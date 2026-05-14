@@ -3,6 +3,7 @@
 ## Scope
 - Project path: `/Users/isabel/Desktop/claude-electron`
 - App type: Electron desktop app with `node-pty` terminal + Whisper dictation.
+- Client install checklist: `INSTALACION_CLIENTE.md`
 
 ## Incident history
 - Date: **2026-05-14**
