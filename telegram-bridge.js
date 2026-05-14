@@ -1,4 +1,5 @@
 const fs = require('fs')
+const https = require('https')
 const path = require('path')
 
 function sleep(ms) {
@@ -30,6 +31,12 @@ function normalizeAllowedUsers(input) {
     return new Set(input.split(/[,\s]+/g).map((x) => x.trim()).filter(Boolean))
   }
   return new Set()
+}
+
+function createAbortError() {
+  const err = new Error('Request aborted')
+  err.name = 'AbortError'
+  return err
 }
 
 class TelegramBridge {
@@ -267,9 +274,7 @@ class TelegramBridge {
       if (!filePath) throw new Error('No se pudo resolver file_path de Telegram.')
 
       const url = `https://api.telegram.org/file/bot${this.config.botToken}/${filePath}`
-      const audioRes = await fetch(url)
-      if (!audioRes.ok) throw new Error(`Error descargando audio: HTTP ${audioRes.status}`)
-      const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
+      const audioBuffer = await this._downloadBuffer(url)
 
       const localPath = path.join(this.tmpDir, `tg-voice-${Date.now()}.ogg`)
       fs.writeFileSync(localPath, audioBuffer)
@@ -370,19 +375,100 @@ class TelegramBridge {
     })
   }
 
+  async _postJson(url, payload, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(createAbortError())
+        return
+      }
+
+      const target = new URL(url)
+      const body = Buffer.from(JSON.stringify(payload || {}))
+      const req = https.request({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': body.length
+        }
+      }, (res) => {
+        const chunks = []
+        res.on('data', (chunk) => chunks.push(chunk))
+        res.on('error', reject)
+        res.on('end', () => {
+          const status = res.statusCode || 0
+          const raw = Buffer.concat(chunks).toString('utf8')
+          if (status < 200 || status >= 300) {
+            reject(new Error(`HTTP ${status}`))
+            return
+          }
+          try {
+            resolve(raw ? JSON.parse(raw) : {})
+          } catch (err) {
+            reject(new Error(`Respuesta JSON invalida: ${err?.message || err}`))
+          }
+        })
+      })
+
+      const onAbort = () => req.destroy(createAbortError())
+      if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
+      req.on('error', reject)
+      req.on('close', () => {
+        if (signal) signal.removeEventListener('abort', onAbort)
+      })
+
+      req.write(body)
+      req.end()
+    })
+  }
+
+  async _downloadBuffer(url, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(createAbortError())
+        return
+      }
+
+      const target = new URL(url)
+      const req = https.request({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method: 'GET'
+      }, (res) => {
+        const status = res.statusCode || 0
+        if (status < 200 || status >= 300) {
+          reject(new Error(`Error descargando audio: HTTP ${status}`))
+          res.resume()
+          return
+        }
+        const chunks = []
+        res.on('data', (chunk) => chunks.push(chunk))
+        res.on('error', reject)
+        res.on('end', () => resolve(Buffer.concat(chunks)))
+      })
+
+      const onAbort = () => req.destroy(createAbortError())
+      if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
+      req.on('error', reject)
+      req.on('close', () => {
+        if (signal) signal.removeEventListener('abort', onAbort)
+      })
+      req.end()
+    })
+  }
+
   async _api(method, payload, signal) {
     const token = this.config?.botToken
     if (!token) throw new Error('Bot token no configurado.')
 
-    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload || {}),
-      signal
-    })
-    if (!res.ok) throw new Error(`Telegram ${method} HTTP ${res.status}`)
-
-    const data = await res.json()
+    const data = await this._postJson(`https://api.telegram.org/bot${token}/${method}`, payload || {}, signal)
     if (!data.ok) {
       throw new Error(`Telegram ${method}: ${data.description || 'error'}`)
     }
