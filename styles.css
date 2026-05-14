@@ -323,8 +323,13 @@ button:active { transform: scale(0.93); }
 #terminal {
   width: 100%;
   height: 100%;
-  padding: 8px 10px 4px 10px;
+  /* Extra right gutter so overlay scrollbars never cover chat text. */
+  padding: 8px 18px 4px 10px;
   overflow: hidden;
+}
+
+.xterm .xterm-viewport {
+  scrollbar-gutter: stable;
 }
 
 .xterm-viewport::-webkit-scrollbar { width: 6px; }
