@@ -27,6 +27,11 @@
    - `npm run doctor`
 4. More robust CLI resolution in `main.js`:
    - Uses env vars / `~/.local/bin` / PATH fallback for `claude`, `codex`, `whisper`.
+5. PTY hardening in main/renderer:
+   - Validates active CLI before spawn.
+   - Emits `pty-error` to UI with explicit message instead of silent failure.
+   - Restart/session resume paths now reject properly on spawn errors.
+   - CLI switch includes rollback to previous CLI if restart fails.
 
 ## Standard commands
 - Dev run: `npm run start`
@@ -41,6 +46,9 @@
   1. `npm run doctor`
   2. `npm run reset:state`
   3. Rebuild (`npm run build:zip` or `npm run dist`)
+- If `npm run start` fails only in restricted/sandboxed execution runners:
+  - Verify again in a normal local terminal session (outside sandbox).
+  - This specific crash signature can be environment-related (`SIGABRT` before app JS loads).
 - If DMG fails with `hdiutil`/`hdiejectd` sandbox errors:
   - Run DMG build outside sandbox/restricted session.
 - ZIP artifacts are usually reliable even when DMG fails in constrained environments.

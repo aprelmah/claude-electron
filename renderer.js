@@ -105,6 +105,10 @@ function hideStatus() {
   statusBar.classList.add('hidden')
 }
 
+function errorMessage(err) {
+  return err?.message || String(err)
+}
+
 // ── Inyecta texto al PTY ──
 function injectToPty(text) {
   if (!text) return
@@ -126,7 +130,17 @@ async function fullRestart(cwd) {
   fitAndSync()
 }
 
-btnRestart.addEventListener('click', () => fullRestart())
+btnRestart.addEventListener('click', async () => {
+  showStatus('Reiniciando terminal…', 'busy')
+  try {
+    await fullRestart()
+    await updateCwdLabel()
+    hideStatus()
+    term.focus()
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6000)
+  }
+})
 btnPin.addEventListener('click', async () => {
   window.api.togglePin()
   const pinned = await window.api.isPinned()
@@ -370,10 +384,14 @@ async function updateCwdLabel() {
 btnWorkHere.addEventListener('click', async () => {
   if (!rootPath) return
   showStatus('Reiniciando Claude en esta carpeta…', 'busy')
-  await fullRestart(rootPath)
-  await updateCwdLabel()
-  hideStatus()
-  term.focus()
+  try {
+    await fullRestart(rootPath)
+    await updateCwdLabel()
+    hideStatus()
+    term.focus()
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6000)
+  }
 })
 
 
@@ -569,11 +587,15 @@ async function openSessions() {
       fitAndSync()
       term.reset()
       term.clear()
-      await window.api.resumeSession(s.id, cwd, term.cols, term.rows)
-      fitAndSync()
-      await updateCwdLabel()
-      hideStatus()
-      term.focus()
+      try {
+        await window.api.resumeSession(s.id, cwd, term.cols, term.rows)
+        fitAndSync()
+        await updateCwdLabel()
+        hideStatus()
+        term.focus()
+      } catch (err) {
+        showStatus(errorMessage(err), 'error', 6000)
+      }
     })
 
     row.querySelector('.btn-delete').addEventListener('click', async (e) => {
@@ -601,19 +623,45 @@ window.addEventListener('keydown', (e) => {
 term.onData((data) => window.api.writePty(data))
 window.api.onPtyData((chunk) => term.write(chunk))
 window.api.onPtyExit(() => term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n'))
+window.api.onPtyError((message) => {
+  const msg = (message || 'Error de terminal').toString()
+  term.write(`\r\n\x1b[31m[error] ${msg}\x1b[0m\r\n`)
+  showStatus(msg, 'error', 7000)
+})
 
 // ── CLI selector ──
 cliSelector.addEventListener('change', async (e) => {
   const newCli = e.target.value
+  const previousCli = await window.api.getActiveCli()
+  if (newCli === previousCli) return
+
   const result = await window.api.setActiveCli(newCli)
-  if (!result.ok) { alert(result.error); cliSelector.value = await window.api.getActiveCli(); return }
-  localStorage.setItem('claude-electron-cli', newCli)
+  if (!result.ok) {
+    alert(result.error)
+    cliSelector.value = previousCli
+    return
+  }
+
   showStatus(`Cambiando a ${newCli.toUpperCase()}...`, 'busy')
   await new Promise(r => setTimeout(r, 300))
-  await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
-  fitAndSync()
-  term.focus()
-  showStatus(`${newCli.toUpperCase()} cargado`, 'ok', 1500)
+  try {
+    await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+    fitAndSync()
+    term.focus()
+    localStorage.setItem('claude-electron-cli', newCli)
+    showStatus(`${newCli.toUpperCase()} cargado`, 'info', 1500)
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 7000)
+    const rollback = await window.api.setActiveCli(previousCli)
+    cliSelector.value = previousCli
+    if (rollback.ok) {
+      try {
+        await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+        fitAndSync()
+        term.focus()
+      } catch {}
+    }
+  }
 })
 
 ;(async () => {
@@ -626,13 +674,25 @@ cliSelector.addEventListener('change', async (e) => {
 
   const activeCli = await window.api.getActiveCli()
   const savedCli = localStorage.getItem('claude-electron-cli') || 'claude'
+  let initialCli = activeCli
   if (savedCli !== activeCli) {
-    await window.api.setActiveCli(savedCli)
+    const setResult = await window.api.setActiveCli(savedCli)
+    if (setResult.ok) {
+      initialCli = savedCli
+    } else {
+      showStatus(setResult.error, 'warn', 5000)
+    }
   }
-  cliSelector.value = savedCli
+  cliSelector.value = initialCli
 
-  await window.api.startPty(term.cols, term.rows, initialRoot)
+  try {
+    await window.api.startPty(term.cols, term.rows, initialRoot)
+  } catch (err) {
+    showStatus(errorMessage(err), 'error')
+    return
+  }
   await setRoot(initialRoot)
+  await updateCwdLabel()
 
   term.focus()
 })()

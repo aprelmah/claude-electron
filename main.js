@@ -1,6 +1,6 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, dialog } = require('electron')
 const pty = require('node-pty')
-const { spawn } = require('child_process')
+const { spawn, spawnSync } = require('child_process')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
@@ -44,6 +44,44 @@ const WHISPER_BIN = resolveCommand([
   'whisper'
 ])
 
+function buildRuntimeEnv() {
+  return {
+    ...process.env,
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    LANG: process.env.LANG || 'en_US.UTF-8',
+    PATH: `${USER_LOCAL_BIN}:${process.env.PATH || ''}:${PYTHON39_BIN}:/usr/local/bin`
+  }
+}
+
+function commandExists(command, env) {
+  if (!command) return false
+  if (command.includes('/')) return fs.existsSync(command)
+  const probe = spawnSync('/bin/bash', ['-lc', `command -v ${JSON.stringify(command)} >/dev/null 2>&1`], { env })
+  return probe.status === 0
+}
+
+function cliMeta(cli = activeCLI) {
+  if (cli === 'codex') return { name: 'Codex', bin: CODEX_BIN, envVar: 'CODEX_BIN' }
+  return { name: 'Claude', bin: CLAUDE_BIN, envVar: 'CLAUDE_BIN' }
+}
+
+function notifyPtyError(message) {
+  win?.webContents.send('pty-error', message)
+}
+
+function ensureCliAvailable(cli = activeCLI) {
+  const meta = cliMeta(cli)
+  const env = buildRuntimeEnv()
+  if (!commandExists(meta.bin, env)) {
+    return {
+      ok: false,
+      error: `${meta.name} no está disponible (${meta.bin}). Ajusta ${meta.envVar} o instala el comando en PATH.`
+    }
+  }
+  return { ok: true, ...meta, env }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1000,
@@ -66,27 +104,28 @@ function createWindow() {
   })
 }
 
-function getBin() {
-  return activeCLI === 'codex' ? CODEX_BIN : CLAUDE_BIN
-}
-
 function startPty(cols, rows, cwd, args = []) {
   if (ptyProcess) return ptyProcess
   if (cwd && fs.existsSync(cwd)) currentCwd = cwd
+  const cliCheck = ensureCliAvailable(activeCLI)
+  if (!cliCheck.ok) {
+    notifyPtyError(cliCheck.error)
+    throw new Error(cliCheck.error)
+  }
 
-  ptyProcess = pty.spawn(getBin(), args, {
-    name: 'xterm-256color',
-    cols: cols || 120,
-    rows: rows || 35,
-    cwd: currentCwd,
-    env: {
-      ...process.env,
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      LANG: process.env.LANG || 'en_US.UTF-8',
-      PATH: `${USER_LOCAL_BIN}:${process.env.PATH}:${PYTHON39_BIN}:/usr/local/bin`
-    }
-  })
+  try {
+    ptyProcess = pty.spawn(cliCheck.bin, args, {
+      name: 'xterm-256color',
+      cols: cols || 120,
+      rows: rows || 35,
+      cwd: currentCwd,
+      env: cliCheck.env
+    })
+  } catch (err) {
+    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
+    notifyPtyError(msg)
+    throw new Error(msg)
+  }
 
   ptyProcess._alive = true
   const myProc = ptyProcess
@@ -130,10 +169,14 @@ ipcMain.on('pty-input', (event, data) => { ptyProcess?.write(data) })
 ipcMain.on('pty-resize', (event, { cols, rows }) => { try { ptyProcess?.resize(cols, rows) } catch {} })
 ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
   killPty()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     setTimeout(() => {
-      startPty(cols, rows, cwd)
-      resolve(currentCwd)
+      try {
+        startPty(cols, rows, cwd)
+        resolve(currentCwd)
+      } catch (err) {
+        reject(err)
+      }
     }, 200)
   })
 })
@@ -141,6 +184,10 @@ ipcMain.handle('pty-cwd', () => currentCwd)
 
 // ── Audio: guarda buffer y transcribe con whisper ──
 ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
+  const whisperReady = commandExists(WHISPER_BIN, buildRuntimeEnv())
+  if (!whisperReady) {
+    throw new Error(`Whisper no disponible (${WHISPER_BIN}). Revisa WHISPER_BIN o tu PATH.`)
+  }
   const ts = Date.now()
   const webmPath = path.join(TMP_DIR, `audio-${ts}.webm`)
   fs.writeFileSync(webmPath, Buffer.from(arrayBuffer))
@@ -154,7 +201,7 @@ ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
       '--output_dir', TMP_DIR,
       '--fp16', 'False'
     ], {
-      env: { ...process.env, PATH: `${process.env.PATH}:${PYTHON39_BIN}` }
+      env: { ...process.env, PATH: `${process.env.PATH || ''}:${PYTHON39_BIN}` }
     })
 
     let stderr = ''
@@ -354,10 +401,14 @@ ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
 
 ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) => {
   killPty()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     setTimeout(() => {
-      startPty(cols, rows, cwd, ['--resume', sessionId])
-      resolve(currentCwd)
+      try {
+        startPty(cols, rows, cwd, ['--resume', sessionId])
+        resolve(currentCwd)
+      } catch (err) {
+        reject(err)
+      }
     }, 200)
   })
 })
@@ -368,6 +419,8 @@ ipcMain.handle('get-active-cli', () => activeCLI)
 
 ipcMain.handle('set-active-cli', (event, cli) => {
   if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
+  const check = ensureCliAvailable(cli)
+  if (!check.ok) return { ok: false, error: check.error }
   if (activeCLI === cli) return { ok: true }
   activeCLI = cli
   killPty()
