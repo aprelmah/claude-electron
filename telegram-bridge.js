@@ -284,7 +284,8 @@ class TelegramBridge {
       return
     }
 
-    await this.onTerminalInput?.(`${text}\n`)
+    // En PTY, Enter debe ser CR (\r) para que el CLI procese la linea.
+    await this.onTerminalInput?.(`${text}\r`)
     await this._sendMessage(chatId, 'OK. Enviado al terminal.')
   }
 
@@ -313,7 +314,7 @@ class TelegramBridge {
         return
       }
 
-      await this.onTerminalInput?.(`${transcript.trim()}\n`)
+      await this.onTerminalInput?.(`${transcript.trim()}\r`)
       await this._sendMessage(chatId, `Voz -> texto:\n${transcript.trim()}`)
     } catch (err) {
       await this._sendMessage(chatId, `Error en voz: ${err?.message || err}`)
