@@ -31,6 +31,7 @@
     ],
     "files": [
       "main.js",
+      "telegram-bridge.js",
       "preload.js",
       "renderer.js",
       "index.html",
