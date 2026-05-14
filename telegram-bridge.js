@@ -226,6 +226,28 @@ class TelegramBridge {
       } catch (err) {
         if (!this.running) break
         if (err?.name === 'AbortError') break
+
+        if (this._isConflictError(err)) {
+          const description = this._getErrorDescription(err)
+          const webhookConflict = /webhook/i.test(description)
+          if (webhookConflict) {
+            try {
+              await this._api('deleteWebhook', { drop_pending_updates: true })
+            } catch {}
+            this.lastError = `Telegram 409: ${description || 'conflicto con webhook'}`
+            this.lastInfo = 'Reconectando Telegram (limpiando webhook)...'
+            this._emitStatus()
+            await sleep(1400)
+            continue
+          }
+
+          this._setError(
+            `Telegram 409: otro proceso usa este bot. Cierra otras instancias/bridges con este token.${description ? ` Detalle: ${description}` : ''}`
+          )
+          await sleep(2500)
+          continue
+        }
+
         this._setError(err?.message || err)
         await sleep(1800)
       }
@@ -375,6 +397,18 @@ class TelegramBridge {
     })
   }
 
+  _getErrorDescription(err) {
+    if (!err) return ''
+    return String(err.description || err?.response?.description || err.message || '').trim()
+  }
+
+  _isConflictError(err) {
+    const code = Number(err?.httpStatus || err?.errorCode || err?.response?.error_code || 0)
+    if (code === 409) return true
+    const desc = this._getErrorDescription(err).toLowerCase()
+    return desc.includes('conflict') || desc.includes("can't use getupdates")
+  }
+
   async _postJson(url, payload, signal) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -401,15 +435,32 @@ class TelegramBridge {
         res.on('end', () => {
           const status = res.statusCode || 0
           const raw = Buffer.concat(chunks).toString('utf8')
-          if (status < 200 || status >= 300) {
-            reject(new Error(`HTTP ${status}`))
+          let data = null
+          try {
+            data = raw ? JSON.parse(raw) : {}
+          } catch (err) {
+            if (status < 200 || status >= 300) {
+              const httpErr = new Error(`HTTP ${status}`)
+              httpErr.httpStatus = status
+              httpErr.responseText = raw
+              reject(httpErr)
+              return
+            }
+            reject(new Error(`Respuesta JSON invalida: ${err?.message || err}`))
             return
           }
-          try {
-            resolve(raw ? JSON.parse(raw) : {})
-          } catch (err) {
-            reject(new Error(`Respuesta JSON invalida: ${err?.message || err}`))
+
+          if (status < 200 || status >= 300) {
+            const description = data?.description || `HTTP ${status}`
+            const httpErr = new Error(description)
+            httpErr.httpStatus = status
+            httpErr.errorCode = data?.error_code
+            httpErr.description = data?.description
+            httpErr.response = data
+            reject(httpErr)
+            return
           }
+          resolve(data || {})
         })
       })
 
