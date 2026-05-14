@@ -4,10 +4,12 @@ const { spawn, spawnSync } = require('child_process')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
+const { TelegramBridge } = require('./telegram-bridge')
 
 const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
 const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
 const TMP_DIR = '/tmp/claude-electron'
+const CONFIG_FILENAME = 'claude-novak.config.json'
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -15,6 +17,25 @@ let win
 let ptyProcess = null
 let currentCwd = os.homedir()
 let activeCLI = 'claude'
+let lastPtyCols = 120
+let lastPtyRows = 35
+let telegramBridge = null
+
+const DEFAULT_CONFIG = Object.freeze({
+  cli: {
+    defaultCli: 'claude',
+    claudeBin: '',
+    codexBin: '',
+    whisperBin: ''
+  },
+  telegram: {
+    enabled: false,
+    botToken: '',
+    allowedUsers: []
+  }
+})
+
+let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 
 function resolveCommand(candidates) {
   for (const cmd of candidates) {
@@ -25,32 +46,98 @@ function resolveCommand(candidates) {
   return candidates.find(Boolean) || ''
 }
 
-const CLAUDE_BIN = resolveCommand([
+const FALLBACK_CLAUDE_BIN = resolveCommand([
   process.env.CLAUDE_BIN,
   path.join(USER_LOCAL_BIN, 'claude'),
   'claude'
 ])
 
-const CODEX_BIN = resolveCommand([
+const FALLBACK_CODEX_BIN = resolveCommand([
   process.env.CODEX_BIN,
   path.join(USER_LOCAL_BIN, 'codex'),
   path.join(os.homedir(), '.nvm/versions/node/v24.15.0/bin/codex'),
   'codex'
 ])
 
-const WHISPER_BIN = resolveCommand([
+const FALLBACK_WHISPER_BIN = resolveCommand([
   process.env.WHISPER_BIN,
   path.join(PYTHON39_BIN, 'whisper'),
   'whisper'
 ])
 
+function normalizeAppConfig(raw) {
+  const cli = raw?.cli || {}
+  const telegram = raw?.telegram || {}
+
+  const normalized = {
+    cli: {
+      defaultCli: cli.defaultCli === 'codex' ? 'codex' : 'claude',
+      claudeBin: typeof cli.claudeBin === 'string' ? cli.claudeBin.trim() : '',
+      codexBin: typeof cli.codexBin === 'string' ? cli.codexBin.trim() : '',
+      whisperBin: typeof cli.whisperBin === 'string' ? cli.whisperBin.trim() : ''
+    },
+    telegram: {
+      enabled: Boolean(telegram.enabled),
+      botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
+      allowedUsers: []
+    }
+  }
+
+  if (Array.isArray(telegram.allowedUsers)) {
+    normalized.telegram.allowedUsers = telegram.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
+  } else if (typeof telegram.allowedUsers === 'string') {
+    normalized.telegram.allowedUsers = telegram.allowedUsers.split(/[,\s]+/g).map((u) => u.trim()).filter(Boolean)
+  }
+  normalized.telegram.allowedUsers = Array.from(new Set(normalized.telegram.allowedUsers))
+
+  return normalized
+}
+
+function configFilePath() {
+  return path.join(app.getPath('userData'), CONFIG_FILENAME)
+}
+
+function loadAppConfig() {
+  try {
+    const p = configFilePath()
+    if (!fs.existsSync(p)) return normalizeAppConfig(DEFAULT_CONFIG)
+    const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
+    return normalizeAppConfig(raw)
+  } catch {
+    return normalizeAppConfig(DEFAULT_CONFIG)
+  }
+}
+
+function saveAppConfig(nextConfig) {
+  const normalized = normalizeAppConfig(nextConfig)
+  const p = configFilePath()
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, JSON.stringify(normalized, null, 2), 'utf-8')
+  appConfig = normalized
+  return normalized
+}
+
+function getConfiguredBin(cli) {
+  if (cli === 'codex') return appConfig.cli.codexBin || FALLBACK_CODEX_BIN
+  return appConfig.cli.claudeBin || FALLBACK_CLAUDE_BIN
+}
+
+function getConfiguredWhisperBin() {
+  return appConfig.cli.whisperBin || FALLBACK_WHISPER_BIN
+}
+
 function buildRuntimeEnv() {
+  const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
+  for (const candidate of [appConfig.cli.claudeBin, appConfig.cli.codexBin, appConfig.cli.whisperBin]) {
+    if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
+  }
+  const mergedPath = Array.from(new Set([...extraPaths, process.env.PATH || ''])).join(':')
   return {
     ...process.env,
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
     LANG: process.env.LANG || 'en_US.UTF-8',
-    PATH: `${USER_LOCAL_BIN}:${process.env.PATH || ''}:${PYTHON39_BIN}:/usr/local/bin`
+    PATH: mergedPath
   }
 }
 
@@ -62,12 +149,16 @@ function commandExists(command, env) {
 }
 
 function cliMeta(cli = activeCLI) {
-  if (cli === 'codex') return { name: 'Codex', bin: CODEX_BIN, envVar: 'CODEX_BIN' }
-  return { name: 'Claude', bin: CLAUDE_BIN, envVar: 'CLAUDE_BIN' }
+  if (cli === 'codex') return { name: 'Codex', bin: getConfiguredBin('codex'), envVar: 'CODEX_BIN' }
+  return { name: 'Claude', bin: getConfiguredBin('claude'), envVar: 'CLAUDE_BIN' }
 }
 
 function notifyPtyError(message) {
   win?.webContents.send('pty-error', message)
+}
+
+function notifyTelegramStatus() {
+  win?.webContents.send('telegram-status', telegramBridge?.getStatus() || null)
 }
 
 function ensureCliAvailable(cli = activeCLI) {
@@ -98,6 +189,9 @@ function createWindow() {
   })
 
   win.loadFile('index.html')
+  win.webContents.on('did-finish-load', () => {
+    notifyTelegramStatus()
+  })
   win.on('closed', () => {
     win = null
     if (ptyProcess) { ptyProcess.kill(); ptyProcess = null }
@@ -106,6 +200,10 @@ function createWindow() {
 
 function startPty(cols, rows, cwd, args = []) {
   if (ptyProcess) return ptyProcess
+  if (cols && rows) {
+    lastPtyCols = cols
+    lastPtyRows = rows
+  }
   if (cwd && fs.existsSync(cwd)) currentCwd = cwd
   const cliCheck = ensureCliAvailable(activeCLI)
   if (!cliCheck.ok) {
@@ -131,7 +229,10 @@ function startPty(cols, rows, cwd, args = []) {
   const myProc = ptyProcess
 
   myProc.onData((data) => {
-    if (myProc._alive) win?.webContents.send('pty-data', data)
+    if (myProc._alive) {
+      win?.webContents.send('pty-data', data)
+      telegramBridge?.pushTerminalData(data)
+    }
   })
 
   myProc.onExit(() => {
@@ -149,8 +250,75 @@ function killPty() {
   ptyProcess = null
 }
 
+function setActiveCli(cli) {
+  if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
+  const check = ensureCliAvailable(cli)
+  if (!check.ok) return { ok: false, error: check.error }
+  if (activeCLI === cli) return { ok: true }
+  activeCLI = cli
+  killPty()
+  return { ok: true }
+}
+
 app.whenReady().then(() => {
+  appConfig = loadAppConfig()
+  activeCLI = appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude'
+
+  telegramBridge = new TelegramBridge({
+    tmpDir: TMP_DIR,
+    onTerminalInput: async (text) => {
+      if (!ptyProcess) startPty(lastPtyCols, lastPtyRows, currentCwd)
+      ptyProcess?.write(text)
+    },
+    onTranscribeFile: async (filePath) => {
+      const whisperBin = getConfiguredWhisperBin()
+      const whisperReady = commandExists(whisperBin, buildRuntimeEnv())
+      if (!whisperReady) {
+        throw new Error(`Whisper no disponible (${whisperBin}).`)
+      }
+      const outBase = path.basename(filePath).replace(/\.[^.]+$/, '')
+      return new Promise((resolve, reject) => {
+        const proc = spawn(whisperBin, [
+          filePath,
+          '--language', 'Spanish',
+          '--model', 'small',
+          '--output_format', 'txt',
+          '--output_dir', TMP_DIR,
+          '--fp16', 'False'
+        ], {
+          env: { ...process.env, PATH: `${process.env.PATH || ''}:${PYTHON39_BIN}` }
+        })
+        let stderr = ''
+        proc.stderr.on('data', (d) => { stderr += d.toString() })
+        proc.on('error', (err) => reject(err))
+        proc.on('close', (code) => {
+          if (code !== 0) return reject(new Error(`whisper exit ${code}: ${stderr}`))
+          const txtPath = path.join(TMP_DIR, `${outBase}.txt`)
+          try {
+            const text = fs.readFileSync(txtPath, 'utf-8').trim()
+            try { fs.unlinkSync(txtPath) } catch {}
+            resolve(text)
+          } catch (err) {
+            reject(err)
+          }
+        })
+      })
+    },
+    onGetActiveCli: async () => activeCLI,
+    onGetCwd: async () => currentCwd,
+    onRestartTerminal: async () => {
+      killPty()
+      startPty(lastPtyCols, lastPtyRows, currentCwd)
+    },
+    onSetCli: async (cli) => setActiveCli(cli),
+    onStatus: notifyTelegramStatus
+  })
+
   createWindow()
+  telegramBridge.applyConfig(appConfig.telegram).catch((err) => {
+    notifyPtyError(`Error iniciando Telegram bridge: ${err?.message || err}`)
+  })
+
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
     if (!win) return createWindow()
     win.isVisible() ? win.hide() : win.show()
@@ -160,13 +328,20 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   globalShortcut.unregisterAll()
   killPty()
+  telegramBridge?.stop()
   app.quit()
 })
 
 // ── PTY ──
 ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => { startPty(cols, rows, cwd); return currentCwd })
 ipcMain.on('pty-input', (event, data) => { ptyProcess?.write(data) })
-ipcMain.on('pty-resize', (event, { cols, rows }) => { try { ptyProcess?.resize(cols, rows) } catch {} })
+ipcMain.on('pty-resize', (event, { cols, rows }) => {
+  if (cols && rows) {
+    lastPtyCols = cols
+    lastPtyRows = rows
+  }
+  try { ptyProcess?.resize(cols, rows) } catch {}
+})
 ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
   killPty()
   return new Promise((resolve, reject) => {
@@ -184,16 +359,17 @@ ipcMain.handle('pty-cwd', () => currentCwd)
 
 // ── Audio: guarda buffer y transcribe con whisper ──
 ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
-  const whisperReady = commandExists(WHISPER_BIN, buildRuntimeEnv())
+  const whisperBin = getConfiguredWhisperBin()
+  const whisperReady = commandExists(whisperBin, buildRuntimeEnv())
   if (!whisperReady) {
-    throw new Error(`Whisper no disponible (${WHISPER_BIN}). Revisa WHISPER_BIN o tu PATH.`)
+    throw new Error(`Whisper no disponible (${whisperBin}). Revisa WHISPER_BIN o tu PATH.`)
   }
   const ts = Date.now()
   const webmPath = path.join(TMP_DIR, `audio-${ts}.webm`)
   fs.writeFileSync(webmPath, Buffer.from(arrayBuffer))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(WHISPER_BIN, [
+    const proc = spawn(whisperBin, [
       webmPath,
       '--language', 'Spanish',
       '--model', 'small',
@@ -418,14 +594,36 @@ ipcMain.handle('get-system-theme', () => nativeTheme.shouldUseDarkColors ? 'dark
 ipcMain.handle('get-active-cli', () => activeCLI)
 
 ipcMain.handle('set-active-cli', (event, cli) => {
-  if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
-  const check = ensureCliAvailable(cli)
-  if (!check.ok) return { ok: false, error: check.error }
-  if (activeCLI === cli) return { ok: true }
-  activeCLI = cli
-  killPty()
-  return { ok: true }
+  return setActiveCli(cli)
 })
+
+ipcMain.handle('get-app-config', () => ({ ...appConfig }))
+
+ipcMain.handle('save-app-config', async (event, partialConfig) => {
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    ...partialConfig,
+    cli: { ...appConfig.cli, ...(partialConfig?.cli || {}) },
+    telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) }
+  })
+  saveAppConfig(merged)
+  const warnings = []
+
+  // Si cambia CLI por defecto, se aplica de inmediato.
+  if (activeCLI !== appConfig.cli.defaultCli) {
+    const switchResult = setActiveCli(appConfig.cli.defaultCli)
+    if (!switchResult.ok) {
+      warnings.push(`Config guardada pero no pude aplicar default CLI: ${switchResult.error}`)
+    }
+  }
+
+  let telegramResult = { ok: true, running: false }
+  if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
+  notifyTelegramStatus()
+  return { ok: telegramResult.ok, telegram: telegramResult, warnings, config: appConfig }
+})
+
+ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
 
 ipcMain.on('window-close', () => win?.hide())
 ipcMain.on('window-minimize', () => win?.minimize())

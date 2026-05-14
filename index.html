@@ -40,6 +40,9 @@
       <button id="btn-theme" class="icon-btn" title="Cambiar tema">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor"/><path d="M12 3a9 9 0 0 0 0 18V3z" fill="currentColor" stroke="none"/></svg>
       </button>
+      <button id="btn-settings" class="icon-btn" title="Configuracion">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
+      </button>
       <button id="btn-restart" class="icon-btn" title="Reiniciar sesión Claude">
         <svg viewBox="0 0 24 24"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
@@ -118,6 +121,62 @@
       </div>
       <div id="sessions-list"></div>
       <div id="sessions-empty" class="hidden">Sin sesiones para esta carpeta.</div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel settings">
+      <div class="modal-header">
+        <span class="modal-title">Configuracion</span>
+        <span class="modal-sub">CLI local + Telegram bridge movil</span>
+        <button id="btn-close-settings" class="modal-close">×</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-group">
+          <div class="settings-group-title">CLI</div>
+          <label class="settings-field">
+            <span>CLI por defecto</span>
+            <select id="cfg-default-cli">
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>CLAUDE_BIN</span>
+            <input id="cfg-claude-bin" type="text" placeholder="/ruta/a/claude o comando" />
+          </label>
+          <label class="settings-field">
+            <span>CODEX_BIN</span>
+            <input id="cfg-codex-bin" type="text" placeholder="/ruta/a/codex o comando" />
+          </label>
+          <label class="settings-field">
+            <span>WHISPER_BIN</span>
+            <input id="cfg-whisper-bin" type="text" placeholder="/ruta/a/whisper o comando" />
+          </label>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Telegram</div>
+          <label class="settings-check">
+            <input id="cfg-telegram-enabled" type="checkbox" />
+            <span>Activar puente Telegram</span>
+          </label>
+          <label class="settings-field">
+            <span>Bot token</span>
+            <input id="cfg-telegram-token" type="password" placeholder="123456:AA..." />
+          </label>
+          <label class="settings-field">
+            <span>Allowed users (IDs Telegram, separados por coma)</span>
+            <input id="cfg-telegram-users" type="text" placeholder="12345678, 98765432" />
+          </label>
+          <div id="cfg-telegram-status" class="settings-note">Estado: -</div>
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button id="btn-refresh-telegram-status" class="icon-btn text-btn">Refrescar estado</button>
+        <button id="btn-save-settings" class="icon-btn text-btn primary">Guardar configuracion</button>
+      </div>
     </div>
   </div>
 

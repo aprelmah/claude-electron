@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('api', {
   getSystemTheme: () => ipcRenderer.invoke('get-system-theme'),
   getActiveCli: () => ipcRenderer.invoke('get-active-cli'),
   setActiveCli: (cli) => ipcRenderer.invoke('set-active-cli', cli),
+  getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  saveAppConfig: (config) => ipcRenderer.invoke('save-app-config', config),
+  getTelegramStatus: () => ipcRenderer.invoke('get-telegram-status'),
+  onTelegramStatus: (cb) => ipcRenderer.on('telegram-status', (_, status) => cb(status)),
 
   closeWindow: () => ipcRenderer.send('window-close'),
   minimizeWindow: () => ipcRenderer.send('window-minimize'),

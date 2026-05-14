@@ -8,6 +8,7 @@ const btnMic = document.getElementById('btn-mic')
 const btnImage = document.getElementById('btn-image')
 const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
+const btnSettings = document.getElementById('btn-settings')
 const cliSelector = document.getElementById('cli-selector')
 const termEl = document.getElementById('terminal')
 const termWrap = document.getElementById('terminal-wrap')
@@ -28,6 +29,18 @@ const sessionsList = document.getElementById('sessions-list')
 const sessionsCwd = document.getElementById('sessions-cwd')
 const sessionsEmpty = document.getElementById('sessions-empty')
 const btnCloseSessions = document.getElementById('btn-close-sessions')
+const settingsModal = document.getElementById('settings-modal')
+const btnCloseSettings = document.getElementById('btn-close-settings')
+const btnSaveSettings = document.getElementById('btn-save-settings')
+const btnRefreshTelegramStatus = document.getElementById('btn-refresh-telegram-status')
+const cfgDefaultCli = document.getElementById('cfg-default-cli')
+const cfgClaudeBin = document.getElementById('cfg-claude-bin')
+const cfgCodexBin = document.getElementById('cfg-codex-bin')
+const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
+const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
+const cfgTelegramToken = document.getElementById('cfg-telegram-token')
+const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
+const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
 
 // ── Themes ──
 const THEMES = {
@@ -109,6 +122,33 @@ function errorMessage(err) {
   return err?.message || String(err)
 }
 
+function renderTelegramStatus(status) {
+  if (!status) {
+    cfgTelegramStatus.textContent = 'Estado: bridge no inicializado.'
+    return
+  }
+  const lines = [
+    `Estado: ${status.running ? 'ON' : 'OFF'}`,
+    `Info: ${status.lastInfo || '-'}`,
+    `Bot: ${status.botUsername ? '@' + status.botUsername : '-'}`,
+    `Chats conectados: ${status.activeChats?.length || 0}`
+  ]
+  if (status.lastError) lines.push(`Error: ${status.lastError}`)
+  cfgTelegramStatus.textContent = lines.join('\n')
+}
+
+async function refreshSettings() {
+  const config = await window.api.getAppConfig()
+  cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
+  cfgClaudeBin.value = config?.cli?.claudeBin || ''
+  cfgCodexBin.value = config?.cli?.codexBin || ''
+  cfgWhisperBin.value = config?.cli?.whisperBin || ''
+  cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
+  cfgTelegramToken.value = config?.telegram?.botToken || ''
+  cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
+  renderTelegramStatus(await window.api.getTelegramStatus())
+}
+
 // ── Inyecta texto al PTY ──
 function injectToPty(text) {
   if (!text) return
@@ -145,6 +185,64 @@ btnPin.addEventListener('click', async () => {
   window.api.togglePin()
   const pinned = await window.api.isPinned()
   btnPin.classList.toggle('active', pinned)
+})
+
+btnSettings.addEventListener('click', async () => {
+  await refreshSettings()
+  settingsModal.classList.remove('hidden')
+})
+
+btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'))
+settingsModal.querySelector('.modal-backdrop').addEventListener('click', () => settingsModal.classList.add('hidden'))
+
+btnRefreshTelegramStatus.addEventListener('click', async () => {
+  renderTelegramStatus(await window.api.getTelegramStatus())
+})
+
+btnSaveSettings.addEventListener('click', async () => {
+  showStatus('Guardando configuracion…', 'busy')
+  const payload = {
+    cli: {
+      defaultCli: cfgDefaultCli.value,
+      claudeBin: cfgClaudeBin.value.trim(),
+      codexBin: cfgCodexBin.value.trim(),
+      whisperBin: cfgWhisperBin.value.trim()
+    },
+    telegram: {
+      enabled: cfgTelegramEnabled.checked,
+      botToken: cfgTelegramToken.value.trim(),
+      allowedUsers: cfgTelegramUsers.value
+        .split(/[,\s]+/g)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    }
+  }
+
+  const result = await window.api.saveAppConfig(payload)
+  if (!result.ok) {
+    showStatus(result.error || 'Error guardando configuracion', 'error', 7000)
+    await refreshSettings()
+    return
+  }
+
+  const currentCli = await window.api.getActiveCli()
+  cliSelector.value = currentCli
+  try {
+    await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+    fitAndSync()
+    term.focus()
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 7000)
+    await refreshSettings()
+    return
+  }
+
+  await refreshSettings()
+  if (result.warnings?.length) {
+    showStatus(result.warnings.join(' | '), 'warn', 6500)
+  } else {
+    showStatus('Configuracion guardada y aplicada', 'info', 2500)
+  }
 })
 
 // ── Imagen / Archivo ──
@@ -520,6 +618,10 @@ btnViewerSend.addEventListener('click', () => {
 btnViewerClose.addEventListener('click', closeViewer)
 viewerModal.querySelector('.modal-backdrop').addEventListener('click', closeViewer)
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
+    settingsModal.classList.add('hidden')
+    return
+  }
   if (e.key === 'Escape' && !viewerModal.classList.contains('hidden')) {
     closeViewer()
   }
@@ -614,6 +716,10 @@ btnSessions.addEventListener('click', openSessions)
 btnCloseSessions.addEventListener('click', () => sessionsModal.classList.add('hidden'))
 sessionsModal.querySelector('.modal-backdrop').addEventListener('click', () => sessionsModal.classList.add('hidden'))
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
+    settingsModal.classList.add('hidden')
+    return
+  }
   if (e.key === 'Escape' && !sessionsModal.classList.contains('hidden')) {
     sessionsModal.classList.add('hidden')
   }
@@ -627,6 +733,9 @@ window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
   term.write(`\r\n\x1b[31m[error] ${msg}\x1b[0m\r\n`)
   showStatus(msg, 'error', 7000)
+})
+window.api.onTelegramStatus((status) => {
+  renderTelegramStatus(status)
 })
 
 // ── CLI selector ──
@@ -673,7 +782,8 @@ cliSelector.addEventListener('change', async (e) => {
   const initialRoot = saved || home
 
   const activeCli = await window.api.getActiveCli()
-  const savedCli = localStorage.getItem('claude-electron-cli') || 'claude'
+  const appConfig = await window.api.getAppConfig()
+  const savedCli = appConfig?.cli?.defaultCli || localStorage.getItem('claude-electron-cli') || 'claude'
   let initialCli = activeCli
   if (savedCli !== activeCli) {
     const setResult = await window.api.setActiveCli(savedCli)
@@ -684,6 +794,7 @@ cliSelector.addEventListener('change', async (e) => {
     }
   }
   cliSelector.value = initialCli
+  renderTelegramStatus(await window.api.getTelegramStatus())
 
   try {
     await window.api.startPty(term.cols, term.rows, initialRoot)

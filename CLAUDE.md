@@ -42,6 +42,34 @@
 - Diagnostics: `npm run doctor`
 - Reset saved state: `npm run reset:state`
 
+## Configuracion (desde la app)
+- Boton `Configuracion` (icono engranaje en barra superior).
+- Seccion CLI:
+  - `CLI por defecto` (`claude` o `codex`).
+  - `CLAUDE_BIN`, `CODEX_BIN`, `WHISPER_BIN` (opcional, override local).
+- Seccion Telegram:
+  - `Activar puente Telegram`.
+  - `Bot token`.
+  - `Allowed users` (IDs numericos de Telegram separados por coma).
+- Al guardar:
+  - Persiste en `~/Library/Application Support/CLAUDE-NOVAK/claude-novak.config.json` (ruta `userData` de Electron).
+  - Reaplica CLI y reinicia terminal.
+  - Reinicia bridge Telegram si esta activado.
+
+## Telegram bridge (movil -> Mac)
+- Arquitectura: gateway local (long polling) Telegram -> PTY local -> respuesta Telegram.
+- Seguridad:
+  - Acceso solo para `allowed users`.
+  - Si usuario no autorizado escribe, recibe rechazo.
+- Comandos soportados:
+  - `/help`
+  - `/status`
+  - `/cwd`
+  - `/restart`
+  - `/cli claude|codex`
+- Mensajes de voz:
+  - Descarga audio de Telegram, transcribe con Whisper local y lo inyecta al terminal.
+
 ## Operational notes
 - If app starts crashing again:
   1. `npm run doctor`
