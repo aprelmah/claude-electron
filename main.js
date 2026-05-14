@@ -31,7 +31,11 @@ const DEFAULT_CONFIG = Object.freeze({
   telegram: {
     enabled: false,
     botToken: '',
-    allowedUsers: []
+    allowedUsers: [],
+    claudeModel: '',
+    claudeEffort: '',
+    codexModel: '',
+    codexEffort: ''
   }
 })
 
@@ -79,7 +83,11 @@ function normalizeAppConfig(raw) {
     telegram: {
       enabled: Boolean(telegram.enabled),
       botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
-      allowedUsers: []
+      allowedUsers: [],
+      claudeModel: typeof telegram.claudeModel === 'string' ? telegram.claudeModel.trim() : '',
+      claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
+      codexModel: typeof telegram.codexModel === 'string' ? telegram.codexModel.trim() : '',
+      codexEffort: typeof telegram.codexEffort === 'string' ? telegram.codexEffort.trim() : ''
     }
   }
 
@@ -124,6 +132,16 @@ function getConfiguredBin(cli) {
 
 function getConfiguredWhisperBin() {
   return appConfig.cli.whisperBin || FALLBACK_WHISPER_BIN
+}
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`
+}
+
+function buildFdLimitCommand(bin, args = []) {
+  const parts = [shellQuote(bin), ...args.map(shellQuote)]
+  const log = '/tmp/claude-novak-fd.log'
+  return `echo "[$(date +%H:%M:%S)] before ulimit=$(ulimit -n) hard=$(ulimit -Hn) bin=${shellQuote(bin)}" >> ${log} 2>/dev/null; ulimit -n 65536 2>/dev/null || true; echo "[$(date +%H:%M:%S)] after  ulimit=$(ulimit -n)" >> ${log} 2>/dev/null; exec ${parts.join(' ')}`
 }
 
 function buildRuntimeEnv() {
@@ -212,7 +230,7 @@ function startPty(cols, rows, cwd, args = []) {
   }
 
   try {
-    ptyProcess = pty.spawn(cliCheck.bin, args, {
+    ptyProcess = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, args)], {
       name: 'xterm-256color',
       cols: cols || 120,
       rows: rows || 35,
@@ -231,7 +249,6 @@ function startPty(cols, rows, cwd, args = []) {
   myProc.onData((data) => {
     if (myProc._alive) {
       win?.webContents.send('pty-data', data)
-      telegramBridge?.pushTerminalData(data)
     }
   })
 
@@ -260,16 +277,193 @@ function setActiveCli(cli) {
   return { ok: true }
 }
 
+function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort }) {
+  const meta = cliMeta('claude')
+  const env = buildRuntimeEnv()
+  if (!commandExists(meta.bin, env)) {
+    return Promise.reject(new Error(`Claude no disponible (${meta.bin}). Configura ${meta.envVar}.`))
+  }
+
+  const args = [
+    '-p', prompt,
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--permission-mode', 'bypassPermissions'
+  ]
+  if (model) args.push('--model', model)
+  if (effort) args.push('--effort', effort)
+  if (sessionId) args.push('--resume', sessionId)
+
+  return new Promise((resolve, reject) => {
+    let killed = false
+    let child
+    try {
+      child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
+        cwd: currentCwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    } catch (err) {
+      return reject(err)
+    }
+
+    const abortHandler = () => {
+      killed = true
+      try { child.kill('SIGTERM') } catch {}
+      setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+    }
+    if (signal) {
+      if (signal.aborted) return abortHandler()
+      signal.addEventListener('abort', abortHandler, { once: true })
+    }
+
+    let buffer = ''
+    let stderrBuf = ''
+    let finalSessionId = null
+    let finalText = ''
+    let resultError = null
+
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8')
+      let nl
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        let obj
+        try { obj = JSON.parse(line) } catch { continue }
+        if (!obj || typeof obj !== 'object') continue
+
+        if (obj.type === 'assistant' && obj.message?.content) {
+          for (const block of obj.message.content) {
+            if (block?.type === 'text' && typeof block.text === 'string') {
+              onText?.(block.text)
+            } else if (block?.type === 'tool_use' && block.name) {
+              onToolUse?.(block.name)
+            }
+          }
+        } else if (obj.type === 'result') {
+          if (typeof obj.result === 'string') finalText = obj.result
+          if (obj.is_error) resultError = obj.result || 'CLI devolvió error'
+          if (obj.session_id) {
+            finalSessionId = obj.session_id
+            onSessionId?.(obj.session_id)
+          }
+        }
+      }
+    })
+
+    child.stderr.on('data', (d) => { stderrBuf += d.toString() })
+    child.on('error', (err) => {
+      if (signal) signal.removeEventListener('abort', abortHandler)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      if (signal) signal.removeEventListener('abort', abortHandler)
+      if (killed) {
+        const err = new Error('Cancelado')
+        err.name = 'AbortError'
+        return reject(err)
+      }
+      if (resultError) return reject(new Error(String(resultError)))
+      if (code !== 0) {
+        return reject(new Error(`claude exit ${code}: ${stderrBuf.slice(-500).trim() || 'sin stderr'}`))
+      }
+      resolve({ sessionId: finalSessionId, text: finalText })
+    })
+  })
+}
+
+function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort }) {
+  const meta = cliMeta('codex')
+  const env = buildRuntimeEnv()
+  if (!commandExists(meta.bin, env)) {
+    return Promise.reject(new Error(`Codex no disponible (${meta.bin}). Configura ${meta.envVar}.`))
+  }
+
+  const baseFlags = ['--skip-git-repo-check', '--json']
+  if (model) baseFlags.push('-m', model)
+  if (effort) baseFlags.push('-c', `model_reasoning_effort=${effort}`)
+
+  const args = sessionId
+    ? ['exec', 'resume', sessionId, ...baseFlags, prompt]
+    : ['exec', ...baseFlags, prompt]
+
+  return new Promise((resolve, reject) => {
+    let killed = false
+    let child
+    try {
+      child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
+        cwd: currentCwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    } catch (err) {
+      return reject(err)
+    }
+
+    const abortHandler = () => {
+      killed = true
+      try { child.kill('SIGTERM') } catch {}
+      setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+    }
+    if (signal) {
+      if (signal.aborted) return abortHandler()
+      signal.addEventListener('abort', abortHandler, { once: true })
+    }
+
+    let buffer = ''
+    let stderrBuf = ''
+    let finalSessionId = null
+    let finalText = ''
+
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8')
+      let nl
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        let obj
+        try { obj = JSON.parse(line) } catch { continue }
+        if (!obj || typeof obj !== 'object') continue
+
+        if (obj.type === 'thread.started' && obj.thread_id) {
+          finalSessionId = obj.thread_id
+          onSessionId?.(obj.thread_id)
+        } else if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
+          finalText = obj.item.text
+          onText?.(obj.item.text)
+        }
+      }
+    })
+
+    child.stderr.on('data', (d) => { stderrBuf += d.toString() })
+    child.on('error', (err) => {
+      if (signal) signal.removeEventListener('abort', abortHandler)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      if (signal) signal.removeEventListener('abort', abortHandler)
+      if (killed) {
+        const err = new Error('Cancelado')
+        err.name = 'AbortError'
+        return reject(err)
+      }
+      if (code !== 0) {
+        return reject(new Error(`codex exit ${code}: ${stderrBuf.slice(-500).trim() || 'sin stderr'}`))
+      }
+      resolve({ sessionId: finalSessionId, text: finalText })
+    })
+  })
+}
+
 app.whenReady().then(() => {
   appConfig = loadAppConfig()
   activeCLI = appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude'
 
   telegramBridge = new TelegramBridge({
     tmpDir: TMP_DIR,
-    onTerminalInput: async (text) => {
-      if (!ptyProcess) startPty(lastPtyCols, lastPtyRows, currentCwd)
-      ptyProcess?.write(text)
-    },
     onTranscribeFile: async (filePath) => {
       const whisperBin = getConfiguredWhisperBin()
       const whisperReady = commandExists(whisperBin, buildRuntimeEnv())
@@ -304,12 +498,15 @@ app.whenReady().then(() => {
         })
       })
     },
+    onRunQuery: async (opts) => {
+      const tg = appConfig.telegram || {}
+      if (opts?.cli === 'codex') {
+        return runCodexHeadless({ ...opts, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+      }
+      return runClaudeHeadless({ ...opts, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+    },
     onGetActiveCli: async () => activeCLI,
     onGetCwd: async () => currentCwd,
-    onRestartTerminal: async () => {
-      killPty()
-      startPty(lastPtyCols, lastPtyRows, currentCwd)
-    },
     onSetCli: async (cli) => setActiveCli(cli),
     onStatus: notifyTelegramStatus
   })

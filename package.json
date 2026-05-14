@@ -9,7 +9,8 @@
     "build:zip": "electron-builder --mac zip --arm64 --x64",
     "build:dmg": "electron-builder --mac dmg --arm64 --x64",
     "doctor": "bash ./scripts/doctor.sh",
-    "reset:state": "bash ./scripts/reset-macos-state.sh"
+    "reset:state": "bash ./scripts/reset-macos-state.sh",
+    "deploy": "bash ./scripts/deploy.sh"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -41,8 +42,20 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "hardenedRuntime": false,
       "gatekeeperAssess": false,

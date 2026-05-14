@@ -170,6 +170,49 @@
             <span>Allowed users (IDs Telegram, separados por coma)</span>
             <input id="cfg-telegram-users" type="text" placeholder="12345678, 98765432" />
           </label>
+          <div class="settings-row">
+            <label class="settings-field">
+              <span>Modelo Claude (Telegram)</span>
+              <select id="cfg-telegram-claude-model">
+                <option value="">Default</option>
+                <option value="haiku">Haiku (barato)</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="opus">Opus (caro)</option>
+              </select>
+            </label>
+            <label class="settings-field">
+              <span>Esfuerzo Claude</span>
+              <select id="cfg-telegram-claude-effort">
+                <option value="">Default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Xhigh</option>
+                <option value="max">Max</option>
+              </select>
+            </label>
+          </div>
+          <div class="settings-row">
+            <label class="settings-field">
+              <span>Modelo Codex (Telegram)</span>
+              <select id="cfg-telegram-codex-model">
+                <option value="">Default (gpt-5.4-mini)</option>
+                <option value="gpt-5.4-mini">gpt-5.4-mini (barato)</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="o3-mini">o3-mini (reasoning)</option>
+                <option value="o3">o3 (reasoning caro)</option>
+              </select>
+            </label>
+            <label class="settings-field">
+              <span>Esfuerzo Codex</span>
+              <select id="cfg-telegram-codex-effort">
+                <option value="">Default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </div>
           <div id="cfg-telegram-status" class="settings-note">Estado: -</div>
         </div>
       </div>

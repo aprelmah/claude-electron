@@ -40,6 +40,10 @@ const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
+const cfgTelegramClaudeModel = document.getElementById('cfg-telegram-claude-model')
+const cfgTelegramClaudeEffort = document.getElementById('cfg-telegram-claude-effort')
+const cfgTelegramCodexModel = document.getElementById('cfg-telegram-codex-model')
+const cfgTelegramCodexEffort = document.getElementById('cfg-telegram-codex-effort')
 const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
 
 // ── Themes ──
@@ -146,6 +150,10 @@ async function refreshSettings() {
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
   cfgTelegramToken.value = config?.telegram?.botToken || ''
   cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
+  cfgTelegramClaudeModel.value = config?.telegram?.claudeModel || ''
+  cfgTelegramClaudeEffort.value = config?.telegram?.claudeEffort || ''
+  cfgTelegramCodexModel.value = config?.telegram?.codexModel || ''
+  cfgTelegramCodexEffort.value = config?.telegram?.codexEffort || ''
   renderTelegramStatus(await window.api.getTelegramStatus())
 }
 
@@ -214,7 +222,11 @@ btnSaveSettings.addEventListener('click', async () => {
       allowedUsers: cfgTelegramUsers.value
         .split(/[,\s]+/g)
         .map((x) => x.trim())
-        .filter(Boolean)
+        .filter(Boolean),
+      claudeModel: cfgTelegramClaudeModel.value,
+      claudeEffort: cfgTelegramClaudeEffort.value,
+      codexModel: cfgTelegramCodexModel.value.trim(),
+      codexEffort: cfgTelegramCodexEffort.value
     }
   }
 

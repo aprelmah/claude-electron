@@ -585,6 +585,16 @@ button:active { transform: scale(0.93); }
   gap: 4px;
 }
 
+.settings-row {
+  display: flex;
+  gap: 10px;
+}
+
+.settings-row .settings-field {
+  flex: 1;
+  min-width: 0;
+}
+
 .settings-field span {
   font-size: 11px;
   color: var(--text2);

@@ -6,10 +6,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function stripAnsi(text) {
-  return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
-}
-
 function splitByLimit(text, limit = 3500) {
   const out = []
   let rest = text
@@ -39,23 +35,126 @@ function createAbortError() {
   return err
 }
 
+const MAX_MESSAGE_LEN = 3800
+
+class TelegramStream {
+  constructor(bridge, chatId, messageId) {
+    this.bridge = bridge
+    this.chatId = chatId
+    this.messageId = messageId
+    this.buffer = ''
+    this.lastEditedText = ''
+    this.lastEditAt = 0
+    this.flushScheduled = false
+    this.editing = false
+    this.MIN_INTERVAL = 1500
+    this.MIN_CHARS = 80
+    this.MAX_LEN = MAX_MESSAGE_LEN
+    this.closed = false
+  }
+
+  appendText(text) {
+    if (!text || this.closed) return
+    this.buffer += text
+    this._maybeFlush()
+  }
+
+  appendStatus(line) {
+    if (this.closed) return
+    this.buffer += (this.buffer ? '\n' : '') + line
+    this._maybeFlush(true)
+  }
+
+  _maybeFlush(force = false) {
+    if (this.flushScheduled) return
+    const now = Date.now()
+    const sinceEdit = now - this.lastEditAt
+    const newChars = this.buffer.length - this.lastEditedText.length
+    if (force || sinceEdit >= this.MIN_INTERVAL || newChars >= this.MIN_CHARS) {
+      this.flushScheduled = true
+      const delay = Math.max(0, this.MIN_INTERVAL - sinceEdit)
+      setTimeout(() => {
+        this.flushScheduled = false
+        this._flush().catch(() => {})
+      }, force ? 0 : delay)
+    }
+  }
+
+  async _flush() {
+    if (this.editing) return
+    if (this.closed) return
+    let text = this.buffer.trim()
+    if (!text) return
+    if (text === this.lastEditedText) return
+
+    this.editing = true
+    try {
+      if (text.length > this.MAX_LEN) {
+        const head = text.slice(0, this.MAX_LEN)
+        await this.bridge._editMessage(this.chatId, this.messageId, head)
+        const rest = text.slice(this.MAX_LEN)
+        const newMsg = await this.bridge._sendMessage(this.chatId, rest.slice(0, this.MAX_LEN) || '...')
+        this.messageId = newMsg?.message_id || this.messageId
+        this.buffer = rest
+        this.lastEditedText = rest.slice(0, this.MAX_LEN)
+      } else {
+        await this.bridge._editMessage(this.chatId, this.messageId, text)
+        this.lastEditedText = text
+      }
+      this.lastEditAt = Date.now()
+    } catch (err) {
+      const desc = String(err?.description || err?.message || '')
+      if (/not modified/i.test(desc)) {
+        this.lastEditedText = text
+      } else if (/retry after/i.test(desc) && err?.parameters?.retry_after) {
+        await sleep((err.parameters.retry_after + 0.2) * 1000)
+      } else {
+        // silencioso: no spamear errores
+      }
+    } finally {
+      this.editing = false
+    }
+  }
+
+  async finalize(extra) {
+    if (extra) this.buffer += (this.buffer ? '\n\n' : '') + extra
+    this.closed = true
+    let text = this.buffer.trim()
+    if (!text) text = '(sin respuesta)'
+    try {
+      if (text.length > this.MAX_LEN) {
+        const blocks = splitByLimit(text, this.MAX_LEN)
+        await this.bridge._editMessage(this.chatId, this.messageId, blocks[0])
+        for (let i = 1; i < blocks.length; i++) {
+          await this.bridge._sendMessage(this.chatId, blocks[i])
+        }
+      } else if (text !== this.lastEditedText) {
+        await this.bridge._editMessage(this.chatId, this.messageId, text)
+      }
+    } catch (err) {
+      const desc = String(err?.description || err?.message || '')
+      if (!/not modified/i.test(desc)) {
+        try { await this.bridge._sendMessage(this.chatId, text.slice(0, this.MAX_LEN)) } catch {}
+      }
+    }
+  }
+}
+
 class TelegramBridge {
   constructor({
     tmpDir,
-    onTerminalInput,
     onTranscribeFile,
+    onRunQuery,
     onGetActiveCli,
     onGetCwd,
-    onRestartTerminal,
     onSetCli,
     onStatus
   }) {
     this.tmpDir = tmpDir
-    this.onTerminalInput = onTerminalInput
     this.onTranscribeFile = onTranscribeFile
+    this.onRunQuery = onRunQuery
     this.onGetActiveCli = onGetActiveCli
     this.onGetCwd = onGetCwd
-    this.onRestartTerminal = onRestartTerminal
     this.onSetCli = onSetCli
     this.onStatus = onStatus
 
@@ -65,15 +164,52 @@ class TelegramBridge {
     this.abortController = null
     this.offset = 0
 
-    this.activeChats = new Set()
     this.allowedUsers = new Set()
-    this.buffers = new Map()
-    this.flushTimer = null
+    this.activeStreams = new Map()
+    this.chatQueues = new Map()
+
+    this.sessionsPath = path.join(tmpDir, 'telegram-sessions.json')
+    this.sessions = this._loadSessions()
 
     this.botUsername = ''
     this.lastError = ''
     this.lastInfo = 'Telegram desactivado'
     this.startedAt = 0
+  }
+
+  _loadSessions() {
+    try {
+      if (!fs.existsSync(this.sessionsPath)) return {}
+      const raw = fs.readFileSync(this.sessionsPath, 'utf-8')
+      const data = JSON.parse(raw)
+      return data && typeof data === 'object' ? data : {}
+    } catch {
+      return {}
+    }
+  }
+
+  _saveSessions() {
+    try {
+      fs.writeFileSync(this.sessionsPath, JSON.stringify(this.sessions, null, 2), 'utf-8')
+    } catch {}
+  }
+
+  _getSessionId(chatId, cli) {
+    return this.sessions?.[String(chatId)]?.[cli] || null
+  }
+
+  _setSessionId(chatId, cli, sessionId) {
+    if (!sessionId) return
+    const key = String(chatId)
+    this.sessions[key] = this.sessions[key] || {}
+    if (this.sessions[key][cli] === sessionId) return
+    this.sessions[key][cli] = sessionId
+    this._saveSessions()
+  }
+
+  _clearSessions(chatId) {
+    delete this.sessions[String(chatId)]
+    this._saveSessions()
   }
 
   getStatus() {
@@ -82,7 +218,7 @@ class TelegramBridge {
       botUsername: this.botUsername,
       lastError: this.lastError,
       lastInfo: this.lastInfo,
-      activeChats: Array.from(this.activeChats),
+      activeChats: Object.keys(this.sessions),
       startedAt: this.startedAt
     }
   }
@@ -144,12 +280,9 @@ class TelegramBridge {
     this.lastError = ''
     this.lastInfo = 'Conectando Telegram...'
     this.startedAt = Date.now()
-    this.activeChats.clear()
-    this.buffers.clear()
     this.offset = 0
     this._emitStatus()
 
-    // Si el bot venia de webhook, desactiva webhook para long polling.
     await this._api('deleteWebhook', { drop_pending_updates: true })
     const me = await this._api('getMe')
     this.botUsername = me?.username || ''
@@ -161,52 +294,19 @@ class TelegramBridge {
 
   async stop() {
     this.running = false
-    this.botUsername = this.botUsername || ''
     if (this.abortController) {
       try { this.abortController.abort() } catch {}
       this.abortController = null
     }
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
+    for (const ctrl of this.activeStreams.values()) {
+      try { ctrl.abort() } catch {}
     }
+    this.activeStreams.clear()
+    this.chatQueues.clear()
     if (this.loopPromise) {
       try { await Promise.race([this.loopPromise, sleep(1000)]) } catch {}
       this.loopPromise = null
     }
-  }
-
-  pushTerminalData(data) {
-    if (!this.running || !this.activeChats.size) return
-    const clean = stripAnsi(String(data || '')).replace(/\r/g, '')
-    if (!clean.trim()) return
-
-    for (const chatId of this.activeChats) {
-      const merged = (this.buffers.get(chatId) || '') + clean
-      this.buffers.set(chatId, merged.slice(-12000))
-    }
-
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => {
-        this.flushTimer = null
-        this._flushBuffers().catch((err) => this._setError(err?.message || err))
-      }, 1200)
-    }
-  }
-
-  async _flushBuffers() {
-    if (!this.running || !this.buffers.size) return
-    const jobs = []
-    for (const [chatId, text] of this.buffers.entries()) {
-      this.buffers.delete(chatId)
-      const trimmed = text.trim()
-      if (!trimmed) continue
-      const blocks = splitByLimit(trimmed, 3500)
-      for (const chunk of blocks) {
-        jobs.push(this._sendMessage(chatId, chunk))
-      }
-    }
-    for (const job of jobs) await job
   }
 
   async _pollLoop() {
@@ -221,7 +321,7 @@ class TelegramBridge {
         this.abortController = null
         for (const update of updates) {
           this.offset = Math.max(this.offset, (update.update_id || 0) + 1)
-          await this._handleUpdate(update)
+          this._handleUpdate(update).catch((err) => this._setError(err?.message || err))
         }
       } catch (err) {
         if (!this.running) break
@@ -267,10 +367,6 @@ class TelegramBridge {
       return
     }
 
-    this.activeChats.add(chatId)
-    this.lastInfo = `Telegram activo (${this.activeChats.size} chat(s) conectados)`
-    this._emitStatus()
-
     if (message.voice?.file_id) {
       await this._handleVoice(chatId, message.voice.file_id)
       return
@@ -284,9 +380,67 @@ class TelegramBridge {
       return
     }
 
-    // En PTY, Enter debe ser CR (\r) para que el CLI procese la linea.
-    await this.onTerminalInput?.(`${text}\r`)
-    await this._sendMessage(chatId, 'OK. Enviado al terminal.')
+    await this._enqueueQuery(chatId, text)
+  }
+
+  _enqueueQuery(chatId, prompt) {
+    const prev = this.chatQueues.get(chatId) || Promise.resolve()
+    const next = prev.catch(() => {}).then(() => this._runQuery(chatId, prompt))
+    this.chatQueues.set(chatId, next)
+    next.finally(() => {
+      if (this.chatQueues.get(chatId) === next) this.chatQueues.delete(chatId)
+    })
+    return next
+  }
+
+  async _runQuery(chatId, prompt) {
+    if (!this.running) return
+    const cli = (await this.onGetActiveCli?.()) || 'claude'
+    const sessionId = this._getSessionId(chatId, cli)
+
+    if (this.activeStreams.has(chatId)) {
+      try { this.activeStreams.get(chatId).abort() } catch {}
+    }
+    const abortController = new AbortController()
+    this.activeStreams.set(chatId, abortController)
+
+    let initial
+    try {
+      initial = await this._api('sendMessage', {
+        chat_id: chatId,
+        text: cli === 'codex' ? 'Procesando con Codex...' : 'Procesando con Claude...'
+      })
+    } catch (err) {
+      this.activeStreams.delete(chatId)
+      this._setError(err?.message || err)
+      return
+    }
+
+    const stream = new TelegramStream(this, chatId, initial?.message_id)
+
+    try {
+      const result = await this.onRunQuery?.({
+        cli,
+        prompt,
+        sessionId,
+        signal: abortController.signal,
+        onText: (text) => stream.appendText(text),
+        onToolUse: (name) => stream.appendStatus(`[${name}]`),
+        onSessionId: (id) => this._setSessionId(chatId, cli, id)
+      })
+      if (result?.sessionId) this._setSessionId(chatId, cli, result.sessionId)
+      await stream.finalize()
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        await stream.finalize('(cancelado)')
+      } else {
+        await stream.finalize(`Error: ${err?.message || err}`)
+      }
+    } finally {
+      if (this.activeStreams.get(chatId) === abortController) {
+        this.activeStreams.delete(chatId)
+      }
+    }
   }
 
   async _handleVoice(chatId, fileId) {
@@ -314,8 +468,9 @@ class TelegramBridge {
         return
       }
 
-      await this.onTerminalInput?.(`${transcript.trim()}\r`)
-      await this._sendMessage(chatId, `Voz -> texto:\n${transcript.trim()}`)
+      const cleaned = transcript.trim()
+      await this._sendMessage(chatId, `Voz: ${cleaned}`)
+      await this._enqueueQuery(chatId, cleaned)
     } catch (err) {
       await this._sendMessage(chatId, `Error en voz: ${err?.message || err}`)
     }
@@ -327,15 +482,16 @@ class TelegramBridge {
 
     if (lower === '/start' || lower === '/help') {
       await this._sendMessage(chatId, [
-        'CLAUDE-NOVAK Telegram bridge activo.',
+        'CLAUDE-NOVAK Telegram bridge.',
         '',
         'Comandos:',
         '/status  -> estado del bridge',
         '/cwd     -> carpeta actual',
-        '/restart -> reiniciar terminal',
+        '/reset   -> empezar conversación nueva (olvida sesión)',
+        '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
         '',
-        'Tambien puedes mandar texto normal o una nota de voz.'
+        'Manda texto normal o una nota de voz para hablar con el CLI activo.'
       ].join('\n'))
       return
     }
@@ -343,12 +499,13 @@ class TelegramBridge {
     if (lower === '/status') {
       const activeCli = await this.onGetActiveCli?.()
       const cwd = await this.onGetCwd?.()
+      const session = this._getSessionId(chatId, activeCli)
       await this._sendMessage(chatId, [
         `Bridge: ${this.running ? 'ON' : 'OFF'}`,
         `Bot: ${this.botUsername ? '@' + this.botUsername : '(sin username)'}`,
         `CLI: ${activeCli || 'desconocido'}`,
         `CWD: ${cwd || '(desconocido)'}`,
-        `Chats conectados: ${this.activeChats.size}`
+        `Sesión: ${session ? session.slice(0, 8) + '…' : '(nueva)'}`
       ].join('\n'))
       return
     }
@@ -359,12 +516,21 @@ class TelegramBridge {
       return
     }
 
-    if (lower === '/restart') {
-      try {
-        await this.onRestartTerminal?.()
-        await this._sendMessage(chatId, 'Terminal reiniciado.')
-      } catch (err) {
-        await this._sendMessage(chatId, `Error reiniciando: ${err?.message || err}`)
+    if (lower === '/reset' || lower === '/restart') {
+      this._clearSessions(chatId)
+      const ctrl = this.activeStreams.get(chatId)
+      if (ctrl) try { ctrl.abort() } catch {}
+      await this._sendMessage(chatId, 'Conversación reseteada. Próximo mensaje empieza sesión nueva.')
+      return
+    }
+
+    if (lower === '/cancel' || lower === '/stop') {
+      const ctrl = this.activeStreams.get(chatId)
+      if (ctrl) {
+        try { ctrl.abort() } catch {}
+        await this._sendMessage(chatId, 'Cancelando...')
+      } else {
+        await this._sendMessage(chatId, 'No hay respuesta en curso.')
       }
       return
     }
@@ -377,7 +543,6 @@ class TelegramBridge {
       }
       const result = await this.onSetCli?.(target)
       if (result?.ok) {
-        await this.onRestartTerminal?.()
         await this._sendMessage(chatId, `CLI cambiado a ${target}.`)
       } else {
         await this._sendMessage(chatId, `No se pudo cambiar CLI: ${result?.error || 'error'}`)
@@ -390,10 +555,25 @@ class TelegramBridge {
 
   async _sendMessage(chatId, text) {
     const normalized = String(text || '').trim()
-    if (!normalized) return
-    await this._api('sendMessage', {
+    if (!normalized) return null
+    const blocks = splitByLimit(normalized, MAX_MESSAGE_LEN)
+    let last = null
+    for (const chunk of blocks) {
+      last = await this._api('sendMessage', {
+        chat_id: chatId,
+        text: chunk,
+        disable_web_page_preview: true
+      })
+    }
+    return last
+  }
+
+  async _editMessage(chatId, messageId, text) {
+    if (!messageId) return this._sendMessage(chatId, text)
+    return this._api('editMessageText', {
       chat_id: chatId,
-      text: normalized,
+      message_id: messageId,
+      text: String(text).slice(0, MAX_MESSAGE_LEN),
       disable_web_page_preview: true
     })
   }
@@ -457,6 +637,7 @@ class TelegramBridge {
             httpErr.httpStatus = status
             httpErr.errorCode = data?.error_code
             httpErr.description = data?.description
+            httpErr.parameters = data?.parameters
             httpErr.response = data
             reject(httpErr)
             return
@@ -522,7 +703,11 @@ class TelegramBridge {
 
     const data = await this._postJson(`https://api.telegram.org/bot${token}/${method}`, payload || {}, signal)
     if (!data.ok) {
-      throw new Error(`Telegram ${method}: ${data.description || 'error'}`)
+      const err = new Error(`Telegram ${method}: ${data.description || 'error'}`)
+      err.description = data.description
+      err.errorCode = data.error_code
+      err.parameters = data.parameters
+      throw err
     }
     return data.result
   }
