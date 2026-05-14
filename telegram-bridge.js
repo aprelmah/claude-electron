@@ -89,7 +89,12 @@ class TelegramStream {
 
     this.editing = true
     try {
-      if (text.length > this.MAX_LEN) {
+      if (!this.messageId) {
+        const head = text.slice(0, this.MAX_LEN)
+        const sent = await this.bridge._sendMessage(this.chatId, head)
+        this.messageId = sent?.message_id || null
+        this.lastEditedText = head
+      } else if (text.length > this.MAX_LEN) {
         const head = text.slice(0, this.MAX_LEN)
         await this.bridge._editMessage(this.chatId, this.messageId, head)
         const rest = text.slice(this.MAX_LEN)
@@ -122,7 +127,13 @@ class TelegramStream {
     let text = this.buffer.trim()
     if (!text) text = '(sin respuesta)'
     try {
-      if (text.length > this.MAX_LEN) {
+      if (!this.messageId) {
+        const blocks = splitByLimit(text, this.MAX_LEN)
+        for (const chunk of blocks) {
+          const sent = await this.bridge._sendMessage(this.chatId, chunk)
+          if (!this.messageId && sent?.message_id) this.messageId = sent.message_id
+        }
+      } else if (text.length > this.MAX_LEN) {
         const blocks = splitByLimit(text, this.MAX_LEN)
         await this.bridge._editMessage(this.chatId, this.messageId, blocks[0])
         for (let i = 1; i < blocks.length; i++) {
@@ -404,19 +415,12 @@ class TelegramBridge {
     const abortController = new AbortController()
     this.activeStreams.set(chatId, abortController)
 
-    let initial
-    try {
-      initial = await this._api('sendMessage', {
-        chat_id: chatId,
-        text: cli === 'codex' ? 'Procesando con Codex...' : 'Procesando con Claude...'
-      })
-    } catch (err) {
-      this.activeStreams.delete(chatId)
-      this._setError(err?.message || err)
-      return
-    }
+    this._sendChatAction(chatId, 'typing').catch(() => {})
+    const typingInterval = setInterval(() => {
+      this._sendChatAction(chatId, 'typing').catch(() => {})
+    }, 4000)
 
-    const stream = new TelegramStream(this, chatId, initial?.message_id)
+    const stream = new TelegramStream(this, chatId, null)
 
     try {
       const result = await this.onRunQuery?.({
@@ -429,18 +433,25 @@ class TelegramBridge {
         onSessionId: (id) => this._setSessionId(chatId, cli, id)
       })
       if (result?.sessionId) this._setSessionId(chatId, cli, result.sessionId)
+      clearInterval(typingInterval)
       await stream.finalize()
     } catch (err) {
+      clearInterval(typingInterval)
       if (err?.name === 'AbortError') {
         await stream.finalize('(cancelado)')
       } else {
         await stream.finalize(`Error: ${err?.message || err}`)
       }
     } finally {
+      clearInterval(typingInterval)
       if (this.activeStreams.get(chatId) === abortController) {
         this.activeStreams.delete(chatId)
       }
     }
+  }
+
+  async _sendChatAction(chatId, action) {
+    return this._api('sendChatAction', { chat_id: chatId, action })
   }
 
   async _handleVoice(chatId, fileId) {

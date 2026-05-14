@@ -277,6 +277,64 @@ function setActiveCli(cli) {
   return { ok: true }
 }
 
+const TG_HISTORY_THRESHOLD = 30
+const TG_HISTORY_KEEP = 20
+
+function extractTurnText(obj) {
+  if (!obj?.message?.content) return ''
+  const content = obj.message.content
+  if (typeof content === 'string') return content.trim()
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === 'string') return block
+        if (block?.type === 'text' && typeof block.text === 'string') return block.text
+        return ''
+      })
+      .join(' ')
+      .trim()
+  }
+  return ''
+}
+
+function compactClaudeSessionIfNeeded({ sessionId, prompt }) {
+  if (!sessionId) return { sessionId, prompt }
+  const transcriptPath = path.join(projectDirFor(currentCwd), `${sessionId}.jsonl`)
+  if (!fs.existsSync(transcriptPath)) return { sessionId: null, prompt }
+
+  let raw
+  try {
+    raw = fs.readFileSync(transcriptPath, 'utf-8')
+  } catch {
+    return { sessionId, prompt }
+  }
+
+  const turns = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    let obj
+    try { obj = JSON.parse(line) } catch { continue }
+    if (obj?.type !== 'user' && obj?.type !== 'assistant') continue
+    const text = extractTurnText(obj)
+    if (!text) continue
+    turns.push({ role: obj.type, text })
+  }
+
+  if (turns.length <= TG_HISTORY_THRESHOLD) return { sessionId, prompt }
+
+  const recent = turns.slice(-TG_HISTORY_KEEP)
+  const transcript = recent
+    .map((t) => `${t.role === 'user' ? 'Usuario' : 'Asistente'}: ${t.text}`)
+    .join('\n\n')
+
+  const compactedPrompt =
+    `[Contexto: conversación previa, últimos ${recent.length} turnos]\n\n` +
+    transcript +
+    `\n\n[Nuevo mensaje del usuario]\n${prompt}`
+
+  return { sessionId: null, prompt: compactedPrompt }
+}
+
 function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort }) {
   const meta = cliMeta('claude')
   const env = buildRuntimeEnv()
@@ -503,7 +561,8 @@ app.whenReady().then(() => {
       if (opts?.cli === 'codex') {
         return runCodexHeadless({ ...opts, model: tg.codexModel || '', effort: tg.codexEffort || '' })
       }
-      return runClaudeHeadless({ ...opts, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+      const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt })
+      return runClaudeHeadless({ ...opts, ...compacted, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
     },
     onGetActiveCli: async () => activeCLI,
     onGetCwd: async () => currentCwd,
