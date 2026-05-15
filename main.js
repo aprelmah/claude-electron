@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -21,12 +21,12 @@ const CONFIG_FILENAME = 'claude-novak.config.json'
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
-let win
-let ptyProcess = null
-let currentCwd = os.homedir()
-let activeCLI = 'claude'
-let lastPtyCols = 120
-let lastPtyRows = 35
+// ── Per-window sessions ──
+// key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
+const sessions = new Map()
+let primaryWcId = null
+let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
+let nextOrdinal = 0
 let telegramBridge = null
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -240,20 +240,12 @@ function commandExists(command, env) {
   return probe.status === 0
 }
 
-function cliMeta(cli = activeCLI) {
+function cliMeta(cli) {
   if (cli === 'codex') return { name: 'Codex', bin: getConfiguredBin('codex'), envVar: 'CODEX_BIN' }
   return { name: 'Claude', bin: getConfiguredBin('claude'), envVar: 'CLAUDE_BIN' }
 }
 
-function notifyPtyError(message) {
-  win?.webContents.send('pty-error', message)
-}
-
-function notifyTelegramStatus() {
-  win?.webContents.send('telegram-status', telegramBridge?.getStatus() || null)
-}
-
-function ensureCliAvailable(cli = activeCLI) {
+function ensureCliAvailable(cli) {
   const meta = cliMeta(cli)
   const env = buildRuntimeEnv()
   if (!commandExists(meta.bin, env)) {
@@ -265,8 +257,155 @@ function ensureCliAvailable(cli = activeCLI) {
   return { ok: true, ...meta, env }
 }
 
+// ── Session helpers ──
+function getSession(wcId) {
+  return sessions.get(wcId) || null
+}
+
+function getSessionByEvent(event) {
+  return sessions.get(event.sender.id) || null
+}
+
+function winFromEvent(event) {
+  return BrowserWindow.fromWebContents(event.sender)
+}
+
+function notifyPtyError(session, message) {
+  if (!session) return
+  const wc = session.win?.webContents
+  if (wc && !session.win.isDestroyed()) wc.send('pty-error', message)
+}
+
+function broadcastTelegramStatus() {
+  const status = telegramBridge?.getStatus() || null
+  for (const s of sessions.values()) {
+    if (s.win && !s.win.isDestroyed()) s.win.webContents.send('telegram-status', status)
+  }
+}
+
+function updatePrimarySnapshot() {
+  const s = primaryWcId != null ? sessions.get(primaryWcId) : null
+  if (s) lastPrimarySnapshot = { cwd: s.cwd, activeCli: s.activeCli }
+}
+
+function getCwdSync() {
+  const s = primaryWcId != null ? sessions.get(primaryWcId) : null
+  if (s) return s.cwd
+  return lastPrimarySnapshot.cwd
+}
+
+function getActiveCliSync() {
+  const s = primaryWcId != null ? sessions.get(primaryWcId) : null
+  if (s) return s.activeCli
+  return lastPrimarySnapshot.activeCli
+}
+
+// ── Tree watcher per-session ──
+function notifyTreeChangedFor(session, reason) {
+  if (!session) return
+  if (session.treeWatchDebounce) clearTimeout(session.treeWatchDebounce)
+  session.treeWatchDebounce = setTimeout(() => {
+    if (!sessions.has(session.wcId)) return
+    if (session.win && !session.win.isDestroyed()) {
+      session.win.webContents.send('tree-changed', reason)
+    }
+  }, 350)
+}
+
+// ── PTY per-session ──
+function startPty(session, cols, rows, cwd, args = []) {
+  if (!session) throw new Error('Sesión no disponible')
+  if (session.pty) return session.pty
+  if (cols && rows) {
+    session.cols = cols
+    session.rows = rows
+  }
+  if (cwd && fs.existsSync(cwd)) session.cwd = cwd
+  const cliCheck = ensureCliAvailable(session.activeCli)
+  if (!cliCheck.ok) {
+    notifyPtyError(session, cliCheck.error)
+    throw new Error(cliCheck.error)
+  }
+
+  let proc
+  try {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, args)], {
+      name: 'xterm-256color',
+      cols: session.cols || 120,
+      rows: session.rows || 35,
+      cwd: session.cwd,
+      env: cliCheck.env
+    })
+  } catch (err) {
+    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
+    notifyPtyError(session, msg)
+    throw new Error(msg)
+  }
+
+  proc._alive = true
+  session.pty = proc
+  const myWcId = session.wcId
+
+  proc.onData((data) => {
+    if (!proc._alive) return
+    const s = sessions.get(myWcId)
+    if (!s || !s.win || s.win.isDestroyed()) return
+    s.win.webContents.send('pty-data', data)
+  })
+
+  proc.onExit(() => {
+    if (proc._alive) {
+      const s = sessions.get(myWcId)
+      if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('pty-exit')
+    }
+    const s = sessions.get(myWcId)
+    if (s && s.pty === proc) s.pty = null
+  })
+
+  if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
+  return proc
+}
+
+function killPty(session) {
+  if (!session || !session.pty) return
+  session.pty._alive = false
+  try { session.pty.kill() } catch {}
+  session.pty = null
+}
+
+function setActiveCli(session, cli) {
+  if (!session) return { ok: false, error: 'No window session' }
+  if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
+  const check = ensureCliAvailable(cli)
+  if (!check.ok) return { ok: false, error: check.error }
+  if (session.activeCli === cli) return { ok: true }
+  session.activeCli = cli
+  killPty(session)
+  if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
+  return { ok: true }
+}
+
+function destroySession(wcId) {
+  const s = sessions.get(wcId)
+  if (!s) return
+  if (s.treeWatchDebounce) { clearTimeout(s.treeWatchDebounce); s.treeWatchDebounce = null }
+  if (s.treeWatcher) { try { s.treeWatcher.close() } catch {} s.treeWatcher = null }
+  killPty(s)
+  sessions.delete(wcId)
+  if (primaryWcId === wcId) {
+    // freeze snapshot
+    lastPrimarySnapshot = { cwd: s.cwd, activeCli: s.activeCli }
+    // reassign to any remaining session
+    const next = sessions.keys().next().value
+    primaryWcId = next != null ? next : null
+    if (primaryWcId != null) updatePrimarySnapshot()
+  }
+}
+
+// ── Window creation ──
 function createWindow() {
-  win = new BrowserWindow({
+  const ordinal = nextOrdinal++
+  const win = new BrowserWindow({
     width: 1000,
     height: 680,
     frame: false,
@@ -280,91 +419,79 @@ function createWindow() {
     }
   })
 
-  win.loadFile('index.html')
+  const wcId = win.webContents.id
+  const session = {
+    win,
+    wcId,
+    ordinal,
+    pty: null,
+    cols: 120,
+    rows: 35,
+    cwd: os.homedir(),
+    activeCli: appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude',
+    treeWatcher: null,
+    treeWatcherPath: null,
+    treeWatchDebounce: null
+  }
+  sessions.set(wcId, session)
+
+  if (primaryWcId == null) {
+    primaryWcId = wcId
+    updatePrimarySnapshot()
+  }
+
+  win.loadFile('index.html', { query: { wid: String(ordinal) } })
+
   win.webContents.on('did-finish-load', () => {
-    notifyTelegramStatus()
+    if (!win.isDestroyed()) win.webContents.send('telegram-status', telegramBridge?.getStatus() || null)
   })
-  win.on('focus', () => notifyTreeChanged('focus'))
+
+  win.on('focus', () => {
+    primaryWcId = wcId
+    updatePrimarySnapshot()
+    notifyTreeChangedFor(session, 'focus')
+  })
+
   win.on('closed', () => {
-    win = null
-    if (treeWatcher) { try { treeWatcher.close() } catch {} treeWatcher = null }
-    if (ptyProcess) { ptyProcess.kill(); ptyProcess = null }
-  })
-}
-
-// ── Tree auto-reload (sidebar watcher) ──
-let treeWatcher = null
-let treeWatcherPath = null
-let treeWatchDebounce = null
-
-function notifyTreeChanged(reason) {
-  if (treeWatchDebounce) clearTimeout(treeWatchDebounce)
-  treeWatchDebounce = setTimeout(() => {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('tree-changed', reason)
-    }
-  }, 350)
-}
-
-function startPty(cols, rows, cwd, args = []) {
-  if (ptyProcess) return ptyProcess
-  if (cols && rows) {
-    lastPtyCols = cols
-    lastPtyRows = rows
-  }
-  if (cwd && fs.existsSync(cwd)) currentCwd = cwd
-  const cliCheck = ensureCliAvailable(activeCLI)
-  if (!cliCheck.ok) {
-    notifyPtyError(cliCheck.error)
-    throw new Error(cliCheck.error)
-  }
-
-  try {
-    ptyProcess = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, args)], {
-      name: 'xterm-256color',
-      cols: cols || 120,
-      rows: rows || 35,
-      cwd: currentCwd,
-      env: cliCheck.env
-    })
-  } catch (err) {
-    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
-    notifyPtyError(msg)
-    throw new Error(msg)
-  }
-
-  ptyProcess._alive = true
-  const myProc = ptyProcess
-
-  myProc.onData((data) => {
-    if (myProc._alive) {
-      win?.webContents.send('pty-data', data)
-    }
+    destroySession(wcId)
   })
 
-  myProc.onExit(() => {
-    if (myProc._alive) win?.webContents.send('pty-exit')
-    if (ptyProcess === myProc) ptyProcess = null
+  return win
+}
+
+// ── Bridge wiring (one global bridge) ──
+function initTelegramBridge() {
+  telegramBridge = new TelegramBridge({
+    tmpDir: TMP_DIR,
+    onTranscribeFile: async (filePath) => {
+      return transcribeAudioFile(filePath, buildRuntimeEnv())
+    },
+    onRunQuery: async (opts) => {
+      const tg = appConfig.telegram || {}
+      const cwd = getCwdSync()
+      if (opts?.cli === 'codex') {
+        return runCodexHeadless({ ...opts, cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+      }
+      const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
+      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+    },
+    onGetActiveCli: async () => getActiveCliSync(),
+    onGetCwd: async () => getCwdSync(),
+    onSetCli: async (cli) => {
+      const s = primaryWcId != null ? sessions.get(primaryWcId) : null
+      if (s) return setActiveCli(s, cli)
+      // decision: sin ventana primaria, persiste como defaultCli y devuelve ok
+      if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
+      const merged = normalizeAppConfig({
+        ...appConfig,
+        cli: { ...appConfig.cli, defaultCli: cli }
+      })
+      saveAppConfig(merged)
+      lastPrimarySnapshot = { ...lastPrimarySnapshot, activeCli: cli }
+      return { ok: true }
+    },
+    onStatus: () => broadcastTelegramStatus()
   })
-
-  return ptyProcess
-}
-
-function killPty() {
-  if (!ptyProcess) return
-  ptyProcess._alive = false
-  try { ptyProcess.kill() } catch {}
-  ptyProcess = null
-}
-
-function setActiveCli(cli) {
-  if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
-  const check = ensureCliAvailable(cli)
-  if (!check.ok) return { ok: false, error: check.error }
-  if (activeCLI === cli) return { ok: true }
-  activeCLI = cli
-  killPty()
-  return { ok: true }
 }
 
 const TG_HISTORY_THRESHOLD = 30
@@ -387,9 +514,10 @@ function extractTurnText(obj) {
   return ''
 }
 
-function compactClaudeSessionIfNeeded({ sessionId, prompt }) {
+function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
   if (!sessionId) return { sessionId, prompt }
-  const transcriptPath = path.join(projectDirFor(currentCwd), `${sessionId}.jsonl`)
+  const baseCwd = cwd || getCwdSync()
+  const transcriptPath = path.join(projectDirFor(baseCwd), `${sessionId}.jsonl`)
   if (!fs.existsSync(transcriptPath)) return { sessionId: null, prompt }
 
   let raw
@@ -425,7 +553,7 @@ function compactClaudeSessionIfNeeded({ sessionId, prompt }) {
   return { sessionId: null, prompt: compactedPrompt }
 }
 
-function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort }) {
+function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd }) {
   const meta = cliMeta('claude')
   const env = buildRuntimeEnv()
   if (!commandExists(meta.bin, env)) {
@@ -447,7 +575,7 @@ function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSes
     let child
     try {
       child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
-        cwd: currentCwd,
+        cwd: cwd || getCwdSync(),
         env,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -522,7 +650,7 @@ function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSes
   })
 }
 
-function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort }) {
+function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd }) {
   const meta = cliMeta('codex')
   const env = buildRuntimeEnv()
   if (!commandExists(meta.bin, env)) {
@@ -542,7 +670,7 @@ function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, mode
     let child
     try {
       child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
-        cwd: currentCwd,
+        cwd: cwd || getCwdSync(),
         env,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -606,9 +734,61 @@ function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, mode
   })
 }
 
+// ── Application menu (Cmd+N / Cmd+W) ──
+function buildAppMenu() {
+  const isMac = process.platform === 'darwin'
+  const template = []
+  if (isMac) {
+    template.push({
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    })
+  }
+  template.push({
+    label: 'File',
+    submenu: [
+      {
+        label: 'Nueva ventana',
+        accelerator: 'CmdOrCtrl+N',
+        click: () => { createWindow() }
+      },
+      {
+        label: 'Cerrar ventana',
+        accelerator: 'CmdOrCtrl+W',
+        click: () => { BrowserWindow.getFocusedWindow()?.close() }
+      },
+      { type: 'separator' },
+      isMac ? { role: 'close' } : { role: 'quit' }
+    ]
+  })
+  template.push({ role: 'editMenu' })
+  template.push({ role: 'viewMenu' })
+  template.push({ role: 'windowMenu' })
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+// ── Single instance lock ──
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    createWindow()
+  })
+}
+
 app.whenReady().then(async () => {
   appConfig = loadAppConfig()
-  activeCLI = appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude'
 
   // Autorizar getUserMedia (micro) y disparar prompt TCC nativo de macOS
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
@@ -625,67 +805,97 @@ app.whenReady().then(async () => {
     }
   }
 
-  telegramBridge = new TelegramBridge({
-    tmpDir: TMP_DIR,
-    onTranscribeFile: async (filePath) => {
-      return transcribeAudioFile(filePath, buildRuntimeEnv())
-    },
-    onRunQuery: async (opts) => {
-      const tg = appConfig.telegram || {}
-      if (opts?.cli === 'codex') {
-        return runCodexHeadless({ ...opts, model: tg.codexModel || '', effort: tg.codexEffort || '' })
-      }
-      const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt })
-      return runClaudeHeadless({ ...opts, ...compacted, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
-    },
-    onGetActiveCli: async () => activeCLI,
-    onGetCwd: async () => currentCwd,
-    onSetCli: async (cli) => setActiveCli(cli),
-    onStatus: notifyTelegramStatus
-  })
+  buildAppMenu()
+  initTelegramBridge()
 
   createWindow()
+
   telegramBridge.applyConfig(appConfig.telegram).catch((err) => {
-    notifyPtyError(`Error iniciando Telegram bridge: ${err?.message || err}`)
+    const s = primaryWcId != null ? sessions.get(primaryWcId) : null
+    notifyPtyError(s, `Error iniciando Telegram bridge: ${err?.message || err}`)
   })
 
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
-    if (!win) return createWindow()
-    win.isVisible() ? win.hide() : win.show()
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused) {
+      focused.isVisible() ? focused.hide() : focused.show()
+      return
+    }
+    if (sessions.size === 0) {
+      createWindow()
+      return
+    }
+    // decision: sin foco pero con ventanas, mostrar la primera
+    const first = sessions.values().next().value
+    if (first?.win && !first.win.isDestroyed()) {
+      first.win.isVisible() ? first.win.hide() : first.win.show()
+    }
   })
 })
 
-app.on('window-all-closed', () => {
-  globalShortcut.unregisterAll()
-  killPty()
-  telegramBridge?.stop()
-  app.quit()
+app.on('activate', () => {
+  if (sessions.size === 0) createWindow()
 })
 
-// ── PTY ──
-ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => { startPty(cols, rows, cwd); return currentCwd })
-ipcMain.on('pty-input', (event, data) => { ptyProcess?.write(data) })
-ipcMain.on('pty-resize', (event, { cols, rows }) => {
-  if (cols && rows) {
-    lastPtyCols = cols
-    lastPtyRows = rows
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    globalShortcut.unregisterAll()
+    telegramBridge?.stop()
+    app.quit()
   }
-  try { ptyProcess?.resize(cols, rows) } catch {}
 })
+
+app.on('before-quit', () => {
+  globalShortcut.unregisterAll()
+  for (const s of sessions.values()) killPty(s)
+  telegramBridge?.stop()
+})
+
+// ── PTY IPC ──
+ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => {
+  const s = getSessionByEvent(event)
+  if (!s) return null
+  startPty(s, cols, rows, cwd)
+  if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+  return s.cwd
+})
+
+ipcMain.on('pty-input', (event, data) => {
+  const s = getSessionByEvent(event)
+  s?.pty?.write(data)
+})
+
+ipcMain.on('pty-resize', (event, { cols, rows }) => {
+  const s = getSessionByEvent(event)
+  if (!s) return
+  if (cols && rows) {
+    s.cols = cols
+    s.rows = rows
+  }
+  try { s.pty?.resize(cols, rows) } catch {}
+})
+
 ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
-  killPty()
+  const s = getSessionByEvent(event)
+  if (!s) return null
+  killPty(s)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(cols, rows, cwd)
-        resolve(currentCwd)
+        startPty(s, cols, rows, cwd)
+        if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+        resolve(s.cwd)
       } catch (err) {
         reject(err)
       }
     }, 200)
   })
 })
-ipcMain.handle('pty-cwd', () => currentCwd)
+
+ipcMain.handle('pty-cwd', (event) => {
+  const s = getSessionByEvent(event)
+  return s ? s.cwd : os.homedir()
+})
 
 // ── Audio: guarda buffer y transcribe con whisper.cpp ──
 ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
@@ -700,8 +910,8 @@ ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
 })
 
 // ── Image picker ──
-ipcMain.handle('pick-image', async () => {
-  const result = await dialog.showOpenDialog(win, {
+ipcMain.handle('pick-image', async (event) => {
+  const result = await dialog.showOpenDialog(winFromEvent(event), {
     properties: ['openFile', 'multiSelections'],
     filters: [
       { name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
@@ -713,8 +923,8 @@ ipcMain.handle('pick-image', async () => {
 })
 
 // ── File picker (cualquier archivo) ──
-ipcMain.handle('pick-file', async () => {
-  const result = await dialog.showOpenDialog(win, {
+ipcMain.handle('pick-file', async (event) => {
+  const result = await dialog.showOpenDialog(winFromEvent(event), {
     properties: ['openFile', 'multiSelections']
   })
   if (result.canceled) return []
@@ -745,8 +955,8 @@ ipcMain.handle('fs-read-dir', async (event, dirPath) => {
   }
 })
 
-ipcMain.handle('fs-pick-folder', async () => {
-  const result = await dialog.showOpenDialog(win, {
+ipcMain.handle('fs-pick-folder', async (event) => {
+  const result = await dialog.showOpenDialog(winFromEvent(event), {
     properties: ['openDirectory']
   })
   if (result.canceled) return null
@@ -755,28 +965,37 @@ ipcMain.handle('fs-pick-folder', async () => {
 
 ipcMain.handle('fs-home', () => os.homedir())
 
-ipcMain.handle('fs-watch-dir', (_event, dirPath) => {
-  if (treeWatcher) {
-    try { treeWatcher.close() } catch {}
-    treeWatcher = null
-    treeWatcherPath = null
+ipcMain.handle('fs-watch-dir', (event, dirPath) => {
+  const s = getSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No window session' }
+  if (s.treeWatcher) {
+    try { s.treeWatcher.close() } catch {}
+    s.treeWatcher = null
+    s.treeWatcherPath = null
   }
   if (!dirPath) return { ok: true }
+  const safeCb = () => {
+    try {
+      if (!sessions.has(s.wcId)) return
+      notifyTreeChangedFor(s, 'fs')
+    } catch {}
+  }
   try {
-    treeWatcher = fs.watch(dirPath, { recursive: true, persistent: false }, (_eventType, filename) => {
-      if (!filename) { notifyTreeChanged('fs'); return }
+    s.treeWatcher = fs.watch(dirPath, { recursive: true, persistent: false }, (_eventType, filename) => {
+      if (!sessions.has(s.wcId)) return
+      if (!filename) { safeCb(); return }
       const base = path.basename(filename)
       if (IGNORE_NAMES.has(base) || base.startsWith('._') || base === '.DS_Store') return
-      notifyTreeChanged('fs')
+      safeCb()
     })
-    treeWatcher.on('error', () => {})
-    treeWatcherPath = dirPath
+    s.treeWatcher.on('error', () => {})
+    s.treeWatcherPath = dirPath
     return { ok: true, recursive: true }
   } catch (err) {
     try {
-      treeWatcher = fs.watch(dirPath, { persistent: false }, () => notifyTreeChanged('fs'))
-      treeWatcher.on('error', () => {})
-      treeWatcherPath = dirPath
+      s.treeWatcher = fs.watch(dirPath, { persistent: false }, () => safeCb())
+      s.treeWatcher.on('error', () => {})
+      s.treeWatcherPath = dirPath
       return { ok: true, recursive: false }
     } catch (err2) {
       return { ok: false, error: err2.message }
@@ -798,7 +1017,6 @@ function fileKind(p) {
   const ext = base.includes('.') ? base.split('.').pop() : base
   if (IMAGE_EXTS.has(ext)) return 'image'
   if (TEXT_EXTS.has(ext)) return 'text'
-  // detect by sniff
   try {
     const fd = fs.openSync(p, 'r')
     const buf = Buffer.alloc(4096)
@@ -907,12 +1125,15 @@ ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
 })
 
 ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) => {
-  killPty()
+  const s = getSessionByEvent(event)
+  if (!s) return null
+  killPty(s)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(cols, rows, cwd, ['--resume', sessionId])
-        resolve(currentCwd)
+        startPty(s, cols, rows, cwd, ['--resume', sessionId])
+        if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+        resolve(s.cwd)
       } catch (err) {
         reject(err)
       }
@@ -922,15 +1143,22 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) =
 
 ipcMain.handle('get-system-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
 
-ipcMain.handle('get-active-cli', () => activeCLI)
+ipcMain.handle('get-active-cli', (event) => {
+  const s = getSessionByEvent(event)
+  return s ? s.activeCli : (appConfig.cli.defaultCli || 'claude')
+})
 
 ipcMain.handle('set-active-cli', (event, cli) => {
-  return setActiveCli(cli)
+  const s = getSessionByEvent(event)
+  const result = setActiveCli(s, cli)
+  if (result.ok && s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+  return result
 })
 
 ipcMain.handle('get-app-config', () => ({ ...appConfig }))
 
 ipcMain.handle('save-app-config', async (event, partialConfig) => {
+  const previousDefault = appConfig.cli.defaultCli
   const merged = normalizeAppConfig({
     ...appConfig,
     ...partialConfig,
@@ -940,26 +1168,47 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   saveAppConfig(merged)
   const warnings = []
 
-  // Si cambia CLI por defecto, se aplica de inmediato.
-  if (activeCLI !== appConfig.cli.defaultCli) {
-    const switchResult = setActiveCli(appConfig.cli.defaultCli)
+  // decision: si cambió defaultCli, aplica a la ventana que guarda (compatibilidad con flujo previo)
+  const s = getSessionByEvent(event)
+  if (s && previousDefault !== appConfig.cli.defaultCli && s.activeCli !== appConfig.cli.defaultCli) {
+    const switchResult = setActiveCli(s, appConfig.cli.defaultCli)
     if (!switchResult.ok) {
       warnings.push(`Config guardada pero no pude aplicar default CLI: ${switchResult.error}`)
+    } else if (s === sessions.get(primaryWcId)) {
+      updatePrimarySnapshot()
     }
   }
 
   let telegramResult = { ok: true, running: false }
   if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
-  notifyTelegramStatus()
+  broadcastTelegramStatus()
   return { ok: telegramResult.ok, telegram: telegramResult, warnings, config: appConfig }
 })
 
 ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
 
-ipcMain.on('window-close', () => win?.hide())
-ipcMain.on('window-minimize', () => win?.minimize())
-ipcMain.on('window-toggle-pin', () => {
-  if (!win) return
-  win.setAlwaysOnTop(!win.isAlwaysOnTop())
+ipcMain.on('window-close', (event) => {
+  const w = winFromEvent(event)
+  if (!w) return
+  // decision: hide solo si es la única ventana (preserva comportamiento previo); con múltiples, close.
+  if (sessions.size > 1) w.close()
+  else w.hide()
 })
-ipcMain.handle('is-pinned', () => win?.isAlwaysOnTop() ?? false)
+
+ipcMain.on('window-minimize', (event) => {
+  winFromEvent(event)?.minimize()
+})
+
+ipcMain.on('window-toggle-pin', (event) => {
+  const w = winFromEvent(event)
+  if (!w) return
+  w.setAlwaysOnTop(!w.isAlwaysOnTop())
+})
+
+ipcMain.handle('is-pinned', (event) => {
+  return winFromEvent(event)?.isAlwaysOnTop() ?? false
+})
+
+ipcMain.on('window-new', () => {
+  createWindow()
+})
