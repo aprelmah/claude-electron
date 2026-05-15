@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, dialog } = require('electron')
+const { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -8,7 +8,15 @@ const { TelegramBridge } = require('./telegram-bridge')
 
 const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
 const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
+const HOMEBREW_BIN = '/usr/local/bin'
 const TMP_DIR = '/tmp/claude-electron'
+const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
+const FFMPEG_BIN = resolveCommand([
+  process.env.FFMPEG_BIN,
+  path.join(PYTHON39_BIN, 'ffmpeg'),
+  path.join(HOMEBREW_BIN, 'ffmpeg'),
+  'ffmpeg'
+])
 const CONFIG_FILENAME = 'claude-novak.config.json'
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
@@ -65,9 +73,75 @@ const FALLBACK_CODEX_BIN = resolveCommand([
 
 const FALLBACK_WHISPER_BIN = resolveCommand([
   process.env.WHISPER_BIN,
-  path.join(PYTHON39_BIN, 'whisper'),
-  'whisper'
+  path.join(HOMEBREW_BIN, 'whisper-cli'),
+  'whisper-cli'
 ])
+
+const WHISPER_HALLUCINATIONS = [
+  /iglesia de jesucristo/i,
+  /santos de los .*ltimos d.as/i,
+  /amara\.org/i,
+  /subt.tulos? (realizados|por la comunidad|creados)/i,
+  /subtitulado por/i,
+  /^\s*\[?(m.sica|aplausos|risas|silencio|ruido)\]?\s*$/i,
+  /gracias por ver/i,
+  /suscr.bete/i
+]
+
+function measureMeanVolume(filePath, env) {
+  return new Promise((resolve) => {
+    const ff = spawn(FFMPEG_BIN, ['-hide_banner', '-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'], { env })
+    let stderr = ''
+    ff.stderr.on('data', (d) => { stderr += d.toString() })
+    ff.on('error', () => resolve(null))
+    ff.on('close', () => {
+      const m = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/)
+      resolve(m ? parseFloat(m[1]) : null)
+    })
+  })
+}
+
+async function transcribeAudioFile(inputPath, env) {
+  const whisperBin = getConfiguredWhisperBin()
+  if (!commandExists(whisperBin, env)) throw new Error(`Whisper no disponible (${whisperBin}). Instala con: brew install whisper-cpp`)
+  if (!commandExists(FFMPEG_BIN, env)) throw new Error(`ffmpeg no disponible (${FFMPEG_BIN}).`)
+  if (!fs.existsSync(WHISPER_CPP_MODEL)) throw new Error(`Modelo no encontrado: ${WHISPER_CPP_MODEL}`)
+
+  const meanDb = await measureMeanVolume(inputPath, env)
+  if (meanDb !== null && meanDb < -50) {
+    throw new Error('Sin audio reconocible (silencio).')
+  }
+
+  const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+  const wavPath = path.join(TMP_DIR, `whisper-${stamp}.wav`)
+  const txtBase = path.join(TMP_DIR, `whisper-${stamp}`)
+  const txtPath = `${txtBase}.txt`
+
+  return new Promise((resolve, reject) => {
+    const ff = spawn(FFMPEG_BIN, ['-y', '-loglevel', 'error', '-i', inputPath, '-ac', '1', '-ar', '16000', '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', wavPath], { env })
+    let ffErr = ''
+    ff.stderr.on('data', (d) => { ffErr += d.toString() })
+    ff.on('error', reject)
+    ff.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`ffmpeg exit ${code}: ${ffErr.slice(-300)}`))
+      const wp = spawn(whisperBin, ['-m', WHISPER_CPP_MODEL, '-l', 'es', '-nt', '-sns', '-nth', '0.3', '--prompt', 'Transcripción en castellano.', '-otxt', '-of', txtBase, '-f', wavPath], { env })
+      let wpErr = ''
+      wp.stderr.on('data', (d) => { wpErr += d.toString() })
+      wp.on('error', (err) => { try { fs.unlinkSync(wavPath) } catch {} ; reject(err) })
+      wp.on('close', (wcode) => {
+        try { fs.unlinkSync(wavPath) } catch {}
+        if (wcode !== 0) return reject(new Error(`whisper-cli exit ${wcode}: ${wpErr.slice(-300)}`))
+        try {
+          const text = fs.readFileSync(txtPath, 'utf-8').trim()
+          try { fs.unlinkSync(txtPath) } catch {}
+          if (!text) return reject(new Error('Sin voz reconocida.'))
+          if (WHISPER_HALLUCINATIONS.some((re) => re.test(text))) return reject(new Error('Sin voz reconocida.'))
+          resolve(text)
+        } catch (err) { reject(err) }
+      })
+    })
+  })
+}
 
 function normalizeAppConfig(raw) {
   const cli = raw?.cli || {}
@@ -516,45 +590,29 @@ function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, mode
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   appConfig = loadAppConfig()
   activeCLI = appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude'
+
+  // Autorizar getUserMedia (micro) y disparar prompt TCC nativo de macOS
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+    if (permission === 'media' || permission === 'audioCapture') return callback(true)
+    callback(true)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => true)
+  if (process.platform === 'darwin') {
+    try {
+      const ok = await systemPreferences.askForMediaAccess('microphone')
+      console.log('[mic] askForMediaAccess →', ok)
+    } catch (err) {
+      console.log('[mic] askForMediaAccess error:', err?.message || err)
+    }
+  }
 
   telegramBridge = new TelegramBridge({
     tmpDir: TMP_DIR,
     onTranscribeFile: async (filePath) => {
-      const whisperBin = getConfiguredWhisperBin()
-      const whisperReady = commandExists(whisperBin, buildRuntimeEnv())
-      if (!whisperReady) {
-        throw new Error(`Whisper no disponible (${whisperBin}).`)
-      }
-      const outBase = path.basename(filePath).replace(/\.[^.]+$/, '')
-      return new Promise((resolve, reject) => {
-        const proc = spawn(whisperBin, [
-          filePath,
-          '--language', 'Spanish',
-          '--model', 'small',
-          '--output_format', 'txt',
-          '--output_dir', TMP_DIR,
-          '--fp16', 'False'
-        ], {
-          env: { ...process.env, PATH: `${process.env.PATH || ''}:${PYTHON39_BIN}` }
-        })
-        let stderr = ''
-        proc.stderr.on('data', (d) => { stderr += d.toString() })
-        proc.on('error', (err) => reject(err))
-        proc.on('close', (code) => {
-          if (code !== 0) return reject(new Error(`whisper exit ${code}: ${stderr}`))
-          const txtPath = path.join(TMP_DIR, `${outBase}.txt`)
-          try {
-            const text = fs.readFileSync(txtPath, 'utf-8').trim()
-            try { fs.unlinkSync(txtPath) } catch {}
-            resolve(text)
-          } catch (err) {
-            reject(err)
-          }
-        })
-      })
+      return transcribeAudioFile(filePath, buildRuntimeEnv())
     },
     onRunQuery: async (opts) => {
       const tg = appConfig.telegram || {}
@@ -613,44 +671,16 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
 })
 ipcMain.handle('pty-cwd', () => currentCwd)
 
-// ── Audio: guarda buffer y transcribe con whisper ──
+// ── Audio: guarda buffer y transcribe con whisper.cpp ──
 ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
-  const whisperBin = getConfiguredWhisperBin()
-  const whisperReady = commandExists(whisperBin, buildRuntimeEnv())
-  if (!whisperReady) {
-    throw new Error(`Whisper no disponible (${whisperBin}). Revisa WHISPER_BIN o tu PATH.`)
-  }
   const ts = Date.now()
   const webmPath = path.join(TMP_DIR, `audio-${ts}.webm`)
   fs.writeFileSync(webmPath, Buffer.from(arrayBuffer))
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(whisperBin, [
-      webmPath,
-      '--language', 'Spanish',
-      '--model', 'small',
-      '--output_format', 'txt',
-      '--output_dir', TMP_DIR,
-      '--fp16', 'False'
-    ], {
-      env: { ...process.env, PATH: `${process.env.PATH || ''}:${PYTHON39_BIN}` }
-    })
-
-    let stderr = ''
-    proc.stderr.on('data', (d) => { stderr += d.toString() })
-    proc.on('error', (err) => reject(err))
-    proc.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`whisper exit ${code}: ${stderr}`))
-      const txtPath = path.join(TMP_DIR, `audio-${ts}.txt`)
-      try {
-        const text = fs.readFileSync(txtPath, 'utf-8').trim()
-        try { fs.unlinkSync(webmPath); fs.unlinkSync(txtPath) } catch {}
-        resolve(text)
-      } catch (e) {
-        reject(e)
-      }
-    })
-  })
+  try {
+    return await transcribeAudioFile(webmPath, buildRuntimeEnv())
+  } finally {
+    try { fs.unlinkSync(webmPath) } catch {}
+  }
 })
 
 // ── Image picker ──

@@ -729,3 +729,14 @@ button:active { transform: scale(0.93); }
     grid-template-columns: 1fr;
   }
 }
+
+.xterm-helper-textarea {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 2px !important;
+  height: 2px !important;
+  opacity: 0.01 !important;
+  z-index: 9999 !important;
+  pointer-events: none !important;
+}
