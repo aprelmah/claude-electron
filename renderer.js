@@ -111,7 +111,16 @@ function fitAndSync() {
   } catch {}
 }
 
-window.addEventListener('resize', fitAndSync)
+let resizeDebounceId = null
+function fitAndSyncDebounced() {
+  if (resizeDebounceId) clearTimeout(resizeDebounceId)
+  resizeDebounceId = setTimeout(() => {
+    fitAndSync()
+    resizeDebounceId = null
+  }, 140)
+}
+
+window.addEventListener('resize', fitAndSyncDebounced)
 
 // ── Status bar ──
 let statusTimer = null
@@ -845,6 +854,9 @@ cliSelector.addEventListener('change', async (e) => {
 
   showStatus(`Cambiando a ${newCli.toUpperCase()}...`, 'busy')
   await new Promise(r => setTimeout(r, 300))
+  term.reset()
+  term.clear()
+  fitAndSync()
   try {
     await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
     fitAndSync()
@@ -857,6 +869,9 @@ cliSelector.addEventListener('change', async (e) => {
     cliSelector.value = previousCli
     if (rollback.ok) {
       try {
+        term.reset()
+        term.clear()
+        fitAndSync()
         await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
         fitAndSync()
         term.focus()
