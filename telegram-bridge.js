@@ -493,7 +493,7 @@ class TelegramBridge {
 
     if (lower === '/start' || lower === '/help') {
       await this._sendMessage(chatId, [
-        'CLAUDE-NOVAK Telegram bridge.',
+        'POWER-AGENT Telegram bridge.',
         '',
         'Comandos:',
         '/status  -> estado del bridge',

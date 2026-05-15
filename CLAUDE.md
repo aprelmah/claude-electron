@@ -1,4 +1,4 @@
-# CLAUDE-NOVAK Runbook
+# POWER-AGENT Runbook
 
 ## Scope
 - Project path: `/Users/isabel/Desktop/claude-electron`
@@ -84,7 +84,7 @@
 
 ## Build artifacts
 - Output folder: `dist/`
-- Intel app: `dist/mac/CLAUDE-NOVAK.app`
-- Apple Silicon app: `dist/mac-arm64/CLAUDE-NOVAK.app`
-- Intel DMG: `dist/CLAUDE-NOVAK-1.0.0.dmg`
-- ARM64 DMG: `dist/CLAUDE-NOVAK-1.0.0-arm64.dmg`
+- Intel app: `dist/mac/POWER-AGENT.app`
+- Apple Silicon app: `dist/mac-arm64/POWER-AGENT.app`
+- Intel DMG: `dist/POWER-AGENT-1.0.0.dmg`
+- ARM64 DMG: `dist/POWER-AGENT-1.0.0-arm64.dmg`

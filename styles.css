@@ -73,10 +73,13 @@ body {
 }
 
 #app-title {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text2);
-  letter-spacing: 0.8px;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #actions, #controls {

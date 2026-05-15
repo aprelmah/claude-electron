@@ -1,20 +1,20 @@
-# CLAUDE-NOVAK - Checklist de Instalacion (macOS)
+# POWER-AGENT - Checklist de Instalacion (macOS)
 
 ## 1. Paquete correcto para el cliente
-- Intel (i5/i7 antiguos): `CLAUDE-NOVAK-1.0.0.dmg`
-- Apple Silicon (M1/M2/M3): `CLAUDE-NOVAK-1.0.0-arm64.dmg`
+- Intel (i5/i7 antiguos): `POWER-AGENT-1.0.0.dmg`
+- Apple Silicon (M1/M2/M3): `POWER-AGENT-1.0.0-arm64.dmg`
 
 Comprobar CPU del cliente:
 - Menu Apple -> `Acerca de este Mac`
 
 ## 2. Instalacion estandar
 1. Abrir el archivo `.dmg`.
-2. Arrastrar `CLAUDE-NOVAK.app` a `Aplicaciones`.
+2. Arrastrar `POWER-AGENT.app` a `Aplicaciones`.
 3. Cerrar y expulsar el `.dmg`.
 
 ## 3. Primera ejecucion (obligatorio una vez)
 1. Ir a `Aplicaciones`.
-2. Click derecho en `CLAUDE-NOVAK.app` -> `Abrir`.
+2. Click derecho en `POWER-AGENT.app` -> `Abrir`.
 3. Confirmar `Abrir` en el aviso de seguridad.
 
 ## 4. Permisos

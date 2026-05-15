@@ -2,7 +2,7 @@
 
 ## Proyecto
 - Ruta: `/Users/isabel/Desktop/claude-electron`
-- App instalada: `/Applications/CLAUDE-NOVAK.app`
+- App instalada: `/Applications/POWER-AGENT.app`
 
 ## Problemas trabajados
 1. **Crash al abrir app empaquetada** por `Cannot find module './telegram-bridge'`.

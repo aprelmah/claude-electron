@@ -6,6 +6,10 @@ const os = require('os')
 const fs = require('fs')
 const { TelegramBridge } = require('./telegram-bridge')
 
+// Keep userData at the legacy path so existing config/Telegram tokens survive the rename.
+const oldUserData = path.join(app.getPath('appData'), 'CLAUDE-NOVAK')
+app.setPath('userData', oldUserData)
+
 const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
 const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
 const HOMEBREW_BIN = '/usr/local/bin'
@@ -470,10 +474,35 @@ function createWindow() {
   return win
 }
 
-function openViewerWindow(filePath) {
+function openViewerWindow(filePath, hint) {
+  const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+  let bounds = { width: 700, height: 600, x: undefined, y: undefined }
+  if (primary && !primary.isDestroyed()) {
+    const b = primary.getBounds()
+    const offset = viewerWindows.size * 24
+    if (hint && Number.isFinite(hint.x) && Number.isFinite(hint.y) && hint.width > 0 && hint.height > 0) {
+      const inset = 6
+      bounds = {
+        width: Math.max(380, Math.round(hint.width) - inset * 2),
+        height: Math.max(280, Math.round(hint.height) - inset * 2),
+        x: b.x + Math.round(hint.x) + inset + offset,
+        y: b.y + Math.round(hint.y) + inset + offset
+      }
+    } else {
+      const inset = 50
+      bounds = {
+        width: Math.max(420, b.width - inset * 2),
+        height: Math.max(320, b.height - inset * 2),
+        x: b.x + inset + offset,
+        y: b.y + inset + offset
+      }
+    }
+  }
   const win = new BrowserWindow({
-    width: 700,
-    height: 600,
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
     frame: false,
     resizable: true,
     minimizable: true,
@@ -1250,9 +1279,11 @@ ipcMain.on('window-new', () => {
   createWindow()
 })
 
-ipcMain.handle('viewer-open', (_event, filePath) => {
+ipcMain.handle('viewer-open', (_event, arg) => {
+  const filePath = typeof arg === 'string' ? arg : arg?.path
+  const hint = (arg && typeof arg === 'object') ? arg.hint : null
   if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'Invalid path' }
-  openViewerWindow(filePath)
+  openViewerWindow(filePath, hint)
   return { ok: true }
 })
 

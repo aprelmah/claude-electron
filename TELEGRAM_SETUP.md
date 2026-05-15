@@ -1,4 +1,4 @@
-# Telegram Setup (CLAUDE-NOVAK)
+# Telegram Setup (POWER-AGENT)
 
 ## 1) Crear bot y obtener token
 1. En Telegram abre `@BotFather`.
@@ -10,7 +10,7 @@
 2. Copia tu `id` numerico (ejemplo `12345678`).
 
 ## 3) Configurar en la app
-1. Abre CLAUDE-NOVAK.
+1. Abre POWER-AGENT.
 2. Pulsa `Configuracion` (engranaje).
 3. En `Telegram`:
    - Activa `Activar puente Telegram`.

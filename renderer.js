@@ -546,7 +546,10 @@ async function renderTreeInto(container, dir, depth) {
       })
       row.addEventListener('dblclick', (e) => {
         e.stopPropagation()
-        window.api.openViewerWindow(entry.path)
+        const tw = document.getElementById('terminal-wrap')
+        const r = tw ? tw.getBoundingClientRect() : null
+        const hint = r ? { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) } : null
+        window.api.openViewerWindow(entry.path, hint)
       })
       // botón aside para enviar a claude (aparece al hover)
       const sendBtn = document.createElement('button')

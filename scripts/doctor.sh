@@ -44,7 +44,7 @@ check_optional_path_or_cmd() {
   wa "${label}: not found (voice dictation will fail)"
 }
 
-echo "== CLAUDE-NOVAK doctor =="
+echo "== POWER-AGENT doctor =="
 echo "Project: $(pwd)"
 
 if command -v node >/dev/null 2>&1; then

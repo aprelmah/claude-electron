@@ -42,6 +42,6 @@ contextBridge.exposeInMainWorld('api', {
   isPinned: () => ipcRenderer.invoke('is-pinned'),
   newWindow: () => ipcRenderer.send('window-new'),
 
-  openViewerWindow: (path) => ipcRenderer.invoke('viewer-open', path),
+  openViewerWindow: (path, hint) => ipcRenderer.invoke('viewer-open', { path, hint }),
   onInjectPath: (cb) => ipcRenderer.on('inject-path', (_, p) => cb(p))
 })
