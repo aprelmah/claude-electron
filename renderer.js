@@ -1,5 +1,9 @@
+// ── Window id (per-window localStorage scoping) ──
+const WID = new URLSearchParams(location.search).get('wid') || '0'
+
 // ── DOM ──
 const btnTheme = document.getElementById('btn-theme')
+const btnNewWindow = document.getElementById('btn-new-window')
 const btnRestart = document.getElementById('btn-restart')
 const btnMinimize = document.getElementById('btn-minimize')
 const btnClose = document.getElementById('btn-close')
@@ -195,6 +199,10 @@ btnPin.addEventListener('click', async () => {
   btnPin.classList.toggle('active', pinned)
 })
 
+if (btnNewWindow) {
+  btnNewWindow.addEventListener('click', () => window.api.newWindow())
+}
+
 btnSettings.addEventListener('click', async () => {
   await refreshSettings()
   settingsModal.classList.remove('hidden')
@@ -357,7 +365,8 @@ window.addEventListener('keydown', (e) => {
 
 // ── Sidebar: árbol de archivos ──
 let rootPath = null
-const ROOT_KEY = 'claude-electron-root'
+const ROOT_KEY = `claude-electron-root:${WID}`
+const CLI_KEY = `claude-electron-cli:${WID}`
 
 const EXT_ICONS = {
   js: '🟨', ts: '🔷', tsx: '⚛', jsx: '⚛', json: '🔧',
@@ -393,6 +402,7 @@ async function setRoot(newRoot) {
   await renderTreeInto(treeEl, newRoot, 0)
   if (typeof updateCwdLabel === 'function') await updateCwdLabel()
   try { window.api.watchDir(newRoot) } catch {}
+  try { lastTreeSignature = await computeTreeSignature() } catch {}
 }
 
 function getExpandedPaths() {
@@ -407,21 +417,50 @@ function getExpandedPaths() {
 }
 
 let refreshTreeDebounce = null
+let lastTreeSignature = ''
+let refreshInFlight = false
+
+async function computeTreeSignature() {
+  const expandedDirs = ['__root__:' + rootPath]
+  document.querySelectorAll('.tree-row[data-is-dir="true"]').forEach(row => {
+    const next = row.nextElementSibling
+    if (next && next.classList.contains('tree-sub') && !next.classList.contains('hidden')) {
+      expandedDirs.push(row.dataset.path)
+    }
+  })
+  const parts = []
+  for (const key of expandedDirs) {
+    const dir = key.startsWith('__root__:') ? key.slice(9) : key
+    const res = await window.api.readDir(dir)
+    if (!res.ok) { parts.push(`${key}=ERR`); continue }
+    const sig = res.entries.map(e => `${e.name}|${e.isDir ? 1 : 0}|${e.size || 0}`).join(',')
+    parts.push(`${key}=${sig}`)
+  }
+  return parts.join('||')
+}
+
 function scheduleTreeRefresh() {
   if (refreshTreeDebounce) clearTimeout(refreshTreeDebounce)
   refreshTreeDebounce = setTimeout(async () => {
     if (!rootPath) return
-    const scrollTop = treeEl.parentElement ? treeEl.parentElement.scrollTop : 0
-    pendingExpand = getExpandedPaths()
-    rootPath = rootPath
-    localStorage.setItem(ROOT_KEY, rootPath)
-    sidebarTitle.textContent = rootPath.split('/').pop() || rootPath
-    sidebarTitle.title = rootPath
-    treeEl.innerHTML = ''
-    await renderTreeInto(treeEl, rootPath, 0)
-    pendingExpand = new Set()
-    if (treeEl.parentElement) treeEl.parentElement.scrollTop = scrollTop
-  }, 250)
+    if (refreshInFlight) return
+    refreshInFlight = true
+    try {
+      const newSig = await computeTreeSignature()
+      if (newSig === lastTreeSignature) return
+      lastTreeSignature = newSig
+      const scrollTop = treeEl.parentElement ? treeEl.parentElement.scrollTop : 0
+      pendingExpand = getExpandedPaths()
+      sidebarTitle.textContent = rootPath.split('/').pop() || rootPath
+      sidebarTitle.title = rootPath
+      treeEl.innerHTML = ''
+      await renderTreeInto(treeEl, rootPath, 0)
+      pendingExpand = new Set()
+      if (treeEl.parentElement) treeEl.parentElement.scrollTop = scrollTop
+    } finally {
+      refreshInFlight = false
+    }
+  }, 400)
 }
 
 async function renderTreeInto(container, dir, depth) {
@@ -810,7 +849,7 @@ cliSelector.addEventListener('change', async (e) => {
     await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
     fitAndSync()
     term.focus()
-    localStorage.setItem('claude-electron-cli', newCli)
+    localStorage.setItem(CLI_KEY, newCli)
     showStatus(`${newCli.toUpperCase()} cargado`, 'info', 1500)
   } catch (err) {
     showStatus(errorMessage(err), 'error', 7000)
@@ -836,7 +875,7 @@ cliSelector.addEventListener('change', async (e) => {
 
   const activeCli = await window.api.getActiveCli()
   const appConfig = await window.api.getAppConfig()
-  const savedCli = appConfig?.cli?.defaultCli || localStorage.getItem('claude-electron-cli') || 'claude'
+  const savedCli = localStorage.getItem(CLI_KEY) || appConfig?.cli?.defaultCli || 'claude'
   let initialCli = activeCli
   if (savedCli !== activeCli) {
     const setResult = await window.api.setActiveCli(savedCli)
