@@ -304,12 +304,22 @@ function getActiveCliSync() {
 function notifyTreeChangedFor(session, reason) {
   if (!session) return
   if (session.treeWatchDebounce) clearTimeout(session.treeWatchDebounce)
+  const delay = reason === 'focus' ? 200 : 800
   session.treeWatchDebounce = setTimeout(() => {
     if (!sessions.has(session.wcId)) return
     if (session.win && !session.win.isDestroyed()) {
       session.win.webContents.send('tree-changed', reason)
     }
-  }, 350)
+  }, delay)
+}
+
+function isNoiseFile(base) {
+  if (!base) return false
+  if (base.startsWith('.')) return true
+  if (base.startsWith('._')) return true
+  if (base.endsWith('~')) return true
+  if (base.endsWith('.swp') || base.endsWith('.swx') || base.endsWith('.tmp')) return true
+  return false
 }
 
 // ── PTY per-session ──
@@ -984,8 +994,10 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
     s.treeWatcher = fs.watch(dirPath, { recursive: true, persistent: false }, (_eventType, filename) => {
       if (!sessions.has(s.wcId)) return
       if (!filename) { safeCb(); return }
-      const base = path.basename(filename)
-      if (IGNORE_NAMES.has(base) || base.startsWith('._') || base === '.DS_Store') return
+      const parts = filename.split('/')
+      for (const part of parts) {
+        if (IGNORE_NAMES.has(part) || isNoiseFile(part)) return
+      }
       safeCb()
     })
     s.treeWatcher.on('error', () => {})

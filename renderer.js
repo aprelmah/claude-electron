@@ -402,6 +402,7 @@ async function setRoot(newRoot) {
   await renderTreeInto(treeEl, newRoot, 0)
   if (typeof updateCwdLabel === 'function') await updateCwdLabel()
   try { window.api.watchDir(newRoot) } catch {}
+  try { lastTreeSignature = await computeTreeSignature() } catch {}
 }
 
 function getExpandedPaths() {
@@ -416,21 +417,50 @@ function getExpandedPaths() {
 }
 
 let refreshTreeDebounce = null
+let lastTreeSignature = ''
+let refreshInFlight = false
+
+async function computeTreeSignature() {
+  const expandedDirs = ['__root__:' + rootPath]
+  document.querySelectorAll('.tree-row[data-is-dir="true"]').forEach(row => {
+    const next = row.nextElementSibling
+    if (next && next.classList.contains('tree-sub') && !next.classList.contains('hidden')) {
+      expandedDirs.push(row.dataset.path)
+    }
+  })
+  const parts = []
+  for (const key of expandedDirs) {
+    const dir = key.startsWith('__root__:') ? key.slice(9) : key
+    const res = await window.api.readDir(dir)
+    if (!res.ok) { parts.push(`${key}=ERR`); continue }
+    const sig = res.entries.map(e => `${e.name}|${e.isDir ? 1 : 0}|${e.size || 0}`).join(',')
+    parts.push(`${key}=${sig}`)
+  }
+  return parts.join('||')
+}
+
 function scheduleTreeRefresh() {
   if (refreshTreeDebounce) clearTimeout(refreshTreeDebounce)
   refreshTreeDebounce = setTimeout(async () => {
     if (!rootPath) return
-    const scrollTop = treeEl.parentElement ? treeEl.parentElement.scrollTop : 0
-    pendingExpand = getExpandedPaths()
-    rootPath = rootPath
-    localStorage.setItem(ROOT_KEY, rootPath)
-    sidebarTitle.textContent = rootPath.split('/').pop() || rootPath
-    sidebarTitle.title = rootPath
-    treeEl.innerHTML = ''
-    await renderTreeInto(treeEl, rootPath, 0)
-    pendingExpand = new Set()
-    if (treeEl.parentElement) treeEl.parentElement.scrollTop = scrollTop
-  }, 250)
+    if (refreshInFlight) return
+    refreshInFlight = true
+    try {
+      const newSig = await computeTreeSignature()
+      if (newSig === lastTreeSignature) return
+      lastTreeSignature = newSig
+      const scrollTop = treeEl.parentElement ? treeEl.parentElement.scrollTop : 0
+      pendingExpand = getExpandedPaths()
+      sidebarTitle.textContent = rootPath.split('/').pop() || rootPath
+      sidebarTitle.title = rootPath
+      treeEl.innerHTML = ''
+      await renderTreeInto(treeEl, rootPath, 0)
+      pendingExpand = new Set()
+      if (treeEl.parentElement) treeEl.parentElement.scrollTop = scrollTop
+    } finally {
+      refreshInFlight = false
+    }
+  }, 400)
 }
 
 async function renderTreeInto(container, dir, depth) {
