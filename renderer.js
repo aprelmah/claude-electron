@@ -382,6 +382,8 @@ function shortenPath(p, max = 36) {
   return '…/' + parts.slice(-2).join('/')
 }
 
+let pendingExpand = new Set()
+
 async function setRoot(newRoot) {
   rootPath = newRoot
   localStorage.setItem(ROOT_KEY, newRoot)
@@ -390,6 +392,36 @@ async function setRoot(newRoot) {
   treeEl.innerHTML = ''
   await renderTreeInto(treeEl, newRoot, 0)
   if (typeof updateCwdLabel === 'function') await updateCwdLabel()
+  try { window.api.watchDir(newRoot) } catch {}
+}
+
+function getExpandedPaths() {
+  const set = new Set()
+  document.querySelectorAll('.tree-row[data-is-dir="true"]').forEach(row => {
+    const next = row.nextElementSibling
+    if (next && next.classList.contains('tree-sub') && !next.classList.contains('hidden')) {
+      set.add(row.dataset.path)
+    }
+  })
+  return set
+}
+
+let refreshTreeDebounce = null
+function scheduleTreeRefresh() {
+  if (refreshTreeDebounce) clearTimeout(refreshTreeDebounce)
+  refreshTreeDebounce = setTimeout(async () => {
+    if (!rootPath) return
+    const scrollTop = treeEl.parentElement ? treeEl.parentElement.scrollTop : 0
+    pendingExpand = getExpandedPaths()
+    rootPath = rootPath
+    localStorage.setItem(ROOT_KEY, rootPath)
+    sidebarTitle.textContent = rootPath.split('/').pop() || rootPath
+    sidebarTitle.title = rootPath
+    treeEl.innerHTML = ''
+    await renderTreeInto(treeEl, rootPath, 0)
+    pendingExpand = new Set()
+    if (treeEl.parentElement) treeEl.parentElement.scrollTop = scrollTop
+  }, 250)
 }
 
 async function renderTreeInto(container, dir, depth) {
@@ -444,6 +476,15 @@ async function renderTreeInto(container, dir, depth) {
           arrow.textContent = '▾'
         }
       })
+
+      if (pendingExpand.has(entry.path)) {
+        if (!sub.dataset.loaded) {
+          await renderTreeInto(sub, entry.path, depth + 1)
+          sub.dataset.loaded = '1'
+        }
+        sub.classList.remove('hidden')
+        arrow.textContent = '▾'
+      }
 
       row.addEventListener('dblclick', (e) => {
         e.stopPropagation()
@@ -816,6 +857,8 @@ cliSelector.addEventListener('change', async (e) => {
   }
   await setRoot(initialRoot)
   await updateCwdLabel()
+
+  window.api.onTreeChanged(() => scheduleTreeRefresh())
 
   term.focus()
 })()

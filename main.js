@@ -284,10 +284,26 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     notifyTelegramStatus()
   })
+  win.on('focus', () => notifyTreeChanged('focus'))
   win.on('closed', () => {
     win = null
+    if (treeWatcher) { try { treeWatcher.close() } catch {} treeWatcher = null }
     if (ptyProcess) { ptyProcess.kill(); ptyProcess = null }
   })
+}
+
+// ── Tree auto-reload (sidebar watcher) ──
+let treeWatcher = null
+let treeWatcherPath = null
+let treeWatchDebounce = null
+
+function notifyTreeChanged(reason) {
+  if (treeWatchDebounce) clearTimeout(treeWatchDebounce)
+  treeWatchDebounce = setTimeout(() => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('tree-changed', reason)
+    }
+  }, 350)
 }
 
 function startPty(cols, rows, cwd, args = []) {
@@ -738,6 +754,35 @@ ipcMain.handle('fs-pick-folder', async () => {
 })
 
 ipcMain.handle('fs-home', () => os.homedir())
+
+ipcMain.handle('fs-watch-dir', (_event, dirPath) => {
+  if (treeWatcher) {
+    try { treeWatcher.close() } catch {}
+    treeWatcher = null
+    treeWatcherPath = null
+  }
+  if (!dirPath) return { ok: true }
+  try {
+    treeWatcher = fs.watch(dirPath, { recursive: true, persistent: false }, (_eventType, filename) => {
+      if (!filename) { notifyTreeChanged('fs'); return }
+      const base = path.basename(filename)
+      if (IGNORE_NAMES.has(base) || base.startsWith('._') || base === '.DS_Store') return
+      notifyTreeChanged('fs')
+    })
+    treeWatcher.on('error', () => {})
+    treeWatcherPath = dirPath
+    return { ok: true, recursive: true }
+  } catch (err) {
+    try {
+      treeWatcher = fs.watch(dirPath, { persistent: false }, () => notifyTreeChanged('fs'))
+      treeWatcher.on('error', () => {})
+      treeWatcherPath = dirPath
+      return { ok: true, recursive: false }
+    } catch (err2) {
+      return { ok: false, error: err2.message }
+    }
+  }
+})
 
 // ── Viewer de archivos ──
 const TEXT_EXTS = new Set([

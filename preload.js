@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
   readDir: (path) => ipcRenderer.invoke('fs-read-dir', path),
   pickFolder: () => ipcRenderer.invoke('fs-pick-folder'),
   homeDir: () => ipcRenderer.invoke('fs-home'),
+  watchDir: (p) => ipcRenderer.invoke('fs-watch-dir', p),
+  onTreeChanged: (cb) => ipcRenderer.on('tree-changed', (_, reason) => cb(reason)),
 
   listSessions: (cwd) => ipcRenderer.invoke('list-sessions', cwd),
   deleteSession: (cwd, sessionId) => ipcRenderer.invoke('delete-session', { cwd, sessionId }),
