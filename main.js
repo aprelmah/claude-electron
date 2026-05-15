@@ -24,6 +24,7 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
+const viewerWindows = new Set()
 let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
@@ -420,7 +421,7 @@ function createWindow() {
     height: 680,
     frame: false,
     resizable: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     skipTaskbar: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -466,6 +467,30 @@ function createWindow() {
     destroySession(wcId)
   })
 
+  return win
+}
+
+function openViewerWindow(filePath) {
+  const win = new BrowserWindow({
+    width: 700,
+    height: 600,
+    frame: false,
+    resizable: true,
+    minimizable: true,
+    alwaysOnTop: false,
+    title: path.basename(filePath),
+    webPreferences: {
+      preload: path.join(__dirname, 'viewer-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  viewerWindows.add(win)
+  win.on('closed', () => viewerWindows.delete(win))
+  win.loadFile('viewer.html')
+  win.webContents.once('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.send('viewer-init', { path: filePath })
+  })
   return win
 }
 
@@ -1223,4 +1248,28 @@ ipcMain.handle('is-pinned', (event) => {
 
 ipcMain.on('window-new', () => {
   createWindow()
+})
+
+ipcMain.handle('viewer-open', (_event, filePath) => {
+  if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'Invalid path' }
+  openViewerWindow(filePath)
+  return { ok: true }
+})
+
+ipcMain.on('viewer-inject-to-active', (_event, filePath) => {
+  if (typeof filePath !== 'string' || !filePath) return
+  if (primaryWcId == null) return
+  const s = sessions.get(primaryWcId)
+  if (!s || !s.win || s.win.isDestroyed()) return
+  s.win.webContents.send('inject-path', filePath)
+})
+
+ipcMain.on('viewer-close-self', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) win.close()
+})
+
+ipcMain.on('viewer-minimize-self', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) win.minimize()
 })

@@ -37,6 +37,9 @@
       "renderer.js",
       "index.html",
       "styles.css",
+      "viewer.html",
+      "viewer-renderer.js",
+      "viewer-preload.js",
       "node_modules/**/*"
     ],
     "mac": {

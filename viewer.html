@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Viewer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+body.dark {
+  --bg: #1a1a1f;
+  --bg-elev: #24242b;
+  --bg3: #2e2e38;
+  --fg: #e8e8f0;
+  --fg-muted: #9090a8;
+  --border: #3a3a48;
+  --accent: #7c6af7;
+  --warn: #f0c060;
+  --error: #ff6b7a;
+  --ok: #7cd99c;
+}
+
+body.light {
+  --bg: #fafafd;
+  --bg-elev: #ffffff;
+  --bg3: #ebebf2;
+  --fg: #1a1a2e;
+  --fg-muted: #606080;
+  --border: #d8d8e8;
+  --accent: #5b4fe8;
+  --warn: #a8730a;
+  --error: #d83040;
+  --ok: #3a9050;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  height: 48px;
+  padding: 0 8px 0 12px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  user-select: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  gap: 10px;
+}
+
+#dirty-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex-shrink: 0;
+  visibility: hidden;
+}
+#dirty-dot.on { visibility: visible; }
+
+#title-block {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+#file-path {
+  font-size: 10px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+  margin-top: 2px;
+}
+
+#header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  padding: 0;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#btn-close:hover { color: var(--error); }
+
+#body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.viewer-editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 14px;
+  tab-size: 2;
+}
+
+#image-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 12px;
+}
+
+#image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+#binary-msg {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 20px;
+  text-align: center;
+}
+
+#binary-msg strong {
+  color: var(--fg);
+  font-size: 14px;
+}
+
+#toast {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+</style>
+</head>
+<body class="dark">
+  <div id="header">
+    <div id="dirty-dot"></div>
+    <div id="title-block">
+      <div id="file-name">—</div>
+      <div id="file-path"></div>
+    </div>
+    <div id="header-buttons">
+      <button id="btn-send" class="icon-btn" title="Enviar @ruta al CLI activo">
+        <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9 22,2"/></svg>
+      </button>
+      <button id="btn-save" class="icon-btn" title="Guardar (Cmd+S)" disabled>
+        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
+      </button>
+      <button id="btn-minimize" class="icon-btn" title="Minimizar">
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button id="btn-close" class="icon-btn" title="Cerrar">
+        <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="body">
+    <div id="content-host" style="width:100%;height:100%;"></div>
+  </div>
+  <div id="toast"></div>
+  <script src="viewer-renderer.js"></script>
+</body>
+</html>

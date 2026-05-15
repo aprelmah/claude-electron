@@ -37,7 +37,7 @@
       <button id="btn-sidebar" class="icon-btn active" title="Mostrar/ocultar explorador">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
       </button>
-      <button id="btn-pin" class="icon-btn active" title="Fijar siempre encima">
+      <button id="btn-pin" class="icon-btn" title="Fijar siempre encima">
         <svg viewBox="0 0 24 24"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-2-6V5H7v6l-2 6z"/></svg>
       </button>
       <button id="btn-theme" class="icon-btn" title="Cambiar tema">
@@ -92,26 +92,6 @@
       <span id="status-text"></span>
     </div>
   </div>
-  </div>
-
-  <div id="viewer-modal" class="hidden">
-    <div class="modal-backdrop"></div>
-    <div class="modal-panel large">
-      <div class="modal-header">
-        <span id="viewer-name" class="modal-title">archivo</span>
-        <span id="viewer-meta" class="modal-sub"></span>
-        <div class="viewer-actions">
-          <button id="btn-viewer-send" class="icon-btn small" title="Enviar @path a Claude">
-            <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9" fill="currentColor"/></svg>
-          </button>
-          <button id="btn-viewer-save" class="icon-btn small" title="Guardar (Cmd+S)" disabled>
-            <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
-          </button>
-          <button id="btn-viewer-close" class="modal-close" title="Cerrar (Esc)">×</button>
-        </div>
-      </div>
-      <div id="viewer-body"></div>
-    </div>
   </div>
 
   <div id="sessions-modal" class="hidden">

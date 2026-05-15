@@ -40,5 +40,8 @@ contextBridge.exposeInMainWorld('api', {
   minimizeWindow: () => ipcRenderer.send('window-minimize'),
   togglePin: () => ipcRenderer.send('window-toggle-pin'),
   isPinned: () => ipcRenderer.invoke('is-pinned'),
-  newWindow: () => ipcRenderer.send('window-new')
+  newWindow: () => ipcRenderer.send('window-new'),
+
+  openViewerWindow: (path) => ipcRenderer.invoke('viewer-open', path),
+  onInjectPath: (cb) => ipcRenderer.on('inject-path', (_, p) => cb(p))
 })

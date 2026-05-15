@@ -546,7 +546,7 @@ async function renderTreeInto(container, dir, depth) {
       })
       row.addEventListener('dblclick', (e) => {
         e.stopPropagation()
-        openViewer(entry.path)
+        window.api.openViewerWindow(entry.path)
       })
       // botón aside para enviar a claude (aparece al hover)
       const sendBtn = document.createElement('button')
@@ -621,110 +621,9 @@ window.addEventListener('mouseup', () => {
   }
 })
 
-// ── Viewer de archivos ──
-const viewerModal = document.getElementById('viewer-modal')
-const viewerName = document.getElementById('viewer-name')
-const viewerMeta = document.getElementById('viewer-meta')
-const viewerBody = document.getElementById('viewer-body')
-const btnViewerSave = document.getElementById('btn-viewer-save')
-const btnViewerSend = document.getElementById('btn-viewer-send')
-const btnViewerClose = document.getElementById('btn-viewer-close')
-
-let viewerState = { path: null, originalText: '', dirty: false, kind: null }
-
-function setDirty(dirty) {
-  viewerState.dirty = dirty
-  btnViewerSave.disabled = !dirty
-  viewerName.textContent = (dirty ? '● ' : '') + (viewerState.path ? viewerState.path.split('/').pop() : '')
-}
-
-function closeViewer() {
-  if (viewerState.dirty) {
-    if (!confirm('Tienes cambios sin guardar. ¿Cerrar igual?')) return
-  }
-  viewerModal.classList.add('hidden')
-  viewerBody.innerHTML = ''
-  viewerState = { path: null, originalText: '', dirty: false, kind: null }
-}
-
-async function openViewer(p) {
-  viewerState.path = p
-  viewerName.textContent = p.split('/').pop()
-  viewerMeta.textContent = p
-  viewerMeta.title = p
-  viewerBody.innerHTML = '<div class="viewer-loading">Cargando…</div>'
-  btnViewerSave.disabled = true
-  viewerModal.classList.remove('hidden')
-
-  const res = await window.api.fileRead(p)
-  if (!res.ok) {
-    viewerBody.innerHTML = `<div class="viewer-error">⚠ ${res.error}</div>`
-    return
-  }
-
-  viewerState.kind = res.kind
-
-  if (res.kind === 'image') {
-    const ext = p.split('.').pop().toLowerCase()
-    const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`
-    viewerBody.innerHTML = `<div class="viewer-image-wrap"><img src="data:${mime};base64,${res.base64}" alt=""/></div>`
-  } else if (res.kind === 'binary') {
-    viewerBody.innerHTML = `<div class="viewer-binary">Archivo binario (${(res.size/1024).toFixed(1)} KB). No editable.</div>`
-  } else {
-    viewerState.originalText = res.text
-    const ta = document.createElement('textarea')
-    ta.className = 'viewer-editor'
-    ta.value = res.text
-    ta.spellcheck = false
-    ta.addEventListener('input', () => setDirty(ta.value !== viewerState.originalText))
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Tab') {
-        e.preventDefault()
-        const s = ta.selectionStart, end = ta.selectionEnd
-        ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(end)
-        ta.selectionStart = ta.selectionEnd = s + 2
-        setDirty(ta.value !== viewerState.originalText)
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault()
-        saveViewer()
-      }
-    })
-    viewerBody.innerHTML = ''
-    viewerBody.appendChild(ta)
-    ta.focus()
-  }
-}
-
-async function saveViewer() {
-  if (!viewerState.path || viewerState.kind !== 'text') return
-  const ta = viewerBody.querySelector('.viewer-editor')
-  if (!ta) return
-  const res = await window.api.fileWrite(viewerState.path, ta.value)
-  if (!res.ok) {
-    showStatus(`Error guardando: ${res.error}`, 'error', 4000)
-    return
-  }
-  viewerState.originalText = ta.value
-  setDirty(false)
-  showStatus('Guardado', 'info', 1500)
-}
-
-btnViewerSave.addEventListener('click', saveViewer)
-btnViewerSend.addEventListener('click', () => {
-  if (!viewerState.path) return
-  injectToPty(`@${viewerState.path} `)
-  closeViewer()
-})
-btnViewerClose.addEventListener('click', closeViewer)
-viewerModal.querySelector('.modal-backdrop').addEventListener('click', closeViewer)
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
     settingsModal.classList.add('hidden')
-    return
-  }
-  if (e.key === 'Escape' && !viewerModal.classList.contains('hidden')) {
-    closeViewer()
   }
 })
 
@@ -829,6 +728,7 @@ window.addEventListener('keydown', (e) => {
 // ── PTY bridge ──
 term.onData((data) => window.api.writePty(data))
 window.api.onPtyData((chunk) => term.write(chunk))
+window.api.onInjectPath((p) => injectToPty(`@${p} `))
 window.api.onPtyExit(() => term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n'))
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
