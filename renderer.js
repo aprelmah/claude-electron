@@ -817,5 +817,42 @@ cliSelector.addEventListener('change', async (e) => {
 
   window.api.onTreeChanged(() => scheduleTreeRefresh())
 
+  document.getElementById('btn-tasks')?.addEventListener('click', () => {
+    try { window.api.openTasksManager?.() } catch {}
+  })
+
+  // ── Toasts para runs programados ──
+  function ensureToastContainer() {
+    let el = document.getElementById('task-toast-container')
+    if (el) return el
+    el = document.createElement('div')
+    el.id = 'task-toast-container'
+    el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none'
+    document.body.appendChild(el)
+    return el
+  }
+  function showTaskToast(msg, kind) {
+    const c = ensureToastContainer()
+    const t = document.createElement('div')
+    const bg = kind === 'ok' ? '#1d6f3b' : kind === 'err' ? '#7f1d1d' : '#1f2937'
+    t.style.cssText = 'background:' + bg + ';color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transform:translateY(8px);transition:opacity .25s,transform .25s;pointer-events:auto;max-width:340px;word-wrap:break-word'
+    t.textContent = msg
+    c.appendChild(t)
+    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)' })
+    setTimeout(() => {
+      t.style.opacity = '0'
+      t.style.transform = 'translateY(8px)'
+      setTimeout(() => { try { t.remove() } catch {} }, 300)
+    }, 3700)
+  }
+  if (window.api.onTaskRunFinished) {
+    window.api.onTaskRunFinished(({ status, durationMs } = {}) => {
+      const dur = typeof durationMs === 'number' ? (durationMs / 1000).toFixed(1) : '?'
+      const kind = status === 'ok' ? 'ok' : (status === 'cancelled' ? 'info' : 'err')
+      const label = status === 'ok' ? 'OK' : (status === 'cancelled' ? 'Cancelada' : 'ERR')
+      showTaskToast('Tarea ' + label + ' · ' + dur + 's', kind)
+    })
+  }
+
   term.focus()
 })()

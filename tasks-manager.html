@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>POWER-AGENT — Programación</title>
+<script>
+(function() {
+  try {
+    var t = null;
+    try {
+      var params = new URLSearchParams(location.search);
+      var fromUrl = params.get('theme');
+      if (fromUrl === 'light' || fromUrl === 'dark') t = fromUrl;
+    } catch (e) {}
+    if (t !== 'light' && t !== 'dark') {
+      t = localStorage.getItem('claude-electron-theme') || localStorage.getItem('theme');
+    }
+    if (t !== 'light' && t !== 'dark') t = 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('claude-electron-theme', t); } catch (e) {}
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+html[data-theme="dark"] {
+  --bg: #1a1a1f;
+  --bg-elev: #24242b;
+  --bg3: #2e2e38;
+  --fg: #e8e8f0;
+  --fg-muted: #9090a8;
+  --border: #3a3a48;
+  --accent: #7c6af7;
+  --warn: #f0c060;
+  --error: #ff6b7a;
+  --ok: #7cd99c;
+  --input-bg: #1a1a1f;
+  --shadow: rgba(0,0,0,0.4);
+}
+
+html[data-theme="light"] {
+  --bg: #fafafd;
+  --bg-elev: #ffffff;
+  --bg3: #ebebf2;
+  --fg: #1a1a2e;
+  --fg-muted: #606080;
+  --border: #d8d8e8;
+  --accent: #5b4fe8;
+  --warn: #a8730a;
+  --error: #d83040;
+  --ok: #3a9050;
+  --input-bg: #ffffff;
+  --shadow: rgba(0,0,0,0.12);
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  height: 48px;
+  padding: 0 8px 0 84px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  user-select: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  gap: 10px;
+}
+
+#header-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.btn {
+  -webkit-app-region: no-drag;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+
+.btn-danger { color: var(--error); }
+.btn-danger:hover:not(:disabled) {
+  background: var(--error);
+  color: white;
+  border-color: var(--error);
+}
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  padding: 0;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#btn-close:hover { color: var(--error); }
+
+#main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+#col-list {
+  width: 30%;
+  min-width: 200px;
+  max-width: 360px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+#col-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+}
+
+#col-runs {
+  width: 28%;
+  min-width: 180px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.col-header {
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.col-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.col-scroll::-webkit-scrollbar { width: 8px; }
+.col-scroll::-webkit-scrollbar-track { background: transparent; }
+.col-scroll::-webkit-scrollbar-thumb {
+  background: var(--bg3);
+  border-radius: 4px;
+}
+.col-scroll::-webkit-scrollbar-thumb:hover { background: var(--border); }
+
+.task-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-item:hover { background: var(--bg3); }
+.task-item.selected {
+  background: var(--bg3);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+
+.task-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex-shrink: 0;
+}
+.task-status-dot.enabled { background: var(--ok); }
+
+.task-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.task-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-state {
+  padding: 24px 16px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+#editor-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+#editor-content::-webkit-scrollbar { width: 8px; }
+#editor-content::-webkit-scrollbar-track { background: transparent; }
+#editor-content::-webkit-scrollbar-thumb {
+  background: var(--bg3);
+  border-radius: 4px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-muted);
+  margin-bottom: 5px;
+}
+
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.field-row > * { flex-shrink: 0; }
+.field-row .grow { flex: 1; min-width: 0; }
+
+input[type="text"], textarea, select {
+  width: 100%;
+  background: var(--input-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 12px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="text"]:focus, textarea:focus, select:focus {
+  border-color: var(--accent);
+}
+
+textarea {
+  font-family: var(--mono);
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.5;
+}
+
+select {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%239090a8' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 26px;
+}
+
+.radio-group {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.radio-label, .check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+
+input[type="radio"], input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+}
+
+.check-label.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#cron-preview {
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  line-height: 1.5;
+  min-height: 14px;
+}
+#cron-preview.error { color: var(--error); }
+#cron-preview.ok { color: var(--ok); }
+
+.sched-block {
+  margin-top: 8px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+.sched-block.active { display: flex; }
+
+.sched-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sched-inline label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.sched-inline input[type="number"],
+.sched-inline input[type="time"],
+.sched-inline input[type="date"] {
+  background: var(--input-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.sched-inline input[type="number"] { width: 76px; }
+.sched-inline input[type="time"] { width: 110px; }
+.sched-inline input[type="date"] { width: 150px; }
+
+.sched-inline input:focus { border-color: var(--accent); }
+
+.weekday-toggles {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.weekday-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  font-family: var(--font);
+  padding: 0;
+}
+
+.weekday-btn:hover { border-color: var(--accent); }
+.weekday-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+#f-cron-advanced {
+  font-family: var(--mono);
+}
+
+.sched-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+#editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 30px;
+  text-align: center;
+}
+
+#editor-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-wrap: wrap;
+}
+
+#editor-actions .spacer { flex: 1; }
+
+.run-item {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.run-item:hover { background: var(--bg3); }
+.run-item.live { background: rgba(124, 106, 247, 0.08); }
+
+.run-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.run-status-pill {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.run-status-pill.ok { background: rgba(124, 217, 156, 0.15); color: var(--ok); }
+.run-status-pill.error { background: rgba(255, 107, 122, 0.15); color: var(--error); }
+.run-status-pill.cancelled { background: rgba(240, 192, 96, 0.15); color: var(--warn); }
+.run-status-pill.running { background: rgba(124, 106, 247, 0.18); color: var(--accent); }
+
+.run-when {
+  font-size: 12px;
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+#modal-bg {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 40px;
+}
+#modal-bg.show { display: flex; }
+
+#modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px var(--shadow);
+  width: 100%;
+  max-width: 720px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#modal-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+#modal-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+
+#toast {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 4px 12px var(--shadow);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  z-index: 1500;
+  max-width: 340px;
+}
+#toast.show { opacity: 1; transform: translateY(0); }
+#toast.ok { border-color: var(--ok); }
+#toast.error { border-color: var(--error); }
+
+@media (max-width: 900px) {
+  #col-list { width: 36%; min-width: 180px; }
+  #col-runs { width: 32%; min-width: 160px; }
+}
+
+/* ---------- Tab bar ---------- */
+#tab-bar {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  flex-shrink: 0;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+#tab-bar .tab {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 500;
+  padding: 0 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+
+#tab-bar .tab:hover { color: var(--fg); }
+
+#tab-bar .tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------- Automations view ---------- */
+#main-automations {
+  flex: 1;
+  min-height: 0;
+  display: none;
+  overflow: hidden;
+}
+#main-automations.active { display: flex; }
+
+#col-auto-list {
+  width: 30%;
+  min-width: 220px;
+  max-width: 380px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+#col-auto-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+}
+
+#col-auto-log {
+  width: 32%;
+  min-width: 220px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.col-header-row {
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  gap: 8px;
+}
+
+.col-header-row .title { flex: 1; min-width: 0; }
+
+.auto-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.auto-item:hover { background: var(--bg3); }
+.auto-item.selected {
+  background: var(--bg3);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+
+.auto-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.auto-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex-shrink: 0;
+}
+.auto-status-dot.installed { background: var(--ok); }
+.auto-status-dot.draft     { background: var(--fg-muted); }
+.auto-status-dot.failed    { background: var(--error); }
+.auto-status-dot.paused    { background: var(--warn); }
+
+.auto-running-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-left: 6px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  vertical-align: -1px;
+  flex-shrink: 0;
+}
+
+.auto-running-banner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(124, 106, 247, 0.14);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.auto-running-banner .auto-running-spinner { margin-left: 0; }
+
+.auto-paused-banner {
+  background: rgba(240, 192, 96, 0.14);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.auto-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.auto-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#auto-editor-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+#auto-editor-content::-webkit-scrollbar { width: 8px; }
+#auto-editor-content::-webkit-scrollbar-track { background: transparent; }
+#auto-editor-content::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 4px; }
+
+#auto-editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 30px;
+  text-align: center;
+}
+
+.auto-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.auto-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.auto-section-title .hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+
+.code-area {
+  width: 100%;
+  background: var(--input-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 1.5;
+  outline: none;
+  resize: vertical;
+  white-space: pre;
+}
+.code-area:focus { border-color: var(--accent); }
+
+.explain-pre {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-family: var(--font);
+  line-height: 1.55;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kv-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.kv-row .k {
+  color: var(--fg-muted);
+  width: 80px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  font-weight: 600;
+}
+.kv-row .v {
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+.kv-row .v .path-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 0 0 6px;
+}
+.kv-row .v .path-link:hover { text-decoration: underline; }
+
+#auto-editor-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-wrap: wrap;
+}
+#auto-editor-actions .spacer { flex: 1; }
+
+.log-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  background: var(--bg);
+}
+.log-pre.has-error {
+  border-left: 3px solid var(--error);
+  padding-left: 9px;
+}
+
+.preview-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  background: var(--bg);
+}
+
+.btn .spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  display: inline-block;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div id="header">
+    <div id="header-title">POWER-AGENT — Programación</div>
+    <div id="header-buttons">
+      <button id="btn-new" class="btn btn-primary">+ Nueva</button>
+      <button id="btn-minimize" class="icon-btn" title="Minimizar">
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button id="btn-close" class="icon-btn" title="Cerrar">
+        <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="tab-bar">
+    <button class="tab" data-tab="tasks">Tareas programadas</button>
+    <button class="tab" data-tab="automations">Automatizaciones</button>
+  </div>
+
+  <div id="main">
+    <div id="col-list">
+      <div class="col-header">Lista</div>
+      <div id="list-scroll" class="col-scroll">
+        <div class="empty-state">Sin tareas. Pulsa <b>+ Nueva</b>.</div>
+      </div>
+    </div>
+
+    <div id="col-editor">
+      <div class="col-header" id="editor-header">Editor</div>
+      <div id="editor-content" style="display:none;">
+        <div class="field">
+          <label class="field-label" for="f-name">Nombre</label>
+          <input type="text" id="f-name" placeholder="p.ej. Resumen diario">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Frecuencia</label>
+          <select id="f-sched-type">
+            <option value="interval-min">Cada X minutos</option>
+            <option value="interval-hour">Cada X horas</option>
+            <option value="daily">Cada día</option>
+            <option value="weekly">Días concretos de la semana</option>
+            <option value="monthly">Cada mes</option>
+            <option value="once">Una sola vez</option>
+            <option value="advanced">Avanzado (cron)</option>
+          </select>
+
+          <div class="sched-block" id="sched-interval-min">
+            <div class="sched-inline">
+              <label for="f-every-min">Cada</label>
+              <input type="number" id="f-every-min" min="1" max="59" value="5">
+              <label>minutos</label>
+            </div>
+          </div>
+
+          <div class="sched-block" id="sched-interval-hour">
+            <div class="sched-inline">
+              <label for="f-every-hour">Cada</label>
+              <input type="number" id="f-every-hour" min="1" max="23" value="2">
+              <label>horas</label>
+            </div>
+          </div>
+
+          <div class="sched-block" id="sched-daily">
+            <div class="sched-inline">
+              <label for="f-daily-time">Hora</label>
+              <input type="time" id="f-daily-time" value="09:00">
+            </div>
+          </div>
+
+          <div class="sched-block" id="sched-weekly">
+            <div class="sched-inline">
+              <label for="f-weekly-time">Hora</label>
+              <input type="time" id="f-weekly-time" value="09:00">
+            </div>
+            <div class="sched-inline">
+              <label>Días</label>
+              <div class="weekday-toggles" id="f-weekly-days">
+                <button type="button" class="weekday-btn" data-dow="1">L</button>
+                <button type="button" class="weekday-btn" data-dow="2">M</button>
+                <button type="button" class="weekday-btn" data-dow="3">X</button>
+                <button type="button" class="weekday-btn" data-dow="4">J</button>
+                <button type="button" class="weekday-btn" data-dow="5">V</button>
+                <button type="button" class="weekday-btn" data-dow="6">S</button>
+                <button type="button" class="weekday-btn" data-dow="0">D</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="sched-block" id="sched-monthly">
+            <div class="sched-inline">
+              <label for="f-monthly-day">Día del mes</label>
+              <input type="number" id="f-monthly-day" min="1" max="28" value="1">
+              <label for="f-monthly-time">Hora</label>
+              <input type="time" id="f-monthly-time" value="09:00">
+            </div>
+            <div class="sched-hint">1–28 para evitar saltos en meses cortos.</div>
+          </div>
+
+          <div class="sched-block" id="sched-once">
+            <div class="sched-inline">
+              <label for="f-once-date">Fecha</label>
+              <input type="date" id="f-once-date">
+              <label for="f-once-time">Hora</label>
+              <input type="time" id="f-once-time" value="09:00">
+            </div>
+          </div>
+
+          <div class="sched-block" id="sched-advanced">
+            <input type="text" id="f-cron-advanced" placeholder="0 9 * * *">
+            <div class="sched-hint">Formato cron de 5 campos: min hora díaMes mes díaSemana.</div>
+          </div>
+
+          <div id="cron-preview"></div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">CLI</label>
+          <div class="radio-group">
+            <label class="radio-label"><input type="radio" name="cli" value="claude" checked> Claude</label>
+            <label class="radio-label"><input type="radio" name="cli" value="codex"> Codex</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="f-cwd">CWD</label>
+          <div class="field-row">
+            <input type="text" id="f-cwd" class="grow" placeholder="/ruta/al/proyecto">
+            <button id="btn-pick-folder" class="btn" title="Elegir carpeta">📁</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <div class="grow">
+              <label class="field-label" for="f-model">Modelo</label>
+              <select id="f-model"></select>
+            </div>
+            <div class="grow">
+              <label class="field-label" for="f-effort">Effort</label>
+              <select id="f-effort"></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="check-label">
+            <input type="checkbox" id="f-resume">
+            Reanudar sesión (mantener contexto entre runs)
+          </label>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="f-prompt">Prompt</label>
+          <textarea id="f-prompt" rows="6" placeholder="Lo que quieres que ejecute el agente..."></textarea>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Output</label>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label class="check-label"><input type="checkbox" id="f-sink-log" checked> Log en app</label>
+            <label class="check-label"><input type="checkbox" id="f-sink-macos"> Notificación macOS</label>
+            <label class="check-label" id="lbl-sink-tg"><input type="checkbox" id="f-sink-tg"> Telegram</label>
+          </div>
+        </div>
+      </div>
+
+      <div id="editor-empty">
+        Selecciona una tarea o crea una nueva.
+      </div>
+
+      <div id="editor-actions" style="display:none;">
+        <button id="btn-save" class="btn btn-primary">Guardar</button>
+        <button id="btn-toggle" class="btn">Activar</button>
+        <button id="btn-run-now" class="btn">▶ Ejecutar ahora</button>
+        <button id="btn-cancel" class="btn" style="display:none;">■ Cancelar</button>
+        <div class="spacer"></div>
+        <button id="btn-delete" class="btn btn-danger">Eliminar</button>
+      </div>
+    </div>
+
+    <div id="col-runs">
+      <div class="col-header" id="runs-header">Runs</div>
+      <div id="runs-scroll" class="col-scroll">
+        <div class="empty-state">Sin runs todavía.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="main-automations">
+    <div id="col-auto-list">
+      <div class="col-header-row">
+        <span class="title">Lista</span>
+        <button id="btn-auto-new" class="btn btn-primary" style="height:24px;padding:0 10px;font-size:11px;">+ Nueva</button>
+      </div>
+      <div id="auto-list-scroll" class="col-scroll">
+        <div class="empty-state">Sin automatizaciones.<br>Pulsa <b>+ Nueva</b>.</div>
+      </div>
+    </div>
+
+    <div id="col-auto-editor">
+      <div class="col-header" id="auto-editor-header">Editor</div>
+
+      <div id="auto-editor-empty">
+        Selecciona una automatización o crea una nueva.
+      </div>
+
+      <div id="auto-editor-content" style="display:none;"></div>
+
+      <div id="auto-editor-actions" style="display:none;"></div>
+    </div>
+
+    <div id="col-auto-log">
+      <div class="col-header" id="auto-log-header">Log en vivo</div>
+      <pre id="auto-log-pre" class="log-pre">Selecciona una automatización para ver el log.</pre>
+    </div>
+  </div>
+
+  <div id="modal-bg">
+    <div id="modal">
+      <div id="modal-header">
+        <div id="modal-title">Output</div>
+        <button id="btn-modal-copy" class="btn">Copiar</button>
+        <button id="btn-modal-close" class="icon-btn" title="Cerrar">
+          <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="tasks-manager-renderer.js"></script>
+</body>
+</html>

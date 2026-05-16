@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Agente — POWER-AGENT</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
+  <style>
+    :root {
+      --bg: #1a1a1d;
+      --bg-elev: #232327;
+      --bg-elev-2: #2c2c30;
+      --fg: #e8e8ea;
+      --fg-muted: #9a9aa0;
+      --border: #34343a;
+      --accent: #4a8cf7;
+      --accent-fg: #fff;
+      --danger: #e57373;
+      --ok: #6abf69;
+      --warn: #d8a96a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    body.theme-light {
+      --bg: #f7f7fa;
+      --bg-elev: #fff;
+      --bg-elev-2: #ececef;
+      --fg: #1a1a1d;
+      --fg-muted: #6a6a70;
+      --border: #d0d0d6;
+      --accent: #2563eb;
+      --accent-fg: #fff;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif;
+      font-size: 13px;
+      color: var(--fg);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .header {
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px 8px 84px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+      user-select: none;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .header .sub {
+      font-size: 11px;
+      color: var(--fg-muted);
+      margin-top: 1px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border);
+      color: var(--fg-muted);
+    }
+    .badge.live { color: var(--ok); border-color: var(--ok); }
+    .badge.busy { color: var(--warn); border-color: var(--warn); }
+    .badge.dead { color: var(--danger); border-color: var(--danger); }
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .badge.busy .dot { animation: pulse 1s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 1; }
+    }
+
+    .cli-select {
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 10px;
+      padding: 1px 18px 1px 8px;
+      appearance: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+      font-family: inherit;
+      outline: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%239a9aa0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 5px center;
+    }
+    .cli-select:hover { border-color: var(--accent); }
+    .cli-select:focus { border-color: var(--accent); }
+
+    .header-actions {
+      -webkit-app-region: no-drag;
+      display: flex;
+      gap: 4px;
+    }
+    .header-btn {
+      width: 26px;
+      height: 24px;
+      border: 1px solid var(--border);
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0;
+    }
+    .header-btn:hover { border-color: var(--accent); }
+    .header-btn-wide {
+      width: auto;
+      padding: 0 10px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .header-btn:disabled { opacity: 0.5; cursor: progress; }
+
+    /* Modal preview + manual */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+    }
+    .modal-backdrop.visible { display: flex; }
+    .modal {
+      width: min(820px, 92vw);
+      max-height: 88vh;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .modal h2 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .modal .modal-body {
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .modal label {
+      font-size: 11px;
+      color: var(--fg-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .modal input[type="text"],
+    .modal textarea {
+      width: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-family: var(--mono);
+      font-size: 12px;
+      resize: vertical;
+    }
+    .modal textarea { min-height: 120px; }
+    .modal .field-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .modal .modal-foot {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      padding-top: 4px;
+      border-top: 1px solid var(--border);
+    }
+    .preview-status {
+      font-size: 11px;
+      color: var(--fg-muted);
+    }
+    .preview-status.ok { color: var(--ok); }
+    .preview-status.bad { color: var(--danger); }
+
+    #terminal-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+      position: relative;
+      background: var(--bg);
+      padding: 6px 8px 0 8px;
+    }
+    #terminal {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Panel inferior con propuestas detectadas */
+    #blocks-panel {
+      flex: 0 0 auto;
+      max-height: 240px;
+      overflow-y: auto;
+      background: var(--bg-elev);
+      border-top: 1px solid var(--border);
+      padding: 10px 12px;
+      display: none;
+    }
+    #blocks-panel.visible { display: block; }
+    .blocks-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .blocks-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ok);
+    }
+    .blocks-summary {
+      font-size: 11px;
+      color: var(--fg-muted);
+    }
+    .blocks-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .btn {
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-fg);
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { opacity: 0.92; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .toast {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 99;
+      max-width: 80%;
+    }
+    .toast.show { opacity: 1; }
+    .toast.ok { border-color: var(--ok); color: var(--ok); }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .toast.warn { border-color: var(--warn); color: var(--warn); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1 id="title">Agente</h1>
+      <div class="sub">
+        <span id="subtitle">Cargando…</span>
+        <span class="badge dead" id="pty-status"><span class="dot"></span><span id="pty-status-text">parado</span></span>
+        <select id="cli-select" title="Cambiar CLI (reinicia el agente)" class="cli-select">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+        </select>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="header-btn header-btn-wide" id="btn-extract" title="Pide al CLI headless que extraiga el script + plist + descripción de la conversación">Extraer propuesta</button>
+      <button class="header-btn header-btn-wide" id="btn-manual" title="Pegar el script y el plist a mano">Pegar a mano</button>
+      <button class="header-btn" id="btn-restart" title="Reiniciar agente (mata y relanza el CLI)">↻</button>
+      <button class="header-btn" id="btn-min" title="Minimizar">−</button>
+      <button class="header-btn" id="btn-close" title="Cerrar">×</button>
+    </div>
+  </div>
+
+  <div id="terminal-wrap">
+    <div id="terminal"></div>
+  </div>
+
+  <div id="blocks-panel">
+    <div class="blocks-header">
+      <span class="blocks-title">El agente ha propuesto cambios</span>
+      <span class="blocks-summary" id="blocks-summary"></span>
+    </div>
+    <div class="blocks-actions" id="blocks-actions"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- Modal preview de la propuesta (manual o extraída) -->
+  <div class="modal-backdrop" id="preview-modal">
+    <div class="modal">
+      <h2>Revisar propuesta antes de aplicar</h2>
+      <div class="preview-status" id="preview-status"></div>
+      <div class="modal-body">
+        <div class="field-row">
+          <label for="prev-desc">Descripción</label>
+          <input type="text" id="prev-desc" placeholder="Una o dos frases sobre qué hace la automatización" />
+        </div>
+        <div class="field-row">
+          <label for="prev-script">Script bash (debe empezar con #!)</label>
+          <textarea id="prev-script" spellcheck="false"></textarea>
+        </div>
+        <div class="field-row">
+          <label for="prev-plist">Plist launchd (XML completo)</label>
+          <textarea id="prev-plist" spellcheck="false"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="prev-cancel">Cancelar</button>
+        <button class="btn btn-primary" id="prev-apply">✓ Aplicar al borrador</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="automation-pty-renderer.js"></script>
+</body>
+</html>

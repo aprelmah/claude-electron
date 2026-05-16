@@ -564,6 +564,10 @@ class TelegramBridge {
     await this._sendMessage(chatId, 'Comando no reconocido. Usa /help.')
   }
 
+  async sendMessage(chatId, text) {
+    return this._sendMessage(chatId, text)
+  }
+
   async _sendMessage(chatId, text) {
     const normalized = String(text || '').trim()
     if (!normalized) return null

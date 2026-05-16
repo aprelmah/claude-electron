@@ -1,10 +1,18 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
 const { TelegramBridge } = require('./telegram-bridge')
+const { createHeadlessRunners } = require('./headless-runners')
+const TaskScheduler = require('./scheduler')
+const { createExecutor } = require('./scheduler/executor')
+const { createSinks } = require('./scheduler/sinks')
+const { createPersistence } = require('./scheduler/persistence')
+const cronPresets = require('./scheduler/cron-presets')
+const { createAutomationManager } = require('./automations')
+const { createAutomationChat } = require('./automations/chat')
 
 // Keep userData at the legacy path so existing config/Telegram tokens survive the rename.
 const oldUserData = path.join(app.getPath('appData'), 'CLAUDE-NOVAK')
@@ -523,6 +531,476 @@ function openViewerWindow(filePath, hint) {
   return win
 }
 
+// ── Tasks Manager (singleton) ──
+let tasksScheduler = null
+let automationManager = null
+let automationChat = null
+let tasksManagerWin = null
+let cwdHistoryCache = []
+// Una ventana de chat por automation.
+const chatWindows = new Map() // automationId → BrowserWindow
+const chatWcToAutomation = new Map() // wcId → automationId
+
+async function openTasksManager() {
+  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) {
+    if (tasksManagerWin.isMinimized()) tasksManagerWin.restore()
+    tasksManagerWin.show()
+    tasksManagerWin.focus()
+    return tasksManagerWin
+  }
+
+  // Hereda el tema actual de la ventana principal (localStorage 'claude-electron-theme').
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  tasksManagerWin = new BrowserWindow({
+    width: 1000,
+    height: 720,
+    minWidth: 760,
+    minHeight: 520,
+    title: 'POWER-AGENT — Tareas programadas',
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#fafafd' : '#111',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'tasks-manager-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  tasksManagerWin.loadFile('tasks-manager.html', { query: { theme: initialTheme } })
+  tasksManagerWin.once('ready-to-show', () => {
+    if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.show()
+  })
+  tasksManagerWin.on('closed', () => { tasksManagerWin = null })
+  return tasksManagerWin
+}
+
+function broadcastToAllWindows(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      try { win.webContents.send(channel, payload) } catch {}
+    }
+  }
+}
+
+// Emite eventos del chat solo a la ventana de chat correspondiente.
+function broadcastAutomationChat(channel, payload) {
+  const id = payload && payload.automationId
+  if (!id) return
+  const win = chatWindows.get(id)
+  if (!win || win.isDestroyed()) return
+  try { win.webContents.send(channel, payload) } catch {}
+}
+
+// ── Automation PTY (agente CLI vivo en xterm) ──
+// Una sesión PTY por automationId, en su propia ventana.
+const agentPtySessions = new Map()         // wcId → AgentPtySession
+const agentPtyWindowByAutomation = new Map() // automationId → BrowserWindow
+
+const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B[@-Z\\-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
+const AGENT_BUFFER_MAX = 200_000
+const AGENT_BOOT_DELAY_MS = 3500
+
+function stripAnsi(s) {
+  if (!s) return ''
+  return s.replace(ANSI_RE, '')
+}
+
+// Quita line-wrapping del terminal: claude code repinta líneas con \r y a veces
+// inserta saltos suaves. También quita caracteres de "box drawing" del TUI para no
+// confundir los matches.
+function flattenTerminal(s) {
+  if (!s) return ''
+  return s
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    // Box drawing y separadores típicos del TUI
+    .replace(/[─-╿▀-▟■-◿]/g, ' ')
+}
+
+function extractAgentBlocks(buffer) {
+  const clean = flattenTerminal(stripAnsi(buffer))
+
+  // Variante 1: tags XML estilo Anthropic, tolerante a espacios internos.
+  const xmlGrab = (tag) => {
+    const re = new RegExp(`<\\s*${tag}\\s*>([\\s\\S]*?)<\\s*/\\s*${tag}\\s*>`, 'i')
+    const m = clean.match(re)
+    return m ? m[1].trim() : null
+  }
+
+  let script = xmlGrab('SCRIPT')
+  let plist = xmlGrab('PLIST')
+  let description = xmlGrab('DESCRIPCION') || xmlGrab('DESCRIPTION')
+
+  // Variante 2 (fallback): code fences markdown con lenguaje pista.
+  // ```bash / ```sh / ```shell → SCRIPT
+  // ```xml / ```plist → PLIST
+  if (!script || !plist) {
+    const fenceRe = /```([a-zA-Z0-9_+-]*)\s*\n([\s\S]*?)```/g
+    let m
+    while ((m = fenceRe.exec(clean)) !== null) {
+      const lang = (m[1] || '').toLowerCase()
+      const body = m[2] || ''
+      if (!script && /^(bash|sh|shell|zsh)$/i.test(lang) && body.includes('#!/')) {
+        script = body.trim()
+      } else if (!plist && /^(xml|plist)$/i.test(lang) && body.includes('<plist')) {
+        plist = body.trim()
+      }
+    }
+  }
+
+  // Validación: descarta solo lo claramente placeholder.
+  // SCRIPT real: tiene shebang + algo de contenido.
+  // PLIST real: tiene cabecera xml + cierre /plist.
+  const isRealScript = (text) => {
+    if (!text || text.length < 40) return false
+    if (!text.includes('#!')) return false
+    return true
+  }
+  const isRealPlist = (text) => {
+    if (!text || text.length < 80) return false
+    if (!/<\?xml|<plist/i.test(text)) return false
+    if (!/<\/plist>/i.test(text)) return false
+    return true
+  }
+  const isRealDescription = (text) => {
+    if (!text || text.length < 10) return false
+    return true
+  }
+
+  if (!isRealScript(script)) script = null
+  if (!isRealPlist(plist)) plist = null
+  if (!isRealDescription(description)) description = null
+
+  // El botón "Aplicar al borrador" solo debe aparecer cuando tenemos una propuesta
+  // sustancial — al menos SCRIPT y PLIST juntos. Solo descripción no dispara.
+  // Esto evita que un placeholder corto de descripción que pase por encima del filtro
+  // (ej. "descripción refinada y precisa" del propio bootstrap si reaparece en pantalla)
+  // accione el botón.
+  if (!script || !plist) return null
+  return { script, plist, description }
+}
+
+function blocksEqual(a, b) {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  return a.script === b.script && a.plist === b.plist && a.description === b.description
+}
+
+function buildAgentBootstrapPrompt(automation) {
+  const hasDraft = !!(automation.generatedScript || automation.generatedPlist)
+  const isInstalled = automation.status === 'installed'
+  const scheduleStr = (() => {
+    try { return JSON.stringify(automation.schedule || null) } catch { return 'null' }
+  })()
+  const lines = []
+
+  // Contexto mínimo — sin script todavía, para que el agente NO se ponga a analizar sin permiso.
+  lines.push('Eres un agente conectado a POWER-AGENT (Mac de Luismi). Estás dentro de una sesión interactiva con él para AYUDARLE con una automatización macOS concreta (script bash + plist launchd que ejecuta launchd).')
+  lines.push('')
+  lines.push('Datos de la automatización (solo contexto, NO analices todavía):')
+  lines.push(`- Nombre: ${automation.name || '(sin nombre)'}`)
+  lines.push(`- Slug: ${automation.slug || '(pendiente)'}`)
+  lines.push(`- Status: ${automation.status || 'draft'}${isInstalled ? ' (YA instalada y corriendo en launchd)' : ''}`)
+  lines.push(`- Schedule: ${scheduleStr}`)
+  lines.push(`- Descripción guardada: ${automation.description ? automation.description : '(vacía)'}`)
+  lines.push(`- ¿Tiene script generado?: ${hasDraft ? 'sí' : 'no'}`)
+  if (automation.scriptPath) lines.push(`- Ruta del script: ${automation.scriptPath}`)
+  if (automation.plistPath) lines.push(`- Ruta del plist: ${automation.plistPath}`)
+  if (automation.logPath) lines.push(`- Ruta del log: ${automation.logPath}`)
+  lines.push('')
+
+  lines.push('REGLAS ESTRICTAS DE COMPORTAMIENTO:')
+  lines.push('1) NO hagas NADA antes de hablar con Luismi. No leas archivos, no analices el script, no propongas cambios todavía.')
+  lines.push('2) Tu PRIMER mensaje debe ser SOLO una pregunta abierta breve: "¿Qué quieres que hagamos con esta automatización?" o equivalente. Una frase. Sin lista, sin análisis, sin sugerencias.')
+  if (hasDraft) {
+    lines.push('3) Esta automatización YA EXISTE (tiene script). Luismi viene a REPARARLA o MODIFICARLA. NO asumas qué falla — pregúntale qué problema tiene o qué quiere cambiar antes de tocar nada.')
+  } else {
+    lines.push('3) Esta automatización es NUEVA (sin script). Pregúntale qué debe hacer exactamente: carpetas, condiciones, frecuencia, edge cases. Una pregunta a la vez.')
+  }
+  lines.push('4) Itera con preguntas cortas. Una por mensaje. Estilo conversación, no entrevista.')
+  lines.push('5) Solo cuando Luismi te diga EXPLÍCITAMENTE "venga, genera" o "vale, hazlo" o equivalente, emite TRES bloques XML en UN SOLO mensaje, con estos nombres de etiqueta exactos en mayúsculas:')
+  lines.push('   - Etiqueta 1: DESCRIPCION  → contiene la descripción refinada y precisa de qué hace.')
+  lines.push('   - Etiqueta 2: SCRIPT       → contiene el script bash completo y FUNCIONAL (no resumen, no placeholder). Debe empezar con shebang y tener varias líneas.')
+  lines.push('   - Etiqueta 3: PLIST        → contiene el plist launchd completo y FUNCIONAL (con cabecera xml y cierre /plist).')
+  lines.push('   Formato de cada bloque: la etiqueta de apertura entre menor-mayor, el contenido COMPLETO y real (sin "..." ni "completo aquí"), y la etiqueta de cierre con barra. Idéntico al formato que Anthropic usa para tool_use blocks.')
+  lines.push('   Importante: NUNCA emitas bloques de ejemplo, demo o con placeholders tipo "..." o "script aquí". Solo cuando vayas a entregar el contenido real y completo.')
+  lines.push('   Eso disparará un botón "Aplicar al borrador" en la UI de Luismi.')
+  lines.push('6) Reglas técnicas para cuando llegue el momento: bash con set -euo pipefail, sin secrets hardcodeados (usa Keychain), plist launchd válido (StartCalendarInterval o StartInterval), logs a la ruta que ya tiene asignada.')
+  lines.push('7) Habla español de España, directo, sin rollos. Luismi odia las introducciones largas.')
+  lines.push('')
+  if (hasDraft) {
+    lines.push('Si Luismi te pide reparar o revisar algo concreto, usa tu Read para abrir el archivo en la ruta del script o del log indicadas arriba. NO los leas antes de que él te lo pida.')
+    lines.push('')
+  }
+  lines.push('Ahora haz tu pregunta de apertura. Solo eso.')
+  return lines.join('\n')
+}
+
+function startAgentPty(session) {
+  if (!session) throw new Error('Sesión agente no disponible')
+  if (session.pty) return session.pty
+  const cliCheck = ensureCliAvailable(session.activeCli)
+  if (!cliCheck.ok) {
+    if (session.win && !session.win.isDestroyed()) {
+      session.win.webContents.send('automation-pty:error', { error: cliCheck.error })
+    }
+    throw new Error(cliCheck.error)
+  }
+
+  let proc
+  try {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, [])], {
+      name: 'xterm-256color',
+      cols: session.cols || 120,
+      rows: session.rows || 35,
+      cwd: session.cwd || os.homedir(),
+      env: cliCheck.env
+    })
+  } catch (err) {
+    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
+    if (session.win && !session.win.isDestroyed()) {
+      session.win.webContents.send('automation-pty:error', { error: msg })
+    }
+    throw new Error(msg)
+  }
+
+  proc._alive = true
+  session.pty = proc
+  session.buffer = ''
+  session.lastBlocks = null
+  // detectFromOffset: hasta que esté seteado, no buscamos bloques.
+  // Se setea ~4.5s después de inyectar el bootstrap, para que el ECO en pantalla
+  // de las etiquetas literales (<SCRIPT> etc) que el bootstrap menciona NO se
+  // confunda con bloques reales emitidos por el CLI.
+  session.detectFromOffset = session.bootstrapPrompt ? null : 0
+  const myWcId = session.wcId
+
+  proc.onData((data) => {
+    if (!proc._alive) return
+    const s = agentPtySessions.get(myWcId)
+    if (!s || !s.win || s.win.isDestroyed()) return
+    const text = typeof data === 'string' ? data : data.toString('utf8')
+    s.win.webContents.send('automation-pty:data', text)
+    // Buffer ring.
+    s.buffer = (s.buffer + text).slice(-AGENT_BUFFER_MAX)
+    if (s.detectFromOffset == null) return
+    // Trunca lo previo al offset.
+    const tail = s.buffer.length > s.detectFromOffset
+      ? s.buffer.slice(s.detectFromOffset)
+      : ''
+    const blocks = extractAgentBlocks(tail)
+    if (blocks && !blocksEqual(blocks, s.lastBlocks)) {
+      s.lastBlocks = blocks
+      console.log('[automation-pty] blocks detected:',
+        blocks.description ? 'DESC(' + blocks.description.length + ')' : '-',
+        blocks.script ? 'SCRIPT(' + blocks.script.length + ')' : '-',
+        blocks.plist ? 'PLIST(' + blocks.plist.length + ')' : '-')
+      s.win.webContents.send('automation-pty:blocks-detected', { blocks })
+    } else if (!blocks) {
+      // Heurística de diagnóstico: si el tail menciona "SCRIPT" o "PLIST" o "DESCRIPCION"
+      // pero el parser no extrajo nada, log mínimo para ver qué está llegando.
+      const flat = flattenTerminal(stripAnsi(tail))
+      if (/<\s*SCRIPT|<\s*PLIST|<\s*DESCRIPCION|```bash|```xml/i.test(flat)) {
+        const idx = flat.search(/<\s*SCRIPT|<\s*PLIST|<\s*DESCRIPCION|```bash|```xml/i)
+        const sample = flat.slice(Math.max(0, idx - 40), idx + 200)
+        console.log('[automation-pty] potential blocks but no match. Sample:', JSON.stringify(sample))
+      }
+    }
+  })
+
+  proc.onExit(() => {
+    if (proc._alive) {
+      const s = agentPtySessions.get(myWcId)
+      if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('automation-pty:exit')
+    }
+    const s = agentPtySessions.get(myWcId)
+    if (s && s.pty === proc) s.pty = null
+  })
+
+  // Inyecta contexto inicial al CLI cuando esté listo.
+  // Usa bracketed paste para que los \n del prompt no se interpreten como Enter (que enviaría
+  // cada línea como mensaje separado al chat del CLI).
+  if (session.bootstrapPrompt && !session.bootstrapInjected) {
+    session.bootstrapInjected = true
+    setTimeout(() => {
+      if (!proc._alive) return
+      try {
+        const BP_START = '\x1b[200~'
+        const BP_END = '\x1b[201~'
+        proc.write(BP_START + session.bootstrapPrompt + BP_END)
+        // Pequeño delay y luego Enter para enviar.
+        setTimeout(() => {
+          if (proc._alive) { try { proc.write('\r') } catch {} }
+        }, 150)
+        // Tras un margen para que el ECO en pantalla del bootstrap termine, abrimos
+        // la detección de bloques desde el offset actual del buffer.
+        setTimeout(() => {
+          const s = agentPtySessions.get(myWcId)
+          if (s) s.detectFromOffset = s.buffer.length
+        }, 4500)
+      } catch {}
+    }, AGENT_BOOT_DELAY_MS)
+  }
+
+  return proc
+}
+
+function killAgentPty(session) {
+  if (!session || !session.pty) return
+  session.pty._alive = false
+  try { session.pty.kill() } catch {}
+  session.pty = null
+}
+
+async function openAutomationPtyWindow(automationId) {
+  if (!automationId) return null
+  if (!automationManager) return null
+  const automation = await automationManager.get(automationId)
+  if (!automation) return null
+
+  const existing = agentPtyWindowByAutomation.get(automationId)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  const win = new BrowserWindow({
+    width: 880,
+    height: 640,
+    minWidth: 560,
+    minHeight: 380,
+    title: 'Agente — ' + (automation.name || automation.slug || 'POWER-AGENT'),
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'automation-pty-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--automation-id=${automationId}`]
+    }
+  })
+
+  const wcId = win.webContents.id
+  const session = {
+    win,
+    wcId,
+    automationId,
+    activeCli: appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude',
+    cols: 120,
+    rows: 35,
+    cwd: os.homedir(),
+    pty: null,
+    buffer: '',
+    lastBlocks: null,
+    bootstrapPrompt: buildAgentBootstrapPrompt(automation),
+    bootstrapInjected: false
+  }
+  agentPtySessions.set(wcId, session)
+  agentPtyWindowByAutomation.set(automationId, win)
+
+  win.loadFile('automation-pty.html', { query: { theme: initialTheme, aid: automationId } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    const s = agentPtySessions.get(wcId)
+    if (s) killAgentPty(s)
+    agentPtySessions.delete(wcId)
+    if (agentPtyWindowByAutomation.get(automationId) === win) {
+      agentPtyWindowByAutomation.delete(automationId)
+    }
+  })
+  return win
+}
+
+async function openAutomationChatWindow(automationId) {
+  if (!automationId) return null
+  if (!automationManager) return null
+  const automation = await automationManager.get(automationId)
+  if (!automation) return null
+
+  const existing = chatWindows.get(automationId)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  // Tema heredado.
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  const win = new BrowserWindow({
+    width: 620,
+    height: 720,
+    minWidth: 420,
+    minHeight: 480,
+    title: 'Agente — ' + (automation.name || automation.slug || 'POWER-AGENT'),
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'automation-chat-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--automation-id=${automationId}`]
+    }
+  })
+  chatWindows.set(automationId, win)
+  const wcId = win.webContents.id
+  chatWcToAutomation.set(wcId, automationId)
+  win.loadFile('automation-chat.html', { query: { theme: initialTheme, aid: automationId } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    if (chatWindows.get(automationId) === win) chatWindows.delete(automationId)
+    chatWcToAutomation.delete(wcId)
+  })
+  return win
+}
+
 // ── Bridge wiring (one global bridge) ──
 function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
@@ -617,186 +1095,13 @@ function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
   return { sessionId: null, prompt: compactedPrompt }
 }
 
-function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd }) {
-  const meta = cliMeta('claude')
-  const env = buildRuntimeEnv()
-  if (!commandExists(meta.bin, env)) {
-    return Promise.reject(new Error(`Claude no disponible (${meta.bin}). Configura ${meta.envVar}.`))
-  }
-
-  const args = [
-    '-p', prompt,
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--permission-mode', 'bypassPermissions'
-  ]
-  if (model) args.push('--model', model)
-  if (effort) args.push('--effort', effort)
-  if (sessionId) args.push('--resume', sessionId)
-
-  return new Promise((resolve, reject) => {
-    let killed = false
-    let child
-    try {
-      child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
-        cwd: cwd || getCwdSync(),
-        env,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-    } catch (err) {
-      return reject(err)
-    }
-
-    const abortHandler = () => {
-      killed = true
-      try { child.kill('SIGTERM') } catch {}
-      setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
-    }
-    if (signal) {
-      if (signal.aborted) return abortHandler()
-      signal.addEventListener('abort', abortHandler, { once: true })
-    }
-
-    let buffer = ''
-    let stderrBuf = ''
-    let finalSessionId = null
-    let finalText = ''
-    let resultError = null
-
-    child.stdout.on('data', (chunk) => {
-      buffer += chunk.toString('utf8')
-      let nl
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).trim()
-        buffer = buffer.slice(nl + 1)
-        if (!line) continue
-        let obj
-        try { obj = JSON.parse(line) } catch { continue }
-        if (!obj || typeof obj !== 'object') continue
-
-        if (obj.type === 'assistant' && obj.message?.content) {
-          for (const block of obj.message.content) {
-            if (block?.type === 'text' && typeof block.text === 'string') {
-              onText?.(block.text)
-            } else if (block?.type === 'tool_use' && block.name) {
-              onToolUse?.(block.name)
-            }
-          }
-        } else if (obj.type === 'result') {
-          if (typeof obj.result === 'string') finalText = obj.result
-          if (obj.is_error) resultError = obj.result || 'CLI devolvió error'
-          if (obj.session_id) {
-            finalSessionId = obj.session_id
-            onSessionId?.(obj.session_id)
-          }
-        }
-      }
-    })
-
-    child.stderr.on('data', (d) => { stderrBuf += d.toString() })
-    child.on('error', (err) => {
-      if (signal) signal.removeEventListener('abort', abortHandler)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      if (signal) signal.removeEventListener('abort', abortHandler)
-      if (killed) {
-        const err = new Error('Cancelado')
-        err.name = 'AbortError'
-        return reject(err)
-      }
-      if (resultError) return reject(new Error(String(resultError)))
-      if (code !== 0) {
-        return reject(new Error(`claude exit ${code}: ${stderrBuf.slice(-500).trim() || 'sin stderr'}`))
-      }
-      resolve({ sessionId: finalSessionId, text: finalText })
-    })
-  })
-}
-
-function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd }) {
-  const meta = cliMeta('codex')
-  const env = buildRuntimeEnv()
-  if (!commandExists(meta.bin, env)) {
-    return Promise.reject(new Error(`Codex no disponible (${meta.bin}). Configura ${meta.envVar}.`))
-  }
-
-  const baseFlags = ['--skip-git-repo-check', '--json']
-  if (model) baseFlags.push('-m', model)
-  if (effort) baseFlags.push('-c', `model_reasoning_effort=${effort}`)
-
-  const args = sessionId
-    ? ['exec', 'resume', sessionId, ...baseFlags, prompt]
-    : ['exec', ...baseFlags, prompt]
-
-  return new Promise((resolve, reject) => {
-    let killed = false
-    let child
-    try {
-      child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
-        cwd: cwd || getCwdSync(),
-        env,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-    } catch (err) {
-      return reject(err)
-    }
-
-    const abortHandler = () => {
-      killed = true
-      try { child.kill('SIGTERM') } catch {}
-      setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
-    }
-    if (signal) {
-      if (signal.aborted) return abortHandler()
-      signal.addEventListener('abort', abortHandler, { once: true })
-    }
-
-    let buffer = ''
-    let stderrBuf = ''
-    let finalSessionId = null
-    let finalText = ''
-
-    child.stdout.on('data', (chunk) => {
-      buffer += chunk.toString('utf8')
-      let nl
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).trim()
-        buffer = buffer.slice(nl + 1)
-        if (!line) continue
-        let obj
-        try { obj = JSON.parse(line) } catch { continue }
-        if (!obj || typeof obj !== 'object') continue
-
-        if (obj.type === 'thread.started' && obj.thread_id) {
-          finalSessionId = obj.thread_id
-          onSessionId?.(obj.thread_id)
-        } else if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
-          finalText = obj.item.text
-          onText?.(obj.item.text)
-        }
-      }
-    })
-
-    child.stderr.on('data', (d) => { stderrBuf += d.toString() })
-    child.on('error', (err) => {
-      if (signal) signal.removeEventListener('abort', abortHandler)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      if (signal) signal.removeEventListener('abort', abortHandler)
-      if (killed) {
-        const err = new Error('Cancelado')
-        err.name = 'AbortError'
-        return reject(err)
-      }
-      if (code !== 0) {
-        return reject(new Error(`codex exit ${code}: ${stderrBuf.slice(-500).trim() || 'sin stderr'}`))
-      }
-      resolve({ sessionId: finalSessionId, text: finalText })
-    })
-  })
-}
+const { runClaudeHeadless, runCodexHeadless } = createHeadlessRunners({
+  cliMeta,
+  buildRuntimeEnv,
+  commandExists,
+  buildFdLimitCommand,
+  getCwdSync
+})
 
 // ── Application menu (Cmd+N / Cmd+W) ──
 function buildAppMenu() {
@@ -879,6 +1184,50 @@ app.whenReady().then(async () => {
     notifyPtyError(s, `Error iniciando Telegram bridge: ${err?.message || err}`)
   })
 
+  try {
+    const persistence = createPersistence({ userDataDir: app.getPath('userData') })
+    const executor = createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig })
+    const sinks = createSinks({ telegramBridge, broadcastToAllWindows })
+    tasksScheduler = new TaskScheduler({ executor, sinks, persistence, broadcast: broadcastToAllWindows })
+    tasksScheduler.persistence = persistence
+    await tasksScheduler.init()
+  } catch (err) {
+    console.error('[tasks] scheduler init failed:', err?.message || err)
+    tasksScheduler = null
+  }
+
+  try {
+    automationManager = createAutomationManager({
+      userDataDir: app.getPath('userData'),
+      runClaudeHeadless,
+      appConfig,
+      telegramBridge,
+      broadcast: broadcastToAllWindows
+    })
+    await automationManager.init()
+  } catch (e) {
+    console.error('[automations] init failed:', e)
+    automationManager = null
+  }
+
+  if (automationManager) {
+    try {
+      automationChat = createAutomationChat({
+        runClaudeHeadless,
+        runCodexHeadless,
+        persistence: automationManager._persistence,
+        automationManager,
+        broadcast: broadcastAutomationChat,
+        userDataDir: app.getPath('userData')
+      })
+    } catch (e) {
+      console.error('[automation-chat] init failed:', e)
+      automationChat = null
+    }
+  }
+
+  globalShortcut.register('CommandOrControl+Shift+T', () => openTasksManager())
+
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
     const focused = BrowserWindow.getFocusedWindow()
     if (focused) {
@@ -912,7 +1261,9 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   globalShortcut.unregisterAll()
   for (const s of sessions.values()) killPty(s)
+  for (const s of agentPtySessions.values()) killAgentPty(s)
   telegramBridge?.stop()
+  try { tasksScheduler?.destroy() } catch {}
 })
 
 // ── PTY IPC ──
@@ -1303,4 +1654,637 @@ ipcMain.on('viewer-close-self', (event) => {
 ipcMain.on('viewer-minimize-self', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win && !win.isDestroyed()) win.minimize()
+})
+
+// ── Tasks Manager IPC ──
+ipcMain.handle('tasks-manager:open', async () => {
+  await openTasksManager()
+  return { ok: true }
+})
+
+function assertScheduler() {
+  if (!tasksScheduler) throw new Error('Scheduler no inicializado')
+  return tasksScheduler
+}
+
+ipcMain.handle('tasks:list', async () => {
+  if (!tasksScheduler) return []
+  return tasksScheduler.persistence.loadTasks()
+})
+
+ipcMain.handle('tasks:get', async (_event, { id }) => {
+  if (!tasksScheduler) return null
+  return tasksScheduler.persistence.getTask(id)
+})
+
+ipcMain.handle('tasks:create', async (_event, data) => {
+  return assertScheduler().upsertTask(data)
+})
+
+ipcMain.handle('tasks:update', async (_event, { id, patch }) => {
+  const sched = assertScheduler()
+  const current = await sched.persistence.getTask(id)
+  if (!current) throw new Error('Tarea no encontrada')
+  return sched.upsertTask({ ...current, ...patch, id })
+})
+
+ipcMain.handle('tasks:delete', async (_event, { id }) => {
+  await assertScheduler().deleteTask(id)
+  return { ok: true }
+})
+
+ipcMain.handle('tasks:toggle', async (_event, { id, enabled }) => {
+  return assertScheduler().toggle(id, enabled)
+})
+
+ipcMain.handle('tasks:run-now', async (_event, { id }) => {
+  const sched = assertScheduler()
+  const runId = require('crypto').randomUUID()
+  // disparar en background; no esperar a que termine
+  Promise.resolve().then(() => sched.runNow(id)).catch((err) => {
+    console.error('[tasks:run-now] error:', err?.message || err)
+  })
+  return { ok: true, runId }
+})
+
+ipcMain.handle('tasks:cancel', async (_event, { id }) => {
+  assertScheduler().cancel(id)
+  return { ok: true }
+})
+
+ipcMain.handle('tasks:get-runs', async (_event, payload = {}) => {
+  if (!tasksScheduler) return []
+  const { taskId, limit = 100 } = payload
+  return tasksScheduler.persistence.getRuns({ taskId, limit })
+})
+
+ipcMain.handle('tasks:validate-cron', async (_event, { expr }) => {
+  if (!tasksScheduler) return { ok: false, error: 'Scheduler no listo' }
+  return tasksScheduler.validateCron(expr)
+})
+
+ipcMain.handle('tasks:list-cwds', async () => {
+  let history = []
+  try {
+    if (tasksScheduler) history = await tasksScheduler.persistence.loadCwdHistory()
+  } catch {}
+  const liveCwds = []
+  for (const s of sessions.values()) {
+    if (s?.cwd) liveCwds.push(s.cwd)
+  }
+  const all = Array.from(new Set([...(Array.isArray(history) ? history : []), ...liveCwds]))
+  if (!all.length) return [os.homedir()]
+  return all
+})
+
+ipcMain.handle('tasks:get-cron-presets', () => cronPresets)
+
+ipcMain.handle('tasks:pick-folder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) || tasksManagerWin
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory']
+  })
+  if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
+  return { path: result.filePaths[0], canceled: false }
+})
+
+ipcMain.handle('tasks:get-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+
+ipcMain.handle('tasks:get-telegram-configured', () => {
+  const tg = appConfig?.telegram || {}
+  return !!(tg.botToken && Array.isArray(tg.allowedUsers) && tg.allowedUsers.length)
+})
+
+ipcMain.handle('tasks:get-default-model-effort', () => {
+  const tg = appConfig?.telegram || {}
+  return {
+    claude: { model: tg.claudeModel || '', effort: tg.claudeEffort || '' },
+    codex: { model: tg.codexModel || '', effort: tg.codexEffort || '' }
+  }
+})
+
+ipcMain.handle('tasks:window-close', () => {
+  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.close()
+  return { ok: true }
+})
+
+ipcMain.handle('tasks:window-minimize', () => {
+  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.minimize()
+  return { ok: true }
+})
+
+// ── Automations IPC ──
+function automationsNotReady() {
+  return { ok: false, error: 'AutomationManager no inicializado' }
+}
+
+ipcMain.handle('automations:list', async () => {
+  try {
+    if (!automationManager) return []
+    return await automationManager.list()
+  } catch (err) {
+    console.error('[automations:list] error:', err?.message || err)
+    return []
+  }
+})
+
+ipcMain.handle('automations:get', async (_e, { id } = {}) => {
+  try {
+    if (!automationManager) return null
+    return await automationManager.get(id)
+  } catch (err) {
+    console.error('[automations:get] error:', err?.message || err)
+    return null
+  }
+})
+
+ipcMain.handle('automations:generate-draft', async (_e, payload = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.generateDraft(payload)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:regenerate', async (_e, { id, patch } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.regenerate(id, patch || {})
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:update-draft', async (_e, { id, scriptText, plistText } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    const automation = await automationManager.updateDraft(id, { scriptText, plistText })
+    return { ok: true, automation }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:install', async (_e, { id, force } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.install(id, { force: !!force })
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:shellcheck-status', async () => {
+  if (!automationManager) return { available: false, path: null, installHint: 'brew install shellcheck' }
+  try {
+    return await automationManager.getShellcheckStatus()
+  } catch {
+    return { available: false, path: null, installHint: 'brew install shellcheck' }
+  }
+})
+
+ipcMain.handle('automations:lint', async (_e, { id } = {}) => {
+  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado' }
+  try {
+    return await automationManager.lintAutomation(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:uninstall', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.uninstall(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:run-once', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.runOnce(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:read-log', async (_e, { id, opts } = {}) => {
+  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado', content: '' }
+  try {
+    const content = await automationManager.readLog(id, opts || {})
+    return { ok: true, content }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err), content: '' }
+  }
+})
+
+ipcMain.handle('automations:create-draft-shell', async (_e, payload = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.createDraftShell(payload || {})
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:remove', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    const res = await automationManager.remove(id)
+    // Limpieza: ventana PTY + ventana chat + persistencia de chat.
+    const pw = agentPtyWindowByAutomation.get(id)
+    if (pw && !pw.isDestroyed()) { try { pw.close() } catch {} }
+    const w = chatWindows.get(id)
+    if (w && !w.isDestroyed()) { try { w.close() } catch {} }
+    if (automationChat) { try { await automationChat.deleteChat(id) } catch {} }
+    return res
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:pause', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.pause(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:resume', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.resume(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automations:get-running', async () => {
+  if (!automationManager) return []
+  try {
+    return await automationManager.getRunningIds()
+  } catch (err) {
+    console.error('[automations:get-running] error:', err?.message || err)
+    return []
+  }
+})
+
+ipcMain.handle('automations:stop-run', async (_e, { id } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  try {
+    return await automationManager.stopRun(id)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('shell:reveal-in-finder', async (_e, { path: target } = {}) => {
+  try {
+    if (!target) return { ok: false, error: 'path requerido' }
+    shell.showItemInFolder(target)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+// ── Automation chat IPC ──
+// El handler "automation-chat:open" ahora abre la ventana PTY (agente CLI vivo).
+// La antigua ventana de burbujas queda accesible solo si se llamara directamente
+// a openAutomationChatWindow desde código (no expuesto vía IPC).
+ipcMain.handle('automation-chat:open', async (_e, { automationId } = {}) => {
+  if (!automationId) return { ok: false, error: 'automationId requerido' }
+  const win = await openAutomationPtyWindow(automationId)
+  return win ? { ok: true } : { ok: false, error: 'No se pudo abrir el agente' }
+})
+
+// ── Automation PTY IPC ──
+function getAgentSessionByEvent(event) {
+  return agentPtySessions.get(event.sender.id) || null
+}
+
+ipcMain.handle('automation-pty:init', async (event) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return { automationId: null }
+  let automation = null
+  try { automation = await automationManager?.get(s.automationId) } catch {}
+  return { automationId: s.automationId, automation, cli: s.activeCli }
+})
+
+ipcMain.handle('automation-pty:start', (event, { cols, rows } = {}) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No agent session' }
+  if (cols && rows) { s.cols = cols; s.rows = rows }
+  try {
+    startAgentPty(s)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.on('automation-pty:write', (event, data) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s || !s.pty) return
+  try { s.pty.write(data) } catch {}
+})
+
+ipcMain.on('automation-pty:resize', (event, { cols, rows } = {}) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return
+  if (cols && rows) { s.cols = cols; s.rows = rows }
+  try { s.pty?.resize(cols, rows) } catch {}
+})
+
+ipcMain.handle('automation-pty:restart', (event, { cols, rows } = {}) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No agent session' }
+  killAgentPty(s)
+  s.buffer = ''
+  s.lastBlocks = null
+  s.bootstrapInjected = false
+  if (cols && rows) { s.cols = cols; s.rows = rows }
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      try {
+        startAgentPty(s)
+        resolve({ ok: true })
+      } catch (err) {
+        resolve({ ok: false, error: err?.message || String(err) })
+      }
+    }, 200)
+  })
+})
+
+ipcMain.on('automation-pty:close-self', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender)
+  if (w && !w.isDestroyed()) w.close()
+})
+
+ipcMain.on('automation-pty:minimize-self', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender)
+  if (w && !w.isDestroyed()) w.minimize()
+})
+
+ipcMain.handle('automation-pty:set-cli', (event, { cli } = {}) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No agent session' }
+  if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'CLI inválido' }
+  if (s.activeCli === cli) return { ok: true, cli }
+  const check = ensureCliAvailable(cli)
+  if (!check.ok) return { ok: false, error: check.error }
+  // Mata PTY actual, reinicia con el nuevo CLI.
+  killAgentPty(s)
+  s.activeCli = cli
+  s.buffer = ''
+  s.lastBlocks = null
+  s.bootstrapInjected = false
+  s.detectFromOffset = null
+  try {
+    startAgentPty(s)
+    return { ok: true, cli }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+function buildExtractPrompt(transcript) {
+  return [
+    'Eres un EXTRACTOR ESTRICTO. Recibes la transcripción (con posibles artefactos de TUI) de una conversación entre un usuario y un asistente que estaban diseñando una automatización macOS (script bash + plist launchd).',
+    'Tu única tarea: localizar la PROPUESTA FINAL y devolver UN ÚNICO objeto JSON. NADA más. Sin markdown, sin explicación, sin code fences.',
+    '',
+    'Forma EXACTA del JSON:',
+    '{"description": string, "script": string, "plist": string}',
+    '',
+    'Reglas:',
+    '- description: una o dos frases en castellano describiendo qué hace la automatización.',
+    '- script: contenido COMPLETO del script bash. Debe empezar por "#!" (shebang). No truncar.',
+    '- plist: contenido COMPLETO del plist launchd, con cabecera <?xml ... ?> y cierre </plist>. No truncar.',
+    '- Si en la conversación hay varias versiones, usa la ÚLTIMA versión completa.',
+    '- Si NO hay propuesta completa (falta script o plist o están incompletos), devuelve EXACTAMENTE: {"error": "razón corta"}',
+    '- NO inventes contenido. NO completes lo que no esté en la transcripción.',
+    '- Tu respuesta debe ser PARSEABLE por JSON.parse() sin pre-procesado.',
+    '',
+    '--- TRANSCRIPCIÓN ---',
+    transcript,
+    '--- FIN TRANSCRIPCIÓN ---',
+    '',
+    'Devuelve ahora SOLO el JSON.'
+  ].join('\n')
+}
+
+function parseExtractorJson(raw) {
+  if (typeof raw !== 'string') return { ok: false, error: 'respuesta vacía' }
+  let text = raw.trim()
+  // Quita posibles fences ```json ... ``` por si el modelo se pone listillo.
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenceMatch) text = fenceMatch[1].trim()
+  // Si hay texto extra, intenta aislar el primer objeto JSON balanceado.
+  if (!text.startsWith('{')) {
+    const i = text.indexOf('{')
+    if (i >= 0) text = text.slice(i)
+  }
+  let obj
+  try { obj = JSON.parse(text) } catch (e) {
+    // Intento de rescate: tomar desde la primera { hasta la última }
+    const first = text.indexOf('{')
+    const last = text.lastIndexOf('}')
+    if (first >= 0 && last > first) {
+      try { obj = JSON.parse(text.slice(first, last + 1)) } catch {}
+    }
+    if (!obj) return { ok: false, error: 'JSON no parseable: ' + (e?.message || e) }
+  }
+  if (!obj || typeof obj !== 'object') return { ok: false, error: 'JSON inválido' }
+  if (typeof obj.error === 'string' && obj.error.trim()) return { ok: false, error: obj.error.trim() }
+  const blocks = {
+    description: typeof obj.description === 'string' ? obj.description.trim() : '',
+    script: typeof obj.script === 'string' ? obj.script : '',
+    plist: typeof obj.plist === 'string' ? obj.plist : ''
+  }
+  if (!blocks.script || !blocks.script.includes('#!')) {
+    return { ok: false, error: 'script ausente o sin shebang' }
+  }
+  if (!blocks.plist || !/<plist/i.test(blocks.plist) || !/<\/plist>/i.test(blocks.plist)) {
+    return { ok: false, error: 'plist ausente o sin cierre' }
+  }
+  return { ok: true, blocks }
+}
+
+ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No agent session' }
+  const raw = s.buffer || ''
+  if (!raw.trim()) return { ok: false, error: 'Buffer vacío — todavía no hay conversación' }
+
+  // Limpia y limita el tamaño que mandamos al headless.
+  const clean = flattenTerminal(stripAnsi(raw))
+  // Quédate con los últimos 80k chars: la propuesta final estará al final.
+  const transcript = clean.length > 80000 ? clean.slice(-80000) : clean
+
+  const useRunner = runner === 'codex' ? 'codex' : 'claude'
+  const prompt = buildExtractPrompt(transcript)
+
+  let result
+  try {
+    if (useRunner === 'codex') {
+      const check = ensureCliAvailable('codex')
+      if (!check.ok) {
+        // Fallback automático a claude.
+        const checkC = ensureCliAvailable('claude')
+        if (!checkC.ok) return { ok: false, error: check.error + ' / ' + checkC.error }
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd })
+      } else {
+        result = await runCodexHeadless({ prompt, cwd: s.cwd })
+      }
+    } else {
+      const check = ensureCliAvailable('claude')
+      if (!check.ok) {
+        const checkX = ensureCliAvailable('codex')
+        if (!checkX.ok) return { ok: false, error: check.error + ' / ' + checkX.error }
+        result = await runCodexHeadless({ prompt, cwd: s.cwd })
+      } else {
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd })
+      }
+    }
+  } catch (err) {
+    return { ok: false, error: 'Headless falló: ' + (err?.message || String(err)) }
+  }
+
+  const parsed = parseExtractorJson(result?.text || '')
+  if (!parsed.ok) return parsed
+  return { ok: true, blocks: parsed.blocks }
+})
+
+ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blocks } = {}) => {
+  if (!automationManager) return automationsNotReady()
+  if (!automationId || !blocks) return { ok: false, error: 'payload requerido' }
+  try {
+    const patch = {}
+    if (typeof blocks.script === 'string' && blocks.script.trim()) patch.scriptText = blocks.script
+    if (typeof blocks.plist === 'string' && blocks.plist.trim()) patch.plistText = blocks.plist
+    if (typeof blocks.description === 'string' && blocks.description.trim()) patch.description = blocks.description
+    if (!Object.keys(patch).length) return { ok: false, error: 'bloques vacíos' }
+    const res = await automationManager.updateDraft(automationId, patch)
+    if (res && res.ok === false) return res
+    return { ok: true, automation: res?.automation || res }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:init', (event) => {
+  const aid = chatWcToAutomation.get(event.sender.id) || null
+  return { automationId: aid }
+})
+
+ipcMain.handle('automation-chat:get-history', async (_e, { automationId, provider } = {}) => {
+  if (!automationChat || !automationId) return []
+  try { return await automationChat.getHistory(automationId, { provider }) }
+  catch (err) { console.error('[automation-chat:get-history]', err?.message || err); return [] }
+})
+
+ipcMain.handle('automation-chat:send', async (_e, { automationId, content, opts } = {}) => {
+  if (!automationChat) return { ok: false, error: 'Chat no inicializado' }
+  try {
+    const safeOpts = (opts && typeof opts === 'object') ? { ...opts } : {}
+    if (typeof safeOpts.provider !== 'string') safeOpts.provider = ''
+    if (typeof safeOpts.model !== 'string') safeOpts.model = ''
+    if (typeof safeOpts.effort !== 'string') safeOpts.effort = ''
+    const res = await automationChat.sendMessage(automationId, content, safeOpts)
+    if (res && res.ok === false) {
+      return { ok: false, error: res.error, providerError: true, provider: res.provider, messageId: res.messageId }
+    }
+    return { ok: true, messageId: res.messageId, provider: res.provider }
+  } catch (err) {
+    // Salvaguarda: no relanzar al renderer, devolver providerError.
+    return { ok: false, providerError: true, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:switch-provider', async (_e, { automationId, toProvider, withSummary } = {}) => {
+  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
+  try {
+    const res = await automationChat.switchProvider(automationId, { toProvider, withSummary: !!withSummary })
+    return res
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:clear-thread', async (_e, { automationId, provider } = {}) => {
+  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
+  try {
+    return await automationChat.clearThread(automationId, { provider })
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:retry-last', async (_e, { automationId, opts } = {}) => {
+  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
+  try {
+    const prefs = await automationChat.getPreferences(automationId)
+    const last = await automationChat.getLastUserMessage(automationId, { provider: prefs.provider })
+    if (!last) return { ok: false, error: 'Sin mensaje previo del usuario para reintentar' }
+    const safeOpts = (opts && typeof opts === 'object') ? { ...opts } : {}
+    safeOpts.provider = prefs.provider
+    if (typeof safeOpts.model !== 'string') safeOpts.model = prefs.model || ''
+    if (typeof safeOpts.effort !== 'string') safeOpts.effort = prefs.effort || ''
+    const res = await automationChat.sendMessage(automationId, last, safeOpts)
+    if (res && res.ok === false) {
+      return { ok: false, error: res.error, providerError: true, provider: res.provider, messageId: res.messageId }
+    }
+    return { ok: true, messageId: res.messageId, provider: res.provider }
+  } catch (err) {
+    return { ok: false, providerError: true, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:get-preferences', async (_e, { automationId } = {}) => {
+  if (!automationChat || !automationId) return { provider: 'claude', model: '', effort: '' }
+  try { return await automationChat.getPreferences(automationId) }
+  catch (err) {
+    console.error('[automation-chat:get-preferences]', err?.message || err)
+    return { provider: 'claude', model: '', effort: '' }
+  }
+})
+
+ipcMain.handle('automation-chat:set-preferences', async (_e, { automationId, provider, model, effort } = {}) => {
+  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
+  try {
+    const res = await automationChat.setPreferences(automationId, { provider, model, effort })
+    return { ok: true, ...res }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:apply-changes', async (_e, payload = {}) => {
+  if (!automationChat) return { ok: false, error: 'Chat no inicializado' }
+  const { automationId, script, plist, alsoReinstall } = payload
+  try {
+    if (alsoReinstall) {
+      return await automationChat.applyAndReinstall(automationId, { script, plist })
+    }
+    return await automationChat.applyProposedChanges(automationId, { script, plist })
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('automation-chat:window-close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) win.close()
+  return { ok: true }
+})
+
+ipcMain.handle('automation-chat:window-minimize', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) win.minimize()
+  return { ok: true }
 })

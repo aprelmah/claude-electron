@@ -43,5 +43,17 @@ contextBridge.exposeInMainWorld('api', {
   newWindow: () => ipcRenderer.send('window-new'),
 
   openViewerWindow: (path, hint) => ipcRenderer.invoke('viewer-open', { path, hint }),
-  onInjectPath: (cb) => ipcRenderer.on('inject-path', (_, p) => cb(p))
+  onInjectPath: (cb) => ipcRenderer.on('inject-path', (_, p) => cb(p)),
+
+  openTasksManager: () => ipcRenderer.invoke('tasks-manager:open'),
+  onTaskRunStarted: (cb) => {
+    const h = (_e, p) => cb(p)
+    ipcRenderer.on('tasks:run-started', h)
+    return () => ipcRenderer.removeListener('tasks:run-started', h)
+  },
+  onTaskRunFinished: (cb) => {
+    const h = (_e, p) => cb(p)
+    ipcRenderer.on('tasks:run-finished', h)
+    return () => ipcRenderer.removeListener('tasks:run-finished', h)
+  }
 })
