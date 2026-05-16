@@ -1610,6 +1610,104 @@ ipcMain.handle('fs-read-dir', async (event, dirPath) => {
   }
 })
 
+ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
+  if (!rootPath) return { ok: false, error: 'no rootPath' }
+
+  const SKIP = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache',
+    '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode', 'coverage'])
+  const BIN_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
+    '.dmg', '.app', '.zip', '.tar', '.gz', '.pdf', '.ttf', '.woff', '.woff2',
+    '.eot', '.mp3', '.mp4', '.wav', '.ogg', '.db', '.sqlite'])
+
+  const allFiles = []
+
+  function walk(dir, depth) {
+    if (depth > 5) return
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (SKIP.has(e.name) || e.name.startsWith('.')) continue
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        walk(full, depth + 1)
+      } else if (e.isFile()) {
+        const ext = path.extname(e.name).toLowerCase()
+        if (!BIN_EXTS.has(ext)) allFiles.push(full)
+      }
+    }
+  }
+
+  walk(rootPath, 0)
+
+  const fileByBasename = new Map()
+  for (const f of allFiles) {
+    const base = path.basename(f, path.extname(f)).toLowerCase()
+    if (!fileByBasename.has(base)) fileByBasename.set(base, f)
+  }
+
+  const connectionCount = new Map(allFiles.map(f => [f, 0]))
+  const edges = []
+
+  for (const filePath of allFiles) {
+    let content
+    try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
+    const ext = path.extname(filePath).toLowerCase()
+
+    if (ext === '.md') {
+      const re = /\[\[([^\]|#]+?)(?:[|#][^\]]+)?\]\]/g
+      let m
+      while ((m = re.exec(content)) !== null) {
+        const target = m[1].trim().toLowerCase()
+        const targetFile = fileByBasename.get(target) ||
+          fileByBasename.get(target.split('/').pop())
+        if (targetFile && targetFile !== filePath) {
+          edges.push({ source: filePath, target: targetFile })
+          connectionCount.set(filePath, (connectionCount.get(filePath) || 0) + 1)
+          connectionCount.set(targetFile, (connectionCount.get(targetFile) || 0) + 1)
+        }
+      }
+    }
+
+    if (['.js', '.ts', '.mjs', '.cjs'].includes(ext)) {
+      const re = /(?:import\s+(?:[^'"]+?\s+from\s+)?|require\s*\(\s*)['"](\.[^'"]+)['"]/g
+      let m
+      while ((m = re.exec(content)) !== null) {
+        let targetFile = path.resolve(path.dirname(filePath), m[1])
+        if (!path.extname(targetFile)) {
+          for (const tryExt of ['.js', '.ts', '.mjs', '/index.js', '/index.ts']) {
+            if (allFiles.includes(targetFile + tryExt)) {
+              targetFile = targetFile + tryExt
+              break
+            }
+          }
+        }
+        if (allFiles.includes(targetFile) && targetFile !== filePath) {
+          edges.push({ source: filePath, target: targetFile })
+          connectionCount.set(filePath, (connectionCount.get(filePath) || 0) + 1)
+          connectionCount.set(targetFile, (connectionCount.get(targetFile) || 0) + 1)
+        }
+      }
+    }
+  }
+
+  const edgeSet = new Set()
+  const uniqueEdges = edges.filter(e => {
+    const key = [e.source, e.target].sort().join('|||')
+    if (edgeSet.has(key)) return false
+    edgeSet.add(key)
+    return true
+  })
+
+  const nodes = allFiles.map(f => ({
+    id: f,
+    label: path.basename(f),
+    path: f,
+    connections: connectionCount.get(f) || 0
+  }))
+
+  return { ok: true, nodes, edges: uniqueEdges }
+})
+
 ipcMain.handle('fs-pick-folder', async (event) => {
   const result = await dialog.showOpenDialog(winFromEvent(event), {
     properties: ['openDirectory']
