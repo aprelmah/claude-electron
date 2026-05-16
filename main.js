@@ -2020,6 +2020,26 @@ ipcMain.on('window-new', () => {
   createWindow()
 })
 
+let graphWindowData = null
+
+ipcMain.handle('graph-window:open', (_event, { nodes, edges }) => {
+  graphWindowData = { nodes, edges }
+  const win = new BrowserWindow({
+    width: 1200, height: 800,
+    frame: false, resizable: true, minimizable: true,
+    title: 'POWER-AGENT — Grafo',
+    webPreferences: {
+      preload: path.join(__dirname, 'graph-window-preload.js'),
+      contextIsolation: true, nodeIntegration: false
+    }
+  })
+  win.loadFile('graph-window.html')
+  win.on('closed', () => { graphWindowData = null })
+  return true
+})
+
+ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [] })
+
 ipcMain.handle('viewer-open', (_event, arg) => {
   const filePath = typeof arg === 'string' ? arg : arg?.path
   const hint = (arg && typeof arg === 'object') ? arg.hint : null

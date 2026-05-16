@@ -71,6 +71,9 @@
           <button id="btn-view-graph" class="icon-btn small" title="Vista grafo">
             <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><circle cx="3" cy="6" r="2"/><circle cx="21" cy="6" r="2"/><circle cx="3" cy="18" r="2"/><circle cx="21" cy="18" r="2"/><line x1="5" y1="7" x2="10" y2="10"/><line x1="19" y1="7" x2="14" y2="10"/><line x1="5" y1="17" x2="10" y2="14"/><line x1="19" y1="17" x2="14" y2="14"/></svg>
           </button>
+          <button id="btn-graph-fullscreen" class="icon-btn small hidden" title="Abrir grafo en ventana completa">
+            <svg viewBox="0 0 24 24" width="14" height="14"><polyline points="15,3 21,3 21,9"/><polyline points="9,21 3,21 3,15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          </button>
           <button id="btn-work-here" class="icon-btn small" title="Reiniciar Claude en esta carpeta">
             <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>
           </button>
@@ -82,6 +85,7 @@
           </button>
         </div>
       </div>
+      <div id="graph-filters" class="hidden"></div>
       <div id="tree"></div>
       <svg id="graph-canvas" class="hidden"></svg>
       <div id="cwd-bar">

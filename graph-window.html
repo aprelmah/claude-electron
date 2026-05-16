@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' blob: data:">
+  <title>POWER-AGENT — Grafo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #050508; overflow: hidden; }
+    #titlebar {
+      position: fixed; top: 0; left: 0; right: 0; height: 32px;
+      background: rgba(5,5,8,0.85); backdrop-filter: blur(8px);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 12px; z-index: 10; -webkit-app-region: drag;
+    }
+    #titlebar span { font-size: 11px; color: rgba(255,255,255,0.4); font-family: system-ui, sans-serif; }
+    #btn-close-graph {
+      -webkit-app-region: no-drag; background: none; border: none;
+      color: rgba(255,255,255,0.4); cursor: pointer; font-size: 16px; line-height: 1;
+      padding: 4px 6px; border-radius: 4px;
+    }
+    #btn-close-graph:hover { color: #fff; background: rgba(255,255,255,0.1); }
+    #graph-canvas {
+      position: fixed; top: 32px; left: 0; right: 0; bottom: 0;
+      width: 100%; height: calc(100% - 32px);
+    }
+    #loading {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      color: rgba(255,255,255,0.3); font-family: system-ui, sans-serif; font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="titlebar">
+    <span>⟁ POWER-AGENT — Grafo</span>
+    <button id="btn-close-graph">×</button>
+  </div>
+  <div id="loading">Cargando grafo…</div>
+  <svg id="graph-canvas"></svg>
+
+  <script src="node_modules/d3/dist/d3.min.js"></script>
+  <script src="graph-renderer.js"></script>
+  <script src="graph-window-renderer.js"></script>
+</body>
+</html>

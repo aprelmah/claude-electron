@@ -27,8 +27,10 @@ const divider = document.getElementById('divider')
 const btnOpenFolder = document.getElementById('btn-open-folder')
 const btnRefreshTree = document.getElementById('btn-refresh-tree')
 const graphCanvas = document.getElementById('graph-canvas')
+const graphFilters = document.getElementById('graph-filters')
 const btnViewTree = document.getElementById('btn-view-tree')
 const btnViewGraph = document.getElementById('btn-view-graph')
+const btnGraphFullscreen = document.getElementById('btn-graph-fullscreen')
 const btnWorkHere = document.getElementById('btn-work-here')
 const cwdValue = document.getElementById('cwd-value')
 const btnSessions = document.getElementById('btn-sessions')
@@ -442,7 +444,51 @@ const CLI_KEY = `claude-electron-cli:${WID}`
 
 // ── Vista grafo / árbol ──────────────────────────────────────────────────
 let graphInstance = null
+let graphAllData = null
 let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
+
+const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'otros']
+const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', otros: '#6b7280' }
+let activeTypes = new Set(ALL_TYPES)
+
+function extType (label) {
+  const ext = (label.split('.').pop() || '').toLowerCase()
+  if (ext === 'mjs' || ext === 'cjs') return 'js'
+  return ALL_TYPES.includes(ext) ? ext : 'otros'
+}
+
+function buildFilters () {
+  graphFilters.innerHTML = ''
+  ALL_TYPES.forEach(type => {
+    const chip = document.createElement('button')
+    chip.className = 'graph-chip' + (activeTypes.has(type) ? ' active' : '')
+    chip.textContent = type
+    chip.style.setProperty('--chip-color', COLORS_BY_TYPE[type])
+    chip.addEventListener('click', () => {
+      if (activeTypes.has(type)) {
+        if (activeTypes.size > 1) activeTypes.delete(type)
+      } else {
+        activeTypes.add(type)
+      }
+      chip.classList.toggle('active', activeTypes.has(type))
+      renderFiltered()
+    })
+    graphFilters.appendChild(chip)
+  })
+}
+
+function renderFiltered () {
+  if (!graphAllData) return
+  const visibleNodes = graphAllData.nodes.filter(n => activeTypes.has(extType(n.label)))
+  const visibleIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = graphAllData.edges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
+  if (graphInstance) { graphInstance.destroy(); graphInstance = null }
+  graphInstance = window.GraphRenderer.init(
+    graphCanvas,
+    { nodes: visibleNodes, edges: visibleEdges },
+    { onDblClick: (filePath) => injectToPty(`@${filePath} `) }
+  )
+}
 
 function applyView (view) {
   currentView = view
@@ -450,11 +496,15 @@ function applyView (view) {
   if (view === 'graph') {
     treeEl.classList.add('hidden')
     graphCanvas.classList.remove('hidden')
+    graphFilters.classList.remove('hidden')
+    btnGraphFullscreen.classList.remove('hidden')
     btnViewTree.classList.remove('active')
     btnViewGraph.classList.add('active')
     loadGraph()
   } else {
     graphCanvas.classList.add('hidden')
+    graphFilters.classList.add('hidden')
+    btnGraphFullscreen.classList.add('hidden')
     treeEl.classList.remove('hidden')
     btnViewTree.classList.add('active')
     btnViewGraph.classList.remove('active')
@@ -469,15 +519,20 @@ async function loadGraph () {
   const result = await window.api.sidebarGetGraph(root)
   if (!result.ok) return
   if (currentView !== 'graph') return
-  graphInstance = window.GraphRenderer.init(
-    graphCanvas,
-    { nodes: result.nodes, edges: result.edges },
-    { onDblClick: (filePath) => injectToPty(`@${filePath} `) }
-  )
+  graphAllData = { nodes: result.nodes, edges: result.edges }
+  buildFilters()
+  renderFiltered()
 }
 
 btnViewTree.addEventListener('click', () => applyView('tree'))
 btnViewGraph.addEventListener('click', () => applyView('graph'))
+btnGraphFullscreen.addEventListener('click', () => {
+  if (!graphAllData) return
+  const visibleNodes = graphAllData.nodes.filter(n => activeTypes.has(extType(n.label)))
+  const visibleIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = graphAllData.edges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
+  window.api.openGraphWindow(visibleNodes, visibleEdges)
+})
 
 const EXT_ICONS = {
   js: '🟨', ts: '🔷', tsx: '⚛', jsx: '⚛', json: '🔧',

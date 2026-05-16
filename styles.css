@@ -721,3 +721,40 @@ button:active { transform: scale(0.93); }
 .node-label {
   transition: opacity 0.15s;
 }
+
+/* Filtros de tipo de archivo */
+#graph-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(5,5,8,0.8);
+}
+
+#graph-filters.hidden {
+  display: none;
+}
+
+.graph-chip {
+  font-size: 10px;
+  font-family: system-ui, sans-serif;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(255,255,255,0.3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.graph-chip.active {
+  border-color: var(--chip-color);
+  color: var(--chip-color);
+  background: color-mix(in srgb, var(--chip-color) 12%, transparent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--chip-color) 30%, transparent);
+}
+
+.graph-chip:hover {
+  opacity: 0.85;
+}
