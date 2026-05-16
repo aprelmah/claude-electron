@@ -58,5 +58,7 @@ contextBridge.exposeInMainWorld('api', {
     const h = (_e, p) => cb(p)
     ipcRenderer.on('tasks:run-finished', h)
     return () => ipcRenderer.removeListener('tasks:run-finished', h)
-  }
+  },
+
+  sidebarGetGraph: (rootPath) => ipcRenderer.invoke('sidebar:get-graph', rootPath),
 })
