@@ -73,8 +73,26 @@ ps aux | grep electron | grep -v grep | head -2
 ### Cómo empaquetar (solo cuando el modo dev funciona)
 ```bash
 npm run build:zip   # ZIP para distribución rápida
-npm run dist        # DMG completo (requiere sesión no sandboxed)
+npm run dist        # DMG + ZIP ambas arquitecturas
 ```
+
+### Desplegar en /Applications para abrir con doble clic
+```bash
+npm run deploy
+```
+Hace todo en secuencia:
+1. Mata instancias activas
+2. Compila build x64 (`dist/mac/POWER-AGENT.app`)
+3. Copia a `/Applications/POWER-AGENT.app` y quita cuarentena (`xattr -cr`)
+4. Abre la app via Finder (necesario porque Claude Code no tiene WindowServer)
+
+**IMPORTANTE — Mac Intel (x86_64):** usar `dist/mac/POWER-AGENT.app`  
+**Mac Apple Silicon (arm64):** usar `dist/mac-arm64/POWER-AGENT.app`  
+Este Mac es Intel → el script usa x64.
+
+**Por qué `xattr -cr`:** macOS bloquea apps descargadas/compiladas localmente sin firma. `xattr -cr` elimina el flag de cuarentena. Sin esto aparece el icono de "no compatible" aunque la arquitectura sea correcta.
+
+**Por qué no `open` directo:** Claude Code corre en subprocess sin WindowServer. Hay que abrir vía `osascript` o Finder.
 
 ### Checklist post-cambio
 1. `node --check main.js` → sin errores
@@ -82,6 +100,7 @@ npm run dist        # DMG completo (requiere sesión no sandboxed)
 3. Matar instancias previas
 4. Lanzar modo dev con osascript
 5. Verificar con `ps aux` que corre el dev, no el empaquetado
+6. Si todo OK → `npm run deploy` para instalar en /Applications
 6. Probar la feature en la app
 7. Solo si OK → empaquetar
 
