@@ -1626,7 +1626,9 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     let entries
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
-      if (SKIP.has(e.name) || e.name.startsWith('.')) continue
+      // Permitir .claude (memoria del proyecto) pero saltar el resto de dot-dirs y SKIP
+      if (SKIP.has(e.name)) continue
+      if (e.name.startsWith('.') && e.name !== '.claude') continue
       const full = path.join(dir, e.name)
       if (e.isDirectory()) {
         walk(full, depth + 1)
