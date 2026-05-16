@@ -1645,7 +1645,7 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     if (!fileByBasename.has(base)) fileByBasename.set(base, f)
   }
 
-  const connectionCount = new Map(allFiles.map(f => [f, 0]))
+  const allFilesSet = new Set(allFiles)
   const edges = []
 
   for (const filePath of allFiles) {
@@ -1662,8 +1662,6 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
           fileByBasename.get(target.split('/').pop())
         if (targetFile && targetFile !== filePath) {
           edges.push({ source: filePath, target: targetFile })
-          connectionCount.set(filePath, (connectionCount.get(filePath) || 0) + 1)
-          connectionCount.set(targetFile, (connectionCount.get(targetFile) || 0) + 1)
         }
       }
     }
@@ -1675,16 +1673,14 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
         let targetFile = path.resolve(path.dirname(filePath), m[1])
         if (!path.extname(targetFile)) {
           for (const tryExt of ['.js', '.ts', '.mjs', '/index.js', '/index.ts']) {
-            if (allFiles.includes(targetFile + tryExt)) {
+            if (allFilesSet.has(targetFile + tryExt)) {
               targetFile = targetFile + tryExt
               break
             }
           }
         }
-        if (allFiles.includes(targetFile) && targetFile !== filePath) {
+        if (allFilesSet.has(targetFile) && targetFile !== filePath) {
           edges.push({ source: filePath, target: targetFile })
-          connectionCount.set(filePath, (connectionCount.get(filePath) || 0) + 1)
-          connectionCount.set(targetFile, (connectionCount.get(targetFile) || 0) + 1)
         }
       }
     }
@@ -1698,11 +1694,17 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     return true
   })
 
+  const connectionCount2 = new Map(allFiles.map(f => [f, 0]))
+  for (const e of uniqueEdges) {
+    connectionCount2.set(e.source, (connectionCount2.get(e.source) || 0) + 1)
+    connectionCount2.set(e.target, (connectionCount2.get(e.target) || 0) + 1)
+  }
+
   const nodes = allFiles.map(f => ({
     id: f,
     label: path.basename(f),
     path: f,
-    connections: connectionCount.get(f) || 0
+    connections: connectionCount2.get(f) || 0
   }))
 
   return { ok: true, nodes, edges: uniqueEdges }
