@@ -1745,13 +1745,20 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
       if (!sessions.has(s.wcId)) return
       if (!filename) { safeCb(); return }
       const parts = filename.split('/')
-      for (const part of parts) {
-        if (IGNORE_NAMES.has(part) || isNoiseFile(part)) return
-      }
+      const base = parts[parts.length - 1]
+
+      // Siempre ignorar directorios pesados y archivos swap/tmp
+      if (parts.some(p => IGNORE_NAMES.has(p))) return
+      if (!base || base.endsWith('~') || base.endsWith('.swp') || base.endsWith('.swx') || base.endsWith('.tmp')) return
+
+      // Pulso del grafo: incluye .claude/memory y cualquier archivo no-ruido
       const fullPath = path.join(dirPath, filename)
       if (s.win && !s.win.isDestroyed()) {
         s.win.webContents.send('graph:file-active', fullPath)
       }
+
+      // tree-changed: solo archivos visibles (sin directorios punto)
+      if (parts.some(p => p.startsWith('.') || p.startsWith('._'))) return
       safeCb()
     })
     s.treeWatcher.on('error', () => {})
