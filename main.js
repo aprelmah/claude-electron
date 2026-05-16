@@ -2022,8 +2022,8 @@ ipcMain.on('window-new', () => {
 
 let graphWindowData = null
 
-ipcMain.handle('graph-window:open', (_event, { nodes, edges }) => {
-  graphWindowData = { nodes, edges }
+ipcMain.handle('graph-window:open', (_event, { nodes, edges, mode, activeTypes }) => {
+  graphWindowData = { nodes, edges, mode: mode || 'refs', activeTypes: activeTypes || null }
   const win = new BrowserWindow({
     width: 1200, height: 800,
     frame: false, resizable: true, minimizable: true,

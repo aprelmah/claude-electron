@@ -594,10 +594,7 @@ btnViewTree.addEventListener('click', () => applyView('tree'))
 btnViewGraph.addEventListener('click', () => applyView('graph'))
 btnGraphFullscreen.addEventListener('click', () => {
   if (!graphAllData) return
-  const visibleNodes = graphAllData.nodes.filter(n => activeTypes.has(extType(n.label)))
-  const visibleIds = new Set(visibleNodes.map(n => n.id))
-  const visibleEdges = graphAllData.edges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
-  window.api.openGraphWindow(visibleNodes, visibleEdges)
+  window.api.openGraphWindow(graphAllData.nodes, graphAllData.edges, graphMode, Array.from(activeTypes))
 })
 
 const EXT_ICONS = {
