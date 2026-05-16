@@ -8,16 +8,19 @@
     json:    '#34d399',
     css:     '#fb7185',
     html:    '#f97316',
+    folder:  '#94a3b8',
     default: '#6b7280'
   }
 
-  function nodeColor (label) {
-    const ext = (label.split('.').pop() || '').toLowerCase()
+  function nodeColor (d) {
+    if (d.type === 'folder') return COLORS.folder
+    const ext = (d.label.split('.').pop() || '').toLowerCase()
     return COLORS[ext] || COLORS.default
   }
 
-  function nodeRadius (connections) {
-    return Math.max(6, Math.min(18, 6 + connections * 1.5))
+  function nodeRadius (d) {
+    if (d.type === 'folder') return 14
+    return Math.max(6, Math.min(18, 6 + d.connections * 1.5))
   }
 
   function init (svgEl, { nodes, edges }, { onDblClick } = {}) {
@@ -91,14 +94,14 @@
       .force('link', d3.forceLink(simEdges).id(d => d.id).distance(80))
       .force('charge', d3.forceManyBody().strength(-220))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide().radius(d => nodeRadius(d.connections) + 10))
+      .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 10))
 
     // Capa de aristas
     const linkSel = g.append('g').attr('class', 'links')
       .selectAll('line')
       .data(simEdges)
       .join('line')
-      .attr('stroke', d => nodeColor(d.source.label || ''))
+      .attr('stroke', d => nodeColor(d.source))
       .attr('stroke-opacity', 0.22)
       .attr('stroke-width', 1.2)
 
@@ -108,7 +111,7 @@
       .data(simEdges)
       .join('circle')
       .attr('r', 2)
-      .attr('fill', d => nodeColor(d.source.label || ''))
+      .attr('fill', d => nodeColor(d.source))
       .attr('opacity', 0.75)
       .attr('pointer-events', 'none')
 
@@ -138,11 +141,12 @@
 
     nodeG.append('circle')
       .attr('class', 'node-circle')
-      .attr('r', d => nodeRadius(d.connections))
-      .attr('fill', d => nodeColor(d.label) + '2a')
-      .attr('stroke', d => nodeColor(d.label))
-      .attr('stroke-width', 1)
+      .attr('r', d => nodeRadius(d))
+      .attr('fill', d => nodeColor(d) + '2a')
+      .attr('stroke', d => nodeColor(d))
+      .attr('stroke-width', d => d.type === 'folder' ? 1.5 : 1)
       .attr('filter', d => {
+        if (d.type === 'folder') return 'url(#glow-folder)'
         const ext = (d.label.split('.').pop() || '').toLowerCase()
         const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
         return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
@@ -151,35 +155,36 @@
     nodeG.append('text')
       .attr('class', 'node-label')
       .text(d => d.label)
-      .attr('y', d => nodeRadius(d.connections) + 11)
+      .attr('y', d => nodeRadius(d) + 11)
       .attr('text-anchor', 'middle')
       .attr('font-size', '9px')
       .attr('font-family', 'system-ui, sans-serif')
       .attr('fill', 'rgba(255,255,255,0.55)')
       .attr('pointer-events', 'none')
 
-    // Ocultar labels en nodos con pocas conexiones
+    // Ocultar labels en nodos con pocas conexiones (carpetas siempre visibles)
     nodeG.each(function (d) {
-      if (d.connections < 3) d3.select(this).select('.node-label').attr('display', 'none')
+      if (d.type !== 'folder' && d.connections < 3) d3.select(this).select('.node-label').attr('display', 'none')
     })
 
     // Hover: agrandar y glow fuerte
     nodeG
       .on('mouseenter', function (e, d) {
         d3.select(this).select('.node-circle')
-          .attr('r', nodeRadius(d.connections) * 1.3)
+          .attr('r', nodeRadius(d) * 1.3)
           .attr('filter', 'url(#glow-strong)')
         d3.select(this).select('.node-label').attr('display', null)
       })
       .on('mouseleave', function (e, d) {
         d3.select(this).select('.node-circle')
-          .attr('r', nodeRadius(d.connections))
+          .attr('r', nodeRadius(d))
           .attr('filter', () => {
+            if (d.type === 'folder') return 'url(#glow-folder)'
             const ext = (d.label.split('.').pop() || '').toLowerCase()
             const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
             return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
           })
-        if (d.connections < 3 && d !== selectedNode) {
+        if (d.type !== 'folder' && d.connections < 3 && d !== selectedNode) {
           d3.select(this).select('.node-label').attr('display', 'none')
         }
       })
@@ -236,6 +241,10 @@
       selectedNode = null
       nodeG.attr('opacity', 1)
       nodeG.selectAll('.node-circle').each(function (d) {
+        if (d.type === 'folder') {
+          d3.select(this).attr('filter', 'url(#glow-folder)')
+          return
+        }
         const ext = (d.label.split('.').pop() || '').toLowerCase()
         const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
         d3.select(this).attr('filter', `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`)
