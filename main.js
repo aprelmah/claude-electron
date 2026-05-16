@@ -1639,6 +1639,10 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
 
   walk(rootPath, 0)
 
+  if (allFiles.length > 5000) {
+    return { ok: false, error: `Proyecto demasiado grande: ${allFiles.length} archivos (máx 5000)` }
+  }
+
   const fileByBasename = new Map()
   for (const f of allFiles) {
     const base = path.basename(f, path.extname(f)).toLowerCase()
@@ -1650,6 +1654,7 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
 
   for (const filePath of allFiles) {
     let content
+    try { if (fs.statSync(filePath).size > 2 * 1024 * 1024) continue } catch { continue }
     try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
     const ext = path.extname(filePath).toLowerCase()
 
@@ -1694,17 +1699,17 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     return true
   })
 
-  const connectionCount2 = new Map(allFiles.map(f => [f, 0]))
+  const connectionCount = new Map(allFiles.map(f => [f, 0]))
   for (const e of uniqueEdges) {
-    connectionCount2.set(e.source, (connectionCount2.get(e.source) || 0) + 1)
-    connectionCount2.set(e.target, (connectionCount2.get(e.target) || 0) + 1)
+    connectionCount.set(e.source, (connectionCount.get(e.source) || 0) + 1)
+    connectionCount.set(e.target, (connectionCount.get(e.target) || 0) + 1)
   }
 
   const nodes = allFiles.map(f => ({
     id: f,
     label: path.basename(f),
     path: f,
-    connections: connectionCount2.get(f) || 0
+    connections: connectionCount.get(f) || 0
   }))
 
   return { ok: true, nodes, edges: uniqueEdges }
