@@ -350,35 +350,86 @@ function isNoiseFile(base) {
   return false
 }
 
+function normalizeProjectKey(raw) {
+  return String(raw || '')
+    .replace(/^\/+/, '')
+    .replace(/[\/\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function resolveClaudeProjectDir(cwd) {
+  if (!cwd) return null
+  const root = path.join(os.homedir(), '.claude', 'projects')
+  const trimmed = String(cwd).replace(/\/$/, '')
+  const candidates = Array.from(new Set([
+    projectDirFor(trimmed),
+    path.join(root, trimmed.replace(/\//g, '-')),
+    path.join(root, trimmed.replace(/[\/\s_]+/g, '-'))
+  ]))
+
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return c
+    } catch {}
+  }
+
+  // Fallback robusto: iguala por clave normalizada (espacios/_/- equivalentes).
+  try {
+    const wanted = normalizeProjectKey(trimmed)
+    const entries = fs.readdirSync(root, { withFileTypes: true })
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      if (normalizeProjectKey(e.name) === wanted) return path.join(root, e.name)
+    }
+  } catch {}
+
+  return candidates[0]
+}
+
 // ── Detección de sessionId de claude (para "enviar a Telegram") ──
 // Claude Code v2 crea un fichero ~/.claude/projects/<cwd-codificado>/<sessionId>.jsonl
 // al iniciar (o al primer mensaje). Tomamos snapshot del directorio antes del spawn
-// y miramos qué fichero nuevo apareció después.
+// y miramos qué fichero nuevo/tocado apareció después.
 function claudeProjectSessionsDir(cwd) {
   if (!cwd) return null
-  const encoded = cwd.replace(/\//g, '-')
-  return path.join(os.homedir(), '.claude', 'projects', encoded)
+  // Resolver con compatibilidad para variaciones históricas del codificado.
+  return resolveClaudeProjectDir(cwd)
+}
+
+function listClaudeSessionFilesWithMtime(cwd) {
+  const dir = claudeProjectSessionsDir(cwd)
+  if (!dir) return []
+  try {
+    return fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => {
+        const p = path.join(dir, f)
+        let mtimeMs = 0
+        try { mtimeMs = fs.statSync(p).mtimeMs } catch {}
+        return { file: f, sessionId: f.replace(/\.jsonl$/, ''), mtimeMs }
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  } catch {
+    return []
+  }
 }
 
 function snapshotClaudeSessions(cwd) {
-  const dir = claudeProjectSessionsDir(cwd)
-  if (!dir) return new Set()
-  try { return new Set(fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))) }
-  catch { return new Set() }
+  const snap = new Map()
+  for (const row of listClaudeSessionFilesWithMtime(cwd)) snap.set(row.file, row.mtimeMs)
+  return snap
 }
 
-function findNewClaudeSessionId(cwd, snapshotBefore) {
-  const dir = claudeProjectSessionsDir(cwd)
-  if (!dir) return null
-  try {
-    const now = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl') && !snapshotBefore.has(f))
-    if (!now.length) return null
-    now.sort((a, b) => {
-      try { return fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs }
-      catch { return 0 }
-    })
-    return now[0].replace(/\.jsonl$/, '')
-  } catch { return null }
+function findUpdatedOrNewClaudeSessionId(cwd, snapshotBefore) {
+  if (!snapshotBefore) return null
+  const rows = listClaudeSessionFilesWithMtime(cwd)
+  for (const row of rows) {
+    const prevMtime = snapshotBefore.get(row.file)
+    if (prevMtime == null) return row.sessionId
+    if (row.mtimeMs > prevMtime) return row.sessionId
+  }
+  return null
 }
 
 // ── PTY per-session ──
@@ -429,7 +480,7 @@ function startPty(session, cols, rows, cwd, args = []) {
       tries++
       const s = sessions.get(myWcId)
       if (!s || !s.pty || s.pty !== proc) { clearInterval(detect); return }
-      const sid = findNewClaudeSessionId(s.cwd, sessionFilesBefore)
+      const sid = findUpdatedOrNewClaudeSessionId(s.cwd, sessionFilesBefore)
       if (sid) {
         s.claudeSessionId = sid
         clearInterval(detect)
@@ -1687,7 +1738,7 @@ function projectDirFor(cwd) {
 }
 
 ipcMain.handle('list-sessions', async (event, cwd) => {
-  const dir = projectDirFor(cwd)
+  const dir = resolveClaudeProjectDir(cwd)
   if (!fs.existsSync(dir)) return []
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))
 
@@ -1724,7 +1775,7 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
 })
 
 ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
-  const dir = projectDirFor(cwd)
+  const dir = resolveClaudeProjectDir(cwd)
   const file = path.join(dir, `${sessionId}.jsonl`)
   if (fs.existsSync(file)) { fs.unlinkSync(file); return true }
   return false
