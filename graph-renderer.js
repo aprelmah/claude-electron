@@ -19,6 +19,7 @@
   }
 
   function nodeRadius (d) {
+    if (d.isRoot) return 22
     if (d.type === 'folder') return 14
     return Math.max(6, Math.min(18, 6 + d.connections * 1.5))
   }
@@ -92,6 +93,12 @@
     // Simulación D3 force
     let repulsion = forces.repulsion ?? -220
     let linkDistance = forces.linkDistance ?? 80
+
+    // Nodo raíz fijo en el centro
+    nodes.forEach(d => {
+      if (d.isRoot) { d.fx = width / 2; d.fy = height / 2 }
+    })
+
     const sim = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(simEdges).id(d => d.id).distance(linkDistance))
       .force('charge', d3.forceManyBody().strength(repulsion))

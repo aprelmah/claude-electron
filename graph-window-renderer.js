@@ -36,7 +36,7 @@ function commonRoot (nodes) {
 function buildStructureGraph (nodes) {
   const root = commonRoot(nodes)
   const folderMap = new Map()
-  if (root) folderMap.set(root, { id: root, label: root.split('/').pop() || root, path: root, connections: 0, type: 'folder' })
+  if (root) folderMap.set(root, { id: root, label: root.split('/').pop() || root, path: root, connections: 0, type: 'folder', isRoot: true })
 
   nodes.forEach(n => {
     let dir = n.path ? n.path.substring(0, n.path.lastIndexOf('/')) : root
