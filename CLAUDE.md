@@ -34,6 +34,57 @@
    - Restart/session resume paths now reject properly on spawn errors.
    - CLI switch includes rollback to previous CLI if restart fails.
 
+## Protocolo de despliegue y prueba
+
+### Regla de oro
+Después de cualquier cambio de código, probar SIEMPRE en **modo dev** antes de empaquetar.
+
+### Cómo lanzar en modo dev (desde Claude Code / agente)
+```bash
+# 1. Matar cualquier instancia previa (dev O empaquetada)
+pkill -f "POWER-AGENT.app" 2>/dev/null
+pkill -f "electron \." 2>/dev/null
+sleep 1
+
+# 2. Lanzar en la sesión gráfica del usuario vía osascript
+osascript /tmp/launch_poweragent.scpt
+# Si el script no existe, créalo primero:
+cat > /tmp/launch_poweragent.scpt << 'EOF'
+set projectPath to "/Users/isabel/Desktop/LUISMI/claude-electron"
+set cmd to "cd " & quoted form of projectPath & " && npm start"
+tell application "Terminal"
+    activate
+    do script cmd
+end tell
+EOF
+osascript /tmp/launch_poweragent.scpt
+```
+
+### Por qué osascript y no Bash directo
+Claude Code corre en un subprocess sin acceso al WindowServer de macOS. Electron necesita el WindowServer para abrir ventanas. `osascript` delega el lanzamiento a la sesión gráfica del usuario, donde sí tiene acceso.
+
+### Verificar que está corriendo el modo dev (no el empaquetado)
+```bash
+ps aux | grep electron | grep -v grep | head -2
+# Debe mostrar: node_modules/electron/dist/Electron.app ... --app-path=/Users/isabel/Desktop/LUISMI/claude-electron
+# NO debe mostrar: dist/mac/POWER-AGENT.app
+```
+
+### Cómo empaquetar (solo cuando el modo dev funciona)
+```bash
+npm run build:zip   # ZIP para distribución rápida
+npm run dist        # DMG completo (requiere sesión no sandboxed)
+```
+
+### Checklist post-cambio
+1. `node --check main.js` → sin errores
+2. `node --check renderer.js` → sin errores
+3. Matar instancias previas
+4. Lanzar modo dev con osascript
+5. Verificar con `ps aux` que corre el dev, no el empaquetado
+6. Probar la feature en la app
+7. Solo si OK → empaquetar
+
 ## Standard commands
 - Dev run: `npm run start`
 - Full build: `npm run dist`
