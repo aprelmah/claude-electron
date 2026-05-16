@@ -110,6 +110,7 @@
       .attr('r', 2)
       .attr('fill', d => nodeColor(d.source.label || ''))
       .attr('opacity', 0.75)
+      .attr('pointer-events', 'none')
 
     // Nodos
     const nodeG = g.append('g').attr('class', 'nodes')
@@ -143,7 +144,8 @@
       .attr('stroke-width', 1)
       .attr('filter', d => {
         const ext = (d.label.split('.').pop() || '').toLowerCase()
-        return `url(#glow-${COLORS[ext] ? ext : 'default'})`
+        const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
+        return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
       })
 
     nodeG.append('text')
@@ -174,7 +176,8 @@
           .attr('r', nodeRadius(d.connections))
           .attr('filter', () => {
             const ext = (d.label.split('.').pop() || '').toLowerCase()
-            return `url(#glow-${COLORS[ext] ? ext : 'default'})`
+            const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
+            return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
           })
         if (d.connections < 3 && d !== selectedNode) {
           d3.select(this).select('.node-label').attr('display', 'none')
