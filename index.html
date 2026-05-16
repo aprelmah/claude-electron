@@ -65,6 +65,12 @@
       <div id="sidebar-header">
         <span id="sidebar-title" title="">Explorador</span>
         <div class="side-actions">
+          <button id="btn-view-tree" class="icon-btn small active" title="Vista árbol">
+            <svg viewBox="0 0 24 24" width="14" height="14"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          </button>
+          <button id="btn-view-graph" class="icon-btn small" title="Vista grafo">
+            <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><circle cx="3" cy="6" r="2"/><circle cx="21" cy="6" r="2"/><circle cx="3" cy="18" r="2"/><circle cx="21" cy="18" r="2"/><line x1="5" y1="7" x2="10" y2="10"/><line x1="19" y1="7" x2="14" y2="10"/><line x1="5" y1="17" x2="10" y2="14"/><line x1="19" y1="17" x2="14" y2="14"/></svg>
+          </button>
           <button id="btn-work-here" class="icon-btn small" title="Reiniciar Claude en esta carpeta">
             <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>
           </button>
@@ -77,6 +83,7 @@
         </div>
       </div>
       <div id="tree"></div>
+      <svg id="graph-canvas" class="hidden"></svg>
       <div id="cwd-bar">
         <span class="cwd-label">claude cwd:</span>
         <span id="cwd-value">—</span>
@@ -212,5 +219,7 @@
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="renderer.js"></script>
+  <script src="node_modules/d3/dist/d3.min.js"></script>
+  <script src="graph-renderer.js"></script>
 </body>
 </html>
