@@ -679,3 +679,45 @@ button:active { transform: scale(0.93); }
   z-index: 9999 !important;
   pointer-events: none !important;
 }
+
+/* ── Graph view ─────────────────────────────────────────────────────── */
+
+#graph-canvas {
+  width: 100%;
+  flex: 1;
+  display: block;
+  background: #050508;
+  cursor: default;
+  user-select: none;
+}
+
+#graph-canvas.hidden {
+  display: none;
+}
+
+#tree.hidden {
+  display: none;
+}
+
+/* Botones toggle árbol/grafo */
+#btn-view-tree,
+#btn-view-graph {
+  opacity: 0.45;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+#btn-view-tree.active,
+#btn-view-graph.active {
+  opacity: 1;
+  color: var(--accent, #7c6ff7);
+}
+
+#btn-view-tree:not(.active):hover,
+#btn-view-graph:not(.active):hover {
+  opacity: 0.75;
+}
+
+/* Labels SVG de los nodos */
+.node-label {
+  transition: opacity 0.15s;
+}
