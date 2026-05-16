@@ -81,18 +81,22 @@
       .on('zoom', e => g.attr('transform', e.transform))
 
     svg.call(zoom)
+    svg.on('dblclick.zoom', null) // desactivar zoom-in por defecto de D3
     svg.on('click.deselect', () => deselect())
     svg.on('dblclick.reset', (e) => {
-      if (e.target.closest('.node')) return
-      const root = nodes.find(d => d.isRoot)
-      if (root && root.x != null) {
-        svg.transition().duration(700).ease(d3.easeCubicOut)
-          .call(zoom.transform, d3.zoomIdentity
-            .translate(width / 2 - root.x, height / 2 - root.y)
-            .scale(1))
-      } else {
-        svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity)
-      }
+      if (e.target.closest && e.target.closest('.node')) return
+      // Fit-to-bounds: calcula el bbox de todos los nodos y ajusta zoom
+      const xs = nodes.map(d => d.x).filter(x => x != null)
+      const ys = nodes.map(d => d.y).filter(y => y != null)
+      if (!xs.length) return
+      const pad = 60
+      const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad
+      const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad
+      const scale = Math.min(width / (maxX - minX), height / (maxY - minY), 2)
+      const tx = width / 2 - scale * (minX + maxX) / 2
+      const ty = height / 2 - scale * (minY + maxY) / 2
+      svg.transition().duration(700).ease(d3.easeCubicOut)
+        .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale))
     })
 
     // Clonar edges con refs de objeto para que D3 forceLink pueda mutar source/target
