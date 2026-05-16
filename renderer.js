@@ -999,6 +999,7 @@ window.addEventListener('keydown', (e) => {
 term.onData((data) => window.api.writePty(data))
 window.api.onPtyData((chunk) => term.write(chunk))
 window.api.onInjectPath((p) => injectToPty(`@${p} `))
+window.api.onGraphFileActive((p) => { if (graphInstance?.pulseNode) graphInstance.pulseNode(p) })
 window.api.onPtyExit(() => term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n'))
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()

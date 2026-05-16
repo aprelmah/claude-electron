@@ -1748,6 +1748,10 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
       for (const part of parts) {
         if (IGNORE_NAMES.has(part) || isNoiseFile(part)) return
       }
+      const fullPath = path.join(dirPath, filename)
+      if (s.win && !s.win.isDestroyed()) {
+        s.win.webContents.send('graph:file-active', fullPath)
+      }
       safeCb()
     })
     s.treeWatcher.on('error', () => {})
@@ -1827,6 +1831,7 @@ ipcMain.handle('file-read', async (event, p) => {
 ipcMain.handle('file-write', async (event, { path: p, text }) => {
   try {
     fs.writeFileSync(p, text, 'utf-8')
+    event.sender.send('graph:file-active', p)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: err.message }

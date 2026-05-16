@@ -271,6 +271,40 @@
         ro.disconnect()
         svg.selectAll('*').remove()
       },
+      pulseNode (filePath) {
+        const node = nodes.find(n => n.path === filePath)
+        if (!node || node.x == null) return
+
+        // Zoom suave hacia el nodo
+        const k = Math.max(d3.zoomTransform(svgEl).k, 1.2)
+        svg.transition().duration(900).ease(d3.easeCubicOut)
+          .call(zoom.transform, d3.zoomIdentity
+            .translate(width / 2 - k * node.x, height / 2 - k * node.y)
+            .scale(k))
+
+        // Pulso: escala → glow fuerte → vuelta a normal
+        const r = nodeRadius(node)
+        const circle = nodeG.filter(d => d.id === node.id).select('.node-circle')
+        circle.interrupt()
+          .transition().duration(220).ease(d3.easeBackOut)
+            .attr('r', r * 3.2)
+            .attr('filter', 'url(#glow-strong)')
+            .attr('stroke-width', 2.5)
+          .transition().duration(350)
+            .attr('r', r * 1.8)
+          .transition().duration(700).ease(d3.easeCubicInOut)
+            .attr('r', r)
+            .attr('stroke-width', node.type === 'folder' ? 1.5 : 1)
+            .attr('filter', () => {
+              if (node.type === 'folder') return 'url(#glow-folder)'
+              const ext = (node.label.split('.').pop() || '').toLowerCase()
+              const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
+              return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
+            })
+
+        // Label siempre visible durante el pulso
+        nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
+      },
       setForces ({ repulsion: r, linkDistance: d, particleSpeed: p }) {
         if (r !== undefined) {
           repulsion = r

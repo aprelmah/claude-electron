@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
 
   openViewerWindow: (path, hint) => ipcRenderer.invoke('viewer-open', { path, hint }),
   onInjectPath: (cb) => ipcRenderer.on('inject-path', (_, p) => cb(p)),
+  onGraphFileActive: (cb) => ipcRenderer.on('graph:file-active', (_, p) => cb(p)),
 
   openTasksManager: () => ipcRenderer.invoke('tasks-manager:open'),
   onTaskRunStarted: (cb) => {
