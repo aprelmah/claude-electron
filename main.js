@@ -237,15 +237,25 @@ function buildFdLimitCommand(bin, args = []) {
 }
 
 function buildRuntimeEnv() {
+  const baseEnv = { ...process.env }
+  // Forzamos color en los CLI embebidos aunque la app herede NO_COLOR del entorno.
+  delete baseEnv.NO_COLOR
+  if (baseEnv.CLICOLOR === '0') delete baseEnv.CLICOLOR
+  if (baseEnv.CLICOLOR_FORCE === '0') delete baseEnv.CLICOLOR_FORCE
+  if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
+
   const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
   for (const candidate of [appConfig.cli.claudeBin, appConfig.cli.codexBin, appConfig.cli.whisperBin]) {
     if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
   }
   const mergedPath = Array.from(new Set([...extraPaths, process.env.PATH || ''])).join(':')
   return {
-    ...process.env,
+    ...baseEnv,
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
+    CLICOLOR: '1',
+    CLICOLOR_FORCE: '1',
+    FORCE_COLOR: '1',
     LANG: process.env.LANG || 'en_US.UTF-8',
     PATH: mergedPath
   }
