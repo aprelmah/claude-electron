@@ -23,7 +23,7 @@
     return Math.max(6, Math.min(18, 6 + d.connections * 1.5))
   }
 
-  function init (svgEl, { nodes, edges }, { onDblClick } = {}) {
+  function init (svgEl, { nodes, edges }, { onDblClick, forces = {} } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
 
@@ -90,9 +90,11 @@
     }))
 
     // Simulación D3 force
+    let repulsion = forces.repulsion ?? -220
+    let linkDistance = forces.linkDistance ?? 80
     const sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(simEdges).id(d => d.id).distance(80))
-      .force('charge', d3.forceManyBody().strength(-220))
+      .force('link', d3.forceLink(simEdges).id(d => d.id).distance(linkDistance))
+      .force('charge', d3.forceManyBody().strength(repulsion))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 10))
 
@@ -198,7 +200,7 @@
     })
 
     // Loop de animación de partículas independiente de la simulación
-    const PARTICLE_SPEED = 4000
+    let particleSpeed = forces.particleSpeed ?? 4000
 
     function animateParticles () {
       const now = Date.now()
@@ -208,7 +210,7 @@
         const tx = d.target.x
         const ty = d.target.y
         if (sx == null || tx == null) return
-        const t = ((now + i * 1337) % PARTICLE_SPEED) / PARTICLE_SPEED
+        const t = ((now + i * 1337) % particleSpeed) / particleSpeed
         d3.select(this)
           .attr('cx', sx + (tx - sx) * t)
           .attr('cy', sy + (ty - sy) * t)
@@ -268,6 +270,18 @@
         sim.stop()
         ro.disconnect()
         svg.selectAll('*').remove()
+      },
+      setForces ({ repulsion: r, linkDistance: d, particleSpeed: p }) {
+        if (r !== undefined) {
+          repulsion = r
+          sim.force('charge', d3.forceManyBody().strength(repulsion))
+        }
+        if (d !== undefined) {
+          linkDistance = d
+          sim.force('link', d3.forceLink(simEdges).id(n => n.id).distance(linkDistance))
+        }
+        if (p !== undefined) particleSpeed = p
+        sim.alpha(0.4).restart()
       }
     }
   }

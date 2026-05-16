@@ -27,7 +27,7 @@
       padding: 6px 12px; z-index: 9;
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
-    .graph-mode-row { display: flex; gap: 4px; }
+    .graph-mode-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
     .graph-mode-btn {
       font-size: 10px; font-family: system-ui, sans-serif;
       padding: 2px 9px; border-radius: 10px;
@@ -38,7 +38,16 @@
       border-color: rgba(148,163,184,0.7); color: rgba(148,163,184,1);
       background: rgba(148,163,184,0.1);
     }
-    .graph-mode-btn:hover { opacity: 0.85; }
+    .btn-graph-forces {
+      font-size: 10px; font-family: system-ui, sans-serif;
+      padding: 2px 7px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: transparent; color: rgba(255,255,255,0.3); cursor: pointer; transition: all 0.15s;
+    }
+    .btn-graph-forces.active {
+      border-color: rgba(167,139,250,0.6); color: rgba(167,139,250,1);
+      background: rgba(167,139,250,0.08);
+    }
     .graph-chips-row { display: flex; flex-wrap: wrap; gap: 4px; }
     .graph-chip {
       font-size: 10px; font-family: system-ui, sans-serif;
@@ -51,11 +60,13 @@
       background: color-mix(in srgb, var(--chip-color) 12%, transparent);
       box-shadow: 0 0 6px color-mix(in srgb, var(--chip-color) 30%, transparent);
     }
-    .graph-chip:hover { opacity: 0.85; }
-    #graph-canvas {
-      position: fixed; left: 0; right: 0; bottom: 0;
-      width: 100%;
-    }
+    .graph-forces-panel { display: none; flex-direction: column; gap: 6px; padding: 4px 0 2px; }
+    .graph-forces-panel.visible { display: flex; }
+    .graph-force-row { display: flex; align-items: center; gap: 8px; }
+    .graph-force-row label { font-size: 10px; font-family: system-ui, sans-serif; color: rgba(255,255,255,0.35); width: 80px; flex-shrink: 0; }
+    .graph-force-row input[type=range] { flex: 1; accent-color: #a78bfa; height: 2px; cursor: pointer; }
+    .graph-force-row span { font-size: 10px; font-family: monospace; color: rgba(255,255,255,0.3); width: 36px; text-align: right; }
+    #graph-canvas { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; }
     #loading {
       position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
       color: rgba(255,255,255,0.3); font-family: system-ui, sans-serif; font-size: 13px;
@@ -70,6 +81,7 @@
   <div id="controls">
     <div class="graph-mode-row" id="mode-row"></div>
     <div class="graph-chips-row" id="chips-row"></div>
+    <div class="graph-forces-panel" id="forces-row"></div>
   </div>
   <div id="loading">Cargando grafo…</div>
   <svg id="graph-canvas"></svg>

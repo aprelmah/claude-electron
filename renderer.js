@@ -447,6 +447,12 @@ let graphInstance = null
 let graphAllData = null
 let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
 let graphMode = localStorage.getItem('poweragent.graph.mode') || 'refs'
+let graphForces = {
+  repulsion: Number(localStorage.getItem('poweragent.graph.repulsion') ?? -220),
+  linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance') ?? 80),
+  particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed') ?? 4000)
+}
+let forcePanelOpen = false
 
 const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'otros']
 const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', otros: '#6b7280' }
@@ -497,8 +503,9 @@ function buildStructureGraph (nodes) {
 function buildFilters () {
   graphFilters.innerHTML = ''
 
-  const modeRow = document.createElement('div')
-  modeRow.className = 'graph-mode-row'
+  const topRow = document.createElement('div')
+  topRow.className = 'graph-mode-row'
+
   ;[['refs', 'Referencias'], ['structure', 'Estructura']].forEach(([mode, label]) => {
     const btn = document.createElement('button')
     btn.className = 'graph-mode-btn' + (graphMode === mode ? ' active' : '')
@@ -509,9 +516,47 @@ function buildFilters () {
       buildFilters()
       renderFiltered()
     })
-    modeRow.appendChild(btn)
+    topRow.appendChild(btn)
   })
-  graphFilters.appendChild(modeRow)
+
+  const btnForces = document.createElement('button')
+  btnForces.className = 'btn-graph-forces' + (forcePanelOpen ? ' active' : '')
+  btnForces.textContent = '⚙ Fuerzas'
+  btnForces.addEventListener('click', () => {
+    forcePanelOpen = !forcePanelOpen
+    buildFilters()
+  })
+  topRow.appendChild(btnForces)
+  graphFilters.appendChild(topRow)
+
+  // Panel de fuerzas
+  const forcesPanel = document.createElement('div')
+  forcesPanel.className = 'graph-forces-panel' + (forcePanelOpen ? ' visible' : '')
+  ;[
+    ['Repulsión', 'repulsion', -800, -20, 10, v => -v],
+    ['Distancia', 'linkDistance', 20, 300, 10, v => v],
+    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v]
+  ].forEach(([label, key, min, max, step, display]) => {
+    const row = document.createElement('div')
+    row.className = 'graph-force-row'
+    const lbl = document.createElement('label')
+    lbl.textContent = label
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.min = min; input.max = max; input.step = step
+    input.value = graphForces[key]
+    const val = document.createElement('span')
+    val.textContent = display(graphForces[key])
+    input.addEventListener('input', () => {
+      graphForces[key] = Number(input.value)
+      val.textContent = display(graphForces[key])
+      localStorage.setItem(`poweragent.graph.${key}`, graphForces[key])
+      if (graphInstance) graphInstance.setForces(graphForces)
+    })
+    row.append(lbl, input, val)
+    forcesPanel.appendChild(row)
+  })
+  graphFilters.appendChild(forcesPanel)
 
   if (graphMode === 'refs') {
     const chipsRow = document.createElement('div')
@@ -552,7 +597,7 @@ function renderFiltered () {
   graphInstance = window.GraphRenderer.init(
     graphCanvas,
     { nodes, edges },
-    { onDblClick: (filePath) => injectToPty(`@${filePath} `) }
+    { onDblClick: (filePath) => injectToPty(`@${filePath} `), forces: graphForces }
   )
 }
 
@@ -594,7 +639,7 @@ btnViewTree.addEventListener('click', () => applyView('tree'))
 btnViewGraph.addEventListener('click', () => applyView('graph'))
 btnGraphFullscreen.addEventListener('click', () => {
   if (!graphAllData) return
-  window.api.openGraphWindow(graphAllData.nodes, graphAllData.edges, graphMode, Array.from(activeTypes))
+  window.api.openGraphWindow(graphAllData.nodes, graphAllData.edges, graphMode, Array.from(activeTypes), graphForces)
 })
 
 const EXT_ICONS = {

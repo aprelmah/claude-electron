@@ -765,6 +765,64 @@ button:active { transform: scale(0.93); }
   gap: 4px;
 }
 
+.graph-forces-panel {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.graph-forces-panel.visible {
+  display: flex;
+}
+
+.graph-force-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-force-row label {
+  font-size: 10px;
+  font-family: system-ui, sans-serif;
+  color: rgba(255,255,255,0.35);
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.graph-force-row input[type=range] {
+  flex: 1;
+  accent-color: #a78bfa;
+  height: 2px;
+  cursor: pointer;
+}
+
+.graph-force-row span {
+  font-size: 10px;
+  font-family: monospace;
+  color: rgba(255,255,255,0.3);
+  width: 36px;
+  text-align: right;
+}
+
+.btn-graph-forces {
+  font-size: 10px;
+  font-family: system-ui, sans-serif;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(255,255,255,0.3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-graph-forces.active {
+  border-color: rgba(167,139,250,0.6);
+  color: rgba(167,139,250,1);
+  background: rgba(167,139,250,0.08);
+}
+
 #graph-filters.hidden {
   display: none;
 }

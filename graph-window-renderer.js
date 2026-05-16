@@ -7,10 +7,13 @@ let allNodes = [], allEdges = []
 let graphMode = 'refs'
 let activeTypes = new Set(ALL_TYPES)
 let graphInstance = null
+let forcePanelOpen = false
+let graphForces = { repulsion: -220, linkDistance: 80, particleSpeed: 4000 }
 
 const graphCanvas = document.getElementById('graph-canvas')
 const modeRow = document.getElementById('mode-row')
 const chipsRow = document.getElementById('chips-row')
+const forcesRow = document.getElementById('forces-row')
 const controls = document.getElementById('controls')
 
 function extType (label) {
@@ -21,8 +24,7 @@ function extType (label) {
 
 function commonRoot (nodes) {
   if (!nodes.length) return ''
-  const parts = nodes[0].path.split('/')
-  let root = parts.slice(0, parts.length - 1).join('/')
+  let root = nodes[0].path.substring(0, nodes[0].path.lastIndexOf('/'))
   for (const n of nodes) {
     while (!n.path.startsWith(root + '/') && root.length > 1) {
       root = root.substring(0, root.lastIndexOf('/'))
@@ -78,7 +80,7 @@ function renderFiltered () {
     edges = allEdges.filter(e => ids.has(e.source) && ids.has(e.target))
   }
   if (graphInstance) { graphInstance.destroy(); graphInstance = null }
-  graphInstance = window.GraphRenderer.init(graphCanvas, { nodes, edges }, {})
+  graphInstance = window.GraphRenderer.init(graphCanvas, { nodes, edges }, { forces: graphForces })
 }
 
 function adjustCanvasTop () {
@@ -93,13 +95,15 @@ function buildControls () {
     const btn = document.createElement('button')
     btn.className = 'graph-mode-btn' + (graphMode === mode ? ' active' : '')
     btn.textContent = label
-    btn.addEventListener('click', () => {
-      graphMode = mode
-      buildControls()
-      renderFiltered()
-    })
+    btn.addEventListener('click', () => { graphMode = mode; buildControls(); renderFiltered() })
     modeRow.appendChild(btn)
   })
+
+  const btnForces = document.createElement('button')
+  btnForces.className = 'btn-graph-forces' + (forcePanelOpen ? ' active' : '')
+  btnForces.textContent = '⚙ Fuerzas'
+  btnForces.addEventListener('click', () => { forcePanelOpen = !forcePanelOpen; buildControls() })
+  modeRow.appendChild(btnForces)
 
   chipsRow.innerHTML = ''
   if (graphMode === 'refs') {
@@ -121,6 +125,32 @@ function buildControls () {
     })
   }
 
+  forcesRow.innerHTML = ''
+  forcesRow.className = 'graph-forces-panel' + (forcePanelOpen ? ' visible' : '')
+  ;[
+    ['Repulsión', 'repulsion', -800, -20, 10, v => -v],
+    ['Distancia', 'linkDistance', 20, 300, 10, v => v],
+    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v]
+  ].forEach(([label, key, min, max, step, display]) => {
+    const row = document.createElement('div')
+    row.className = 'graph-force-row'
+    const lbl = document.createElement('label')
+    lbl.textContent = label
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.min = min; input.max = max; input.step = step
+    input.value = graphForces[key]
+    const val = document.createElement('span')
+    val.textContent = display(graphForces[key])
+    input.addEventListener('input', () => {
+      graphForces[key] = Number(input.value)
+      val.textContent = display(graphForces[key])
+      if (graphInstance) graphInstance.setForces(graphForces)
+    })
+    row.append(lbl, input, val)
+    forcesRow.appendChild(row)
+  })
+
   adjustCanvasTop()
 }
 
@@ -130,6 +160,7 @@ window.api.getGraphWindowData().then(data => {
   allEdges = data.edges || []
   graphMode = data.mode || 'refs'
   activeTypes = data.activeTypes ? new Set(data.activeTypes) : new Set(ALL_TYPES)
+  if (data.forces) graphForces = { ...graphForces, ...data.forces }
   buildControls()
   renderFiltered()
 })
