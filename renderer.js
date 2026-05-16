@@ -26,6 +26,9 @@ const treeEl = document.getElementById('tree')
 const divider = document.getElementById('divider')
 const btnOpenFolder = document.getElementById('btn-open-folder')
 const btnRefreshTree = document.getElementById('btn-refresh-tree')
+const graphCanvas = document.getElementById('graph-canvas')
+const btnViewTree = document.getElementById('btn-view-tree')
+const btnViewGraph = document.getElementById('btn-view-graph')
 const btnWorkHere = document.getElementById('btn-work-here')
 const cwdValue = document.getElementById('cwd-value')
 const btnSessions = document.getElementById('btn-sessions')
@@ -437,6 +440,45 @@ let rootPath = null
 const ROOT_KEY = `claude-electron-root:${WID}`
 const CLI_KEY = `claude-electron-cli:${WID}`
 
+// ── Vista grafo / árbol ──────────────────────────────────────────────────
+let graphInstance = null
+let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
+
+function applyView (view) {
+  currentView = view
+  localStorage.setItem('poweragent.sidebar.view', view)
+  if (view === 'graph') {
+    treeEl.classList.add('hidden')
+    graphCanvas.classList.remove('hidden')
+    btnViewTree.classList.remove('active')
+    btnViewGraph.classList.add('active')
+    loadGraph()
+  } else {
+    graphCanvas.classList.add('hidden')
+    treeEl.classList.remove('hidden')
+    btnViewTree.classList.add('active')
+    btnViewGraph.classList.remove('active')
+    if (graphInstance) { graphInstance.destroy(); graphInstance = null }
+  }
+}
+
+async function loadGraph () {
+  if (graphInstance) { graphInstance.destroy(); graphInstance = null }
+  const root = rootPath || await window.api.ptyCwd()
+  if (!root) return
+  const result = await window.api.sidebarGetGraph(root)
+  if (!result.ok) return
+  if (currentView !== 'graph') return
+  graphInstance = window.GraphRenderer.init(
+    graphCanvas,
+    { nodes: result.nodes, edges: result.edges },
+    { onDblClick: (filePath) => injectToPty(`@${filePath} `) }
+  )
+}
+
+btnViewTree.addEventListener('click', () => applyView('tree'))
+btnViewGraph.addEventListener('click', () => applyView('graph'))
+
 const EXT_ICONS = {
   js: '🟨', ts: '🔷', tsx: '⚛', jsx: '⚛', json: '🔧',
   py: '🐍', md: '📝', txt: '📄', sh: '⚡', html: '🌐',
@@ -472,6 +514,7 @@ async function setRoot(newRoot) {
   if (typeof updateCwdLabel === 'function') await updateCwdLabel()
   try { window.api.watchDir(newRoot) } catch {}
   try { lastTreeSignature = await computeTreeSignature() } catch {}
+  if (currentView === 'graph') loadGraph()
 }
 
 function getExpandedPaths() {
@@ -632,6 +675,7 @@ btnOpenFolder.addEventListener('click', async () => {
 
 btnRefreshTree.addEventListener('click', async () => {
   if (rootPath) await setRoot(rootPath)
+  if (currentView === 'graph') loadGraph()
 })
 
 async function updateCwdLabel() {
@@ -874,6 +918,7 @@ cliSelector.addEventListener('change', async (e) => {
   }
   await setRoot(initialRoot)
   await updateCwdLabel()
+  applyView(currentView)
 
   window.api.onTreeChanged(() => scheduleTreeRefresh())
 
