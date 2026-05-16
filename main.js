@@ -340,6 +340,37 @@ function isNoiseFile(base) {
   return false
 }
 
+// ── Detección de sessionId de claude (para "enviar a Telegram") ──
+// Claude Code v2 crea un fichero ~/.claude/projects/<cwd-codificado>/<sessionId>.jsonl
+// al iniciar (o al primer mensaje). Tomamos snapshot del directorio antes del spawn
+// y miramos qué fichero nuevo apareció después.
+function claudeProjectSessionsDir(cwd) {
+  if (!cwd) return null
+  const encoded = cwd.replace(/\//g, '-')
+  return path.join(os.homedir(), '.claude', 'projects', encoded)
+}
+
+function snapshotClaudeSessions(cwd) {
+  const dir = claudeProjectSessionsDir(cwd)
+  if (!dir) return new Set()
+  try { return new Set(fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))) }
+  catch { return new Set() }
+}
+
+function findNewClaudeSessionId(cwd, snapshotBefore) {
+  const dir = claudeProjectSessionsDir(cwd)
+  if (!dir) return null
+  try {
+    const now = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl') && !snapshotBefore.has(f))
+    if (!now.length) return null
+    now.sort((a, b) => {
+      try { return fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs }
+      catch { return 0 }
+    })
+    return now[0].replace(/\.jsonl$/, '')
+  } catch { return null }
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
@@ -354,6 +385,12 @@ function startPty(session, cols, rows, cwd, args = []) {
     notifyPtyError(session, cliCheck.error)
     throw new Error(cliCheck.error)
   }
+
+  // Snapshot ANTES del spawn solo si es claude — para capturar el sessionId que cree.
+  const sessionFilesBefore = session.activeCli === 'claude'
+    ? snapshotClaudeSessions(session.cwd)
+    : null
+  session.claudeSessionId = null
 
   let proc
   try {
@@ -373,6 +410,24 @@ function startPty(session, cols, rows, cwd, args = []) {
   proc._alive = true
   session.pty = proc
   const myWcId = session.wcId
+
+  // Polling corto para capturar el sessionId que claude cree en ~/.claude/projects/...
+  // Intentamos durante 12s (espera prudente: el .jsonl suele aparecer en <5s).
+  if (sessionFilesBefore) {
+    let tries = 0
+    const detect = setInterval(() => {
+      tries++
+      const s = sessions.get(myWcId)
+      if (!s || !s.pty || s.pty !== proc) { clearInterval(detect); return }
+      const sid = findNewClaudeSessionId(s.cwd, sessionFilesBefore)
+      if (sid) {
+        s.claudeSessionId = sid
+        clearInterval(detect)
+        return
+      }
+      if (tries >= 12) clearInterval(detect)
+    }, 1000)
+  }
 
   proc.onData((data) => {
     if (!proc._alive) return
@@ -1727,6 +1782,51 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
 })
 
 ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
+
+// ── Transferir sesión activa de la ventana a Telegram ──
+ipcMain.handle('app:can-send-to-telegram', (event) => {
+  const s = sessions.get(event.sender.id)
+  if (!s) return { ok: false, reason: 'no-session' }
+  if (s.activeCli !== 'claude') return { ok: false, reason: 'not-claude' }
+  if (!s.claudeSessionId) return { ok: false, reason: 'no-session-id' }
+  if (!telegramBridge) return { ok: false, reason: 'bridge-not-init' }
+  const status = telegramBridge.getStatus()
+  if (!status.running) return { ok: false, reason: 'bridge-not-running' }
+  if (!telegramBridge.getFirstAllowedUserId()) return { ok: false, reason: 'no-allowed-user' }
+  return { ok: true, sessionId: s.claudeSessionId, cwd: s.cwd }
+})
+
+ipcMain.handle('app:send-session-to-telegram', async (event) => {
+  const s = sessions.get(event.sender.id)
+  if (!s) return { ok: false, error: 'No hay sesión asociada a esta ventana' }
+  if (s.activeCli !== 'claude') return { ok: false, error: 'Solo claude soportado (esta ventana usa ' + s.activeCli + ')' }
+  if (!s.claudeSessionId) return { ok: false, error: 'No se detectó el sessionId de claude. Habla con él al menos un mensaje y vuelve a intentarlo.' }
+  if (!telegramBridge) return { ok: false, error: 'Telegram bridge no inicializado' }
+  const status = telegramBridge.getStatus()
+  if (!status.running) return { ok: false, error: 'Telegram bridge no está corriendo (actívalo en Configuración).' }
+  const chatId = telegramBridge.getFirstAllowedUserId()
+  if (!chatId) return { ok: false, error: 'No hay usuarios autorizados en Telegram (configúralos en Configuración).' }
+
+  try {
+    telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
+    const cwdShort = path.basename(s.cwd || os.homedir())
+    const sidShort = s.claudeSessionId.slice(0, 8)
+    const text = [
+      '📱 Sesión de claude movida a Telegram',
+      `📂 Carpeta: ${cwdShort}`,
+      `🆔 ${sidShort}…`,
+      '',
+      'Escríbeme cuando quieras y continuamos donde lo dejaste.'
+    ].join('\n')
+    await telegramBridge.sendMessageTo(chatId, text)
+    // Mata el PTY local para evitar pisar el .jsonl con la sesión que ahora vive en Telegram.
+    killPty(s)
+    try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: s.claudeSessionId, chatId }) } catch {}
+    return { ok: true, sessionId: s.claudeSessionId, chatId }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
 
 ipcMain.on('window-close', (event) => {
   const w = winFromEvent(event)

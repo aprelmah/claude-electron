@@ -13,6 +13,7 @@ const btnImage = document.getElementById('btn-image')
 const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
 const btnSettings = document.getElementById('btn-settings')
+const btnSendTelegram = document.getElementById('btn-send-telegram')
 const cliSelector = document.getElementById('cli-selector')
 const termEl = document.getElementById('terminal')
 const termWrap = document.getElementById('terminal-wrap')
@@ -207,6 +208,65 @@ btnPin.addEventListener('click', async () => {
   const pinned = await window.api.isPinned()
   btnPin.classList.toggle('active', pinned)
 })
+
+// ── Botón "Enviar a Telegram" ──
+async function refreshSendTelegramButton() {
+  if (!btnSendTelegram) return
+  try {
+    const res = await window.api.canSendSessionToTelegram()
+    const ok = !!(res && res.ok)
+    btnSendTelegram.disabled = !ok
+    btnSendTelegram.classList.toggle('active', ok)
+    if (ok) {
+      btnSendTelegram.title = 'Llevar esta sesión a Telegram (mata el chat aquí y te aviso en el móvil)'
+    } else {
+      const reason = res && res.reason
+      const reasons = {
+        'no-session': 'No hay sesión',
+        'not-claude': 'Solo claude por ahora (cambia el CLI a claude)',
+        'no-session-id': 'Aún no detecto el ID — habla un mensaje con claude y vuelve a intentarlo',
+        'bridge-not-init': 'Telegram no inicializado',
+        'bridge-not-running': 'Activa Telegram en Configuración',
+        'no-allowed-user': 'Añade tu user ID en Configuración → Telegram → allowed users'
+      }
+      btnSendTelegram.title = '📱 ' + (reasons[reason] || 'No disponible')
+    }
+  } catch {
+    btnSendTelegram.disabled = true
+  }
+}
+
+if (btnSendTelegram) {
+  btnSendTelegram.addEventListener('click', async () => {
+    if (btnSendTelegram.disabled) return
+    btnSendTelegram.disabled = true
+    showStatus('Enviando sesión a Telegram…', 'busy')
+    try {
+      const res = await window.api.sendSessionToTelegram()
+      if (!res || res.ok === false) {
+        showStatus((res && res.error) || 'No se pudo enviar', 'error', 6000)
+        btnSendTelegram.disabled = false
+        return
+      }
+      showStatus(`✓ Sesión enviada a Telegram (ID ${res.sessionId.slice(0,8)}…) — terminal local cerrado`, 'ok', 8000)
+      // El PTY se mató en el backend; aquí solo refrescamos UI.
+      btnSendTelegram.classList.remove('active')
+    } catch (err) {
+      showStatus(errorMessage(err), 'error', 6000)
+      btnSendTelegram.disabled = false
+    }
+  })
+  // Refresca cada 4s mientras la ventana esté activa.
+  setInterval(refreshSendTelegramButton, 4000)
+  refreshSendTelegramButton()
+  // Refresca tras cambios de status de Telegram.
+  if (window.api.onTelegramStatus) {
+    window.api.onTelegramStatus(() => refreshSendTelegramButton())
+  }
+  if (window.api.onPtyTransferredToTelegram) {
+    window.api.onPtyTransferredToTelegram(() => refreshSendTelegramButton())
+  }
+}
 
 if (btnNewWindow) {
   btnNewWindow.addEventListener('click', () => window.api.newWindow())

@@ -234,6 +234,24 @@ class TelegramBridge {
     }
   }
 
+  // ── API pública para "transferir sesión app → Telegram" ──
+  getFirstAllowedUserId() {
+    if (!this.allowedUsers || this.allowedUsers.size === 0) return null
+    return [...this.allowedUsers][0]
+  }
+
+  adoptSession(chatId, cli, sessionId) {
+    if (!chatId || !sessionId) return false
+    const c = (cli === 'codex') ? 'codex' : 'claude'
+    this._setSessionId(chatId, c, sessionId)
+    return true
+  }
+
+  async sendMessageTo(chatId, text) {
+    if (!this.running) throw new Error('Telegram bridge no está corriendo')
+    return this._sendMessage(chatId, text)
+  }
+
   _emitStatus() {
     this.onStatus?.(this.getStatus())
   }
