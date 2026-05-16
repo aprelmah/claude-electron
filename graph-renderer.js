@@ -82,6 +82,18 @@
 
     svg.call(zoom)
     svg.on('click.deselect', () => deselect())
+    svg.on('dblclick.reset', (e) => {
+      if (e.target.closest('.node')) return
+      const root = nodes.find(d => d.isRoot)
+      if (root && root.x != null) {
+        svg.transition().duration(700).ease(d3.easeCubicOut)
+          .call(zoom.transform, d3.zoomIdentity
+            .translate(width / 2 - root.x, height / 2 - root.y)
+            .scale(1))
+      } else {
+        svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity)
+      }
+    })
 
     // Clonar edges con refs de objeto para que D3 forceLink pueda mutar source/target
     const nodeById = new Map(nodes.map(n => [n.id, n]))

@@ -8,7 +8,7 @@ let graphMode = 'refs'
 let activeTypes = new Set(ALL_TYPES)
 let graphInstance = null
 let forcePanelOpen = false
-let graphForces = { repulsion: -220, linkDistance: 80, particleSpeed: 4000 }
+let graphForces = { repulsion: -80, linkDistance: 40, particleSpeed: 4000 }
 
 const graphCanvas = document.getElementById('graph-canvas')
 const modeRow = document.getElementById('mode-row')

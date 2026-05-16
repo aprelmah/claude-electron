@@ -447,9 +447,15 @@ let graphInstance = null
 let graphAllData = null
 let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
 let graphMode = localStorage.getItem('poweragent.graph.mode') || 'refs'
+// v2: reset force defaults si vienen de la versión anterior
+if (localStorage.getItem('poweragent.graph.forces.v') !== '2') {
+  localStorage.removeItem('poweragent.graph.repulsion')
+  localStorage.removeItem('poweragent.graph.linkDistance')
+  localStorage.setItem('poweragent.graph.forces.v', '2')
+}
 let graphForces = {
-  repulsion: Number(localStorage.getItem('poweragent.graph.repulsion') ?? -220),
-  linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance') ?? 80),
+  repulsion: Number(localStorage.getItem('poweragent.graph.repulsion') ?? -80),
+  linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance') ?? 40),
   particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed') ?? 4000)
 }
 let forcePanelOpen = false
