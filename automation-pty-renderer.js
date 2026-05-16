@@ -133,70 +133,84 @@ agentPty.onStatus(({ status } = {}) => {
   if (status === 'live' || status === 'busy' || status === 'dead') setPtyStatus(status)
 })
 
+// Listener de respaldo (push) — el método principal es polling pull-based más abajo.
 agentPty.onBlocks((payload) => {
   if (!payload || !payload.blocks) return
   state.lastBlocks = payload.blocks
-  renderBlocksPanel(payload.blocks)
+  setApplyButton(true)
 })
 
-// ── Panel de bloques ──
-function renderBlocksPanel(blocks) {
-  const panel = $('#blocks-panel')
-  const actions = $('#blocks-actions')
-  const summary = $('#blocks-summary')
-  if (!blocks) {
-    panel.classList.remove('visible')
-    return
-  }
-  const parts = []
-  if (blocks.description) parts.push('DESCRIPCION')
-  if (blocks.script) parts.push('SCRIPT')
-  if (blocks.plist) parts.push('PLIST')
-  summary.textContent = parts.length
-    ? 'Detectado: ' + parts.join(' + ')
-    : 'sin bloques'
-
-  actions.innerHTML = ''
-  if (!parts.length) {
-    panel.classList.remove('visible')
-    return
-  }
-
-  const btnApply = document.createElement('button')
-  btnApply.className = 'btn btn-primary'
-  btnApply.textContent = '✓ Aplicar al borrador'
-  btnApply.addEventListener('click', onApplyBlocks)
-  actions.appendChild(btnApply)
-
-  const btnIgnore = document.createElement('button')
-  btnIgnore.className = 'btn'
-  btnIgnore.textContent = 'Descartar propuesta'
-  btnIgnore.addEventListener('click', () => {
-    state.lastBlocks = null
-    renderBlocksPanel(null)
-  })
-  actions.appendChild(btnIgnore)
-
-  panel.classList.add('visible')
+// ── Polling pull-based: cada 1.5s preguntamos al main si hay propuesta en disco.
+// Es el mecanismo principal: robusto al timing y a eventos perdidos.
+let proposalPollId = null
+function startProposalPolling() {
+  if (proposalPollId) clearInterval(proposalPollId)
+  proposalPollId = setInterval(async () => {
+    try {
+      const res = await agentPty.checkProposal()
+      if (res && res.available && res.blocks) {
+        state.lastBlocks = res.blocks
+        setApplyButton(true)
+      } else if (!state.applying) {
+        // Si no hay propuesta y no estamos aplicando, apagar el botón.
+        setApplyButton(false)
+      }
+    } catch {}
+  }, 1500)
 }
+
+function stopProposalPolling() {
+  if (proposalPollId) { clearInterval(proposalPollId); proposalPollId = null }
+}
+
+function setApplyButton(ready) {
+  const btn = document.getElementById('btn-apply-top')
+  if (!btn) return
+  if (ready) {
+    if (btn.classList.contains('ready')) return  // ya estaba
+    btn.classList.add('ready')
+    btn.disabled = false
+    btn.textContent = '✓ Aplicar al borrador'
+    btn.title = 'El agente tiene la propuesta lista. Pulsa para aplicarla a la automatización.'
+    toast('Propuesta lista · pulsa el botón verde de arriba', 'ok')
+  } else {
+    btn.classList.remove('ready')
+    btn.disabled = true
+    btn.textContent = '⌛ Esperando propuesta…'
+    btn.title = 'Esperando a que el agente termine la propuesta'
+  }
+}
+
+// ── Panel de bloques (legacy, sustituido por el botón del header) ──
+// Mantenido como no-op para no romper llamadas residuales.
+function renderBlocksPanel(_blocks) { /* noop */ }
 
 async function onApplyBlocks() {
   if (!state.lastBlocks || !state.automationId) return
-  const payload = {
-    automationId: state.automationId,
-    blocks: state.lastBlocks
-  }
+  if (state.applying) return
+  state.applying = true
+  const btn = document.getElementById('btn-apply-top')
+  if (btn) { btn.disabled = true; btn.textContent = 'Aplicando…' }
+  const payload = { automationId: state.automationId, blocks: state.lastBlocks }
   try {
     const res = await agentPty.applyBlocks(payload)
     if (!res || res.ok === false) {
       toast((res && res.error) || 'No se pudo aplicar', 'error')
       return
     }
-    toast('Aplicado al borrador ✓', 'ok')
+    if (res.reinstallError) {
+      toast('Aplicado al borrador, pero la reinstalación falló: ' + res.reinstallError, 'error')
+    } else if (res.reinstalled) {
+      toast('Aplicado y reinstalado en launchd ✓', 'ok')
+    } else {
+      toast('Aplicado al borrador ✓', 'ok')
+    }
     state.lastBlocks = null
-    renderBlocksPanel(null)
+    setApplyButton(false)
   } catch (e) {
     toast('Error: ' + (e && e.message ? e.message : e), 'error')
+  } finally {
+    state.applying = false
   }
 }
 
@@ -250,7 +264,13 @@ $('#prev-apply').addEventListener('click', async () => {
       toast((res && res.error) || 'No se pudo aplicar', 'error')
       return
     }
-    toast('Aplicado al borrador ✓', 'ok')
+    if (res.reinstallError) {
+      toast('Aplicado al borrador, pero la reinstalación falló: ' + res.reinstallError, 'error')
+    } else if (res.reinstalled) {
+      toast('Aplicado y reinstalado en launchd ✓', 'ok')
+    } else {
+      toast('Aplicado al borrador ✓', 'ok')
+    }
     closePreviewModal()
     // Limpia panel de detección automática si lo había.
     state.lastBlocks = null
@@ -262,63 +282,11 @@ $('#prev-apply').addEventListener('click', async () => {
   }
 })
 
-// ── Botón "Extraer propuesta" (headless) ──
-$('#btn-extract').addEventListener('click', async () => {
-  const btn = $('#btn-extract')
-  if (btn.disabled) return
-  btn.disabled = true
-  const originalText = btn.textContent
-  btn.textContent = 'Extrayendo…'
-  toast('Pidiendo al CLI headless que extraiga la propuesta…', 'warn')
-  try {
-    const res = await agentPty.extract()
-    if (!res || res.ok === false) {
-      const err = (res && res.error) || 'No se pudo extraer'
-      // NO abrir modal vacío automáticamente — confunde.
-      // Pregunta a Luismi si quiere ir a "Pegar a mano" o cancelar.
-      const wantManual = confirm(
-        'No he podido extraer la propuesta automáticamente:\n\n' +
-        err + '\n\n' +
-        'Posibles causas:\n' +
-        '• El agente todavía no ha emitido los bloques (sigue pensando o investigando).\n' +
-        '• La conversación no contiene una propuesta completa con script + plist.\n\n' +
-        '¿Quieres abrir el modal en modo "Pegar a mano" para pegar tú el contenido?'
-      )
-      if (wantManual) {
-        openPreviewModal({
-          description: '',
-          script: '',
-          plist: '',
-          statusText: 'Modo manual. Pega el script y el plist que veas en la terminal del agente.',
-          statusKind: 'bad'
-        })
-      }
-      return
-    }
-    openPreviewModal({
-      description: res.blocks.description || '',
-      script: res.blocks.script || '',
-      plist: res.blocks.plist || '',
-      statusText: 'Propuesta extraída del CLI. Revisa antes de aplicar.',
-      statusKind: 'ok'
-    })
-  } catch (e) {
-    toast('Error: ' + (e && e.message ? e.message : e), 'error')
-  } finally {
-    btn.disabled = false
-    btn.textContent = originalText
-  }
-})
-
-// ── Botón "Pegar a mano" ──
-$('#btn-manual').addEventListener('click', () => {
-  openPreviewModal({
-    description: '',
-    script: '',
-    plist: '',
-    statusText: 'Pega el script y el plist que te dio el agente.',
-    statusKind: ''
-  })
+// ── Botón principal: Aplicar al borrador ──
+$('#btn-apply-top').addEventListener('click', () => {
+  const btn = document.getElementById('btn-apply-top')
+  if (!btn || btn.disabled) return
+  onApplyBlocks()
 })
 
 // ── Botones header ──
@@ -391,6 +359,8 @@ async function bootstrap() {
     setPtyStatus('live')
     setTimeout(fitAndSync, 200)
     term.focus()
+    // Arrancar polling para encender el botón cuando haya propuesta en disco.
+    startProposalPolling()
   } catch (e) {
     $('#subtitle').textContent = 'Error: ' + (e && e.message ? e.message : e)
     setPtyStatus('dead')

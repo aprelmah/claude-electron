@@ -222,38 +222,65 @@
       height: 100%;
     }
 
-    /* Panel inferior con propuestas detectadas */
+    /* Panel flotante (overlay) con propuesta detectada — imposible ignorar */
     #blocks-panel {
-      flex: 0 0 auto;
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%) translateY(20px);
+      min-width: 360px;
+      max-width: 720px;
       max-height: 240px;
       overflow-y: auto;
-      background: var(--bg-elev);
-      border-top: 1px solid var(--border);
-      padding: 10px 12px;
-      display: none;
+      background: var(--ok);
+      color: #0a1a0a;
+      border: 2px solid #18b85a;
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08) inset;
+      padding: 14px 18px;
+      z-index: 9999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease, transform 0.18s ease;
     }
-    #blocks-panel.visible { display: block; }
+    #blocks-panel.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
     .blocks-header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
+      gap: 10px;
+      margin-bottom: 10px;
     }
     .blocks-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--ok);
+      font-size: 14px;
+      font-weight: 700;
+      color: #0a1a0a;
     }
     .blocks-summary {
-      font-size: 11px;
-      color: var(--fg-muted);
+      font-size: 12px;
+      color: #14401e;
+      opacity: 0.9;
     }
     .blocks-actions {
       display: flex;
-      gap: 6px;
+      gap: 8px;
       flex-wrap: wrap;
-      margin-top: 6px;
     }
+    #blocks-panel .btn {
+      background: #ffffff;
+      color: #0a1a0a;
+      border: 1px solid #0a1a0a;
+      font-weight: 600;
+    }
+    #blocks-panel .btn-primary {
+      background: #0a1a0a;
+      color: #ffffff;
+      border-color: #0a1a0a;
+    }
+    #blocks-panel .btn:hover { filter: brightness(1.06); }
     .btn {
       background: var(--bg-elev-2);
       color: var(--fg);
@@ -272,6 +299,38 @@
     }
     .btn-primary:hover { opacity: 0.92; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Botón principal "Aplicar al borrador" del header — siempre visible,
+       gris cuando no hay propuesta, verde brillante (con pulse) cuando sí. */
+    .btn-apply-top {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 14px;
+      border-radius: 8px;
+      background: #2a2a2f;
+      color: #888;
+      border: 1px solid #3a3a40;
+      cursor: not-allowed;
+      transition: all 0.15s ease;
+      margin-right: 6px;
+    }
+    .btn-apply-top.ready {
+      background: #18b85a;
+      color: #ffffff;
+      border-color: #18b85a;
+      cursor: pointer;
+      box-shadow: 0 0 0 0 rgba(24, 184, 90, 0.55);
+      animation: pulse-apply 1.6s infinite;
+    }
+    .btn-apply-top.ready:hover { background: #14a04e; }
+    @keyframes pulse-apply {
+      0%   { box-shadow: 0 0 0 0 rgba(24, 184, 90, 0.55); }
+      70%  { box-shadow: 0 0 0 10px rgba(24, 184, 90, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(24, 184, 90, 0); }
+    }
+    body.theme-light .btn-apply-top { background: #eaeaee; color: #777; border-color: #d4d4da; }
+    body.theme-light .btn-apply-top.ready { background: #18b85a; color: #ffffff; border-color: #14a04e; }
 
     .toast {
       position: fixed;
@@ -310,8 +369,7 @@
       </div>
     </div>
     <div class="header-actions">
-      <button class="header-btn header-btn-wide" id="btn-extract" title="Pide al CLI headless que extraiga el script + plist + descripción de la conversación">Extraer propuesta</button>
-      <button class="header-btn header-btn-wide" id="btn-manual" title="Pegar el script y el plist a mano">Pegar a mano</button>
+      <button id="btn-apply-top" class="btn-apply-top" disabled title="Esperando a que el agente termine la propuesta">⌛ Esperando propuesta…</button>
       <button class="header-btn" id="btn-restart" title="Reiniciar agente (mata y relanza el CLI)">↻</button>
       <button class="header-btn" id="btn-min" title="Minimizar">−</button>
       <button class="header-btn" id="btn-close" title="Cerrar">×</button>
@@ -320,14 +378,6 @@
 
   <div id="terminal-wrap">
     <div id="terminal"></div>
-  </div>
-
-  <div id="blocks-panel">
-    <div class="blocks-header">
-      <span class="blocks-title">El agente ha propuesto cambios</span>
-      <span class="blocks-summary" id="blocks-summary"></span>
-    </div>
-    <div class="blocks-actions" id="blocks-actions"></div>
   </div>
 
   <div class="toast" id="toast"></div>

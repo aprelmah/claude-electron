@@ -13,6 +13,9 @@ const { createPersistence } = require('./scheduler/persistence')
 const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
+const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
+
+const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi', 'automation-builder', 'patterns.md')
 
 // Keep userData at the legacy path so existing config/Telegram tokens survive the rename.
 const oldUserData = path.join(app.getPath('appData'), 'CLAUDE-NOVAK')
@@ -22,6 +25,8 @@ const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
 const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
 const HOMEBREW_BIN = '/usr/local/bin'
 const TMP_DIR = '/tmp/claude-electron'
+const AGENT_PROPOSAL_BASE = '/tmp/poweragent-proposal'
+const AGENT_PROPOSAL_POLL_MS = 1500
 const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
 const FFMPEG_BIN = resolveCommand([
   process.env.FFMPEG_BIN,
@@ -700,6 +705,61 @@ function blocksEqual(a, b) {
   return a.script === b.script && a.plist === b.plist && a.description === b.description
 }
 
+// ── Propuesta vía filesystem (source of truth) ──
+// Claude Code v2 oculta los bloques largos en su TUI (los procesa como tool_use
+// internos) → el stream PTY nunca contiene el script/plist literales. Solución:
+// pedirle que escriba los archivos a disco con su Write tool. POWER-AGENT pollea
+// el directorio y, cuando aparece el "READY", lee y emite blocks-detected.
+function proposalPaths(automationId) {
+  const dir = path.join(AGENT_PROPOSAL_BASE, automationId)
+  return {
+    dir,
+    script: path.join(dir, 'script.sh'),
+    plist: path.join(dir, 'plist.plist'),
+    description: path.join(dir, 'description.txt'),
+    ready: path.join(dir, 'READY')
+  }
+}
+
+function ensureProposalDir(automationId) {
+  const p = proposalPaths(automationId)
+  try { fs.mkdirSync(p.dir, { recursive: true }) } catch {}
+  // Limpia residuos de iteraciones anteriores para que la próxima propuesta empiece limpia.
+  for (const f of [p.script, p.plist, p.description, p.ready]) {
+    try { fs.unlinkSync(f) } catch {}
+  }
+  return p
+}
+
+function clearProposalFromDisk(automationId) {
+  const p = proposalPaths(automationId)
+  for (const f of [p.script, p.plist, p.description, p.ready]) {
+    try { fs.unlinkSync(f) } catch {}
+  }
+}
+
+function readProposalFromDisk(automationId) {
+  const p = proposalPaths(automationId)
+  try {
+    if (!fs.existsSync(p.ready)) return null
+    if (!fs.existsSync(p.script) || !fs.existsSync(p.plist)) return null
+    const script = fs.readFileSync(p.script, 'utf8')
+    const plist = fs.readFileSync(p.plist, 'utf8')
+    let description = ''
+    try { description = fs.readFileSync(p.description, 'utf8') } catch {}
+    // Validación: shebang en script, cierre </plist> en plist.
+    if (!script || !script.includes('#!')) return null
+    if (!plist || !/<plist[\s>]/i.test(plist) || !/<\/plist>/i.test(plist)) return null
+    return {
+      script: script.trim(),
+      plist: plist.trim(),
+      description: description.trim() || null
+    }
+  } catch {
+    return null
+  }
+}
+
 function buildAgentBootstrapPrompt(automation) {
   const hasDraft = !!(automation.generatedScript || automation.generatedPlist)
   const isInstalled = automation.status === 'installed'
@@ -709,7 +769,7 @@ function buildAgentBootstrapPrompt(automation) {
   const lines = []
 
   // Contexto mínimo — sin script todavía, para que el agente NO se ponga a analizar sin permiso.
-  lines.push('Eres un agente conectado a POWER-AGENT (Mac de Luismi). Estás dentro de una sesión interactiva con él para AYUDARLE con una automatización macOS concreta (script bash + plist launchd que ejecuta launchd).')
+  lines.push('Eres un agente integrado en POWER-AGENT, una app de macOS para crear y gestionar automatizaciones (script bash + plist launchd). Hablas con el usuario que está creando o modificando UNA automatización concreta. El usuario NO es técnico: no sabe bash, no sabe launchd, no lee XML. Tu trabajo es traducir lo que pide a un script + plist correctos y entregarlos.')
   lines.push('')
   lines.push('Datos de la automatización (solo contexto, NO analices todavía):')
   lines.push(`- Nombre: ${automation.name || '(sin nombre)'}`)
@@ -724,29 +784,67 @@ function buildAgentBootstrapPrompt(automation) {
   lines.push('')
 
   lines.push('REGLAS ESTRICTAS DE COMPORTAMIENTO:')
-  lines.push('1) NO hagas NADA antes de hablar con Luismi. No leas archivos, no analices el script, no propongas cambios todavía.')
-  lines.push('2) Tu PRIMER mensaje debe ser SOLO una pregunta abierta breve: "¿Qué quieres que hagamos con esta automatización?" o equivalente. Una frase. Sin lista, sin análisis, sin sugerencias.')
-  if (hasDraft) {
-    lines.push('3) Esta automatización YA EXISTE (tiene script). Luismi viene a REPARARLA o MODIFICARLA. NO asumas qué falla — pregúntale qué problema tiene o qué quiere cambiar antes de tocar nada.')
-  } else {
-    lines.push('3) Esta automatización es NUEVA (sin script). Pregúntale qué debe hacer exactamente: carpetas, condiciones, frecuencia, edge cases. Una pregunta a la vez.')
-  }
-  lines.push('4) Itera con preguntas cortas. Una por mensaje. Estilo conversación, no entrevista.')
-  lines.push('5) Solo cuando Luismi te diga EXPLÍCITAMENTE "venga, genera" o "vale, hazlo" o equivalente, emite TRES bloques XML en UN SOLO mensaje, con estos nombres de etiqueta exactos en mayúsculas:')
-  lines.push('   - Etiqueta 1: DESCRIPCION  → contiene la descripción refinada y precisa de qué hace.')
-  lines.push('   - Etiqueta 2: SCRIPT       → contiene el script bash completo y FUNCIONAL (no resumen, no placeholder). Debe empezar con shebang y tener varias líneas.')
-  lines.push('   - Etiqueta 3: PLIST        → contiene el plist launchd completo y FUNCIONAL (con cabecera xml y cierre /plist).')
-  lines.push('   Formato de cada bloque: la etiqueta de apertura entre menor-mayor, el contenido COMPLETO y real (sin "..." ni "completo aquí"), y la etiqueta de cierre con barra. Idéntico al formato que Anthropic usa para tool_use blocks.')
-  lines.push('   Importante: NUNCA emitas bloques de ejemplo, demo o con placeholders tipo "..." o "script aquí". Solo cuando vayas a entregar el contenido real y completo.')
-  lines.push('   Eso disparará un botón "Aplicar al borrador" en la UI de Luismi.')
-  lines.push('6) Reglas técnicas para cuando llegue el momento: bash con set -euo pipefail, sin secrets hardcodeados (usa Keychain), plist launchd válido (StartCalendarInterval o StartInterval), logs a la ruta que ya tiene asignada.')
-  lines.push('7) Habla español de España, directo, sin rollos. Luismi odia las introducciones largas.')
+  lines.push('')
+  lines.push('1) LEE LA DESCRIPCIÓN GUARDADA antes de hablar. Está más arriba. Es lo que el usuario ya te dijo. NUNCA preguntes algo que ya está dicho ahí (si la descripción dice "borra capturas del escritorio" → NO preguntes "¿qué borro? ¿de dónde?" — eso es insultante).')
   lines.push('')
   if (hasDraft) {
-    lines.push('Si Luismi te pide reparar o revisar algo concreto, usa tu Read para abrir el archivo en la ruta del script o del log indicadas arriba. NO los leas antes de que él te lo pida.')
+    lines.push('2) Esta automatización YA EXISTE (tiene script). USA TU READ tool para abrir el script (ruta arriba) ANTES de tu primer mensaje. Necesitas contexto del estado actual para ayudar bien. Luego pregúntale qué quiere cambiar o qué problema tiene.')
     lines.push('')
+    lines.push('3) Tu PRIMER mensaje: una línea reconociendo qué hace ahora la automatización + una pregunta concreta sobre qué quiere cambiar. Ejemplo: "Ahora borra X cada Y. ¿Qué quieres ajustar?"')
+  } else {
+    lines.push('2) Esta automatización es NUEVA (sin script). Trabaja sobre la descripción guardada.')
+    lines.push('')
+    lines.push('3) Tu PRIMER mensaje: dos partes en una sola frase corta.')
+    lines.push('   a) Confirma con tus palabras lo que has entendido de la descripción (1 línea).')
+    lines.push('   b) Lista SOLO los huecos imprescindibles que falten para generar el script (carpeta exacta si no la dijo, hora exacta si solo dijo "cada día", si quiere notificación Telegram cuando termine, etc).')
+    lines.push('   Ejemplo bueno: "Entiendo: borrar las capturas del Escritorio cada día. Necesito 2 cosas: ¿a qué hora? ¿te aviso por Telegram?"')
+    lines.push('   Ejemplo MALO: "¿Qué quieres que hagamos? ¿Dónde están las capturas? ¿A dónde las muevo?" (eso es lo que la descripción ya te dijo).')
   }
-  lines.push('Ahora haz tu pregunta de apertura. Solo eso.')
+  lines.push('')
+  lines.push('4) Pregunta lo MÍNIMO. Si la descripción ya da suficiente info para generar algo razonable con defaults sensatos (ej. hora 07:00 si dice "cada día por la mañana"), úsalos y propón directamente sin preguntar más. El usuario es no técnico y se cansa rápido.')
+  lines.push('5) ENTREGA DE LA PROPUESTA — léelo bien, esto es lo único que importa:')
+  lines.push('   Cuando tengas la info mínima (o el usuario diga "venga", "hazlo", "tira" o equivalente), debes ENTREGAR la propuesta ESCRIBIENDO 4 ARCHIVOS a disco con tu herramienta Write (no por chat, no como bloques en pantalla — directamente al filesystem):')
+  const pp = proposalPaths(automation.id || 'UNKNOWN')
+  lines.push(`     a) ${pp.script}`)
+  lines.push('        → script bash completo y funcional. PRIMERA línea: #!/bin/bash (o #!/usr/bin/env bash). Sin truncar, sin "...", sin placeholders.')
+  lines.push(`     b) ${pp.plist}`)
+  lines.push('        → plist launchd completo. Debe contener cabecera <?xml ...?>, <plist ...> y cierre </plist>. Sin truncar.')
+  lines.push(`     c) ${pp.description}`)
+  lines.push('        → 1–2 frases en castellano describiendo qué hace la automatización.')
+  lines.push(`     d) ${pp.ready}`)
+  lines.push('        → archivo VACÍO. Escríbelo SOLO después de los otros tres. Es la señal "ya está".')
+  lines.push('   Reglas:')
+  lines.push('   - Usa exactamente esas rutas. No las cambies, no inventes otras.')
+  lines.push('   - Escribe primero los 3 con contenido, ÚLTIMO el READY.')
+  lines.push('   - NO pegues el script ni el plist en el chat — solo escríbelos. POWER-AGENT los detectará por filesystem y mostrará el botón "Aplicar al borrador" en su UI (botón verde brillante arriba a la derecha).')
+  lines.push('   - NO necesitas pedir permiso para Write — la app tiene bypassPermissions activo.')
+  lines.push('   - Si quieres iterar (cambiar versión), simplemente reescribe los 3 archivos de contenido y vuelve a crear el READY. El polling lo detectará.')
+  lines.push('   - Después de escribir los 4 archivos, di solo una frase al usuario: "Listo, pulsa el botón verde \\"Aplicar al borrador\\" arriba para guardarlo." Nada más. No expliques qué hiciste — el usuario revisará al aplicar.')
+  lines.push('')
+  lines.push('6) Reglas técnicas DURAS para el contenido — están al final de este prompt. CÚMPLELAS todas. En particular: Telegram (si el usuario lo pide o la descripción lo menciona), lockfile, trap, logs, plist válido.')
+  lines.push('7) Tono: español de España, directo, sin rollos, sin "perfecto" ni "claro" ni "por supuesto". Frases cortas. Tratamiento de tú (no "usted").')
+  lines.push('')
+  // Reglas técnicas de contenido — mismas que usa el generador headless original.
+  // Cubre Telegram, lockfile, trap, NAS QNAP, plist launchd, idempotencia, secrets.
+  // Nota: las "Reglas de salida" del system-prompt (bloques XML) NO aplican aquí —
+  // tú entregas por filesystem (rutas indicadas arriba). Ignora ese bloque del prompt.
+  lines.push('═══ REGLAS TÉCNICAS DE CONTENIDO (NO NEGOCIABLES) ═══')
+  lines.push('')
+  try {
+    lines.push(buildAutomationSystemPrompt({ patternsPath: AGENT_PATTERNS_PATH }))
+  } catch (err) {
+    lines.push('[no se pudo cargar system-prompt: ' + (err && err.message ? err.message : err) + ']')
+  }
+  lines.push('')
+  lines.push('═══ FIN REGLAS TÉCNICAS ═══')
+  lines.push('')
+  lines.push('IMPORTANTE sobre el formato de salida: el system-prompt de arriba menciona "tres bloques <SCRIPT>...</SCRIPT>, <PLIST>...</PLIST>, <EXPLANATION>...". ESO NO APLICA AQUÍ. Tú entregas escribiendo los 4 archivos en las rutas que te di arriba (script.sh, plist.plist, description.txt, READY). NO emitas bloques XML en el chat.')
+  lines.push('')
+  if (hasDraft) {
+    lines.push('AHORA: lee el script actual con tu Read tool. Luego escribe tu primer mensaje siguiendo la regla 3.')
+  } else {
+    lines.push('AHORA: escribe tu primer mensaje siguiendo la regla 3. NO preguntes lo que la descripción ya dice.')
+  }
   return lines.join('\n')
 }
 
@@ -788,6 +886,24 @@ function startAgentPty(session) {
   // confunda con bloques reales emitidos por el CLI.
   session.detectFromOffset = session.bootstrapPrompt ? null : 0
   const myWcId = session.wcId
+
+  // Polling del filesystem: vía principal de detección de propuesta.
+  // Claude Code v2 oculta los bloques en el TUI pero su Write tool sí escribe
+  // a disco aunque no se vea nada en pantalla. Pollea cada 1.5s.
+  if (session.proposalPollId) { try { clearInterval(session.proposalPollId) } catch {} }
+  session.proposalPollId = setInterval(() => {
+    const s = agentPtySessions.get(myWcId)
+    if (!s || !s.win || s.win.isDestroyed()) return
+    const found = readProposalFromDisk(s.automationId)
+    if (!found) return
+    if (blocksEqual(found, s.lastBlocks)) return
+    s.lastBlocks = found
+    console.log('[automation-pty] proposal detected on disk:',
+      found.description ? 'DESC(' + found.description.length + ')' : '-',
+      found.script ? 'SCRIPT(' + found.script.length + ')' : '-',
+      found.plist ? 'PLIST(' + found.plist.length + ')' : '-')
+    try { s.win.webContents.send('automation-pty:blocks-detected', { blocks: found }) } catch {}
+  }, AGENT_PROPOSAL_POLL_MS)
 
   proc.onData((data) => {
     if (!proc._alive) return
@@ -860,7 +976,12 @@ function startAgentPty(session) {
 }
 
 function killAgentPty(session) {
-  if (!session || !session.pty) return
+  if (!session) return
+  if (session.proposalPollId) {
+    try { clearInterval(session.proposalPollId) } catch {}
+    session.proposalPollId = null
+  }
+  if (!session.pty) return
   session.pty._alive = false
   try { session.pty.kill() } catch {}
   session.pty = null
@@ -879,6 +1000,9 @@ async function openAutomationPtyWindow(automationId) {
     existing.focus()
     return existing
   }
+
+  // Preparar directorio de propuestas a disco (limpia residuos previos).
+  ensureProposalDir(automationId)
 
   let initialTheme = ''
   try {
@@ -1819,8 +1943,7 @@ ipcMain.handle('automations:regenerate', async (_e, { id, patch } = {}) => {
 ipcMain.handle('automations:update-draft', async (_e, { id, scriptText, plistText } = {}) => {
   if (!automationManager) return automationsNotReady()
   try {
-    const automation = await automationManager.updateDraft(id, { scriptText, plistText })
-    return { ok: true, automation }
+    return await automationManager.updateDraft(id, { scriptText, plistText })
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }
@@ -2008,6 +2131,8 @@ ipcMain.handle('automation-pty:restart', (event, { cols, rows } = {}) => {
   s.buffer = ''
   s.lastBlocks = null
   s.bootstrapInjected = false
+  s.detectFromOffset = null
+  ensureProposalDir(s.automationId)
   if (cols && rows) { s.cols = cols; s.rows = rows }
   return new Promise((resolve) => {
     setTimeout(() => {
@@ -2045,6 +2170,7 @@ ipcMain.handle('automation-pty:set-cli', (event, { cli } = {}) => {
   s.lastBlocks = null
   s.bootstrapInjected = false
   s.detectFromOffset = null
+  ensureProposalDir(s.automationId)
   try {
     startAgentPty(s)
     return { ok: true, cli }
@@ -2118,6 +2244,22 @@ function parseExtractorJson(raw) {
 ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
   const s = getAgentSessionByEvent(event)
   if (!s) return { ok: false, error: 'No agent session' }
+
+  // Vía rápida: si la propuesta ya está en disco (Write tool del agente),
+  // úsala directamente sin necesidad de invocar headless.
+  const fromDisk = readProposalFromDisk(s.automationId)
+  if (fromDisk) {
+    return {
+      ok: true,
+      blocks: {
+        description: fromDisk.description || '',
+        script: fromDisk.script || '',
+        plist: fromDisk.plist || ''
+      },
+      source: 'disk'
+    }
+  }
+
   const raw = s.buffer || ''
   if (!raw.trim()) return { ok: false, error: 'Buffer vacío — todavía no hay conversación' }
 
@@ -2160,6 +2302,16 @@ ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
   return { ok: true, blocks: parsed.blocks }
 })
 
+// Pull desde el renderer: ¿hay propuesta lista en disco para este agente?
+// El renderer pollea esto cada 1.5s y enciende el botón "Aplicar al borrador".
+ipcMain.handle('automation-pty:check-proposal', (event) => {
+  const s = getAgentSessionByEvent(event)
+  if (!s || !s.automationId) return { available: false }
+  const found = readProposalFromDisk(s.automationId)
+  if (!found) return { available: false }
+  return { available: true, blocks: found, automationId: s.automationId }
+})
+
 ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blocks } = {}) => {
   if (!automationManager) return automationsNotReady()
   if (!automationId || !blocks) return { ok: false, error: 'payload requerido' }
@@ -2171,7 +2323,21 @@ ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blo
     if (!Object.keys(patch).length) return { ok: false, error: 'bloques vacíos' }
     const res = await automationManager.updateDraft(automationId, patch)
     if (res && res.ok === false) return res
-    return { ok: true, automation: res?.automation || res }
+    // Aplicado OK → limpia archivos en disco para que la próxima propuesta empiece limpia
+    // y el polling no reemita el mismo bloque indefinidamente.
+    clearProposalFromDisk(automationId)
+    // Reset lastBlocks de las sesiones abiertas para esa automation, por si vuelve a
+    // generarse exactamente la misma propuesta y queremos volver a mostrar el botón.
+    for (const s of agentPtySessions.values()) {
+      if (s && s.automationId === automationId) s.lastBlocks = null
+    }
+    return {
+      ok: true,
+      automation: res?.automation || res,
+      reinstalled: !!res?.reinstalled,
+      reinstallError: res?.reinstallError || null,
+      needsReinstall: !!res?.needsReinstall
+    }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }

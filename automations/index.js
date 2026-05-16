@@ -283,9 +283,33 @@ class AutomationManager {
     if (typeof scriptText === 'string') updated.generatedScript = scriptText
     if (typeof plistText === 'string') updated.generatedPlist = plistText
     if (typeof description === 'string' && description.trim()) updated.description = description.trim()
+
+    const scriptChanged = updated.generatedScript !== current.generatedScript
+    const plistChanged = updated.generatedPlist !== current.generatedPlist
+    const needsReinstall = current.status === 'installed' && (scriptChanged || plistChanged)
+
     await this._persistence.upsert(updated)
+
+    let reinstalled = false
+    let reinstallError = null
+    if (needsReinstall) {
+      try {
+        const res = await this._installer.install(updated)
+        if (res && res.ok) {
+          reinstalled = true
+          // Conservar status 'installed' + actualizar updatedAt.
+          updated.updatedAt = nowIso()
+          await this._persistence.upsert(updated)
+        } else {
+          reinstallError = (res && res.error) || 'launchctl falló (sin detalle)'
+        }
+      } catch (err) {
+        reinstallError = err && err.message ? err.message : String(err)
+      }
+    }
+
     this._emitListChanged()
-    return updated
+    return { ok: true, automation: updated, reinstalled, reinstallError, needsReinstall }
   }
 
   async install(id, opts = {}) {

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('agentPty', {
   resize:     (cols, rows)   => ipcRenderer.send('automation-pty:resize', { cols, rows }),
   restart:    (cols, rows)   => ipcRenderer.invoke('automation-pty:restart', { cols, rows }),
   applyBlocks: (payload)     => ipcRenderer.invoke('automation-pty:apply-blocks', payload),
+  checkProposal: ()          => ipcRenderer.invoke('automation-pty:check-proposal'),
   extract:    (runner)       => ipcRenderer.invoke('automation-pty:extract', { runner }),
   setCli:     (cli)          => ipcRenderer.invoke('automation-pty:set-cli', { cli }),
   closeSelf:  ()             => ipcRenderer.send('automation-pty:close-self'),
