@@ -237,7 +237,8 @@
       nodeG.attr('opacity', 1)
       nodeG.selectAll('.node-circle').each(function (d) {
         const ext = (d.label.split('.').pop() || '').toLowerCase()
-        d3.select(this).attr('filter', `url(#glow-${COLORS[ext] ? ext : 'default'})`)
+        const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
+        d3.select(this).attr('filter', `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`)
       })
       linkSel.attr('stroke-opacity', 0.22)
       particleSel.attr('opacity', 0.75)
