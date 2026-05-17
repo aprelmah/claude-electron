@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('api', {
   onTelegramStatus: (cb) => ipcRenderer.on('telegram-status', (_, status) => cb(status)),
   canSendSessionToTelegram: () => ipcRenderer.invoke('app:can-send-to-telegram'),
   sendSessionToTelegram: () => ipcRenderer.invoke('app:send-session-to-telegram'),
+  disconnectSessionFromTelegram: () => ipcRenderer.invoke('app:disconnect-session-from-telegram'),
   onPtyTransferredToTelegram: (cb) => ipcRenderer.on('pty-transferred-to-telegram', (_, p) => cb(p)),
 
   closeWindow: () => ipcRenderer.send('window-close'),

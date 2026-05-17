@@ -540,7 +540,7 @@ function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0) {
   }
 }
 
-function cleanRelayFallbackText(raw) {
+function cleanRelayFallbackText(raw, cli = 'claude') {
   const clean = flattenTerminal(stripAnsi(String(raw || '')))
   if (!clean) return ''
   return clean
@@ -555,6 +555,8 @@ function cleanRelayFallbackText(raw) {
       if (/^\/model\b/i.test(t)) return false
       if (/^Claude Code v/i.test(t)) return false
       if (/^Haiku\b/i.test(t)) return false
+      if (cli === 'codex' && /^OpenAI Codex\b/i.test(t)) return false
+      if (cli === 'codex' && /^model:\s*/i.test(t)) return false
       if (/^\s*[›>]\s*$/.test(t)) return false
       return true
     })
@@ -563,24 +565,28 @@ function cleanRelayFallbackText(raw) {
     .trim()
 }
 
-async function relayThroughPty(session, prompt, { onText, signal } = {}) {
+async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   if (!session?.pty || !session?.cwd) return null
-  if (session.activeCli !== 'claude') return null
+  const targetCli = mode || session.activeCli
+  if (targetCli !== 'claude' && targetCli !== 'codex') return null
+  if (session.activeCli !== targetCli) return null
   if (session.relayActive) return null
   const message = String(prompt || '').trim()
   if (!message) return null
 
-  const beforeMeta = snapshotClaudeSessionMeta(session.cwd)
-  const latest = listClaudeSessionFilesWithMtime(session.cwd)[0]
-  const preferredSessionId = session.claudeSessionId || latest?.sessionId || null
-  if (!session.claudeSessionId && preferredSessionId) session.claudeSessionId = preferredSessionId
+  const beforeMeta = targetCli === 'claude' ? snapshotClaudeSessionMeta(session.cwd) : null
+  const latest = targetCli === 'claude' ? listClaudeSessionFilesWithMtime(session.cwd)[0] : null
+  const preferredSessionId = targetCli === 'claude'
+    ? (session.claudeSessionId || latest?.sessionId || null)
+    : null
+  if (targetCli === 'claude' && !session.claudeSessionId && preferredSessionId) session.claudeSessionId = preferredSessionId
 
   session.relayActive = true
 
   return new Promise((resolve, reject) => {
     const MAX_WAIT_MS = 120000
     const WAIT_FIRST_OUTPUT_MS = 25000
-    const SILENCE_MS = 2200
+    const SILENCE_MS = targetCli === 'codex' ? 3200 : 2200
     const ECHO_SKIP_MS = 700
     const FORCE_FINAL_TEXT_MS = 15000
     const FORCE_END_RELAY_MS = 45000
@@ -619,6 +625,9 @@ async function relayThroughPty(session, prompt, { onText, signal } = {}) {
     }
 
     const buildRelayResult = () => {
+      if (targetCli !== 'claude') {
+        return { sid: null, fromTranscript: { text: '', sawAssistant: false, sawEndTurn: false } }
+      }
       const candidate = pickRelayTranscriptCandidate(session.cwd, beforeMeta, session.claudeSessionId || preferredSessionId)
       let fromTranscript = { text: '', sawAssistant: false, sawEndTurn: false }
       let sid = session.claudeSessionId || preferredSessionId || null
@@ -652,6 +661,25 @@ async function relayThroughPty(session, prompt, { onText, signal } = {}) {
       const elapsed = now - startedAt
       const { sid, fromTranscript } = buildRelayResult()
       const text = String(fromTranscript.text || '').trim()
+      if (targetCli === 'codex') {
+        const fallbackText = cleanRelayFallbackText(capture, 'codex')
+        if (fallbackText && elapsed >= 1200) {
+          finishOk(fallbackText, sid)
+          return
+        }
+        if (elapsed >= FORCE_END_RELAY_MS) {
+          if (!fallbackText) {
+            const err = new Error('Relay empty response')
+            err.name = 'RelayEmpty'
+            finishErr(err)
+            return
+          }
+          finishOk(fallbackText, sid)
+          return
+        }
+        armSilenceTimer()
+        return
+      }
       if (fromTranscript.sawEndTurn) {
         finishOk(text, sid)
         return
@@ -661,7 +689,7 @@ async function relayThroughPty(session, prompt, { onText, signal } = {}) {
         return
       }
       if (elapsed >= FORCE_END_RELAY_MS) {
-        const fallbackText = text || cleanRelayFallbackText(capture)
+        const fallbackText = text || cleanRelayFallbackText(capture, 'claude')
         finishOk(fallbackText, sid)
         return
       }
@@ -736,9 +764,10 @@ async function relayThroughPty(session, prompt, { onText, signal } = {}) {
   })
 }
 
-function canRelayTelegramToPty(session) {
+function canRelayTelegramToPty(session, expectedCli = null) {
   if (!session?.pty) return false
-  if (session.activeCli !== 'claude') return false
+  if (expectedCli && session.activeCli !== expectedCli) return false
+  if (!expectedCli && session.activeCli !== 'claude' && session.activeCli !== 'codex') return false
   if (session.relayActive) return false
   return true
 }
@@ -774,19 +803,24 @@ function getRelayBindingForSession(session, preferredChatId = null) {
   return { linked: false, chatId: null }
 }
 
-function describeRelayUnavailable(session) {
+function describeRelayUnavailable(session, requiredCli = null) {
   if (!session) return 'la ventana enlazada ya no existe'
   if (!session.pty) return 'el PTY de esa ventana no está iniciado'
-  if (session.activeCli !== 'claude') return `esa ventana ya no está en claude (CLI actual: ${session.activeCli})`
+  if (requiredCli && session.activeCli !== requiredCli) {
+    return `esa ventana está en ${session.activeCli}, no en ${requiredCli}`
+  }
+  if (session.activeCli !== 'claude' && session.activeCli !== 'codex') {
+    return `esa ventana usa un CLI no soportado (${session.activeCli})`
+  }
   if (session.relayActive) return 'esa ventana está ocupada con otra petición'
   return 'falló la lectura de respuesta del PTY'
 }
 
-function pickRelaySession() {
+function pickRelaySession(expectedCli = null) {
   const primary = primaryWcId != null ? sessions.get(primaryWcId) : null
-  if (canRelayTelegramToPty(primary)) return primary
+  if (canRelayTelegramToPty(primary, expectedCli)) return primary
   for (const s of sessions.values()) {
-    if (canRelayTelegramToPty(s)) return s
+    if (canRelayTelegramToPty(s, expectedCli)) return s
   }
   return null
 }
@@ -798,22 +832,59 @@ function bindRelaySessionToTelegramChat(chatId, session) {
   telegramRelayByChat.set(key, session.wcId)
 }
 
+function unbindRelaySessionForTelegramChat(chatId) {
+  const key = normalizeTelegramChatKey(chatId)
+  if (!key) return false
+  return telegramRelayByChat.delete(key)
+}
+
 function unbindRelaySessionsByWcId(wcId) {
   for (const [chatId, boundWcId] of telegramRelayByChat.entries()) {
     if (boundWcId === wcId) telegramRelayByChat.delete(chatId)
   }
 }
 
-function pickRelaySessionForChat(chatId, allowFallback = true) {
+function pickRelaySessionForChat(chatId, allowFallback = true, expectedCli = null) {
   const binding = getRelayBindingForChat(chatId)
   if (binding.bound) {
-    if (canRelayTelegramToPty(binding.session)) return binding.session
-    if (!binding.session.pty || binding.session.activeCli !== 'claude') {
-      telegramRelayByChat.delete(binding.chatId)
-    }
-    return allowFallback ? pickRelaySession() : null
+    if (canRelayTelegramToPty(binding.session, expectedCli)) return binding.session
+    return allowFallback ? pickRelaySession(expectedCli) : null
   }
-  return allowFallback ? pickRelaySession() : null
+  return allowFallback ? pickRelaySession(expectedCli) : null
+}
+
+async function syncSessionContextAfterTelegramDetach(session, chatId, cliHint = null) {
+  if (!session) return { ok: false, refreshed: false, reason: 'no-session' }
+  const targetCli = (cliHint === 'codex' || cliHint === 'claude')
+    ? cliHint
+    : (session.activeCli === 'codex' ? 'codex' : 'claude')
+  const key = normalizeTelegramChatKey(chatId)
+
+  if (targetCli === 'codex') {
+    const codexSessionId = telegramBridge?.getSessionId?.(key, 'codex') || null
+    if (!codexSessionId) {
+      return { ok: true, refreshed: false, mode: 'codex', reason: 'no-session-id' }
+    }
+    try {
+      killPty(session)
+      await new Promise((resolve) => setTimeout(resolve, 180))
+      startPty(session, session.cols, session.rows, session.cwd, ['resume', codexSessionId])
+      if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
+      return { ok: true, refreshed: true, mode: 'codex', sessionId: codexSessionId }
+    } catch (err) {
+      return {
+        ok: false,
+        refreshed: false,
+        mode: 'codex',
+        sessionId: codexSessionId,
+        error: err?.message || String(err)
+      }
+    }
+  }
+
+  const claudeSid = session.claudeSessionId || telegramBridge?.getSessionId?.(key, 'claude') || null
+  if (!session.claudeSessionId && claudeSid) session.claudeSessionId = claudeSid
+  return { ok: true, refreshed: !!claudeSid, mode: 'claude', sessionId: claudeSid || null }
 }
 
 // ── PTY per-session ──
@@ -879,8 +950,11 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     if (s) s.lastPtyDataAt = Date.now()
     if (!s || !s.win || s.win.isDestroyed()) return
-    // Modo espejo: durante relay Telegram también pintamos el stream en el PTY local.
-    s.win.webContents.send('pty-data', data)
+    // Modo privado: durante relay Telegram enlazado no pintamos el stream en la PTY local.
+    const linked = getRelayBindingForSession(s).linked
+    if (!(linked && s.relayActive)) {
+      s.win.webContents.send('pty-data', data)
+    }
   })
 
   proc.onExit(() => {
@@ -1661,29 +1735,37 @@ function initTelegramBridge() {
     onRunQuery: async (opts) => {
       const tg = appConfig.telegram || {}
       const cwd = getCwdSync()
-      if (opts?.cli === 'codex') {
-        return runCodexHeadless({ ...opts, cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+      const binding = getRelayBindingForChat(opts?.chatId)
+      const boundCli = binding.bound ? binding.session?.activeCli : null
+      const targetCli = (boundCli === 'claude' || boundCli === 'codex')
+        ? boundCli
+        : (opts?.cli === 'codex' ? 'codex' : 'claude')
+
+      if (targetCli === 'codex') {
+        // Codex por Telegram se mantiene en ruta headless estable (resume por thread_id).
+        // El relay PTY en Codex puede no delimitar fin de turno de forma consistente y provocar latencia/doble respuesta.
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
       }
 
-      const binding = getRelayBindingForChat(opts?.chatId)
-      const relaySession = pickRelaySessionForChat(opts?.chatId, !binding.bound)
+      const relaySession = pickRelaySessionForChat(opts?.chatId, !binding.bound, 'claude')
       if (relaySession) {
         try {
           const relayResult = await relayThroughPty(relaySession, opts?.userPrompt || opts?.prompt, {
             onText: opts?.onText,
-            signal: opts?.signal
+            signal: opts?.signal,
+            mode: 'claude'
           })
           if (relayResult) return relayResult
         } catch (err) {
           if (err?.name === 'AbortError') throw err
           if (binding.bound) {
-            throw new Error(`Relay PTY enlazado falló: ${describeRelayUnavailable(binding.session)}.`)
+            throw new Error(`Relay PTY enlazado falló: ${describeRelayUnavailable(binding.session, 'claude')}.`)
           }
           console.warn('[telegram-relay] PTY relay falló, usando fallback headless:', err?.name || err?.message || err)
         }
       }
       if (binding.bound) {
-        throw new Error(`La sesión enlazada de Telegram no está disponible: ${describeRelayUnavailable(binding.session)}.`)
+        throw new Error(`La sesión enlazada de Telegram no está disponible: ${describeRelayUnavailable(binding.session, 'claude')}.`)
       }
 
       const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
@@ -1703,6 +1785,17 @@ function initTelegramBridge() {
       saveAppConfig(merged)
       lastPrimarySnapshot = { ...lastPrimarySnapshot, activeCli: cli }
       return { ok: true }
+    },
+    onUnlinkRelay: async (chatId) => {
+      const key = normalizeTelegramChatKey(chatId)
+      if (!key) return { ok: false, linked: false, error: 'Chat inválido' }
+      const binding = getRelayBindingForChat(key)
+      const detached = unbindRelaySessionForTelegramChat(key)
+      if (detached) broadcastTelegramStatus()
+      const sync = binding.bound
+        ? await syncSessionContextAfterTelegramDetach(binding.session, key, binding.session?.activeCli)
+        : { ok: true, refreshed: false, reason: 'no-bound-session' }
+      return { ok: true, linked: false, detached, chatId: key, sync }
     },
     onStatus: () => broadcastTelegramStatus()
   })
@@ -2404,10 +2497,10 @@ ipcMain.handle('app:can-send-to-telegram', (event) => {
   const preferredChatId = telegramBridge?.getFirstAllowedUserId?.() || null
   const binding = getRelayBindingForSession(s, preferredChatId)
   const linkedChatId = binding.chatId || (preferredChatId == null ? null : String(preferredChatId))
-  const withLink = (payload) => ({ ...payload, linked: binding.linked, chatId: linkedChatId, relayActive: !!s.relayActive })
+  const withLink = (payload) => ({ ...payload, linked: binding.linked, chatId: linkedChatId, relayActive: !!s.relayActive, cli: s.activeCli })
 
-  if (s.activeCli !== 'claude') return withLink({ ok: false, reason: 'not-claude' })
-  if (!s.claudeSessionId) return withLink({ ok: false, reason: 'no-session-id' })
+  if (s.activeCli !== 'claude' && s.activeCli !== 'codex') return withLink({ ok: false, reason: 'not-supported-cli' })
+  if (s.activeCli === 'claude' && !s.claudeSessionId) return withLink({ ok: false, reason: 'no-session-id' })
   if (!telegramBridge) return withLink({ ok: false, reason: 'bridge-not-init' })
   const status = telegramBridge.getStatus()
   if (!status.running) return withLink({ ok: false, reason: 'bridge-not-running' })
@@ -2418,8 +2511,12 @@ ipcMain.handle('app:can-send-to-telegram', (event) => {
 ipcMain.handle('app:send-session-to-telegram', async (event) => {
   const s = sessions.get(event.sender.id)
   if (!s) return { ok: false, error: 'No hay sesión asociada a esta ventana' }
-  if (s.activeCli !== 'claude') return { ok: false, error: 'Solo claude soportado (esta ventana usa ' + s.activeCli + ')' }
-  if (!s.claudeSessionId) return { ok: false, error: 'No se detectó el sessionId de claude. Habla con él al menos un mensaje y vuelve a intentarlo.' }
+  if (s.activeCli !== 'claude' && s.activeCli !== 'codex') {
+    return { ok: false, error: 'CLI no soportado para relay Telegram (usa claude o codex).' }
+  }
+  if (s.activeCli === 'claude' && !s.claudeSessionId) {
+    return { ok: false, error: 'No se detectó el sessionId de claude. Habla con él al menos un mensaje y vuelve a intentarlo.' }
+  }
   if (!telegramBridge) return { ok: false, error: 'Telegram bridge no inicializado' }
   const status = telegramBridge.getStatus()
   if (!status.running) return { ok: false, error: 'Telegram bridge no está corriendo (actívalo en Configuración).' }
@@ -2427,23 +2524,72 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
   if (!chatId) return { ok: false, error: 'No hay usuarios autorizados en Telegram (configúralos en Configuración).' }
 
   try {
-    telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
+    if (s.activeCli === 'claude' && s.claudeSessionId) {
+      telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
+    }
     bindRelaySessionToTelegramChat(chatId, s)
+    broadcastTelegramStatus()
     const cwdShort = path.basename(s.cwd || os.homedir())
-    const sidShort = s.claudeSessionId.slice(0, 8)
-    const text = [
-      '📱 Sesión de Claude conectada a Telegram',
+    const cliLabel = s.activeCli === 'codex' ? 'Codex' : 'Claude'
+    const lines = [
+      `📱 Sesión de ${cliLabel} conectada a Telegram`,
       `📂 Carpeta: ${cwdShort}`,
-      `🆔 ${sidShort}…`,
-      '',
-      'Desde ahora, cuando escribas al bot, usará esta sesión viva del PTY.'
-    ].join('\n')
+    ]
+    if (s.activeCli === 'claude' && s.claudeSessionId) {
+      lines.push(`🆔 ${s.claudeSessionId.slice(0, 8)}…`)
+    }
+    lines.push('', 'Desde ahora, cuando escribas al bot, usará esta sesión viva del PTY.')
+    const text = lines.join('\n')
     await telegramBridge.sendMessageTo(chatId, text)
     // Mantener PTY vivo: Telegram usa relay directo sobre esta sesión (sin --resume por turno).
     try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: s.claudeSessionId, chatId }) } catch {}
-    return { ok: true, sessionId: s.claudeSessionId, chatId: String(chatId), linked: true }
+    return { ok: true, sessionId: s.claudeSessionId || null, chatId: String(chatId), linked: true, cli: s.activeCli }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('app:disconnect-session-from-telegram', async (event) => {
+  const s = sessions.get(event.sender.id)
+  if (!s) return { ok: false, error: 'No hay sesión asociada a esta ventana', linked: false }
+
+  const preferredChatId = telegramBridge?.getFirstAllowedUserId?.() || null
+  const binding = getRelayBindingForSession(s, preferredChatId)
+  if (!binding.linked) return { ok: false, error: 'Esta ventana no está enlazada a Telegram.', linked: false }
+
+  const chatId = binding.chatId || (preferredChatId == null ? null : String(preferredChatId))
+  let detached = false
+  if (chatId) detached = unbindRelaySessionForTelegramChat(chatId)
+  if (!detached) {
+    const before = telegramRelayByChat.size
+    unbindRelaySessionsByWcId(s.wcId)
+    detached = telegramRelayByChat.size !== before
+  }
+
+  if (detached) {
+    broadcastTelegramStatus()
+    const sync = await syncSessionContextAfterTelegramDetach(s, chatId, s.activeCli)
+    if (chatId && telegramBridge?.getStatus()?.running) {
+      const cliLabel = s.activeCli === 'codex' ? 'Codex' : 'Claude'
+      try { await telegramBridge.sendMessageTo(chatId, `🔌 Sesión de ${cliLabel} desconectada del relay PTY.`) } catch {}
+    }
+    return {
+      ok: true,
+      linked: false,
+      detached: true,
+      chatId: chatId || null,
+      cli: s.activeCli,
+      sync
+    }
+  }
+
+  return {
+    ok: true,
+    linked: false,
+    detached: false,
+    chatId: chatId || null,
+    cli: s.activeCli,
+    sync: { ok: true, refreshed: false, reason: 'already-detached' }
   }
 })
 

@@ -158,6 +158,31 @@ button:active { transform: scale(0.93); }
   50% { box-shadow: 0 0 0 8px rgba(255, 80, 112, 0); }
 }
 
+/* telegram linked-live indicator */
+#btn-send-telegram .tg-logo {
+  width: 16px;
+  height: 16px;
+  display: block;
+  stroke: none !important;
+}
+
+#btn-send-telegram .tg-logo .tg-bg {
+  fill: #229ed9;
+}
+
+#btn-send-telegram .tg-logo .tg-plane {
+  fill: #ffffff;
+}
+
+#btn-send-telegram.tg-linked-live .tg-logo {
+  animation: tg-blink 0.95s ease-in-out infinite;
+}
+
+@keyframes tg-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.38; }
+}
+
 /* ── MAIN LAYOUT ── */
 #main {
   flex: 1;

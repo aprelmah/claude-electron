@@ -276,26 +276,31 @@ async function refreshSendTelegramButton() {
     const wrap = btnSendTelegramWrap
     const reasons = {
       'no-session': 'No hay sesión',
-      'not-claude': 'Solo claude por ahora (cambia el CLI a claude)',
+      'not-supported-cli': 'CLI no soportado para relay (usa claude o codex)',
       'no-session-id': 'Aún no detecto el ID — habla un mensaje con claude y vuelve a intentarlo',
       'bridge-not-init': 'Telegram no inicializado',
       'bridge-not-running': 'Activa Telegram en Configuración',
       'no-allowed-user': 'Añade tu user ID en Configuración → Telegram → allowed users'
     }
 
-    btnSendTelegram.disabled = !ok
+    btnSendTelegram.disabled = !(ok || linked)
     btnSendTelegram.classList.toggle('active', linked || ok)
 
     if (linked) {
+      btnSendTelegram.classList.add('tg-linked-live')
+      btnSendTelegram.setAttribute('aria-label', 'Telegram enlazado')
       const chatLabel = linkedChatId ? ` (chat ${linkedChatId})` : ''
       const suffix = relayBusy ? ' Ahora mismo está procesando una petición.' : ''
       const tip = ok
-        ? `Enlazado en vivo${chatLabel}: Telegram usa esta sesión PTY directa (sin --resume).${suffix}`
+        ? `Enlazado en vivo${chatLabel}: Telegram usa esta sesión PTY directa (sin --resume). Pulsa para desconectar.${suffix}`
         : `Enlazado en vivo${chatLabel}, pero no disponible ahora: ${reasons[res?.reason] || 'No disponible'}.${suffix}`
       btnSendTelegram.title = tip
       if (wrap) wrap.title = tip
       return
     }
+
+    btnSendTelegram.classList.remove('tg-linked-live')
+    btnSendTelegram.setAttribute('aria-label', 'Enviar a Telegram')
 
     if (ok) {
       const tip = 'Conectar esta sesión viva a Telegram (relay directo, sin sobrecoste por turno)'
@@ -309,6 +314,8 @@ async function refreshSendTelegramButton() {
     }
   } catch {
     btnSendTelegram.disabled = true
+    btnSendTelegram.classList.remove('tg-linked-live')
+    btnSendTelegram.setAttribute('aria-label', 'Enviar a Telegram')
   }
 }
 
@@ -316,15 +323,43 @@ if (btnSendTelegram) {
   btnSendTelegram.addEventListener('click', async () => {
     if (btnSendTelegram.disabled) return
     btnSendTelegram.disabled = true
-    showStatus('Enviando sesión a Telegram…', 'busy')
     try {
+      const state = await window.api.canSendSessionToTelegram()
+      if (state && state.linked) {
+        showStatus('Desconectando sesión de Telegram…', 'busy')
+        const off = await window.api.disconnectSessionFromTelegram()
+        if (!off || off.ok === false) {
+          showStatus((off && off.error) || 'No se pudo desconectar', 'error', 6000)
+          btnSendTelegram.disabled = false
+          return
+        }
+        const cliLabel = off?.cli === 'codex' ? 'Codex' : 'Claude'
+        const sync = off?.sync || null
+        let statusText = `✓ Sesión ${cliLabel} desconectada de Telegram`
+        let statusKind = 'ok'
+        if (sync?.mode === 'codex' && sync?.refreshed && sync?.sessionId) {
+          statusText += ` · contexto recargado (${String(sync.sessionId).slice(0, 8)}…)`
+        } else if (sync?.mode === 'codex' && sync?.ok === false) {
+          statusText += ' · desconectada, pero falló recarga de contexto Codex'
+          statusKind = 'error'
+        }
+        showStatus(statusText, statusKind, statusKind === 'error' ? 7000 : 5000)
+        btnSendTelegram.classList.remove('tg-linked-live')
+        btnSendTelegram.classList.remove('active')
+        refreshSendTelegramButton()
+        return
+      }
+
+      showStatus('Enviando sesión a Telegram…', 'busy')
       const res = await window.api.sendSessionToTelegram()
       if (!res || res.ok === false) {
         showStatus((res && res.error) || 'No se pudo enviar', 'error', 6000)
         btnSendTelegram.disabled = false
         return
       }
-      showStatus(`✓ Sesión conectada a Telegram (ID ${res.sessionId.slice(0,8)}…) — relay PTY activo`, 'ok', 8000)
+      const cliLabel = res?.cli === 'codex' ? 'Codex' : 'Claude'
+      const sidPart = res?.sessionId ? ` (ID ${res.sessionId.slice(0, 8)}…)` : ''
+      showStatus(`✓ Sesión ${cliLabel} conectada a Telegram${sidPart} — relay PTY activo`, 'ok', 8000)
       btnSendTelegram.classList.add('active')
       refreshSendTelegramButton()
     } catch (err) {

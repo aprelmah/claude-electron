@@ -161,6 +161,7 @@ class TelegramBridge {
     onGetActiveCli,
     onGetCwd,
     onSetCli,
+    onUnlinkRelay,
     onStatus
   }) {
     this.tmpDir = tmpDir
@@ -169,6 +170,7 @@ class TelegramBridge {
     this.onGetActiveCli = onGetActiveCli
     this.onGetCwd = onGetCwd
     this.onSetCli = onSetCli
+    this.onUnlinkRelay = onUnlinkRelay
     this.onStatus = onStatus
 
     this.config = null
@@ -247,6 +249,12 @@ class TelegramBridge {
     const c = (cli === 'codex') ? 'codex' : 'claude'
     this._setSessionId(chatId, c, sessionId)
     return true
+  }
+
+  getSessionId(chatId, cli) {
+    if (!chatId) return null
+    const c = (cli === 'codex') ? 'codex' : 'claude'
+    return this._getSessionId(String(chatId), c)
   }
 
   async sendMessageTo(chatId, text) {
@@ -555,6 +563,7 @@ class TelegramBridge {
         '/status  -> estado del bridge',
         '/cwd     -> carpeta actual',
         '/reset   -> empezar conversación nueva (olvida sesión)',
+        '/salir   -> desconectar este chat del relay PTY',
         '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
         '',
@@ -588,6 +597,27 @@ class TelegramBridge {
       const ctrl = this.activeStreams.get(chatId)
       if (ctrl) try { ctrl.abort() } catch {}
       await this._sendMessage(chatId, 'Conversación reseteada. Próximo mensaje empieza sesión nueva.')
+      return
+    }
+
+    if (lower === '/salir' || lower === '/unlink' || lower === '/disconnect') {
+      const result = await this.onUnlinkRelay?.(String(chatId))
+      if (result?.ok) {
+        const sync = result.sync || null
+        if (result.detached) {
+          if (sync?.mode === 'codex' && sync?.refreshed) {
+            await this._sendMessage(chatId, 'Relay PTY desconectado. Contexto Codex recargado en la PTY de la app.')
+          } else if (sync?.mode === 'codex' && sync?.ok === false) {
+            await this._sendMessage(chatId, `Relay PTY desconectado, pero falló el refresco de contexto Codex: ${sync.error || 'error'}`)
+          } else {
+            await this._sendMessage(chatId, 'Relay PTY desconectado para este chat.')
+          }
+        } else {
+          await this._sendMessage(chatId, 'Este chat ya estaba desconectado del relay PTY.')
+        }
+      } else {
+        await this._sendMessage(chatId, `No se pudo desconectar: ${result?.error || 'error'}`)
+      }
       return
     }
 
