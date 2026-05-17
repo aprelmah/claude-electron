@@ -403,6 +403,12 @@ class TelegramBridge {
       return
     }
 
+    if (message.photo?.length) {
+      const largest = message.photo[message.photo.length - 1]
+      await this._handlePhoto(chatId, largest.file_id, message.caption || '')
+      return
+    }
+
     const text = (message.text || '').trim()
     if (!text) return
 
@@ -443,7 +449,7 @@ class TelegramBridge {
     const stream = new TelegramStream(this, chatId, null)
 
     try {
-      const fileHint = '[Sistema: si el usuario pide un archivo y lo encuentras en el sistema de archivos, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]\n\n'
+      const fileHint = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]\n\n'
       const result = await this.onRunQuery?.({
         cli,
         prompt: fileHint + prompt,
@@ -473,6 +479,33 @@ class TelegramBridge {
 
   async _sendChatAction(chatId, action) {
     return this._api('sendChatAction', { chat_id: chatId, action })
+  }
+
+  async _handlePhoto(chatId, fileId, caption) {
+    try {
+      const saveDir = path.join(os.homedir(), 'Desktop', 'Telegram')
+      if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true })
+
+      const fileInfo = await this._api('getFile', { file_id: fileId })
+      const filePath = fileInfo?.file_path
+      if (!filePath) throw new Error('No se pudo resolver file_path.')
+
+      const url = `https://api.telegram.org/file/bot${this.config.botToken}/${filePath}`
+      const buf = await this._downloadBuffer(url)
+
+      const ext = path.extname(filePath) || '.jpg'
+      const fileName = `foto-${Date.now()}${ext}`
+      const localPath = path.join(saveDir, fileName)
+      fs.writeFileSync(localPath, buf)
+
+      await this._sendMessage(chatId, `Foto guardada en ${localPath}`)
+
+      if (caption.trim()) {
+        await this._enqueueQuery(chatId, `${caption.trim()} (foto guardada en ${localPath})`)
+      }
+    } catch (err) {
+      await this._sendMessage(chatId, `Error guardando foto: ${err?.message || err}`)
+    }
   }
 
   async _handleVoice(chatId, fileId) {
