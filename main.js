@@ -859,8 +859,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     if (s) s.lastPtyDataAt = Date.now()
     if (!s || !s.win || s.win.isDestroyed()) return
-    // Relay Telegram usa el mismo PTY; en modo relay evitamos "ensuciar" el terminal local.
-    if (s.relayActive) return
+    // Modo espejo: durante relay Telegram también pintamos el stream en el PTY local.
     s.win.webContents.send('pty-data', data)
   })
 

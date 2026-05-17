@@ -5,6 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev": "electron .",
+    "dev:trace": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "electron-builder --mac --arm64 --x64",
     "build:zip": "electron-builder --mac zip --arm64 --x64",
