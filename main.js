@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -27,6 +27,10 @@ const HOMEBREW_BIN = '/usr/local/bin'
 const TMP_DIR = '/tmp/claude-electron'
 const AGENT_PROPOSAL_BASE = '/tmp/poweragent-proposal'
 const AGENT_PROPOSAL_POLL_MS = 1500
+const CODEX_HOME_DIR = path.join(os.homedir(), '.codex')
+const CODEX_HISTORY_PATH = path.join(CODEX_HOME_DIR, 'history.jsonl')
+const CODEX_SESSION_INDEX_PATH = path.join(CODEX_HOME_DIR, 'session_index.jsonl')
+const CODEX_STATE_DB_PATH = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
 const FFMPEG_BIN = resolveCommand([
   process.env.FFMPEG_BIN,
@@ -891,6 +895,7 @@ async function syncSessionContextAfterTelegramDetach(session, chatId, cliHint = 
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
   if (session.pty) return session.pty
+  session.ptyStartedAt = Date.now()
   if (cols && rows) {
     session.cols = cols
     session.rows = rows
@@ -906,7 +911,11 @@ function startPty(session, cols, rows, cwd, args = []) {
   const sessionFilesBefore = session.activeCli === 'claude'
     ? snapshotClaudeSessions(session.cwd)
     : null
-  session.claudeSessionId = null
+  if (session.activeCli === 'claude') {
+    session.claudeSessionId = extractClaudeResumeId(args)
+  } else if (session.activeCli === 'codex') {
+    session.codexSessionId = extractCodexResumeId(args)
+  }
 
   let proc
   try {
@@ -1052,6 +1061,9 @@ function createWindow() {
     rows: 35,
     cwd: os.homedir(),
     activeCli: appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude',
+    claudeSessionId: null,
+    codexSessionId: null,
+    ptyStartedAt: 0,
     relayActive: false,
     relayListener: null,
     relayCancel: null,
@@ -1821,6 +1833,224 @@ function extractTurnText(obj) {
   return ''
 }
 
+let codexHistoryCache = { key: '', rows: [] }
+let codexSessionIndexCache = { key: '', byId: new Map() }
+let codexStateThreadCache = new Map()
+
+function fileCacheKey(filePath) {
+  try {
+    const st = fs.statSync(filePath)
+    return `${st.mtimeMs}:${st.size}`
+  } catch {
+    return ''
+  }
+}
+
+function clipText(text, max = 160) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+function loadCodexHistoryRows() {
+  const key = fileCacheKey(CODEX_HISTORY_PATH)
+  if (!key) return []
+  if (codexHistoryCache.key === key) return codexHistoryCache.rows
+
+  let rows = []
+  try {
+    const raw = fs.readFileSync(CODEX_HISTORY_PATH, 'utf-8')
+    rows = raw
+      .split('\n')
+      .map((line) => {
+        if (!line.trim()) return null
+        try {
+          const obj = JSON.parse(line)
+          const sessionId = typeof obj?.session_id === 'string' ? obj.session_id.trim() : ''
+          const ts = Number(obj?.ts)
+          const tsMs = Number.isFinite(ts) ? ts * 1000 : 0
+          const text = typeof obj?.text === 'string' ? clipText(obj.text, 220) : ''
+          if (!sessionId) return null
+          return { sessionId, tsMs, text }
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+  } catch {}
+
+  if (rows.length > 5000) rows = rows.slice(-5000)
+  codexHistoryCache = { key, rows }
+  return rows
+}
+
+function loadCodexSessionIndexMap() {
+  const key = fileCacheKey(CODEX_SESSION_INDEX_PATH)
+  if (!key) return new Map()
+  if (codexSessionIndexCache.key === key) return codexSessionIndexCache.byId
+
+  const byId = new Map()
+  try {
+    const raw = fs.readFileSync(CODEX_SESSION_INDEX_PATH, 'utf-8')
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        const id = typeof obj?.id === 'string' ? obj.id.trim() : ''
+        const title = clipText(obj?.thread_name || obj?.title || obj?.preview || '', 220)
+        if (id && title) byId.set(id, title)
+      } catch {}
+    }
+  } catch {}
+
+  codexSessionIndexCache = { key, byId }
+  return byId
+}
+
+function escapeSqlLiteral(text) {
+  return String(text || '').replace(/'/g, "''")
+}
+
+function readCodexStateThreadMeta(threadId) {
+  const id = String(threadId || '').trim()
+  if (!id) return null
+  if (codexStateThreadCache.has(id)) return codexStateThreadCache.get(id)
+  if (!fs.existsSync(CODEX_STATE_DB_PATH)) return null
+
+  const sql = `select json_object('title', coalesce(title,''), 'cwd', coalesce(cwd,'')) from threads where id='${escapeSqlLiteral(id)}' order by updated_at desc limit 1;`
+  let meta = null
+  try {
+    const out = spawnSync('sqlite3', [CODEX_STATE_DB_PATH, sql], {
+      encoding: 'utf8',
+      timeout: 1200,
+      maxBuffer: 1024 * 256
+    })
+    if (!out.error && out.status === 0) {
+      const line = String(out.stdout || '').trim().split('\n')[0] || ''
+      if (line.startsWith('{')) {
+        const obj = JSON.parse(line)
+        meta = {
+          title: clipText(obj?.title || '', 220),
+          cwd: String(obj?.cwd || '').trim()
+        }
+      }
+    }
+  } catch {}
+
+  codexStateThreadCache.set(id, meta)
+  if (codexStateThreadCache.size > 500) {
+    const oldest = codexStateThreadCache.keys().next().value
+    if (oldest) codexStateThreadCache.delete(oldest)
+  }
+  return meta
+}
+
+function extractCodexResumeId(args) {
+  if (!Array.isArray(args) || args.length < 2) return null
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === 'resume' && args[i + 1]) return String(args[i + 1]).trim()
+  }
+  return null
+}
+
+function extractClaudeResumeId(args) {
+  if (!Array.isArray(args) || args.length < 2) return null
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '--resume' && args[i + 1]) return String(args[i + 1]).trim()
+  }
+  return null
+}
+
+function guessCodexSessionFromHistory(session) {
+  const rows = loadCodexHistoryRows()
+  if (!rows.length) return null
+
+  const sinceMs = Math.max(
+    Number(session?.ptyStartedAt || 0),
+    Number(session?.lastLocalInputAt || 0) - 1500
+  )
+
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]
+    if (!row?.sessionId) continue
+    if (sinceMs > 0 && row.tsMs > 0 && row.tsMs + 2000 < sinceMs) continue
+    return row
+  }
+
+  return rows[rows.length - 1] || null
+}
+
+function readClaudeSessionTitle(cwd, sessionId) {
+  const sid = String(sessionId || '').trim()
+  if (!sid) return { title: '', path: null }
+  const dir = resolveClaudeProjectDir(cwd)
+  const file = dir ? path.join(dir, `${sid}.jsonl`) : null
+  if (!file || !fs.existsSync(file)) return { title: '', path: file }
+
+  try {
+    const raw = fs.readFileSync(file, 'utf-8')
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        if (obj?.type !== 'user') continue
+        const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
+        if (text && !text.startsWith('Caveat:')) {
+          return { title: clipText(text), path: file }
+        }
+      } catch {}
+    }
+  } catch {}
+  return { title: '', path: file }
+}
+
+function buildCurrentSessionMeta(session) {
+  const cli = session?.activeCli === 'codex' ? 'codex' : 'claude'
+  const cwd = session?.cwd || os.homedir()
+
+  if (cli === 'claude') {
+    let sessionId = session?.claudeSessionId || null
+    if (!sessionId) {
+      const latest = listClaudeSessionFilesWithMtime(cwd)[0]
+      if (latest?.sessionId) {
+        sessionId = latest.sessionId
+        session.claudeSessionId = sessionId
+      }
+    }
+    const info = readClaudeSessionTitle(cwd, sessionId)
+    return {
+      cli,
+      cwd,
+      sessionId: sessionId || null,
+      title: info.title || '(sin título)',
+      path: info.path || null
+    }
+  }
+
+  let sessionId = session?.codexSessionId || null
+  let fallbackTitle = ''
+  if (!sessionId) {
+    const guess = guessCodexSessionFromHistory(session)
+    if (guess?.sessionId) {
+      sessionId = guess.sessionId
+      session.codexSessionId = sessionId
+      fallbackTitle = guess.text || ''
+    }
+  }
+
+  const stateMeta = sessionId ? readCodexStateThreadMeta(sessionId) : null
+  const indexTitle = sessionId ? (loadCodexSessionIndexMap().get(sessionId) || '') : ''
+  const title = clipText(stateMeta?.title || indexTitle || fallbackTitle, 160) || '(sin título)'
+
+  return {
+    cli,
+    cwd,
+    sessionId: sessionId || null,
+    title,
+    path: null
+  }
+}
+
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
   if (!sessionId) return { sessionId, prompt }
   const baseCwd = cwd || getCwdSync()
@@ -2506,6 +2736,25 @@ ipcMain.handle('get-active-cli', (event) => {
   return s ? s.activeCli : (appConfig.cli.defaultCli || 'claude')
 })
 
+ipcMain.handle('get-current-session-meta', (event) => {
+  const s = getSessionByEvent(event)
+  if (!s) {
+    return { cli: appConfig.cli.defaultCli || 'claude', cwd: os.homedir(), sessionId: null, title: '(sin sesión)' }
+  }
+  return buildCurrentSessionMeta(s)
+})
+
+ipcMain.handle('clipboard-write-text', (_event, text) => {
+  const value = String(text || '')
+  if (!value.trim()) return false
+  try {
+    clipboard.writeText(value)
+    return true
+  } catch {
+    return false
+  }
+})
+
 ipcMain.handle('set-active-cli', (event, cli) => {
   const s = getSessionByEvent(event)
   const result = setActiveCli(s, cli)
@@ -2560,7 +2809,8 @@ ipcMain.handle('app:can-send-to-telegram', (event) => {
   const status = telegramBridge.getStatus()
   if (!status.running) return withLink({ ok: false, reason: 'bridge-not-running' })
   if (!preferredChatId) return withLink({ ok: false, reason: 'no-allowed-user' })
-  return withLink({ ok: true, sessionId: s.claudeSessionId, cwd: s.cwd })
+  const meta = buildCurrentSessionMeta(s)
+  return withLink({ ok: true, sessionId: meta?.sessionId || null, cwd: s.cwd })
 })
 
 ipcMain.handle('app:send-session-to-telegram', async (event) => {
@@ -2577,10 +2827,15 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
   if (!status.running) return { ok: false, error: 'Telegram bridge no está corriendo (actívalo en Configuración).' }
   const chatId = telegramBridge.getFirstAllowedUserId()
   if (!chatId) return { ok: false, error: 'No hay usuarios autorizados en Telegram (configúralos en Configuración).' }
+  const currentMeta = buildCurrentSessionMeta(s)
+  const currentSessionId = currentMeta?.sessionId || null
 
   try {
     if (s.activeCli === 'claude' && s.claudeSessionId) {
       telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
+    } else if (s.activeCli === 'codex' && currentSessionId) {
+      s.codexSessionId = currentSessionId
+      telegramBridge.adoptSession(chatId, 'codex', currentSessionId)
     }
     bindRelaySessionToTelegramChat(chatId, s)
     broadcastTelegramStatus()
@@ -2590,15 +2845,15 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
       `📱 Sesión de ${cliLabel} conectada a Telegram`,
       `📂 Carpeta: ${cwdShort}`,
     ]
-    if (s.activeCli === 'claude' && s.claudeSessionId) {
-      lines.push(`🆔 ${s.claudeSessionId.slice(0, 8)}…`)
+    if (currentSessionId) {
+      lines.push(`🆔 ${String(currentSessionId).slice(0, 8)}…`)
     }
     lines.push('', 'Desde ahora, cuando escribas al bot, usará esta sesión viva del PTY.')
     const text = lines.join('\n')
     await telegramBridge.sendMessageTo(chatId, text)
     // Mantener PTY vivo: Telegram usa relay directo sobre esta sesión (sin --resume por turno).
-    try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: s.claudeSessionId, chatId }) } catch {}
-    return { ok: true, sessionId: s.claudeSessionId || null, chatId: String(chatId), linked: true, cli: s.activeCli }
+    try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: currentSessionId, chatId }) } catch {}
+    return { ok: true, sessionId: currentSessionId, chatId: String(chatId), linked: true, cli: s.activeCli }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }

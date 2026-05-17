@@ -183,6 +183,73 @@ button:active { transform: scale(0.93); }
   50% { opacity: 0.38; }
 }
 
+#session-strip {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.session-strip-cli {
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-weight: 700;
+}
+
+.session-strip-cli.codex {
+  color: var(--ok);
+  background: var(--bg3);
+  border-color: var(--border);
+}
+
+#session-strip-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-strip-id {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  padding: 3px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  max-width: 42%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-strip-id:disabled {
+  opacity: 0.8;
+  cursor: default;
+}
+
+.session-strip-id.ready {
+  color: var(--text);
+}
+
+.session-strip-id.ready:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── MAIN LAYOUT ── */
 #main {
   flex: 1;

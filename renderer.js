@@ -56,6 +56,9 @@ const cfgTelegramClaudeEffort = document.getElementById('cfg-telegram-claude-eff
 const cfgTelegramCodexModel = document.getElementById('cfg-telegram-codex-model')
 const cfgTelegramCodexEffort = document.getElementById('cfg-telegram-codex-effort')
 const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
+const sessionStripCli = document.getElementById('session-strip-cli')
+const sessionStripTitle = document.getElementById('session-strip-title')
+const sessionStripId = document.getElementById('session-strip-id')
 
 // ── Themes ──
 const THEMES = {
@@ -194,6 +197,66 @@ function errorMessage(err) {
   return err?.message || String(err)
 }
 
+let sessionMetaRefreshInFlight = false
+let sessionMetaLastKey = ''
+
+function ellipsize(text, max = 110) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+function renderSessionStrip(meta) {
+  if (!sessionStripCli || !sessionStripTitle || !sessionStripId) return
+  const cli = meta?.cli === 'codex' ? 'codex' : 'claude'
+  const sid = meta?.sessionId ? String(meta.sessionId).trim() : ''
+  const title = ellipsize(meta?.title || '(sin título)', 140)
+  const displayCli = cli === 'codex' ? 'Codex' : 'Claude'
+
+  sessionStripCli.textContent = displayCli
+  sessionStripCli.classList.toggle('codex', cli === 'codex')
+  sessionStripTitle.textContent = `Sesión: ${title}`
+  sessionStripTitle.title = `${displayCli} · ${meta?.title || '(sin título)'}`
+
+  if (sid) {
+    sessionStripId.disabled = false
+    sessionStripId.classList.add('ready')
+    sessionStripId.dataset.sessionId = sid
+    sessionStripId.textContent = sid
+    sessionStripId.title = 'Copiar UID exacta de sesión'
+  } else {
+    sessionStripId.disabled = true
+    sessionStripId.classList.remove('ready')
+    sessionStripId.dataset.sessionId = ''
+    sessionStripId.textContent = 'UID: —'
+    sessionStripId.title = 'UID todavía no detectada'
+  }
+}
+
+async function refreshSessionStrip(force = false) {
+  if (sessionMetaRefreshInFlight && !force) return
+  sessionMetaRefreshInFlight = true
+  try {
+    const meta = await window.api.getCurrentSessionMeta()
+    const key = `${meta?.cli || ''}|${meta?.sessionId || ''}|${meta?.title || ''}`
+    if (force || key !== sessionMetaLastKey) {
+      sessionMetaLastKey = key
+      renderSessionStrip(meta || null)
+    }
+  } catch {}
+  sessionMetaRefreshInFlight = false
+}
+
+if (sessionStripId) {
+  sessionStripId.addEventListener('click', async () => {
+    const sid = sessionStripId.dataset.sessionId || ''
+    if (!sid) return
+    const ok = await window.api.copyText(sid)
+    if (ok) showStatus('UID de sesión copiada', 'ok', 1500)
+    else showStatus('No pude copiar la UID', 'error', 2500)
+  })
+}
+
 function renderTelegramStatus(status) {
   if (!status) {
     cfgTelegramStatus.textContent = 'Estado: bridge no inicializado.'
@@ -244,6 +307,7 @@ async function fullRestart(cwd) {
   term.reset()
   term.clear()
   await window.api.restartPty(cwd, term.cols, term.rows)
+  await refreshSessionStrip(true)
   fitAndSync()
 }
 
@@ -347,6 +411,7 @@ if (btnSendTelegram) {
         btnSendTelegram.classList.remove('tg-linked-live')
         btnSendTelegram.classList.remove('active')
         refreshSendTelegramButton()
+        refreshSessionStrip(true)
         return
       }
 
@@ -362,6 +427,7 @@ if (btnSendTelegram) {
       showStatus(`✓ Sesión ${cliLabel} conectada a Telegram${sidPart} — relay PTY activo`, 'ok', 8000)
       btnSendTelegram.classList.add('active')
       refreshSendTelegramButton()
+      refreshSessionStrip(true)
     } catch (err) {
       showStatus(errorMessage(err), 'error', 6000)
       btnSendTelegram.disabled = false
@@ -375,7 +441,10 @@ if (btnSendTelegram) {
     window.api.onTelegramStatus(() => refreshSendTelegramButton())
   }
   if (window.api.onPtyTransferredToTelegram) {
-    window.api.onPtyTransferredToTelegram(() => refreshSendTelegramButton())
+    window.api.onPtyTransferredToTelegram(() => {
+      refreshSendTelegramButton()
+      refreshSessionStrip(true)
+    })
   }
 }
 
@@ -429,6 +498,7 @@ btnSaveSettings.addEventListener('click', async () => {
   cliSelector.value = currentCli
   try {
     await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+    await refreshSessionStrip(true)
     fitAndSync()
     term.focus()
   } catch (err) {
@@ -1397,6 +1467,7 @@ async function openSessions() {
         previewEl.textContent = res.title || val
         s.preview = previewEl.textContent
         showStatus('Título original actualizado', 'ok', 2500)
+        refreshSessionStrip(true)
       }
 
       input.addEventListener('blur', () => { commit().catch(() => rollback()) })
@@ -1431,6 +1502,7 @@ async function openSessions() {
         await window.api.resumeSession(s.id, cwd, term.cols, term.rows)
         fitAndSync()
         await updateCwdLabel()
+        await refreshSessionStrip(true)
         hideStatus()
         term.focus()
       } catch (err) {
@@ -1498,6 +1570,7 @@ cliSelector.addEventListener('change', async (e) => {
   fitAndSync()
   try {
     await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+    await refreshSessionStrip(true)
     fitAndSync()
     term.focus()
     localStorage.setItem(CLI_KEY, newCli)
@@ -1512,6 +1585,7 @@ cliSelector.addEventListener('change', async (e) => {
         term.clear()
         fitAndSync()
         await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
+        await refreshSessionStrip(true)
         fitAndSync()
         term.focus()
       } catch {}
@@ -1541,6 +1615,7 @@ cliSelector.addEventListener('change', async (e) => {
   }
   cliSelector.value = initialCli
   renderTelegramStatus(await window.api.getTelegramStatus())
+  await refreshSessionStrip(true)
 
   try {
     await window.api.startPty(term.cols, term.rows, initialRoot)
@@ -1550,7 +1625,9 @@ cliSelector.addEventListener('change', async (e) => {
   }
   await setRoot(initialRoot)
   await updateCwdLabel()
+  await refreshSessionStrip(true)
   applyView(currentView)
+  setInterval(() => { refreshSessionStrip(false) }, 3500)
 
   window.api.onTreeChanged(() => scheduleTreeRefresh())
 
