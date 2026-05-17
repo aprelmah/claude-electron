@@ -270,23 +270,39 @@ async function refreshSendTelegramButton() {
   try {
     const res = await window.api.canSendSessionToTelegram()
     const ok = !!(res && res.ok)
-    btnSendTelegram.disabled = !ok
-    btnSendTelegram.classList.toggle('active', ok)
+    const linked = !!(res && res.linked)
+    const linkedChatId = res && res.chatId ? String(res.chatId) : ''
+    const relayBusy = !!(res && res.relayActive)
     const wrap = btnSendTelegramWrap
+    const reasons = {
+      'no-session': 'No hay sesión',
+      'not-claude': 'Solo claude por ahora (cambia el CLI a claude)',
+      'no-session-id': 'Aún no detecto el ID — habla un mensaje con claude y vuelve a intentarlo',
+      'bridge-not-init': 'Telegram no inicializado',
+      'bridge-not-running': 'Activa Telegram en Configuración',
+      'no-allowed-user': 'Añade tu user ID en Configuración → Telegram → allowed users'
+    }
+
+    btnSendTelegram.disabled = !ok
+    btnSendTelegram.classList.toggle('active', linked || ok)
+
+    if (linked) {
+      const chatLabel = linkedChatId ? ` (chat ${linkedChatId})` : ''
+      const suffix = relayBusy ? ' Ahora mismo está procesando una petición.' : ''
+      const tip = ok
+        ? `Enlazado en vivo${chatLabel}: Telegram usa esta sesión PTY directa (sin --resume).${suffix}`
+        : `Enlazado en vivo${chatLabel}, pero no disponible ahora: ${reasons[res?.reason] || 'No disponible'}.${suffix}`
+      btnSendTelegram.title = tip
+      if (wrap) wrap.title = tip
+      return
+    }
+
     if (ok) {
-      const tip = 'Llevar esta sesión a Telegram (mata el chat aquí y te aviso en el móvil)'
+      const tip = 'Conectar esta sesión viva a Telegram (relay directo, sin sobrecoste por turno)'
       btnSendTelegram.title = tip
       if (wrap) wrap.title = tip
     } else {
       const reason = res && res.reason
-      const reasons = {
-        'no-session': 'No hay sesión',
-        'not-claude': 'Solo claude por ahora (cambia el CLI a claude)',
-        'no-session-id': 'Aún no detecto el ID — habla un mensaje con claude y vuelve a intentarlo',
-        'bridge-not-init': 'Telegram no inicializado',
-        'bridge-not-running': 'Activa Telegram en Configuración',
-        'no-allowed-user': 'Añade tu user ID en Configuración → Telegram → allowed users'
-      }
       const tip = '📱 ' + (reasons[reason] || 'No disponible')
       btnSendTelegram.title = tip
       if (wrap) wrap.title = tip
@@ -308,9 +324,9 @@ if (btnSendTelegram) {
         btnSendTelegram.disabled = false
         return
       }
-      showStatus(`✓ Sesión enviada a Telegram (ID ${res.sessionId.slice(0,8)}…) — terminal local cerrado`, 'ok', 8000)
-      // El PTY se mató en el backend; aquí solo refrescamos UI.
-      btnSendTelegram.classList.remove('active')
+      showStatus(`✓ Sesión conectada a Telegram (ID ${res.sessionId.slice(0,8)}…) — relay PTY activo`, 'ok', 8000)
+      btnSendTelegram.classList.add('active')
+      refreshSendTelegramButton()
     } catch (err) {
       showStatus(errorMessage(err), 'error', 6000)
       btnSendTelegram.disabled = false

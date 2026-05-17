@@ -453,6 +453,8 @@ class TelegramBridge {
       const result = await this.onRunQuery?.({
         cli,
         prompt: fileHint + prompt,
+        userPrompt: prompt,
+        chatId: String(chatId),
         sessionId,
         signal: abortController.signal,
         onText: (text) => stream.appendText(text),

@@ -41,6 +41,7 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
+const telegramRelayByChat = new Map() // chatId(string) -> wcId(number)
 const viewerWindows = new Set()
 let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
@@ -432,6 +433,369 @@ function findUpdatedOrNewClaudeSessionId(cwd, snapshotBefore) {
   return null
 }
 
+function snapshotClaudeSessionMeta(cwd) {
+  const dir = claudeProjectSessionsDir(cwd)
+  const snap = new Map()
+  if (!dir) return snap
+  try {
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.jsonl')) continue
+      const p = path.join(dir, file)
+      try {
+        const st = fs.statSync(p)
+        snap.set(file, { size: st.size, mtimeMs: st.mtimeMs })
+      } catch {}
+    }
+  } catch {}
+  return snap
+}
+
+function pickRelayTranscriptCandidate(cwd, beforeMeta, preferredSessionId) {
+  const dir = claudeProjectSessionsDir(cwd)
+  if (!dir) return null
+  const rows = listClaudeSessionFilesWithMtime(cwd)
+  if (rows.length === 0) return null
+
+  const preferredFile = preferredSessionId ? `${preferredSessionId}.jsonl` : null
+  const isChanged = (row) => {
+    const before = beforeMeta.get(row.file)
+    return !before || row.mtimeMs > before.mtimeMs
+  }
+
+  if (preferredFile) {
+    const changedPreferred = rows.find((r) => r.file === preferredFile && isChanged(r))
+    if (changedPreferred) {
+      return { ...changedPreferred, filePath: path.join(dir, changedPreferred.file), before: beforeMeta.get(changedPreferred.file) || null }
+    }
+  }
+
+  const changedAny = rows.find((r) => isChanged(r))
+  if (changedAny) {
+    return { ...changedAny, filePath: path.join(dir, changedAny.file), before: beforeMeta.get(changedAny.file) || null }
+  }
+
+  if (preferredFile) {
+    const preferred = rows.find((r) => r.file === preferredFile)
+    if (preferred) {
+      return { ...preferred, filePath: path.join(dir, preferred.file), before: beforeMeta.get(preferred.file) || null }
+    }
+  }
+
+  const latest = rows[0]
+  return latest ? { ...latest, filePath: path.join(dir, latest.file), before: beforeMeta.get(latest.file) || null } : null
+}
+
+function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0) {
+  try {
+    const rawBuf = fs.readFileSync(transcriptPath)
+    if (!rawBuf || rawBuf.length === 0) return { text: '', sawAssistant: false, sawEndTurn: false }
+
+    const start = Math.max(0, Math.min(offsetBytes || 0, rawBuf.length))
+    let slice = rawBuf.slice(start).toString('utf8')
+    if (start > 0) {
+      // Si arrancamos en mitad de línea JSON, descarta hasta el siguiente \n.
+      const firstNl = slice.indexOf('\n')
+      slice = firstNl === -1 ? '' : slice.slice(firstNl + 1)
+    }
+    if (!slice.trim()) return { text: '', sawAssistant: false, sawEndTurn: false }
+
+    let lastAssistantText = ''
+    let sawAssistant = false
+    let sawEndTurn = false
+    const lines = slice.split('\n')
+    for (const raw of lines) {
+      const line = raw.trim()
+      if (!line) continue
+      let obj
+      try { obj = JSON.parse(line) } catch { continue }
+      if (obj?.type !== 'assistant') continue
+      sawAssistant = true
+      const text = extractTurnText(obj)
+      if (text) lastAssistantText = text
+      if (obj?.message?.stop_reason === 'end_turn') sawEndTurn = true
+    }
+    return { text: lastAssistantText, sawAssistant, sawEndTurn }
+  } catch {
+    return { text: '', sawAssistant: false, sawEndTurn: false }
+  }
+}
+
+function cleanRelayFallbackText(raw) {
+  const clean = flattenTerminal(stripAnsi(String(raw || '')))
+  if (!clean) return ''
+  return clean
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return false
+      if (/^(\*+\s*(Brewed|Sauteed|Cogitated)\b)/i.test(t)) return false
+      if (/^bypass permissions on\b/i.test(t)) return false
+      if (/^\$0\.0000\b/.test(t)) return false
+      if (/^\/model\b/i.test(t)) return false
+      if (/^Claude Code v/i.test(t)) return false
+      if (/^Haiku\b/i.test(t)) return false
+      if (/^\s*[›>]\s*$/.test(t)) return false
+      return true
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+async function relayThroughPty(session, prompt, { onText, signal } = {}) {
+  if (!session?.pty || !session?.cwd) return null
+  if (session.activeCli !== 'claude') return null
+  if (session.relayActive) return null
+  const message = String(prompt || '').trim()
+  if (!message) return null
+
+  const beforeMeta = snapshotClaudeSessionMeta(session.cwd)
+  const latest = listClaudeSessionFilesWithMtime(session.cwd)[0]
+  const preferredSessionId = session.claudeSessionId || latest?.sessionId || null
+  if (!session.claudeSessionId && preferredSessionId) session.claudeSessionId = preferredSessionId
+
+  session.relayActive = true
+
+  return new Promise((resolve, reject) => {
+    const MAX_WAIT_MS = 120000
+    const WAIT_FIRST_OUTPUT_MS = 25000
+    const SILENCE_MS = 2200
+    const ECHO_SKIP_MS = 700
+    const FORCE_FINAL_TEXT_MS = 15000
+    const FORCE_END_RELAY_MS = 45000
+    const MAX_CAPTURE_CHARS = 180000
+
+    const startedAt = Date.now()
+    let lastDataAt = startedAt
+    let sawAnyOutput = false
+    let capture = ''
+    let finalized = false
+    let silenceTimer = null
+    let firstOutputTimer = null
+    let maxTimer = null
+
+    const finishErr = (err) => {
+      cleanup()
+      reject(err)
+    }
+
+    const finishOk = (text, sid) => {
+      cleanup()
+      const finalText = String(text || '').trim()
+      if (!finalText) {
+        const err = new Error('Relay empty response')
+        err.name = 'RelayEmpty'
+        reject(err)
+        return
+      }
+      onText?.(finalText)
+      resolve({ sessionId: sid || session.claudeSessionId || preferredSessionId || null, text: finalText })
+    }
+
+    const armSilenceTimer = () => {
+      if (silenceTimer) clearTimeout(silenceTimer)
+      silenceTimer = setTimeout(checkForFinish, SILENCE_MS)
+    }
+
+    const buildRelayResult = () => {
+      const candidate = pickRelayTranscriptCandidate(session.cwd, beforeMeta, session.claudeSessionId || preferredSessionId)
+      let fromTranscript = { text: '', sawAssistant: false, sawEndTurn: false }
+      let sid = session.claudeSessionId || preferredSessionId || null
+      if (candidate) {
+        sid = candidate.sessionId || sid
+        const offset = candidate.before?.size || 0
+        fromTranscript = extractAssistantTextFromTranscript(candidate.filePath, offset)
+        if (!fromTranscript.text) {
+          // Rescate: última respuesta del transcript completo.
+          fromTranscript = extractAssistantTextFromTranscript(candidate.filePath, 0)
+        }
+      }
+      if (sid) session.claudeSessionId = sid
+      return { sid, fromTranscript }
+    }
+
+    const checkForFinish = () => {
+      if (finalized) return
+      if (!session?.pty) {
+        const err = new Error('PTY no disponible')
+        err.name = 'RelayPtyClosed'
+        finishErr(err)
+        return
+      }
+      const now = Date.now()
+      if (now - lastDataAt < SILENCE_MS - 40) {
+        armSilenceTimer()
+        return
+      }
+
+      const elapsed = now - startedAt
+      const { sid, fromTranscript } = buildRelayResult()
+      const text = String(fromTranscript.text || '').trim()
+      if (fromTranscript.sawEndTurn) {
+        finishOk(text, sid)
+        return
+      }
+      if (text && elapsed >= FORCE_FINAL_TEXT_MS) {
+        finishOk(text, sid)
+        return
+      }
+      if (elapsed >= FORCE_END_RELAY_MS) {
+        const fallbackText = text || cleanRelayFallbackText(capture)
+        finishOk(fallbackText, sid)
+        return
+      }
+      armSilenceTimer()
+    }
+
+    const onAbort = () => {
+      try { session.pty?.write('\u0003') } catch {}
+      const err = new Error('Request aborted')
+      err.name = 'AbortError'
+      finishErr(err)
+    }
+
+    const cleanup = () => {
+      if (finalized) return
+      finalized = true
+      if (silenceTimer) clearTimeout(silenceTimer)
+      if (firstOutputTimer) clearTimeout(firstOutputTimer)
+      if (maxTimer) clearTimeout(maxTimer)
+      if (signal) signal.removeEventListener('abort', onAbort)
+      if (session) {
+        session.relayActive = false
+        session.relayListener = null
+        session.relayCancel = null
+      }
+    }
+
+    session.relayListener = (chunk) => {
+      if (finalized) return
+      const raw = typeof chunk === 'string' ? chunk : String(chunk || '')
+      if (!raw) return
+      sawAnyOutput = true
+      lastDataAt = Date.now()
+      if (firstOutputTimer) {
+        clearTimeout(firstOutputTimer)
+        firstOutputTimer = null
+      }
+      if (lastDataAt - startedAt > ECHO_SKIP_MS) {
+        capture += raw
+        if (capture.length > MAX_CAPTURE_CHARS) capture = capture.slice(-MAX_CAPTURE_CHARS)
+      }
+      armSilenceTimer()
+    }
+
+    session.relayCancel = (err) => {
+      if (finalized) return
+      const relayErr = err instanceof Error ? err : new Error(String(err || 'Relay canceled'))
+      relayErr.name = relayErr.name || 'RelayCanceled'
+      finishErr(relayErr)
+    }
+
+    if (signal) {
+      if (signal.aborted) return onAbort()
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    firstOutputTimer = setTimeout(() => {
+      if (finalized || sawAnyOutput) return
+      const err = new Error('Relay no output')
+      err.name = 'RelayNoOutput'
+      finishErr(err)
+    }, WAIT_FIRST_OUTPUT_MS)
+
+    maxTimer = setTimeout(() => {
+      const err = new Error('Relay timeout')
+      err.name = 'RelayTimeout'
+      finishErr(err)
+    }, MAX_WAIT_MS)
+
+    armSilenceTimer()
+    try { session.pty.write(message + '\r') } catch (err) { finishErr(err); return }
+  })
+}
+
+function canRelayTelegramToPty(session) {
+  if (!session?.pty) return false
+  if (session.activeCli !== 'claude') return false
+  if (session.relayActive) return false
+  return true
+}
+
+function normalizeTelegramChatKey(chatId) {
+  if (chatId == null) return ''
+  const key = String(chatId).trim()
+  return key || ''
+}
+
+function getRelayBindingForChat(chatId) {
+  const key = normalizeTelegramChatKey(chatId)
+  if (!key) return { chatId: '', bound: false, wcId: null, session: null }
+  const wcId = telegramRelayByChat.get(key)
+  if (wcId == null) return { chatId: key, bound: false, wcId: null, session: null }
+  const session = sessions.get(wcId) || null
+  if (!session) {
+    telegramRelayByChat.delete(key)
+    return { chatId: key, bound: false, wcId: null, session: null }
+  }
+  return { chatId: key, bound: true, wcId, session }
+}
+
+function getRelayBindingForSession(session, preferredChatId = null) {
+  if (!session?.wcId) return { linked: false, chatId: null }
+  const preferredKey = normalizeTelegramChatKey(preferredChatId)
+  if (preferredKey && telegramRelayByChat.get(preferredKey) === session.wcId) {
+    return { linked: true, chatId: preferredKey }
+  }
+  for (const [chatId, boundWcId] of telegramRelayByChat.entries()) {
+    if (boundWcId === session.wcId) return { linked: true, chatId: String(chatId) }
+  }
+  return { linked: false, chatId: null }
+}
+
+function describeRelayUnavailable(session) {
+  if (!session) return 'la ventana enlazada ya no existe'
+  if (!session.pty) return 'el PTY de esa ventana no está iniciado'
+  if (session.activeCli !== 'claude') return `esa ventana ya no está en claude (CLI actual: ${session.activeCli})`
+  if (session.relayActive) return 'esa ventana está ocupada con otra petición'
+  return 'falló la lectura de respuesta del PTY'
+}
+
+function pickRelaySession() {
+  const primary = primaryWcId != null ? sessions.get(primaryWcId) : null
+  if (canRelayTelegramToPty(primary)) return primary
+  for (const s of sessions.values()) {
+    if (canRelayTelegramToPty(s)) return s
+  }
+  return null
+}
+
+function bindRelaySessionToTelegramChat(chatId, session) {
+  const key = normalizeTelegramChatKey(chatId)
+  if (!key || !session?.wcId) return
+  unbindRelaySessionsByWcId(session.wcId)
+  telegramRelayByChat.set(key, session.wcId)
+}
+
+function unbindRelaySessionsByWcId(wcId) {
+  for (const [chatId, boundWcId] of telegramRelayByChat.entries()) {
+    if (boundWcId === wcId) telegramRelayByChat.delete(chatId)
+  }
+}
+
+function pickRelaySessionForChat(chatId, allowFallback = true) {
+  const binding = getRelayBindingForChat(chatId)
+  if (binding.bound) {
+    if (canRelayTelegramToPty(binding.session)) return binding.session
+    if (!binding.session.pty || binding.session.activeCli !== 'claude') {
+      telegramRelayByChat.delete(binding.chatId)
+    }
+    return allowFallback ? pickRelaySession() : null
+  }
+  return allowFallback ? pickRelaySession() : null
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
@@ -490,7 +854,13 @@ function startPty(session, cols, rows, cwd, args = []) {
   proc.onData((data) => {
     if (!proc._alive) return
     const s = sessions.get(myWcId)
+    if (s?.relayListener) {
+      try { s.relayListener(data) } catch {}
+    }
+    if (s) s.lastPtyDataAt = Date.now()
     if (!s || !s.win || s.win.isDestroyed()) return
+    // Relay Telegram usa el mismo PTY; en modo relay evitamos "ensuciar" el terminal local.
+    if (s.relayActive) return
     s.win.webContents.send('pty-data', data)
   })
 
@@ -500,7 +870,17 @@ function startPty(session, cols, rows, cwd, args = []) {
       if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('pty-exit')
     }
     const s = sessions.get(myWcId)
-    if (s && s.pty === proc) s.pty = null
+    if (s && s.pty === proc) {
+      if (typeof s.relayCancel === 'function') {
+        const err = new Error('PTY cerrado')
+        err.name = 'RelayPtyClosed'
+        try { s.relayCancel(err) } catch {}
+      }
+      s.pty = null
+      s.relayActive = false
+      s.relayListener = null
+      s.relayCancel = null
+    }
   })
 
   if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
@@ -509,9 +889,17 @@ function startPty(session, cols, rows, cwd, args = []) {
 
 function killPty(session) {
   if (!session || !session.pty) return
+  if (typeof session.relayCancel === 'function') {
+    const err = new Error('PTY reiniciado')
+    err.name = 'RelayPtyClosed'
+    try { session.relayCancel(err) } catch {}
+  }
   session.pty._alive = false
   try { session.pty.kill() } catch {}
   session.pty = null
+  session.relayActive = false
+  session.relayListener = null
+  session.relayCancel = null
 }
 
 function setActiveCli(session, cli) {
@@ -532,6 +920,7 @@ function destroySession(wcId) {
   if (s.treeWatchDebounce) { clearTimeout(s.treeWatchDebounce); s.treeWatchDebounce = null }
   if (s.treeWatcher) { try { s.treeWatcher.close() } catch {} s.treeWatcher = null }
   killPty(s)
+  unbindRelaySessionsByWcId(wcId)
   sessions.delete(wcId)
   if (primaryWcId === wcId) {
     // freeze snapshot
@@ -570,6 +959,11 @@ function createWindow() {
     rows: 35,
     cwd: os.homedir(),
     activeCli: appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude',
+    relayActive: false,
+    relayListener: null,
+    relayCancel: null,
+    lastPtyDataAt: 0,
+    lastLocalInputAt: 0,
     treeWatcher: null,
     treeWatcherPath: null,
     treeWatchDebounce: null
@@ -1251,6 +1645,28 @@ function initTelegramBridge() {
       if (opts?.cli === 'codex') {
         return runCodexHeadless({ ...opts, cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
       }
+
+      const binding = getRelayBindingForChat(opts?.chatId)
+      const relaySession = pickRelaySessionForChat(opts?.chatId, !binding.bound)
+      if (relaySession) {
+        try {
+          const relayResult = await relayThroughPty(relaySession, opts?.userPrompt || opts?.prompt, {
+            onText: opts?.onText,
+            signal: opts?.signal
+          })
+          if (relayResult) return relayResult
+        } catch (err) {
+          if (err?.name === 'AbortError') throw err
+          if (binding.bound) {
+            throw new Error(`Relay PTY enlazado falló: ${describeRelayUnavailable(binding.session)}.`)
+          }
+          console.warn('[telegram-relay] PTY relay falló, usando fallback headless:', err?.name || err?.message || err)
+        }
+      }
+      if (binding.bound) {
+        throw new Error(`La sesión enlazada de Telegram no está disponible: ${describeRelayUnavailable(binding.session)}.`)
+      }
+
       const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
       return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
     },
@@ -1514,6 +1930,8 @@ ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => {
 
 ipcMain.on('pty-input', (event, data) => {
   const s = getSessionByEvent(event)
+  if (s?.relayActive) return
+  if (s) s.lastLocalInputAt = Date.now()
   s?.pty?.write(data)
 })
 
@@ -1963,14 +2381,19 @@ ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
 // ── Transferir sesión activa de la ventana a Telegram ──
 ipcMain.handle('app:can-send-to-telegram', (event) => {
   const s = sessions.get(event.sender.id)
-  if (!s) return { ok: false, reason: 'no-session' }
-  if (s.activeCli !== 'claude') return { ok: false, reason: 'not-claude' }
-  if (!s.claudeSessionId) return { ok: false, reason: 'no-session-id' }
-  if (!telegramBridge) return { ok: false, reason: 'bridge-not-init' }
+  if (!s) return { ok: false, reason: 'no-session', linked: false, chatId: null, relayActive: false }
+  const preferredChatId = telegramBridge?.getFirstAllowedUserId?.() || null
+  const binding = getRelayBindingForSession(s, preferredChatId)
+  const linkedChatId = binding.chatId || (preferredChatId == null ? null : String(preferredChatId))
+  const withLink = (payload) => ({ ...payload, linked: binding.linked, chatId: linkedChatId, relayActive: !!s.relayActive })
+
+  if (s.activeCli !== 'claude') return withLink({ ok: false, reason: 'not-claude' })
+  if (!s.claudeSessionId) return withLink({ ok: false, reason: 'no-session-id' })
+  if (!telegramBridge) return withLink({ ok: false, reason: 'bridge-not-init' })
   const status = telegramBridge.getStatus()
-  if (!status.running) return { ok: false, reason: 'bridge-not-running' }
-  if (!telegramBridge.getFirstAllowedUserId()) return { ok: false, reason: 'no-allowed-user' }
-  return { ok: true, sessionId: s.claudeSessionId, cwd: s.cwd }
+  if (!status.running) return withLink({ ok: false, reason: 'bridge-not-running' })
+  if (!preferredChatId) return withLink({ ok: false, reason: 'no-allowed-user' })
+  return withLink({ ok: true, sessionId: s.claudeSessionId, cwd: s.cwd })
 })
 
 ipcMain.handle('app:send-session-to-telegram', async (event) => {
@@ -1986,20 +2409,20 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
 
   try {
     telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
+    bindRelaySessionToTelegramChat(chatId, s)
     const cwdShort = path.basename(s.cwd || os.homedir())
     const sidShort = s.claudeSessionId.slice(0, 8)
     const text = [
-      '📱 Sesión de claude movida a Telegram',
+      '📱 Sesión de Claude conectada a Telegram',
       `📂 Carpeta: ${cwdShort}`,
       `🆔 ${sidShort}…`,
       '',
-      'Escríbeme cuando quieras y continuamos donde lo dejaste.'
+      'Desde ahora, cuando escribas al bot, usará esta sesión viva del PTY.'
     ].join('\n')
     await telegramBridge.sendMessageTo(chatId, text)
-    // Mata el PTY local para evitar pisar el .jsonl con la sesión que ahora vive en Telegram.
-    killPty(s)
+    // Mantener PTY vivo: Telegram usa relay directo sobre esta sesión (sin --resume por turno).
     try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: s.claudeSessionId, chatId }) } catch {}
-    return { ok: true, sessionId: s.claudeSessionId, chatId }
+    return { ok: true, sessionId: s.claudeSessionId, chatId: String(chatId), linked: true }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }
