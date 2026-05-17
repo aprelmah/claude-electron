@@ -14,6 +14,7 @@ const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
 const btnSettings = document.getElementById('btn-settings')
 const btnSendTelegram = document.getElementById('btn-send-telegram')
+const btnSendTelegramWrap = document.getElementById('btn-send-telegram-wrap')
 const cliSelector = document.getElementById('cli-selector')
 const termEl = document.getElementById('terminal')
 const termWrap = document.getElementById('terminal-wrap')
@@ -271,8 +272,11 @@ async function refreshSendTelegramButton() {
     const ok = !!(res && res.ok)
     btnSendTelegram.disabled = !ok
     btnSendTelegram.classList.toggle('active', ok)
+    const wrap = btnSendTelegramWrap
     if (ok) {
-      btnSendTelegram.title = 'Llevar esta sesión a Telegram (mata el chat aquí y te aviso en el móvil)'
+      const tip = 'Llevar esta sesión a Telegram (mata el chat aquí y te aviso en el móvil)'
+      btnSendTelegram.title = tip
+      if (wrap) wrap.title = tip
     } else {
       const reason = res && res.reason
       const reasons = {
@@ -283,7 +287,9 @@ async function refreshSendTelegramButton() {
         'bridge-not-running': 'Activa Telegram en Configuración',
         'no-allowed-user': 'Añade tu user ID en Configuración → Telegram → allowed users'
       }
-      btnSendTelegram.title = '📱 ' + (reasons[reason] || 'No disponible')
+      const tip = '📱 ' + (reasons[reason] || 'No disponible')
+      btnSendTelegram.title = tip
+      if (wrap) wrap.title = tip
     }
   } catch {
     btnSendTelegram.disabled = true

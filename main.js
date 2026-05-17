@@ -472,22 +472,19 @@ function startPty(session, cols, rows, cwd, args = []) {
   session.pty = proc
   const myWcId = session.wcId
 
-  // Polling corto para capturar el sessionId que claude cree en ~/.claude/projects/...
-  // Intentamos durante 12s (espera prudente: el .jsonl suele aparecer en <5s).
+  // Poll continuo para capturar el sessionId que claude cree/actualice en ~/.claude/projects/...
+  // Sigue hasta detectarlo o hasta que el PTY muera.
   if (sessionFilesBefore) {
-    let tries = 0
     const detect = setInterval(() => {
-      tries++
       const s = sessions.get(myWcId)
       if (!s || !s.pty || s.pty !== proc) { clearInterval(detect); return }
+      if (s.claudeSessionId) { clearInterval(detect); return }
       const sid = findUpdatedOrNewClaudeSessionId(s.cwd, sessionFilesBefore)
       if (sid) {
         s.claudeSessionId = sid
         clearInterval(detect)
-        return
       }
-      if (tries >= 12) clearInterval(detect)
-    }, 1000)
+    }, 2000)
   }
 
   proc.onData((data) => {
@@ -1300,7 +1297,7 @@ function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
   if (!sessionId) return { sessionId, prompt }
   const baseCwd = cwd || getCwdSync()
   const transcriptPath = path.join(projectDirFor(baseCwd), `${sessionId}.jsonl`)
-  if (!fs.existsSync(transcriptPath)) return { sessionId: null, prompt }
+  if (!fs.existsSync(transcriptPath)) return { sessionId, prompt }
 
   let raw
   try {
