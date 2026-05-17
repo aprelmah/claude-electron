@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
 
   listSessions: (cwd) => ipcRenderer.invoke('list-sessions', cwd),
   deleteSession: (cwd, sessionId) => ipcRenderer.invoke('delete-session', { cwd, sessionId }),
+  updateSessionTitle: (cwd, sessionId, title) => ipcRenderer.invoke('update-session-title', { cwd, sessionId, title }),
   resumeSession: (sessionId, cwd, cols, rows) => ipcRenderer.invoke('resume-session', { sessionId, cwd, cols, rows }),
 
   fileInfo: (p) => ipcRenderer.invoke('file-info', p),

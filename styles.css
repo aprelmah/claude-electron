@@ -635,8 +635,23 @@ body.layout-split #terminal-wrap { flex: 1; }
   flex-shrink: 0;
 }
 
-.session-row:hover .btn-rename { opacity: 0.6; }
+.btn-edit-content {
+  background: none;
+  border: none;
+  padding: 1px 3px;
+  cursor: pointer;
+  color: var(--text2);
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.session-row:hover .btn-rename,
+.session-row:hover .btn-edit-content { opacity: 0.6; }
 .btn-rename:hover { opacity: 1 !important; color: var(--accent); }
+.btn-edit-content:hover { opacity: 1 !important; color: var(--accent); }
 
 .session-name-input {
   font-size: 11px;
@@ -649,6 +664,18 @@ body.layout-split #terminal-wrap { flex: 1; }
   outline: none;
   width: 100%;
   max-width: 200px;
+}
+
+.session-title-input {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 4px 6px;
+  outline: none;
+  width: min(100%, 520px);
 }
 
 #btn-nav-back, #btn-nav-forward {

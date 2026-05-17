@@ -2402,12 +2402,8 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
       for (const line of lines) {
         try {
           const obj = JSON.parse(line)
-          if (obj.type === 'user' && obj.message?.content) {
-            const c = obj.message.content
-            let text = ''
-            if (typeof c === 'string') text = c
-            else if (Array.isArray(c)) text = c.map(x => x.text || '').join(' ')
-            text = text.replace(/<[^>]+>/g, '').trim()
+          if (obj.type === 'user') {
+            const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
             if (text && !text.startsWith('Caveat:')) {
               preview = text.slice(0, 160)
               break
@@ -2416,7 +2412,7 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
         } catch {}
       }
     } catch {}
-    return { id, mtime, size, preview: preview || '(sin contenido)', msgCount }
+    return { id, mtime, size, preview: preview || '(sin contenido)', msgCount, path: fullPath }
   }).sort((a, b) => b.mtime - a.mtime)
 })
 
@@ -2425,6 +2421,65 @@ ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
   const file = path.join(dir, `${sessionId}.jsonl`)
   if (fs.existsSync(file)) { fs.unlinkSync(file); return true }
   return false
+})
+
+ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title }) => {
+  try {
+    const nextTitle = String(title || '').trim()
+    if (!nextTitle) return { ok: false, error: 'El título no puede estar vacío.' }
+
+    const dir = resolveClaudeProjectDir(cwd)
+    const file = path.join(dir, `${sessionId}.jsonl`)
+    if (!fs.existsSync(file)) return { ok: false, error: 'No encontré el archivo de sesión.' }
+
+    const raw = fs.readFileSync(file, 'utf-8')
+    const hadTrailingNl = raw.endsWith('\n')
+    const lines = raw.split('\n')
+    let updated = false
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (!line.trim()) continue
+      let obj
+      try { obj = JSON.parse(line) } catch { continue }
+      if (obj?.type !== 'user' || !obj?.message) continue
+
+      const currentText = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
+      if (!currentText || currentText.startsWith('Caveat:')) continue
+
+      const content = obj.message.content
+      if (typeof content === 'string') {
+        obj.message.content = nextTitle
+      } else if (Array.isArray(content)) {
+        let replaced = false
+        const nextContent = content.map((block) => {
+          if (!replaced && block && typeof block === 'object' && block.type === 'text') {
+            replaced = true
+            return { ...block, text: nextTitle }
+          }
+          return block
+        })
+        if (!replaced) nextContent.unshift({ type: 'text', text: nextTitle })
+        obj.message.content = nextContent
+      } else {
+        obj.message.content = nextTitle
+      }
+
+      lines[i] = JSON.stringify(obj)
+      updated = true
+      break
+    }
+
+    if (!updated) {
+      return { ok: false, error: 'No encontré un mensaje de usuario para renombrar en esta sesión.' }
+    }
+
+    const out = lines.join('\n')
+    fs.writeFileSync(file, hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out, 'utf-8')
+    return { ok: true, title: nextTitle, path: file }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
 })
 
 ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) => {

@@ -1303,9 +1303,6 @@ window.addEventListener('keydown', (e) => {
 })
 
 // ── Sesiones (historial) ──
-function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
 
 function fmtRelative(ts) {
   const diff = Date.now() - ts
@@ -1339,17 +1336,15 @@ async function openSessions() {
   }
 
   for (const s of sessions) {
-    const nameKey = `poweragent.session.name.${s.id}`
-    const savedName = localStorage.getItem(nameKey)
     const row = document.createElement('div')
     row.className = 'session-row'
     row.innerHTML = `
       <div class="session-main">
         <div class="session-name-row">
-          <span class="session-name">${savedName ? escHtml(savedName) : ''}</span>
-          <button class="btn-rename" title="Renombrar sesión">
+          <button class="btn-rename" title="Editar título original">
             <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" fill="none" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
+          <button class="btn-edit-content" title="Editar contenido original (.jsonl)">✎</button>
         </div>
         <div class="session-preview"></div>
         <div class="session-meta">
@@ -1364,40 +1359,63 @@ async function openSessions() {
         <button class="btn-delete" title="Borrar sesión">🗑</button>
       </div>
     `
-    row.querySelector('.session-preview').textContent = s.preview
-    row.querySelector('.session-name').style.display = savedName ? '' : 'none'
+    const previewEl = row.querySelector('.session-preview')
+    previewEl.textContent = s.preview
 
-    row.querySelector('.btn-rename').addEventListener('click', (e) => {
+    row.querySelector('.btn-rename').addEventListener('click', async (e) => {
       e.stopPropagation()
-      const nameSpan = row.querySelector('.session-name')
-      const current = localStorage.getItem(nameKey) || ''
+      const current = (previewEl.textContent || '').trim()
+      if (!current || current === '(sin contenido)') {
+        showStatus('Esta sesión no tiene un título editable detectado.', 'error', 5000)
+        return
+      }
+      if (row.querySelector('.session-title-input')) return
       const input = document.createElement('input')
-      input.className = 'session-name-input'
+      input.className = 'session-title-input'
       input.value = current
-      input.placeholder = 'Nombre de la sesión…'
-      nameSpan.replaceWith(input)
+      input.placeholder = 'Título de la sesión…'
+      previewEl.replaceWith(input)
       input.focus()
       input.select()
-      const commit = () => {
-        const val = input.value.trim()
-        const newSpan = document.createElement('span')
-        newSpan.className = 'session-name'
-        if (val) {
-          localStorage.setItem(nameKey, val)
-          newSpan.textContent = val
-          newSpan.style.display = ''
-        } else {
-          localStorage.removeItem(nameKey)
-          newSpan.style.display = 'none'
-        }
-        input.replaceWith(newSpan)
+
+      const rollback = () => {
+        input.replaceWith(previewEl)
+        previewEl.textContent = current
       }
-      input.addEventListener('blur', commit)
+
+      const commit = async () => {
+        const val = input.value.trim()
+        if (!val) { rollback(); return }
+        if (val === current) { rollback(); return }
+        const res = await window.api.updateSessionTitle(cwd, s.id, val)
+        if (!res || !res.ok) {
+          rollback()
+          showStatus((res && res.error) || 'No se pudo editar el título original.', 'error', 6000)
+          return
+        }
+        input.replaceWith(previewEl)
+        previewEl.textContent = res.title || val
+        s.preview = previewEl.textContent
+        showStatus('Título original actualizado', 'ok', 2500)
+      }
+
+      input.addEventListener('blur', () => { commit().catch(() => rollback()) })
       input.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter') { ev.preventDefault(); input.blur() }
-        if (ev.key === 'Escape') { input.value = current; input.blur() }
+        if (ev.key === 'Escape') { ev.preventDefault(); rollback() }
       })
     })
+
+    row.querySelector('.btn-edit-content').addEventListener('click', async (e) => {
+      e.stopPropagation()
+      if (!s.path) {
+        showStatus('No encontré el archivo original de esta sesión.', 'error', 6000)
+        return
+      }
+      sessionsModal.classList.add('hidden')
+      await window.api.openViewerWindow(s.path)
+    })
+
     row.querySelector('.meta-time').textContent = fmtRelative(s.mtime)
     row.querySelector('.meta-msgs').textContent = `${s.msgCount} msgs`
     row.querySelector('.meta-size').textContent = fmtSize(s.size)
