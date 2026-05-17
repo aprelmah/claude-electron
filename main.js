@@ -77,6 +77,24 @@ function resolveCommand(candidates) {
   return candidates.find(Boolean) || ''
 }
 
+function resolveLatestNvmNodeBinDir() {
+  const root = path.join(os.homedir(), '.nvm', 'versions', 'node')
+  try {
+    const versions = fs.readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^v\d+/.test(d.name))
+      .map((d) => d.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+    if (!versions.length) return ''
+    const binDir = path.join(root, versions[versions.length - 1], 'bin')
+    return fs.existsSync(binDir) ? binDir : ''
+  } catch {
+    return ''
+  }
+}
+
+const LATEST_NVM_NODE_BIN = resolveLatestNvmNodeBinDir()
+const LATEST_NVM_CODEX_BIN = LATEST_NVM_NODE_BIN ? path.join(LATEST_NVM_NODE_BIN, 'codex') : ''
+
 const FALLBACK_CLAUDE_BIN = resolveCommand([
   process.env.CLAUDE_BIN,
   path.join(USER_LOCAL_BIN, 'claude'),
@@ -85,6 +103,7 @@ const FALLBACK_CLAUDE_BIN = resolveCommand([
 
 const FALLBACK_CODEX_BIN = resolveCommand([
   process.env.CODEX_BIN,
+  LATEST_NVM_CODEX_BIN,
   path.join(USER_LOCAL_BIN, 'codex'),
   path.join(os.homedir(), '.nvm/versions/node/v24.15.0/bin/codex'),
   'codex'
@@ -246,6 +265,7 @@ function buildRuntimeEnv() {
   if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
 
   const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
+  if (LATEST_NVM_NODE_BIN) extraPaths.push(LATEST_NVM_NODE_BIN)
   for (const candidate of [appConfig.cli.claudeBin, appConfig.cli.codexBin, appConfig.cli.whisperBin]) {
     if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
   }
