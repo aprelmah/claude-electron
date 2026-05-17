@@ -498,13 +498,13 @@ class TelegramBridge {
       const localPath = path.join(saveDir, fileName)
       fs.writeFileSync(localPath, buf)
 
-      await this._sendMessage(chatId, `Foto guardada en ${localPath}`)
+      const instruction = caption.trim()
+        ? `El usuario te ha enviado una imagen (guardada en ${localPath}). Lee la imagen con tu herramienta Read y responde a esto: ${caption.trim()}`
+        : `El usuario te ha enviado una imagen (guardada en ${localPath}). Lee la imagen con tu herramienta Read, descríbela brevemente y pregúntale qué quiere hacer con ella.`
 
-      if (caption.trim()) {
-        await this._enqueueQuery(chatId, `${caption.trim()} (foto guardada en ${localPath})`)
-      }
+      await this._enqueueQuery(chatId, instruction)
     } catch (err) {
-      await this._sendMessage(chatId, `Error guardando foto: ${err?.message || err}`)
+      await this._sendMessage(chatId, `Error con la foto: ${err?.message || err}`)
     }
   }
 
