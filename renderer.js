@@ -97,6 +97,54 @@ term.loadAddon(fitAddon)
 term.loadAddon(webLinksAddon)
 term.open(termEl)
 
+// Clic en el terminal → mover cursor readline a esa columna (solo fila activa del prompt)
+let _termClickPending = null
+
+termEl.addEventListener('mousedown', (e) => {
+  _termClickPending = null
+  if (e.button !== 0) return
+  if (term.buffer.active === term.buffer.alternate) return // vim, less, etc.
+  const screen = termEl.querySelector('.xterm-screen')
+  if (!screen) return
+  const rect = screen.getBoundingClientRect()
+  const buf = term.buffer.active
+  const clickCol = Math.max(0, Math.floor((e.clientX - rect.left) * term.cols / rect.width))
+  const clickRow = Math.max(0, Math.floor((e.clientY - rect.top) * term.rows / rect.height))
+  if (clickRow !== buf.cursorY) return
+  const diff = clickCol - buf.cursorX
+  if (diff === 0 || Math.abs(diff) > 300) return
+  _termClickPending = diff
+}, true)
+
+termEl.addEventListener('mouseup', (e) => {
+  if (e.button !== 0 || _termClickPending == null) return
+  const diff = _termClickPending
+  _termClickPending = null
+  if (term.hasSelection()) return
+  window.api.writePty(diff < 0 ? '\x1b[D'.repeat(-diff) : '\x1b[C'.repeat(diff))
+})
+
+// Borrar selección del prompt con Backspace/Delete
+term.attachCustomKeyEventHandler((e) => {
+  if (e.type !== 'keydown') return true
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return true
+  if (!term.hasSelection()) return true
+  const sel = term.getSelectionPosition()
+  if (!sel) return true
+  const buf = term.buffer.active
+  if (sel.start.y !== buf.cursorY || sel.end.y !== buf.cursorY) return true
+  const len = term.getSelection().length
+  if (!len) return true
+  term.clearSelection()
+  const toEnd = sel.end.x - buf.cursorX
+  let seq = ''
+  if (toEnd > 0) seq += '\x1b[C'.repeat(toEnd)
+  else if (toEnd < 0) seq += '\x1b[D'.repeat(-toEnd)
+  seq += '\x7f'.repeat(len)
+  window.api.writePty(seq)
+  return false
+})
+
 function applyTermTheme(name) {
   document.body.classList.remove('dark', 'light')
   document.body.classList.add(name)
@@ -189,6 +237,7 @@ btnTheme.addEventListener('click', () => {
 })
 btnMinimize.addEventListener('click', () => window.api.minimizeWindow())
 btnClose.addEventListener('click', () => window.api.closeWindow())
+document.getElementById('drag-area').addEventListener('dblclick', () => window.api.toggleMaximize())
 async function fullRestart(cwd) {
   fitAndSync()
   term.reset()
@@ -440,6 +489,28 @@ window.addEventListener('keydown', (e) => {
 // ── Sidebar: árbol de archivos ──
 let rootPath = null
 const ROOT_KEY = `claude-electron-root:${WID}`
+
+// ── Historial de navegación ──
+const navHistory = []
+let navIndex = -1
+const btnNavBack = document.getElementById('btn-nav-back')
+const btnNavForward = document.getElementById('btn-nav-forward')
+
+function updateNavButtons() {
+  btnNavBack.disabled = navIndex <= 0
+  btnNavForward.disabled = navIndex >= navHistory.length - 1
+}
+
+btnNavBack.addEventListener('click', async () => {
+  if (navIndex <= 0) return
+  navIndex--
+  await setRoot(navHistory[navIndex], false)
+})
+btnNavForward.addEventListener('click', async () => {
+  if (navIndex >= navHistory.length - 1) return
+  navIndex++
+  await setRoot(navHistory[navIndex], false)
+})
 const CLI_KEY = `claude-electron-cli:${WID}`
 
 // ── Vista grafo / árbol ──────────────────────────────────────────────────
@@ -603,9 +674,185 @@ function renderFiltered () {
   graphInstance = window.GraphRenderer.init(
     graphCanvas,
     { nodes, edges },
-    { onDblClick: (filePath) => injectToPty(`@${filePath} `), forces: graphForces }
+    {
+      onDblClick: (filePath) => injectToPty(`@${filePath} `),
+      onContextMenu: (node, x, y) => showGraphContextMenu(node, x, y),
+      forces: graphForces
+    }
   )
 }
+
+const BINARY_EXTS = new Set([
+  'jpg','jpeg','png','gif','webp','bmp','ico','tif','tiff','svgz',
+  'pdf','zip','tar','gz','tgz','rar','7z','bz2','xz',
+  'mp3','wav','m4a','ogg','flac','aac',
+  'mp4','mov','webm','mkv','avi','wmv',
+  'exe','dmg','app','pkg','deb','rpm',
+  'woff','woff2','ttf','otf','eot',
+  'so','dylib','dll','class','jar','o','a',
+  'sqlite','db','bin'
+])
+
+function isLikelyBinaryByExt (filePath) {
+  const ext = (filePath.split('.').pop() || '').toLowerCase()
+  return BINARY_EXTS.has(ext)
+}
+
+let graphCtxMenuOpen = false
+let graphCtxMenuCloseHandler = null
+
+function closeGraphContextMenu () {
+  const menu = document.getElementById('graph-context-menu')
+  if (!menu) return
+  menu.classList.add('hidden')
+  menu.innerHTML = ''
+  graphCtxMenuOpen = false
+  if (graphCtxMenuCloseHandler) {
+    document.removeEventListener('click', graphCtxMenuCloseHandler, true)
+    document.removeEventListener('contextmenu', graphCtxMenuCloseHandler, true)
+    window.removeEventListener('blur', graphCtxMenuCloseHandler)
+    window.removeEventListener('resize', graphCtxMenuCloseHandler)
+    graphCtxMenuCloseHandler = null
+  }
+}
+
+function showGraphContextMenu (node, x, y) {
+  const menu = document.getElementById('graph-context-menu')
+  if (!menu) return
+  menu.innerHTML = ''
+
+  const isFolder = node.type === 'folder'
+
+  if (!isFolder) {
+    const openItem = document.createElement('div')
+    openItem.className = 'ctx-menu-item'
+    openItem.textContent = 'Abrir'
+    openItem.addEventListener('click', (e) => {
+      e.stopPropagation()
+      closeGraphContextMenu()
+      openGraphFileModal(node)
+    })
+    menu.appendChild(openItem)
+  }
+
+  const pasteItem = document.createElement('div')
+  pasteItem.className = 'ctx-menu-item'
+  pasteItem.textContent = 'Pegar ruta'
+  pasteItem.addEventListener('click', (e) => {
+    e.stopPropagation()
+    closeGraphContextMenu()
+    injectToPty('@' + node.path + ' ')
+  })
+  menu.appendChild(pasteItem)
+
+  menu.classList.remove('hidden')
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const rect = menu.getBoundingClientRect()
+  const px = Math.min(x, vw - rect.width - 4)
+  const py = Math.min(y, vh - rect.height - 4)
+  menu.style.left = Math.max(4, px) + 'px'
+  menu.style.top = Math.max(4, py) + 'px'
+
+  graphCtxMenuOpen = true
+  graphCtxMenuCloseHandler = (ev) => {
+    if (ev && ev.target && menu.contains(ev.target)) return
+    closeGraphContextMenu()
+  }
+  setTimeout(() => {
+    document.addEventListener('click', graphCtxMenuCloseHandler, true)
+    document.addEventListener('contextmenu', graphCtxMenuCloseHandler, true)
+    window.addEventListener('blur', graphCtxMenuCloseHandler)
+    window.addEventListener('resize', graphCtxMenuCloseHandler)
+  }, 0)
+}
+
+let graphFileModalState = { path: null, originalText: null, editable: false }
+
+async function openGraphFileModal (node) {
+  const modal = document.getElementById('graph-file-modal')
+  const title = document.getElementById('graph-file-modal-title')
+  const sub = document.getElementById('graph-file-modal-sub')
+  const textarea = document.getElementById('graph-file-modal-textarea')
+  const notice = document.getElementById('graph-file-modal-notice')
+  const saveBtn = document.getElementById('graph-file-modal-save')
+  const statusEl = document.getElementById('graph-file-modal-status')
+  if (!modal) return
+
+  title.textContent = node.label || node.path.split('/').pop()
+  sub.textContent = node.path
+  statusEl.textContent = ''
+  textarea.value = ''
+  notice.textContent = ''
+
+  graphFileModalState = { path: node.path, originalText: null, editable: false }
+
+  if (isLikelyBinaryByExt(node.path)) {
+    textarea.classList.add('hidden')
+    notice.textContent = 'No editable (archivo binario)'
+    notice.classList.remove('hidden')
+    saveBtn.disabled = true
+    modal.classList.remove('hidden')
+    return
+  }
+
+  textarea.classList.remove('hidden')
+  notice.classList.add('hidden')
+  textarea.value = 'Cargando…'
+  textarea.disabled = true
+  saveBtn.disabled = true
+  modal.classList.remove('hidden')
+
+  const res = await window.api.fileRead(node.path)
+  if (!res || !res.ok) {
+    textarea.classList.add('hidden')
+    notice.textContent = 'No editable: ' + (res?.error || 'no se pudo leer')
+    notice.classList.remove('hidden')
+    return
+  }
+  if (res.kind === 'image' || res.kind === 'binary') {
+    textarea.classList.add('hidden')
+    notice.textContent = 'No editable (' + res.kind + ')'
+    notice.classList.remove('hidden')
+    return
+  }
+
+  textarea.disabled = false
+  textarea.value = res.text || ''
+  saveBtn.disabled = false
+  graphFileModalState.originalText = res.text || ''
+  graphFileModalState.editable = true
+}
+
+function closeGraphFileModal () {
+  const modal = document.getElementById('graph-file-modal')
+  if (!modal) return
+  modal.classList.add('hidden')
+  graphFileModalState = { path: null, originalText: null, editable: false }
+}
+
+document.getElementById('graph-file-modal-close')?.addEventListener('click', closeGraphFileModal)
+document.getElementById('graph-file-modal-cancel')?.addEventListener('click', closeGraphFileModal)
+document.querySelector('#graph-file-modal .modal-backdrop')?.addEventListener('click', closeGraphFileModal)
+document.getElementById('graph-file-modal-save')?.addEventListener('click', async () => {
+  if (!graphFileModalState.editable || !graphFileModalState.path) return
+  const textarea = document.getElementById('graph-file-modal-textarea')
+  const statusEl = document.getElementById('graph-file-modal-status')
+  const saveBtn = document.getElementById('graph-file-modal-save')
+  const content = textarea.value
+  saveBtn.disabled = true
+  statusEl.textContent = 'Guardando…'
+  const res = await window.api.fileWrite(graphFileModalState.path, content)
+  if (res && res.ok) {
+    graphFileModalState.originalText = content
+    statusEl.textContent = '✓ Guardado'
+    saveBtn.disabled = false
+    setTimeout(() => { statusEl.textContent = '' }, 2000)
+  } else {
+    statusEl.textContent = '✗ ' + (res?.error || 'error')
+    saveBtn.disabled = false
+  }
+})
 
 function applyView (view) {
   currentView = view
@@ -673,9 +920,15 @@ function shortenPath(p, max = 36) {
 
 let pendingExpand = new Set()
 
-async function setRoot(newRoot) {
+async function setRoot(newRoot, record = true) {
   rootPath = newRoot
   localStorage.setItem(ROOT_KEY, newRoot)
+  if (record) {
+    navHistory.splice(navIndex + 1)
+    navHistory.push(newRoot)
+    navIndex = navHistory.length - 1
+  }
+  updateNavButtons()
   sidebarTitle.textContent = newRoot.split('/').pop() || newRoot
   sidebarTitle.title = newRoot
   treeEl.innerHTML = ''
@@ -870,29 +1123,118 @@ btnWorkHere.addEventListener('click', async () => {
 })
 
 
+function updateLayoutButtonsState () {
+  const collapsed = sidebar.classList.contains('collapsed')
+  document.querySelectorAll('.layout-btn').forEach(btn => {
+    btn.style.opacity = collapsed ? '0.4' : ''
+    btn.style.pointerEvents = collapsed ? 'none' : ''
+  })
+}
+
+function expandSidebarIfCollapsed () {
+  if (!sidebar.classList.contains('collapsed')) return
+  sidebar.classList.remove('collapsed')
+  divider.classList.remove('hidden')
+  btnSidebar.classList.add('active')
+  updateLayoutButtonsState()
+}
+
 btnSidebar.addEventListener('click', () => {
   sidebar.classList.toggle('collapsed')
-  divider.classList.toggle('hidden', sidebar.classList.contains('collapsed'))
-  btnSidebar.classList.toggle('active', !sidebar.classList.contains('collapsed'))
+  const collapsed = sidebar.classList.contains('collapsed')
+  divider.classList.toggle('hidden', collapsed)
+  btnSidebar.classList.toggle('active', !collapsed)
+  updateLayoutButtonsState()
   setTimeout(fitAndSync, 50)
 })
+
+// ── Layout switcher ──
+const LAYOUT_KEY = 'poweragent.layout'
+const SIDEBAR_SIZE_KEY = 'poweragent.sidebar.size'
+const LAYOUTS = ['left', 'right', 'horizontal', 'split']
+
+function applySidebarSize(name) {
+  sidebar.style.width = ''
+  sidebar.style.height = ''
+  try {
+    const raw = localStorage.getItem(SIDEBAR_SIZE_KEY)
+    if (!raw) return
+    const sizes = JSON.parse(raw)
+    const v = sizes?.[name]
+    if (typeof v !== 'number' || v <= 0) return
+    if (name === 'horizontal') sidebar.style.height = v + 'px'
+    else sidebar.style.width = v + 'px'
+  } catch {}
+}
+
+function persistSidebarSize(name, value) {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_SIZE_KEY)
+    const sizes = raw ? JSON.parse(raw) : {}
+    sizes[name] = value
+    localStorage.setItem(SIDEBAR_SIZE_KEY, JSON.stringify(sizes))
+  } catch {}
+}
+
+function setLayout(name, save = true) {
+  LAYOUTS.forEach(l => {
+    document.body.classList.toggle(`layout-${l}`, l === name)
+    document.getElementById(`btn-layout-${l}`)?.classList.toggle('active', l === name)
+  })
+  applySidebarSize(name)
+  const isHoriz = name === 'horizontal'
+  divider.style.cursor = isHoriz ? 'row-resize' : 'col-resize'
+  if (save) localStorage.setItem(LAYOUT_KEY, name)
+  updateLayoutButtonsState()
+  setTimeout(fitAndSync, 50)
+}
+
+LAYOUTS.forEach(name => {
+  document.getElementById(`btn-layout-${name}`)?.addEventListener('click', () => {
+    expandSidebarIfCollapsed()
+    setLayout(name)
+  })
+})
+setLayout(localStorage.getItem(LAYOUT_KEY) || 'left', false)
+updateLayoutButtonsState()
 
 // Divider resize
 let isResizing = false
 divider.addEventListener('mousedown', (e) => {
   isResizing = true
-  document.body.style.cursor = 'col-resize'
+  const isHoriz = document.body.classList.contains('layout-horizontal')
+  document.body.style.cursor = isHoriz ? 'row-resize' : 'col-resize'
   e.preventDefault()
 })
 window.addEventListener('mousemove', (e) => {
   if (!isResizing) return
-  const newWidth = Math.max(160, Math.min(480, e.clientX))
-  sidebar.style.width = newWidth + 'px'
+  const isHoriz = document.body.classList.contains('layout-horizontal')
+  const isRight = document.body.classList.contains('layout-right')
+  if (isHoriz) {
+    const mainRect = document.getElementById('main').getBoundingClientRect()
+    const newH = Math.max(80, Math.min(500, e.clientY - mainRect.top))
+    sidebar.style.height = newH + 'px'
+  } else if (isRight) {
+    const mainRect = document.getElementById('main').getBoundingClientRect()
+    const newW = Math.max(160, Math.min(600, mainRect.right - e.clientX))
+    sidebar.style.width = newW + 'px'
+  } else {
+    const newWidth = Math.max(160, Math.min(600, e.clientX))
+    sidebar.style.width = newWidth + 'px'
+  }
 })
 window.addEventListener('mouseup', () => {
   if (isResizing) {
     isResizing = false
     document.body.style.cursor = ''
+    const currentLayout = LAYOUTS.find(l => document.body.classList.contains(`layout-${l}`)) || 'left'
+    if (currentLayout === 'horizontal') {
+      const h = parseInt(sidebar.style.height, 10)
+      if (h > 0) persistSidebarSize(currentLayout, h)
+    } else {
+      const w = parseInt(sidebar.style.width, 10)
+      if (w > 0) persistSidebarSize(currentLayout, w)
+    }
     fitAndSync()
   }
 })
@@ -904,6 +1246,10 @@ window.addEventListener('keydown', (e) => {
 })
 
 // ── Sesiones (historial) ──
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 function fmtRelative(ts) {
   const diff = Date.now() - ts
   const m = Math.floor(diff / 60000)
@@ -936,10 +1282,18 @@ async function openSessions() {
   }
 
   for (const s of sessions) {
+    const nameKey = `poweragent.session.name.${s.id}`
+    const savedName = localStorage.getItem(nameKey)
     const row = document.createElement('div')
     row.className = 'session-row'
     row.innerHTML = `
       <div class="session-main">
+        <div class="session-name-row">
+          <span class="session-name">${savedName ? escHtml(savedName) : ''}</span>
+          <button class="btn-rename" title="Renombrar sesión">
+            <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" fill="none" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+        </div>
         <div class="session-preview"></div>
         <div class="session-meta">
           <span class="meta-time"></span>
@@ -954,6 +1308,39 @@ async function openSessions() {
       </div>
     `
     row.querySelector('.session-preview').textContent = s.preview
+    row.querySelector('.session-name').style.display = savedName ? '' : 'none'
+
+    row.querySelector('.btn-rename').addEventListener('click', (e) => {
+      e.stopPropagation()
+      const nameSpan = row.querySelector('.session-name')
+      const current = localStorage.getItem(nameKey) || ''
+      const input = document.createElement('input')
+      input.className = 'session-name-input'
+      input.value = current
+      input.placeholder = 'Nombre de la sesión…'
+      nameSpan.replaceWith(input)
+      input.focus()
+      input.select()
+      const commit = () => {
+        const val = input.value.trim()
+        const newSpan = document.createElement('span')
+        newSpan.className = 'session-name'
+        if (val) {
+          localStorage.setItem(nameKey, val)
+          newSpan.textContent = val
+          newSpan.style.display = ''
+        } else {
+          localStorage.removeItem(nameKey)
+          newSpan.style.display = 'none'
+        }
+        input.replaceWith(newSpan)
+      }
+      input.addEventListener('blur', commit)
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); input.blur() }
+        if (ev.key === 'Escape') { input.value = current; input.blur() }
+      })
+    })
     row.querySelector('.meta-time').textContent = fmtRelative(s.mtime)
     row.querySelector('.meta-msgs').textContent = `${s.msgCount} msgs`
     row.querySelector('.meta-size').textContent = fmtSize(s.size)

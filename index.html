@@ -35,7 +35,19 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
       </button>
       <button id="btn-sidebar" class="icon-btn active" title="Mostrar/ocultar explorador">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="5" y1="7" x2="7" y2="7"/><line x1="5" y1="11" x2="7" y2="11"/><line x1="5" y1="15" x2="7" y2="15"/></svg>
+      </button>
+      <button id="btn-layout-left" class="icon-btn layout-btn active" title="Sidebar izquierda">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="8" y1="2" x2="8" y2="22"/></svg>
+      </button>
+      <button id="btn-layout-right" class="icon-btn layout-btn" title="Sidebar derecha">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="16" y1="2" x2="16" y2="22"/></svg>
+      </button>
+      <button id="btn-layout-horizontal" class="icon-btn layout-btn" title="Sidebar arriba">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/></svg>
+      </button>
+      <button id="btn-layout-split" class="icon-btn layout-btn" title="50/50 vertical">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
       </button>
       <button id="btn-pin" class="icon-btn" title="Fijar siempre encima">
         <svg viewBox="0 0 24 24"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-2-6V5H7v6l-2 6z"/></svg>
@@ -43,7 +55,9 @@
       <button id="btn-theme" class="icon-btn" title="Cambiar tema">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor"/><path d="M12 3a9 9 0 0 0 0 18V3z" fill="currentColor" stroke="none"/></svg>
       </button>
-      <button id="btn-tasks" class="icon-btn" title="Tareas programadas (Cmd+Shift+T)" aria-label="Tareas">⏰</button>
+      <button id="btn-tasks" class="icon-btn" title="Tareas programadas (Cmd+Shift+T)" aria-label="Tareas">
+        <svg viewBox="0 0 24 24"><polyline points="9,11 12,14 22,4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      </button>
       <button id="btn-settings" class="icon-btn" title="Configuracion">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
       </button>
@@ -63,6 +77,12 @@
   <div id="main">
     <aside id="sidebar">
       <div id="sidebar-header">
+        <button id="btn-nav-back" class="icon-btn small" title="Carpeta anterior" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14"><polyline points="15,18 9,12 15,6"/></svg>
+        </button>
+        <button id="btn-nav-forward" class="icon-btn small" title="Carpeta siguiente" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14"><polyline points="9,18 15,12 9,6"/></svg>
+        </button>
         <span id="sidebar-title" title="">Explorador</span>
         <div class="side-actions">
           <button id="btn-view-tree" class="icon-btn small active" title="Vista árbol">
@@ -215,6 +235,28 @@
       <div class="settings-actions">
         <button id="btn-refresh-telegram-status" class="icon-btn text-btn">Refrescar estado</button>
         <button id="btn-save-settings" class="icon-btn text-btn primary">Guardar configuracion</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="graph-context-menu" class="hidden"></div>
+
+  <div id="graph-file-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel graph-file-modal-panel">
+      <div class="modal-header">
+        <span class="modal-title" id="graph-file-modal-title">Archivo</span>
+        <span class="modal-sub" id="graph-file-modal-sub"></span>
+        <button id="graph-file-modal-close" class="modal-close">×</button>
+      </div>
+      <div class="graph-file-modal-body">
+        <textarea id="graph-file-modal-textarea" spellcheck="false"></textarea>
+        <div id="graph-file-modal-notice" class="hidden"></div>
+      </div>
+      <div class="graph-file-modal-actions">
+        <span id="graph-file-modal-status" class="settings-note"></span>
+        <button id="graph-file-modal-cancel" class="icon-btn text-btn">Cerrar</button>
+        <button id="graph-file-modal-save" class="icon-btn text-btn primary">Guardar</button>
       </div>
     </div>
   </div>

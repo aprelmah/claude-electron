@@ -2020,6 +2020,12 @@ ipcMain.on('window-minimize', (event) => {
   winFromEvent(event)?.minimize()
 })
 
+ipcMain.on('window-toggle-maximize', (event) => {
+  const w = winFromEvent(event)
+  if (!w) return
+  w.isMaximized() ? w.unmaximize() : w.maximize()
+})
+
 ipcMain.on('window-toggle-pin', (event) => {
   const w = winFromEvent(event)
   if (!w) return

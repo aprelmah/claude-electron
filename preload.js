@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('api', {
 
   closeWindow: () => ipcRenderer.send('window-close'),
   minimizeWindow: () => ipcRenderer.send('window-minimize'),
+  toggleMaximize: () => ipcRenderer.send('window-toggle-maximize'),
   togglePin: () => ipcRenderer.send('window-toggle-pin'),
   isPinned: () => ipcRenderer.invoke('is-pinned'),
   newWindow: () => ipcRenderer.send('window-new'),
