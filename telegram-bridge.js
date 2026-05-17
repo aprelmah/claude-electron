@@ -1,6 +1,7 @@
 const fs = require('fs')
 const https = require('https')
 const path = require('path')
+const os = require('os')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -126,6 +127,7 @@ class TelegramStream {
     this.closed = true
     let text = this.buffer.trim()
     if (!text) text = '(sin respuesta)'
+    text = await this.bridge._extractAndSendFiles(this.chatId, text)
     try {
       if (!this.messageId) {
         const blocks = splitByLimit(text, this.MAX_LEN)
@@ -441,9 +443,10 @@ class TelegramBridge {
     const stream = new TelegramStream(this, chatId, null)
 
     try {
+      const fileHint = '[Sistema: si el usuario pide un archivo y lo encuentras en el sistema de archivos, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]\n\n'
       const result = await this.onRunQuery?.({
         cli,
-        prompt,
+        prompt: fileHint + prompt,
         sessionId,
         signal: abortController.signal,
         onText: (text) => stream.appendText(text),
@@ -584,6 +587,65 @@ class TelegramBridge {
 
   async sendMessage(chatId, text) {
     return this._sendMessage(chatId, text)
+  }
+
+  async _extractAndSendFiles(chatId, text) {
+    const FILE_RE = /\[ARCHIVO:([^\]]+)\]/g
+    const matches = [...text.matchAll(FILE_RE)]
+    if (!matches.length) return text
+    const cleaned = text.replace(FILE_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+    for (const m of matches) {
+      const rawPath = m[1].trim()
+      const absPath = rawPath.startsWith('~') ? path.join(os.homedir(), rawPath.slice(1)) : rawPath
+      try {
+        await this._sendDocument(chatId, absPath)
+      } catch (err) {
+        await this._sendMessage(chatId, `No pude enviar ${path.basename(absPath)}: ${err.message}`)
+      }
+    }
+    return cleaned || '(sin respuesta)'
+  }
+
+  async _sendDocument(chatId, filePath) {
+    const token = this.config?.botToken
+    if (!token) throw new Error('Bot token no configurado.')
+    if (!fs.existsSync(filePath)) throw new Error(`Archivo no encontrado: ${filePath}`)
+    const stat = fs.statSync(filePath)
+    if (stat.size > 50 * 1024 * 1024) throw new Error(`Archivo demasiado grande (límite 50 MB): ${path.basename(filePath)}`)
+    const fileData = fs.readFileSync(filePath)
+    const fileName = path.basename(filePath)
+    const boundary = `----TGBoundary${Date.now()}`
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`
+    )
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`)
+    const body = Buffer.concat([head, fileData, tail])
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${token}/sendDocument`,
+        method: 'POST',
+        headers: {
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+          'content-length': body.length
+        }
+      }, (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('error', reject)
+        res.on('end', () => {
+          let data
+          try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { reject(new Error('Respuesta inválida')); return }
+          if (!data.ok) { reject(new Error(`sendDocument: ${data.description || 'error'}`)); return }
+          resolve(data.result)
+        })
+      })
+      req.on('error', reject)
+      req.write(body)
+      req.end()
+    })
   }
 
   async _sendMessage(chatId, text) {
