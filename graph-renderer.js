@@ -24,6 +24,16 @@
     return Math.max(6, Math.min(18, 6 + d.connections * 1.5))
   }
 
+  function hoverRadius (d) {
+    const base = nodeRadius(d)
+    if (d.isRoot) return base * 1.12
+    if (d.type === 'folder') return base * 1.28
+    if (base <= 8) return base * 2.15
+    if (base <= 11) return base * 1.75
+    if (base <= 14) return base * 1.45
+    return base * 1.25
+  }
+
   function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
@@ -214,12 +224,16 @@
     nodeG
       .on('mouseenter', function (e, d) {
         d3.select(this).select('.node-circle')
-          .attr('r', nodeRadius(d) * 1.3)
+          .interrupt()
+          .transition().duration(120).ease(d3.easeCubicOut)
+          .attr('r', hoverRadius(d))
           .attr('filter', 'url(#glow-strong)')
         d3.select(this).select('.node-label').attr('display', null)
       })
       .on('mouseleave', function (e, d) {
         d3.select(this).select('.node-circle')
+          .interrupt()
+          .transition().duration(140).ease(d3.easeCubicOut)
           .attr('r', nodeRadius(d))
           .attr('filter', () => {
             if (d.type === 'folder') return 'url(#glow-folder)'

@@ -139,6 +139,8 @@ button.icon-btn svg {
 
 button.icon-btn.small { width: 24px; height: 24px; padding: 4px; }
 button.icon-btn.small svg { width: 13px; height: 13px; stroke-width: 2.2; }
+button.icon-btn.small:hover { transform: scale(1.14); }
+button.icon-btn.small:active { transform: scale(0.95); }
 
 button:hover { background: var(--bg3); color: var(--text); }
 button:active { transform: scale(0.93); }
@@ -945,6 +947,7 @@ body.layout-split #terminal-wrap { flex: 1; }
   color: rgba(255,255,255,0.3);
   cursor: pointer;
   transition: all 0.15s;
+  transform-origin: center;
 }
 
 .graph-mode-btn.active {
@@ -954,7 +957,8 @@ body.layout-split #terminal-wrap { flex: 1; }
 }
 
 .graph-mode-btn:hover {
-  opacity: 0.85;
+  opacity: 0.9;
+  transform: scale(1.08);
 }
 
 .graph-chips-row {
@@ -1013,6 +1017,7 @@ body.layout-split #terminal-wrap { flex: 1; }
   color: rgba(255,255,255,0.3);
   cursor: pointer;
   transition: all 0.15s;
+  transform-origin: center;
 }
 
 .btn-graph-forces.active {
@@ -1035,6 +1040,7 @@ body.layout-split #terminal-wrap { flex: 1; }
   color: rgba(255,255,255,0.3);
   cursor: pointer;
   transition: all 0.15s;
+  transform-origin: center;
 }
 
 .graph-chip.active {
@@ -1045,7 +1051,8 @@ body.layout-split #terminal-wrap { flex: 1; }
 }
 
 .graph-chip:hover {
-  opacity: 0.85;
+  opacity: 0.9;
+  transform: scale(1.09);
 }
 
 #graph-context-menu {
