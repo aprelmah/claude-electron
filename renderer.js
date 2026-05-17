@@ -658,9 +658,12 @@ let graphForces = {
 }
 let forcePanelOpen = false
 
-const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'otros']
-const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', otros: '#6b7280' }
+const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
+const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5', go: '#06b6d4', otros: '#6b7280' }
 let activeTypes = new Set(ALL_TYPES)
+let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
+let graphSearchNo = 0
+let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
 
 function extType (label) {
   const ext = (label.split('.').pop() || '').toLowerCase()
@@ -704,6 +707,16 @@ function buildStructureGraph (nodes) {
   return { nodes: allNodes, edges }
 }
 
+function pickHotNodeIds (nodes) {
+  const files = (nodes || []).filter((n) => n && !n.type)
+  if (!files.length) return new Set()
+  const now = Date.now()
+  const sorted = [...files].sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
+  const fresh = sorted.filter((n) => n.mtimeMs && (now - n.mtimeMs) <= 24 * 60 * 60 * 1000)
+  const picked = (fresh.length >= 6 ? fresh.slice(0, 120) : sorted.slice(0, 40))
+  return new Set(picked.map((n) => n.id))
+}
+
 function buildFilters () {
   graphFilters.innerHTML = ''
 
@@ -731,7 +744,48 @@ function buildFilters () {
     buildFilters()
   })
   topRow.appendChild(btnForces)
+
+  const btnHot = document.createElement('button')
+  btnHot.className = 'btn-graph-hot' + (graphHotOnly ? ' active' : '')
+  btnHot.textContent = '🔥 Calientes'
+  btnHot.title = 'Mostrar solo archivos recientes (último día o top más tocados)'
+  btnHot.addEventListener('click', () => {
+    graphHotOnly = !graphHotOnly
+    localStorage.setItem('poweragent.graph.hotOnly', graphHotOnly ? '1' : '0')
+    buildFilters()
+    renderFiltered()
+  })
+  topRow.appendChild(btnHot)
   graphFilters.appendChild(topRow)
+
+  const searchRow = document.createElement('div')
+  searchRow.className = 'graph-search-row'
+  const searchInput = document.createElement('input')
+  searchInput.className = 'graph-search-input'
+  searchInput.type = 'search'
+  searchInput.placeholder = 'Buscar nodo (archivo/ruta)'
+  searchInput.value = graphSearchQuery
+  const btnSearch = document.createElement('button')
+  btnSearch.className = 'btn-graph-search'
+  btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+  const runSearch = () => {
+    graphSearchQuery = searchInput.value.trim()
+    localStorage.setItem('poweragent.graph.search', graphSearchQuery)
+    if (!graphInstance || !graphSearchQuery) {
+      graphSearchNo = 0
+      btnSearch.textContent = 'Buscar'
+      return
+    }
+    const info = graphInstance.focusByQuery?.(graphSearchQuery) || null
+    graphSearchNo = Number(info?.total || 0)
+    btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+  }
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runSearch() }
+  })
+  btnSearch.addEventListener('click', runSearch)
+  searchRow.append(searchInput, btnSearch)
+  graphFilters.appendChild(searchRow)
 
   // Panel de fuerzas
   const forcesPanel = document.createElement('div')
@@ -788,12 +842,20 @@ function buildFilters () {
 function renderFiltered () {
   if (!graphAllData) return
   let nodes, edges
+  let sourceNodes = graphAllData.nodes
+  if (graphMode === 'refs') {
+    sourceNodes = sourceNodes.filter(n => activeTypes.has(extType(n.label)))
+  }
+  if (graphHotOnly) {
+    const hotIds = pickHotNodeIds(sourceNodes)
+    if (hotIds.size > 0) sourceNodes = sourceNodes.filter((n) => hotIds.has(n.id))
+  }
   if (graphMode === 'structure') {
-    const structData = buildStructureGraph(graphAllData.nodes)
+    const structData = buildStructureGraph(sourceNodes)
     nodes = structData.nodes
     edges = structData.edges
   } else {
-    nodes = graphAllData.nodes.filter(n => activeTypes.has(extType(n.label)))
+    nodes = sourceNodes
     const visibleIds = new Set(nodes.map(n => n.id))
     edges = graphAllData.edges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
   }
@@ -807,6 +869,14 @@ function renderFiltered () {
       forces: graphForces
     }
   )
+  if (graphSearchQuery && graphInstance?.focusByQuery) {
+    const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
+    graphSearchNo = Number(info?.total || 0)
+  } else {
+    graphSearchNo = 0
+  }
+  const sb = graphFilters.querySelector('.btn-graph-search')
+  if (sb) sb.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
 }
 
 const BINARY_EXTS = new Set([
@@ -1019,7 +1089,14 @@ btnViewTree.addEventListener('click', () => applyView('tree'))
 btnViewGraph.addEventListener('click', () => applyView('graph'))
 btnGraphFullscreen.addEventListener('click', () => {
   if (!graphAllData) return
-  window.api.openGraphWindow(graphAllData.nodes, graphAllData.edges, graphMode, Array.from(activeTypes), graphForces)
+  window.api.openGraphWindow(
+    graphAllData.nodes,
+    graphAllData.edges,
+    graphMode,
+    Array.from(activeTypes),
+    graphForces,
+    { search: graphSearchQuery, hotOnly: graphHotOnly }
+  )
 })
 
 const EXT_ICONS = {

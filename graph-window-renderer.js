@@ -1,7 +1,7 @@
 document.getElementById('btn-close-graph').addEventListener('click', () => window.api.closeWindow())
 
-const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'otros']
-const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', otros: '#6b7280' }
+const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
+const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5', go: '#06b6d4', otros: '#6b7280' }
 
 let allNodes = [], allEdges = []
 let graphMode = 'refs'
@@ -9,6 +9,9 @@ let activeTypes = new Set(ALL_TYPES)
 let graphInstance = null
 let forcePanelOpen = false
 let graphForces = { repulsion: -80, linkDistance: 40, particleSpeed: 4000 }
+let graphSearchQuery = ''
+let graphSearchNo = 0
+let graphHotOnly = false
 
 const graphCanvas = document.getElementById('graph-canvas')
 const modeRow = document.getElementById('mode-row')
@@ -68,19 +71,45 @@ function buildStructureGraph (nodes) {
   return { nodes: structNodes, edges }
 }
 
+function pickHotNodeIds (nodes) {
+  const files = (nodes || []).filter((n) => n && !n.type)
+  if (!files.length) return new Set()
+  const now = Date.now()
+  const sorted = [...files].sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
+  const fresh = sorted.filter((n) => n.mtimeMs && (now - n.mtimeMs) <= 24 * 60 * 60 * 1000)
+  const picked = (fresh.length >= 6 ? fresh.slice(0, 120) : sorted.slice(0, 40))
+  return new Set(picked.map((n) => n.id))
+}
+
 function renderFiltered () {
   let nodes, edges
+  let sourceNodes = allNodes
+  if (graphMode === 'refs') {
+    sourceNodes = sourceNodes.filter(n => activeTypes.has(extType(n.label)))
+  }
+  if (graphHotOnly) {
+    const hotIds = pickHotNodeIds(sourceNodes)
+    if (hotIds.size > 0) sourceNodes = sourceNodes.filter((n) => hotIds.has(n.id))
+  }
   if (graphMode === 'structure') {
-    const s = buildStructureGraph(allNodes)
+    const s = buildStructureGraph(sourceNodes)
     nodes = s.nodes
     edges = s.edges
   } else {
-    nodes = allNodes.filter(n => activeTypes.has(extType(n.label)))
+    nodes = sourceNodes
     const ids = new Set(nodes.map(n => n.id))
     edges = allEdges.filter(e => ids.has(e.source) && ids.has(e.target))
   }
   if (graphInstance) { graphInstance.destroy(); graphInstance = null }
   graphInstance = window.GraphRenderer.init(graphCanvas, { nodes, edges }, { forces: graphForces })
+  if (graphSearchQuery && graphInstance?.focusByQuery) {
+    const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
+    graphSearchNo = Number(info?.total || 0)
+  } else {
+    graphSearchNo = 0
+  }
+  const sb = document.querySelector('.btn-graph-search')
+  if (sb) sb.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
 }
 
 function adjustCanvasTop () {
@@ -104,6 +133,45 @@ function buildControls () {
   btnForces.textContent = '⚙ Fuerzas'
   btnForces.addEventListener('click', () => { forcePanelOpen = !forcePanelOpen; buildControls() })
   modeRow.appendChild(btnForces)
+
+  const btnHot = document.createElement('button')
+  btnHot.className = 'btn-graph-hot' + (graphHotOnly ? ' active' : '')
+  btnHot.textContent = '🔥 Calientes'
+  btnHot.title = 'Mostrar solo archivos recientes (último día o top más tocados)'
+  btnHot.addEventListener('click', () => {
+    graphHotOnly = !graphHotOnly
+    buildControls()
+    renderFiltered()
+  })
+  modeRow.appendChild(btnHot)
+
+  const searchRow = document.getElementById('search-row')
+  if (!searchRow) return
+  searchRow.innerHTML = ''
+  const searchInput = document.createElement('input')
+  searchInput.className = 'graph-search-input'
+  searchInput.type = 'search'
+  searchInput.placeholder = 'Buscar nodo (archivo/ruta)'
+  searchInput.value = graphSearchQuery
+  const btnSearch = document.createElement('button')
+  btnSearch.className = 'btn-graph-search'
+  btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+  const runSearch = () => {
+    graphSearchQuery = searchInput.value.trim()
+    if (!graphInstance || !graphSearchQuery) {
+      graphSearchNo = 0
+      btnSearch.textContent = 'Buscar'
+      return
+    }
+    const info = graphInstance.focusByQuery?.(graphSearchQuery) || null
+    graphSearchNo = Number(info?.total || 0)
+    btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+  }
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runSearch() }
+  })
+  btnSearch.addEventListener('click', runSearch)
+  searchRow.append(searchInput, btnSearch)
 
   chipsRow.innerHTML = ''
   if (graphMode === 'refs') {
@@ -161,6 +229,8 @@ window.api.getGraphWindowData().then(data => {
   graphMode = data.mode || 'refs'
   activeTypes = data.activeTypes ? new Set(data.activeTypes) : new Set(ALL_TYPES)
   if (data.forces) graphForces = { ...graphForces, ...data.forces }
+  graphSearchQuery = data?.ui?.search ? String(data.ui.search) : ''
+  graphHotOnly = !!data?.ui?.hotOnly
   buildControls()
   renderFiltered()
 })

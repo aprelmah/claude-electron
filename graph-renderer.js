@@ -8,6 +8,9 @@
     json:    '#34d399',
     css:     '#fb7185',
     html:    '#f97316',
+    py:      '#22c55e',
+    php:     '#4f7cf5',
+    go:      '#06b6d4',
     folder:  '#94a3b8',
     default: '#6b7280'
   }
@@ -34,6 +37,14 @@
     return base * 1.25
   }
 
+  function glowIdForNode (d) {
+    if (d.isRoot) return 'glow-brain'
+    if (d.type === 'folder') return 'glow-folder'
+    const ext = (d.label.split('.').pop() || '').toLowerCase()
+    const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
+    return `glow-${COLORS[glowKey] ? glowKey : 'default'}`
+  }
+
   function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
@@ -42,6 +53,7 @@
     let height = svgEl.clientHeight || 400
     let rafId = null
     let selectedNode = null
+    let queryCycle = { q: '', i: -1, matches: [] }
 
     // Defs: filtros glow por tipo de archivo
     const defs = svg.append('defs')
@@ -65,6 +77,21 @@
     const ms = fStrong.append('feMerge')
     ms.append('feMergeNode').attr('in', 'blur')
     ms.append('feMergeNode').attr('in', 'SourceGraphic')
+
+    const fBrain = defs.append('filter')
+      .attr('id', 'glow-brain')
+      .attr('x', '-90%').attr('y', '-90%')
+      .attr('width', '280%').attr('height', '280%')
+    fBrain.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur')
+    const mb = fBrain.append('feMerge')
+    mb.append('feMergeNode').attr('in', 'blur')
+    mb.append('feMergeNode').attr('in', 'SourceGraphic')
+
+    const brainGrad = defs.append('radialGradient')
+      .attr('id', 'brain-grad')
+      .attr('cx', '50%').attr('cy', '42%').attr('r', '60%')
+    brainGrad.append('stop').attr('offset', '0%').attr('stop-color', '#e7fbff').attr('stop-opacity', 0.95)
+    brainGrad.append('stop').attr('offset', '100%').attr('stop-color', '#8acbe0').attr('stop-opacity', 0.4)
 
     // Gradiente nebulosa en el centro
     const radGrad = defs.append('radialGradient')
@@ -195,15 +222,54 @@
     nodeG.append('circle')
       .attr('class', 'node-circle')
       .attr('r', d => nodeRadius(d))
-      .attr('fill', d => nodeColor(d) + '2a')
-      .attr('stroke', d => nodeColor(d))
-      .attr('stroke-width', d => d.type === 'folder' ? 1.5 : 1)
-      .attr('filter', d => {
-        if (d.type === 'folder') return 'url(#glow-folder)'
-        const ext = (d.label.split('.').pop() || '').toLowerCase()
-        const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
-        return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
-      })
+      .attr('fill', d => d.isRoot ? 'rgba(170, 236, 255, 0.08)' : (nodeColor(d) + '2a'))
+      .attr('stroke', d => d.isRoot ? '#c6f4ff' : nodeColor(d))
+      .attr('stroke-width', d => d.isRoot ? 1.8 : (d.type === 'folder' ? 1.5 : 1))
+      .attr('filter', d => `url(#${glowIdForNode(d)})`)
+
+    // Nodo protagonista: cerebro luminoso girando
+    const rootBrain = nodeG.filter(d => d.isRoot).append('g')
+      .attr('class', 'root-brain')
+      .attr('pointer-events', 'none')
+      .attr('filter', 'url(#glow-brain)')
+
+    rootBrain.append('ellipse')
+      .attr('cx', 0).attr('cy', 0).attr('rx', 17).attr('ry', 14)
+      .attr('fill', 'url(#brain-grad)')
+      .attr('stroke', '#dff7ff')
+      .attr('stroke-opacity', 0.95)
+      .attr('stroke-width', 1.2)
+
+    rootBrain.append('line')
+      .attr('x1', 0).attr('y1', -13).attr('x2', 0).attr('y2', 14)
+      .attr('stroke', '#dff7ff')
+      .attr('stroke-opacity', 0.75)
+      .attr('stroke-width', 1)
+
+    const gyri = [
+      'M-13,-2 C-16,-8 -10,-13 -6,-10 C-2,-8 -4,-3 -8,-1',
+      'M-10,4 C-14,1 -12,-6 -6,-6 C-2,-6 -1,0 -5,3',
+      'M-2,-11 C-6,-9 -6,-4 -2,-2 C1,-1 2,-5 1,-8',
+      'M8,-10 C5,-8 5,-3 9,-1 C13,1 13,-5 11,-8',
+      'M11,3 C7,0 8,-6 13,-6 C16,-5 17,0 14,3',
+      'M3,9 C0,7 0,3 4,2 C8,1 9,5 7,8',
+      'M-5,9 C-8,7 -8,3 -4,2 C0,1 1,5 -1,8'
+    ]
+    gyri.forEach((d) => {
+      rootBrain.append('path')
+        .attr('d', d)
+        .attr('fill', 'none')
+        .attr('stroke', '#ecfeff')
+        .attr('stroke-opacity', 0.88)
+        .attr('stroke-width', 1)
+    })
+
+    rootBrain.append('path')
+      .attr('d', 'M0,14 L0,23')
+      .attr('fill', 'none')
+      .attr('stroke', '#d2f3ff')
+      .attr('stroke-opacity', 0.85)
+      .attr('stroke-width', 1.2)
 
     nodeG.append('text')
       .attr('class', 'node-label')
@@ -235,12 +301,7 @@
           .interrupt()
           .transition().duration(140).ease(d3.easeCubicOut)
           .attr('r', nodeRadius(d))
-          .attr('filter', () => {
-            if (d.type === 'folder') return 'url(#glow-folder)'
-            const ext = (d.label.split('.').pop() || '').toLowerCase()
-            const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
-            return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
-          })
+          .attr('filter', () => `url(#${glowIdForNode(d)})`)
         if (d.type !== 'folder' && d.connections < 3 && d !== selectedNode) {
           d3.select(this).select('.node-label').attr('display', 'none')
         }
@@ -256,9 +317,14 @@
 
     // Loop de animación de partículas independiente de la simulación
     let particleSpeed = forces.particleSpeed ?? 4000
+    let brainAngle = 0
+    let prevAnimTs = Date.now()
 
     function animateParticles () {
       const now = Date.now()
+      const dt = Math.max(0, now - prevAnimTs)
+      prevAnimTs = now
+      brainAngle = (brainAngle + dt * 0.018) % 360
       particleSel.each(function (d, i) {
         const sx = d.source.x
         const sy = d.source.y
@@ -270,6 +336,7 @@
           .attr('cx', sx + (tx - sx) * t)
           .attr('cy', sy + (ty - sy) * t)
       })
+      rootBrain.attr('transform', `rotate(${brainAngle})`)
       rafId = requestAnimationFrame(animateParticles)
     }
     animateParticles()
@@ -298,16 +365,48 @@
       selectedNode = null
       nodeG.attr('opacity', 1)
       nodeG.selectAll('.node-circle').each(function (d) {
-        if (d.type === 'folder') {
-          d3.select(this).attr('filter', 'url(#glow-folder)')
-          return
-        }
-        const ext = (d.label.split('.').pop() || '').toLowerCase()
-        const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
-        d3.select(this).attr('filter', `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`)
+        d3.select(this).attr('filter', `url(#${glowIdForNode(d)})`)
       })
       linkSel.attr('stroke-opacity', 0.22)
       particleSel.attr('opacity', 0.75)
+    }
+
+    function focusNode (node, scale = null) {
+      if (!node || node.x == null || node.y == null) return false
+      selectNode(node)
+      const currentK = d3.zoomTransform(svgEl).k
+      const k = scale != null ? scale : Math.max(currentK, 1.25)
+      svg.transition().duration(560).ease(d3.easeCubicOut)
+        .call(zoom.transform, d3.zoomIdentity
+          .translate(width / 2 - k * node.x, height / 2 - k * node.y)
+          .scale(k))
+      nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
+      return true
+    }
+
+    function focusByQuery (query, { resetCycle = false } = {}) {
+      const q = String(query || '').trim().toLowerCase()
+      if (!q) {
+        queryCycle = { q: '', i: -1, matches: [] }
+        return { total: 0, index: -1, node: null }
+      }
+      const matches = nodes.filter((n) => {
+        const label = String(n.label || '').toLowerCase()
+        const p = String(n.path || '').toLowerCase()
+        return label.includes(q) || p.includes(q)
+      })
+      if (!matches.length) {
+        queryCycle = { q, i: -1, matches: [] }
+        return { total: 0, index: -1, node: null }
+      }
+      let idx = 0
+      if (!resetCycle && queryCycle.q === q && queryCycle.matches.length === matches.length) {
+        idx = (queryCycle.i + 1) % matches.length
+      }
+      queryCycle = { q, i: idx, matches }
+      const node = matches[idx]
+      focusNode(node)
+      return { total: matches.length, index: idx, node }
     }
 
     // ResizeObserver para adaptar el grafo al tamaño del sidebar
@@ -327,6 +426,7 @@
         ro.disconnect()
         svg.selectAll('*').remove()
       },
+      focusByQuery,
       pulseNode (filePath) {
         const node = nodes.find(n => n.path === filePath)
         if (!node || node.x == null) return
@@ -350,13 +450,8 @@
             .attr('r', r * 1.8)
           .transition().duration(700).ease(d3.easeCubicInOut)
             .attr('r', r)
-            .attr('stroke-width', node.type === 'folder' ? 1.5 : 1)
-            .attr('filter', () => {
-              if (node.type === 'folder') return 'url(#glow-folder)'
-              const ext = (node.label.split('.').pop() || '').toLowerCase()
-              const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
-              return `url(#glow-${COLORS[glowKey] ? glowKey : 'default'})`
-            })
+            .attr('stroke-width', node.isRoot ? 1.8 : (node.type === 'folder' ? 1.5 : 1))
+            .attr('filter', () => `url(#${glowIdForNode(node)})`)
 
         // Label siempre visible durante el pulso
         nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
