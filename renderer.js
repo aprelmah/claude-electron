@@ -433,8 +433,8 @@ if (btnSendTelegram) {
       btnSendTelegram.disabled = false
     }
   })
-  // Refresca cada 4s mientras la ventana esté activa.
-  setInterval(refreshSendTelegramButton, 4000)
+  // Refresco periódico ligero mientras la ventana está activa.
+  setInterval(refreshSendTelegramButton, 6500)
   refreshSendTelegramButton()
   // Refresca tras cambios de status de Telegram.
   if (window.api.onTelegramStatus) {
@@ -1400,9 +1400,10 @@ btnWorkHere.addEventListener('click', async () => {
 
 function updateLayoutButtonsState () {
   const collapsed = sidebar.classList.contains('collapsed')
+  const disabled = collapsed
   document.querySelectorAll('.layout-btn').forEach(btn => {
-    btn.style.opacity = collapsed ? '0.4' : ''
-    btn.style.pointerEvents = collapsed ? 'none' : ''
+    btn.style.opacity = disabled ? '0.4' : ''
+    btn.style.pointerEvents = disabled ? 'none' : ''
   })
 }
 
@@ -1699,6 +1700,11 @@ window.api.onPtyError((message) => {
   term.write(`\r\n\x1b[31m[error] ${msg}\x1b[0m\r\n`)
   showStatus(msg, 'error', 7000)
 })
+if (typeof window.api.onPtyBusy === 'function') {
+  window.api.onPtyBusy((message) => {
+    showStatus(String(message || 'Relay activo en Telegram'), 'warn', 1800)
+  })
+}
 window.api.onTelegramStatus((status) => {
   renderTelegramStatus(status)
 })
@@ -1780,7 +1786,7 @@ cliSelector.addEventListener('change', async (e) => {
   await updateCwdLabel()
   await refreshSessionStrip(true)
   applyView(currentView)
-  setInterval(() => { refreshSessionStrip(false) }, 3500)
+  setInterval(() => { refreshSessionStrip(false) }, 6000)
 
   window.api.onTreeChanged(() => {
     scheduleTreeRefresh()

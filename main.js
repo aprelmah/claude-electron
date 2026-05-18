@@ -959,11 +959,9 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     if (s) s.lastPtyDataAt = Date.now()
     if (!s || !s.win || s.win.isDestroyed()) return
-    // Modo privado: durante relay Telegram enlazado no pintamos el stream en la PTY local.
-    const linked = getRelayBindingForSession(s).linked
-    if (!(linked && s.relayActive)) {
-      s.win.webContents.send('pty-data', data)
-    }
+    // Mantener siempre espejo local: aunque Telegram esté en relay activo,
+    // la ventana principal sigue mostrando el stream real de la PTY.
+    s.win.webContents.send('pty-data', data)
   })
 
   proc.onExit(() => {
@@ -1067,6 +1065,7 @@ function createWindow() {
     relayActive: false,
     relayListener: null,
     relayCancel: null,
+    lastRelayInputWarnAt: 0,
     lastPtyDataAt: 0,
     lastLocalInputAt: 0,
     treeWatcher: null,
@@ -1836,6 +1835,23 @@ function extractTurnText(obj) {
 let codexHistoryCache = { key: '', rows: [] }
 let codexSessionIndexCache = { key: '', byId: new Map() }
 let codexStateThreadCache = new Map()
+const CLAUDE_TITLE_CACHE_MAX = 600
+const claudeSessionTitleCache = new Map()
+
+function rememberClaudeSessionTitle(filePath, entry) {
+  if (!filePath || !entry) return
+  if (claudeSessionTitleCache.has(filePath)) claudeSessionTitleCache.delete(filePath)
+  claudeSessionTitleCache.set(filePath, entry)
+  if (claudeSessionTitleCache.size > CLAUDE_TITLE_CACHE_MAX) {
+    const oldest = claudeSessionTitleCache.keys().next().value
+    if (oldest) claudeSessionTitleCache.delete(oldest)
+  }
+}
+
+function forgetClaudeSessionTitle(filePath) {
+  if (!filePath) return
+  claudeSessionTitleCache.delete(filePath)
+}
 
 function fileCacheKey(filePath) {
   try {
@@ -1985,8 +2001,20 @@ function readClaudeSessionTitle(cwd, sessionId) {
   if (!sid) return { title: '', path: null }
   const dir = resolveClaudeProjectDir(cwd)
   const file = dir ? path.join(dir, `${sid}.jsonl`) : null
-  if (!file || !fs.existsSync(file)) return { title: '', path: file }
+  if (!file || !fs.existsSync(file)) {
+    if (file) forgetClaudeSessionTitle(file)
+    return { title: '', path: file }
+  }
 
+  let stat = null
+  try { stat = fs.statSync(file) } catch {}
+  const cached = claudeSessionTitleCache.get(file)
+  if (cached?.locked) return { title: cached.title || '', path: file }
+  if (cached && stat && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return { title: cached.title || '', path: file }
+  }
+
+  let title = ''
   try {
     const raw = fs.readFileSync(file, 'utf-8')
     for (const line of raw.split('\n')) {
@@ -1996,12 +2024,19 @@ function readClaudeSessionTitle(cwd, sessionId) {
         if (obj?.type !== 'user') continue
         const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
         if (text && !text.startsWith('Caveat:')) {
-          return { title: clipText(text), path: file }
+          title = clipText(text)
+          break
         }
       } catch {}
     }
   } catch {}
-  return { title: '', path: file }
+  rememberClaudeSessionTitle(file, {
+    title,
+    mtimeMs: Number(stat?.mtimeMs || 0),
+    size: Number(stat?.size || 0),
+    locked: !!title
+  })
+  return { title, path: file }
 }
 
 function buildCurrentSessionMeta(session) {
@@ -2049,6 +2084,27 @@ function buildCurrentSessionMeta(session) {
     title,
     path: null
   }
+}
+
+function resolveSessionIdForRelay(session) {
+  if (!session) return null
+  const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
+  if (cli === 'claude') {
+    if (session.claudeSessionId) return session.claudeSessionId
+    const latest = listClaudeSessionFilesWithMtime(session.cwd)[0]
+    if (latest?.sessionId) {
+      session.claudeSessionId = latest.sessionId
+      return latest.sessionId
+    }
+    return null
+  }
+  if (session.codexSessionId) return session.codexSessionId
+  const guess = guessCodexSessionFromHistory(session)
+  if (guess?.sessionId) {
+    session.codexSessionId = guess.sessionId
+    return guess.sessionId
+  }
+  return null
 }
 
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
@@ -2272,7 +2328,16 @@ ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => {
 
 ipcMain.on('pty-input', (event, data) => {
   const s = getSessionByEvent(event)
-  if (s?.relayActive) return
+  if (s?.relayActive) {
+    const now = Date.now()
+    if (!s.lastRelayInputWarnAt || (now - s.lastRelayInputWarnAt) > 1500) {
+      s.lastRelayInputWarnAt = now
+      try {
+        s.win?.webContents?.send('pty-busy', 'Relay activo: Telegram está usando esta sesión ahora.')
+      } catch {}
+    }
+    return
+  }
   if (s) s.lastLocalInputAt = Date.now()
   s?.pty?.write(data)
 })
@@ -2867,7 +2932,11 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
 ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
   const dir = resolveClaudeProjectDir(cwd)
   const file = path.join(dir, `${sessionId}.jsonl`)
-  if (fs.existsSync(file)) { fs.unlinkSync(file); return true }
+  if (fs.existsSync(file)) {
+    fs.unlinkSync(file)
+    forgetClaudeSessionTitle(file)
+    return true
+  }
   return false
 })
 
@@ -2924,6 +2993,14 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
 
     const out = lines.join('\n')
     fs.writeFileSync(file, hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out, 'utf-8')
+    let stat = null
+    try { stat = fs.statSync(file) } catch {}
+    rememberClaudeSessionTitle(file, {
+      title: clipText(nextTitle),
+      mtimeMs: Number(stat?.mtimeMs || 0),
+      size: Number(stat?.size || 0),
+      locked: true
+    })
     return { ok: true, title: nextTitle, path: file }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
@@ -3022,13 +3099,13 @@ ipcMain.handle('app:can-send-to-telegram', (event) => {
   const withLink = (payload) => ({ ...payload, linked: binding.linked, chatId: linkedChatId, relayActive: !!s.relayActive, cli: s.activeCli })
 
   if (s.activeCli !== 'claude' && s.activeCli !== 'codex') return withLink({ ok: false, reason: 'not-supported-cli' })
-  if (s.activeCli === 'claude' && !s.claudeSessionId) return withLink({ ok: false, reason: 'no-session-id' })
+  const sessionId = resolveSessionIdForRelay(s)
+  if (s.activeCli === 'claude' && !sessionId) return withLink({ ok: false, reason: 'no-session-id' })
   if (!telegramBridge) return withLink({ ok: false, reason: 'bridge-not-init' })
   const status = telegramBridge.getStatus()
   if (!status.running) return withLink({ ok: false, reason: 'bridge-not-running' })
   if (!preferredChatId) return withLink({ ok: false, reason: 'no-allowed-user' })
-  const meta = buildCurrentSessionMeta(s)
-  return withLink({ ok: true, sessionId: meta?.sessionId || null, cwd: s.cwd })
+  return withLink({ ok: true, sessionId: sessionId || null, cwd: s.cwd })
 })
 
 ipcMain.handle('app:send-session-to-telegram', async (event) => {
@@ -3037,7 +3114,8 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
   if (s.activeCli !== 'claude' && s.activeCli !== 'codex') {
     return { ok: false, error: 'CLI no soportado para relay Telegram (usa claude o codex).' }
   }
-  if (s.activeCli === 'claude' && !s.claudeSessionId) {
+  const resolvedSessionId = resolveSessionIdForRelay(s)
+  if (s.activeCli === 'claude' && !resolvedSessionId) {
     return { ok: false, error: 'No se detectó el sessionId de claude. Habla con él al menos un mensaje y vuelve a intentarlo.' }
   }
   if (!telegramBridge) return { ok: false, error: 'Telegram bridge no inicializado' }
@@ -3045,8 +3123,7 @@ ipcMain.handle('app:send-session-to-telegram', async (event) => {
   if (!status.running) return { ok: false, error: 'Telegram bridge no está corriendo (actívalo en Configuración).' }
   const chatId = telegramBridge.getFirstAllowedUserId()
   if (!chatId) return { ok: false, error: 'No hay usuarios autorizados en Telegram (configúralos en Configuración).' }
-  const currentMeta = buildCurrentSessionMeta(s)
-  const currentSessionId = currentMeta?.sessionId || null
+  const currentSessionId = resolvedSessionId || null
 
   try {
     if (s.activeCli === 'claude' && s.claudeSessionId) {

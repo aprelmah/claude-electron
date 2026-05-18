@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   onPtyData: (cb) => ipcRenderer.on('pty-data', (_, d) => cb(d)),
   onPtyExit: (cb) => ipcRenderer.on('pty-exit', () => cb()),
   onPtyError: (cb) => ipcRenderer.on('pty-error', (_, message) => cb(message)),
+  onPtyBusy: (cb) => ipcRenderer.on('pty-busy', (_, message) => cb(message)),
 
   transcribeAudio: (arrayBuffer) => ipcRenderer.invoke('transcribe-audio', arrayBuffer),
   pickImage: () => ipcRenderer.invoke('pick-image'),
