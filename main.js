@@ -2471,7 +2471,7 @@ ipcMain.handle('fs-read-dir', async (event, dirPath) => {
   }
 })
 
-ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
+function computeProjectGraph(rootPath) {
   if (!rootPath) return { ok: false, error: 'no rootPath' }
 
   const SKIP = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache',
@@ -2769,6 +2769,8 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     edgeSet.add(key)
     return true
   })
+  // F-hier: marca explícita de referencias (vs parent-child).
+  for (const e of uniqueEdges) e.kind = 'reference'
 
   const connectionCount = new Map(allFiles.map(f => [f, 0]))
   for (const e of uniqueEdges) {
@@ -2776,25 +2778,52 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     connectionCount.set(e.target, (connectionCount.get(e.target) || 0) + 1)
   }
 
-  const nodes = allFiles.map(f => ({
-    id: f,
-    label: path.basename(f),
-    path: f,
-    connections: connectionCount.get(f) || 0,
-    mtimeMs: Number(fileMtime.get(f) || 0)
-  }))
+  // F-hier: metadata jerárquica. parentId = carpeta contenedora si está en dirSet.
+  // depth = nº de separadores entre root y el nodo (0 para root, 1 para hijos directos).
+  const computeHier = (p, isRoot) => {
+    if (isRoot || p === rootPath) return { parentId: null, depth: 0 }
+    const parent = path.dirname(p)
+    const parentId = dirSet.has(parent) ? parent : null
+    let depth = 1
+    if (rootPath && p.startsWith(rootPath + path.sep)) {
+      const rel = p.slice(rootPath.length + 1)
+      depth = rel.split(path.sep).length
+    }
+    return { parentId, depth }
+  }
 
-  const dirs = allDirs.map((d) => ({
-    id: d,
-    label: path.basename(d) || d,
-    path: d,
-    type: 'folder',
-    isRoot: d === rootPath,
-    connections: 0
-  }))
+  const nodes = allFiles.map(f => {
+    const { parentId, depth } = computeHier(f, false)
+    return {
+      id: f,
+      label: path.basename(f),
+      path: f,
+      connections: connectionCount.get(f) || 0,
+      mtimeMs: Number(fileMtime.get(f) || 0),
+      parentId,
+      depth
+    }
+  })
+
+  const dirs = allDirs.map((d) => {
+    const isRoot = d === rootPath
+    const { parentId, depth } = computeHier(d, isRoot)
+    return {
+      id: d,
+      label: path.basename(d) || d,
+      path: d,
+      type: 'folder',
+      isRoot,
+      connections: 0,
+      parentId,
+      depth
+    }
+  })
 
   return { ok: true, nodes, edges: uniqueEdges, dirs }
-})
+}
+
+ipcMain.handle('sidebar:get-graph', (_event, rootPath) => computeProjectGraph(rootPath))
 
 ipcMain.handle('fs-pick-folder', async (event) => {
   const result = await dialog.showOpenDialog(winFromEvent(event), {
@@ -3273,15 +3302,44 @@ ipcMain.on('window-new', () => {
 
 let graphWindowData = null
 
-ipcMain.handle('graph-window:open', (_event, { nodes, edges, dirs, mode, activeTypes, forces, ui }) => {
-  graphWindowData = {
-    nodes,
-    edges,
-    dirs: dirs || [],
-    mode: mode || 'refs',
-    activeTypes: activeTypes || null,
-    forces: forces || null,
-    ui: ui || null
+ipcMain.handle('graph-window:open', (event, payload = {}) => {
+  const {
+    nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes,
+    selfFetch, rootPath
+  } = payload || {}
+  let cwd = null
+  try {
+    const s = getSessionByEvent(event)
+    cwd = s ? s.cwd : null
+  } catch { cwd = null }
+  if (!cwd) cwd = (typeof rootPath === 'string' && rootPath) ? rootPath : (getCwdSync() || os.homedir())
+  if (selfFetch) {
+    // La ventana standalone se autosirve: no precargamos nodos/edges.
+    graphWindowData = {
+      nodes: [],
+      edges: [],
+      dirs: [],
+      mode: mode || 'refs',
+      activeTypes: activeTypes || null,
+      structureActiveTypes: structureActiveTypes || null,
+      forces: forces || null,
+      ui: ui || null,
+      cwd: cwd || '',
+      selfFetch: true
+    }
+  } else {
+    graphWindowData = {
+      nodes: nodes || [],
+      edges: edges || [],
+      dirs: dirs || [],
+      mode: mode || 'refs',
+      activeTypes: activeTypes || null,
+      structureActiveTypes: structureActiveTypes || null,
+      forces: forces || null,
+      ui: ui || null,
+      cwd: cwd || '',
+      selfFetch: false
+    }
   }
   const win = new BrowserWindow({
     width: 1200, height: 800,
@@ -3298,6 +3356,22 @@ ipcMain.handle('graph-window:open', (_event, { nodes, edges, dirs, mode, activeT
 })
 
 ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
+
+ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
+  let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
+  if (!root) root = getCwdSync() || null
+  if (!root) return { ok: false, error: 'No hay carpeta activa para calcular el grafo' }
+  try {
+    if (!fs.existsSync(root)) return { ok: false, error: `La ruta no existe: ${root}` }
+  } catch (err) { return { ok: false, error: err.message } }
+  try {
+    const result = computeProjectGraph(root)
+    if (result && result.ok) result.cwd = root
+    return result
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+})
 
 ipcMain.handle('viewer-open', (_event, arg) => {
   const filePath = typeof arg === 'string' ? arg : arg?.path

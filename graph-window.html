@@ -72,6 +72,18 @@
       border-color: rgba(251,191,36,0.7); color: rgba(251,191,36,1);
       background: rgba(251,191,36,0.12);
     }
+    .graph-speed-wrap {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 1px 7px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.10); background: transparent;
+    }
+    .graph-speed-label { font-size: 10px; font-family: system-ui, sans-serif; color: rgba(255,255,255,0.45); }
+    .graph-speed-input { width: 70px; height: 2px; accent-color: #a78bfa; cursor: pointer; }
+    .graph-speed-val {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px; color: rgba(255,255,255,0.5);
+      min-width: 14px; text-align: right;
+    }
     .graph-search-row { display: flex; gap: 6px; align-items: center; }
     .graph-search-input {
       flex: 1; min-width: 120px;
@@ -92,6 +104,19 @@
       cursor: pointer; transition: all 0.15s;
     }
     .btn-graph-search:hover { filter: brightness(1.1); transform: scale(1.04); }
+    .btn-graph-search-nav {
+      font-size: 10px; font-family: system-ui, sans-serif;
+      padding: 4px 7px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06); color: rgba(220,215,255,0.9);
+      cursor: pointer; transition: all 0.15s; line-height: 1;
+    }
+    .btn-graph-search-nav:hover { filter: brightness(1.15); border-color: rgba(124,106,247,0.6); }
+    .graph-search-count {
+      font-size: 10px; font-family: system-ui, sans-serif;
+      color: rgba(220,215,255,0.7);
+      min-width: 32px; text-align: center; visibility: hidden;
+    }
     .graph-chips-row { display: flex; flex-wrap: wrap; gap: 4px; }
     .graph-chip {
       font-size: 10px; font-family: system-ui, sans-serif;
@@ -116,11 +141,98 @@
       position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
       color: rgba(255,255,255,0.3); font-family: system-ui, sans-serif; font-size: 13px;
     }
+    /* Context menu */
+    #graph-context-menu {
+      position: fixed; background: #14141c; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px; padding: 4px; z-index: 9999; min-width: 160px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    #graph-context-menu.hidden { display: none; }
+    .ctx-menu-item {
+      padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 12px;
+      color: rgba(255,255,255,0.9); display: flex; align-items: center; gap: 8px;
+      font-family: system-ui, sans-serif;
+    }
+    .ctx-menu-item:hover { background: rgba(255,255,255,0.08); }
+    /* File modal */
+    #graph-file-modal {
+      position: fixed; inset: 0; z-index: 9998;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #graph-file-modal.hidden { display: none; }
+    #graph-file-modal .modal-backdrop {
+      position: absolute; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
+    }
+    .graph-file-modal-panel {
+      position: relative; z-index: 1;
+      width: min(820px, 92vw); height: min(70vh, 640px);
+      background: #14141c; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; display: flex; flex-direction: column;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    }
+    #graph-file-modal .modal-header {
+      padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.08);
+      display: flex; align-items: center; gap: 12px;
+    }
+    #graph-file-modal .modal-title {
+      font-size: 14px; font-weight: 700; color: rgba(255,255,255,0.95);
+      font-family: system-ui, sans-serif;
+    }
+    #graph-file-modal .modal-sub {
+      font-family: Menlo, monospace; font-size: 11px; color: rgba(255,255,255,0.5);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+    }
+    #graph-file-modal .modal-close {
+      background: none; border: none; color: rgba(255,255,255,0.55);
+      font-size: 20px; cursor: pointer; padding: 0 8px; border-radius: 6px; line-height: 1;
+    }
+    #graph-file-modal .modal-close:hover { background: #ef4444; color: white; }
+    .graph-file-modal-body { flex: 1; display: flex; min-height: 0; padding: 10px; }
+    #graph-file-modal-textarea {
+      flex: 1; resize: none;
+      background: #0c0c12; color: rgba(255,255,255,0.92);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; line-height: 1.45; white-space: pre; overflow: auto; tab-size: 2;
+    }
+    #graph-file-modal-notice {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      font-size: 13px; color: rgba(255,255,255,0.7);
+      border: 1px dashed rgba(255,255,255,0.12); border-radius: 6px;
+      font-family: system-ui, sans-serif;
+    }
+    #graph-file-modal-notice.hidden { display: none; }
+    .graph-file-modal-actions {
+      display: flex; align-items: center; justify-content: flex-end;
+      gap: 8px; padding: 8px 10px 10px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .graph-file-modal-actions #graph-file-modal-status {
+      margin-right: auto; font-size: 11px; color: rgba(255,255,255,0.55);
+      font-family: system-ui, sans-serif;
+    }
+    .graph-file-modal-actions button {
+      font-size: 12px; padding: 6px 12px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.85);
+      cursor: pointer; font-family: system-ui, sans-serif;
+    }
+    .graph-file-modal-actions button:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
+    .graph-file-modal-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .graph-file-modal-actions button.primary {
+      border-color: rgba(124,106,247,0.6);
+      background: rgba(124,106,247,0.18);
+      color: rgba(220,215,255,0.98);
+    }
+    .graph-file-modal-actions button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
   <div id="titlebar">
     <span>⟁ POWER-AGENT — Grafo</span>
+    <span id="cwd-label" style="margin-left:12px;opacity:0.6;font-size:11px;font-family:system-ui,sans-serif;"></span>
     <button id="btn-close-graph">×</button>
   </div>
   <div id="controls">
@@ -131,6 +243,28 @@
   </div>
   <div id="loading">Cargando grafo…</div>
   <svg id="graph-canvas"></svg>
+
+  <div id="graph-context-menu" class="hidden"></div>
+
+  <div id="graph-file-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="graph-file-modal-panel">
+      <div class="modal-header">
+        <span class="modal-title" id="graph-file-modal-title">Archivo</span>
+        <span class="modal-sub" id="graph-file-modal-sub"></span>
+        <button id="graph-file-modal-close" class="modal-close">×</button>
+      </div>
+      <div class="graph-file-modal-body">
+        <textarea id="graph-file-modal-textarea" spellcheck="false"></textarea>
+        <div id="graph-file-modal-notice" class="hidden"></div>
+      </div>
+      <div class="graph-file-modal-actions">
+        <span id="graph-file-modal-status"></span>
+        <button id="graph-file-modal-cancel">Cerrar</button>
+        <button id="graph-file-modal-save" class="primary">Guardar</button>
+      </div>
+    </div>
+  </div>
 
   <script src="node_modules/d3/dist/d3.min.js"></script>
   <script src="graph-renderer.js"></script>

@@ -267,7 +267,9 @@
     const nodeById = new Map(nodes.map(n => [n.id, n]))
     const simEdges = edges.map(e => ({
       source: nodeById.get(e.source) || e.source,
-      target: nodeById.get(e.target) || e.target
+      target: nodeById.get(e.target) || e.target,
+      // F-hier: preservar kind para que el worker aplique distance/strength por tipo.
+      kind: e.kind || 'reference'
     }))
 
     // Simulación D3 force → ahora corre en Web Worker.
@@ -340,6 +342,9 @@
       // Estado interno (mock alpha para drag start/end semántica)
       let alphaTargetVal = 0
       let alphaVal = 0.6
+      // Último factor de velocidad aplicado. Se reenvía al worker tras init
+      // para sobrevivir a rebuilds internos (setForces rehace fuerzas).
+      let lastSpeedFactor = null
 
       const api = {
         _worker: w,
@@ -386,6 +391,17 @@
         setForcesDirect (patch) {
           if (wDisposed) return api
           w.postMessage({ type: 'setForces', ...patch })
+          // setForces rebuilda fuerzas internas; reaplicar velocidad para no perderla.
+          if (lastSpeedFactor != null) {
+            w.postMessage({ type: 'setSpeed', factor: lastSpeedFactor })
+          }
+          return api
+        },
+        setSpeed (factor) {
+          if (wDisposed) return api
+          const f = Math.max(0.1, Math.min(1, Number(factor) || 1))
+          lastSpeedFactor = f
+          w.postMessage({ type: 'setSpeed', factor: f })
           return api
         },
         setSize (w_, h_) {
@@ -424,11 +440,15 @@
             y: n.y,
             fx: n.fx,
             fy: n.fy,
-            radiusPad: nodeRadius(n)
+            radiusPad: nodeRadius(n),
+            // F-hier: parentId propaga al worker para forceCluster.
+            parentId: n.parentId || null
           }))
           const initEdges = simEdges.map(e => ({
             source: typeof e.source === 'object' ? e.source.id : e.source,
-            target: typeof e.target === 'object' ? e.target.id : e.target
+            target: typeof e.target === 'object' ? e.target.id : e.target,
+            // F-hier: kind propaga al worker para distance/strength por tipo.
+            kind: e.kind || 'reference'
           }))
           w.postMessage({
             type: 'init',
@@ -437,7 +457,8 @@
             width,
             height,
             forces: { repulsion, linkDistance, compactness },
-            alpha: 0.6
+            alpha: 0.6,
+            speedFactor: lastSpeedFactor != null ? lastSpeedFactor : undefined
           })
         }
       }
@@ -791,7 +812,26 @@
       return true
     }
 
-    function focusByQuery (query, { resetCycle = false } = {}) {
+    // Estado para pausa por búsqueda. Guarda el `paused` previo para restaurarlo
+    // al limpiar. No re-anima si el grafo estaba pausado por autoPause.
+    let searchActive = false
+    let searchPrevPaused = false
+
+    function ensureSearchPause () {
+      if (searchActive) return
+      searchActive = true
+      searchPrevPaused = paused
+      if (!paused) setPaused(true)
+    }
+
+    function restoreFromSearch () {
+      if (!searchActive) return
+      searchActive = false
+      // Si antes estaba en marcha, reanudar. Si estaba pausado (manual o autoPause), dejar pausado.
+      if (!searchPrevPaused && paused) setPaused(false)
+    }
+
+    function focusByQuery (query, { resetCycle = false, scopeDir = null, step = 0 } = {}) {
       const qRaw = String(query || '').trim()
       const q = normalizeText(qRaw)
       if (!q) {
@@ -799,24 +839,65 @@
         return { total: 0, index: -1, node: null }
       }
       const terms = q.split(/\s+/).filter(Boolean)
+      const scope = scopeDir ? String(scopeDir).replace(/\/+$/, '').toLowerCase() : null
+      const scopePrefix = scope ? scope + '/' : null
       const matches = nodes.filter((n) => {
+        if (scope) {
+          const p = (n.path || '').toLowerCase()
+          if (!p || (p !== scope && !p.startsWith(scopePrefix))) return false
+        }
         const hay = normalizeText(`${n.label || ''} ${n.path || ''}`)
         return terms.every((term) => hay.includes(term))
       })
       if (!matches.length) {
         queryCycle = { q, i: -1, matches: [] }
+        ensureSearchPause()
         return { total: 0, index: -1, node: null }
       }
-      let idx = 0
       const sameMatchSet = queryCycle.matches.length === matches.length &&
         queryCycle.matches.every((n, i) => n.id === matches[i].id)
-      if (!resetCycle && queryCycle.q === q && sameMatchSet) {
-        idx = (queryCycle.i + 1) % matches.length
+      let idx
+      if (resetCycle || queryCycle.q !== q || !sameMatchSet) {
+        idx = 0
+      } else {
+        const delta = Number(step) || 0
+        idx = ((queryCycle.i + delta) % matches.length + matches.length) % matches.length
       }
       queryCycle = { q, i: idx, matches }
       const node = matches[idx]
+      ensureSearchPause()
       focusNode(node)
       return { total: matches.length, index: idx, node }
+    }
+
+    function searchNext () {
+      if (!queryCycle.matches.length) return { total: 0, index: -1, node: null }
+      const idx = (queryCycle.i + 1) % queryCycle.matches.length
+      queryCycle.i = idx
+      const node = queryCycle.matches[idx]
+      ensureSearchPause()
+      focusNode(node)
+      return { total: queryCycle.matches.length, index: idx, node }
+    }
+
+    function searchPrev () {
+      if (!queryCycle.matches.length) return { total: 0, index: -1, node: null }
+      const n = queryCycle.matches.length
+      const idx = (queryCycle.i - 1 + n) % n
+      queryCycle.i = idx
+      const node = queryCycle.matches[idx]
+      ensureSearchPause()
+      focusNode(node)
+      return { total: n, index: idx, node }
+    }
+
+    function searchClear () {
+      queryCycle = { q: '', i: -1, matches: [] }
+      restoreFromSearch()
+    }
+
+    function isSearching () {
+      return !!queryCycle.matches.length
     }
 
     // ResizeObserver para adaptar el grafo al tamaño del sidebar
@@ -852,6 +933,10 @@
         try { svg.selectAll('*').remove() } catch {}
       },
       focusByQuery,
+      searchPrev,
+      searchNext,
+      searchClear,
+      isSearching,
       markActivePath,
       setPaused,
       pulseNode (filePath) {
@@ -888,6 +973,10 @@
         if (p !== undefined) particleSpeed = p
         if (Object.keys(patch).length) sim.setForcesDirect(patch)
         if (!paused) sim.alpha(0.4).restart()
+      },
+      setSpeed (factor) {
+        // factor ∈ [0.1, 1.0]. 1.0 = comportamiento default d3 (rápido).
+        if (sim?.setSpeed) sim.setSpeed(factor)
       }
     }
   }

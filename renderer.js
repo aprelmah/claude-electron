@@ -13,6 +13,7 @@ const btnImage = document.getElementById('btn-image')
 const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
 const btnSettings = document.getElementById('btn-settings')
+const btnOpenGraphWindow = document.getElementById('btn-open-graph-window')
 const btnSendTelegram = document.getElementById('btn-send-telegram')
 const btnSendTelegramWrap = document.getElementById('btn-send-telegram-wrap')
 const cliSelector = document.getElementById('cli-selector')
@@ -31,7 +32,6 @@ const graphCanvas = document.getElementById('graph-canvas')
 const graphFilters = document.getElementById('graph-filters')
 const btnViewTree = document.getElementById('btn-view-tree')
 const btnViewGraph = document.getElementById('btn-view-graph')
-const btnGraphFullscreen = document.getElementById('btn-graph-fullscreen')
 const btnWorkHere = document.getElementById('btn-work-here')
 const cwdValue = document.getElementById('cwd-value')
 const btnSessions = document.getElementById('btn-sessions')
@@ -660,12 +660,90 @@ let graphForces = {
 }
 let forcePanelOpen = false
 
-const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
-const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5', go: '#06b6d4', otros: '#6b7280' }
-let activeTypes = new Set(ALL_TYPES)
+// Extensiones conocidas con color fijo (compat histórico). El resto se colorea
+// por hash determinista contra COLOR_PALETTE para que misma ext = mismo color
+// en cada sesión. `__noext__` agrupa archivos sin extensión (Makefile, LICENSE).
+const NOEXT_KEY = '__noext__'
+const KNOWN_COLORS_BY_TYPE = {
+  md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399',
+  css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5',
+  go: '#06b6d4',
+  [NOEXT_KEY]: '#6b7280'
+}
+const COLOR_PALETTE = [
+  '#f43f5e', '#ec4899', '#d946ef', '#a855f7', '#8b5cf6', '#6366f1',
+  '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e',
+  '#84cc16', '#eab308', '#f59e0b', '#f97316', '#ef4444', '#78716c'
+]
+function hashStr (s) {
+  let h = 0
+  for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0 }
+  return Math.abs(h)
+}
+function colorForExt (type) {
+  if (KNOWN_COLORS_BY_TYPE[type]) return KNOWN_COLORS_BY_TYPE[type]
+  return COLOR_PALETTE[hashStr(type) % COLOR_PALETTE.length]
+}
+function extLabel (type) { return type === NOEXT_KEY ? 'sin ext' : type }
+
+// Conjunto de extensiones detectadas en el grafo actual. Se recalcula al cargar
+// el grafo y al cambiar de modo. Mantenido ordenado alfabéticamente con
+// `__noext__` al final para que el orden no salte al toggle.
+let presentExts = []
+
+// Persistimos las extensiones INACTIVAS, no las activas: así, cuando aparece
+// una extensión nueva en un proyecto, arranca activa por defecto.
+let refsInactiveTypes = (() => {
+  try {
+    const raw = localStorage.getItem('poweragent_graph_refs_exts_inactive')
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? new Set(arr) : new Set()
+  } catch { return new Set() }
+})()
+let structureInactiveTypes = (() => {
+  try {
+    const raw = localStorage.getItem('poweragent_graph_structure_exts_inactive')
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? new Set(arr) : new Set()
+  } catch { return new Set() }
+})()
+function persistRefsInactive () {
+  try { localStorage.setItem('poweragent_graph_refs_exts_inactive', JSON.stringify(Array.from(refsInactiveTypes))) } catch {}
+}
+function persistStructureInactive () {
+  try { localStorage.setItem('poweragent_graph_structure_exts_inactive', JSON.stringify(Array.from(structureInactiveTypes))) } catch {}
+}
+// Set efectivo de tipos activos para el modo dado, derivado de `presentExts`
+// menos los inactivos persistidos. Nuevas extensiones arrancan activas.
+function activeTypesFor (mode) {
+  const inactive = mode === 'structure' ? structureInactiveTypes : refsInactiveTypes
+  return new Set(presentExts.filter((t) => !inactive.has(t)))
+}
+function recomputePresentExts (nodes) {
+  const set = new Set()
+  for (const n of (nodes || [])) {
+    if (!n || n.type === 'folder') continue
+    set.add(extType(n.label))
+  }
+  const arr = Array.from(set)
+  const noext = arr.includes(NOEXT_KEY)
+  const sorted = arr.filter((t) => t !== NOEXT_KEY).sort()
+  if (noext) sorted.push(NOEXT_KEY)
+  presentExts = sorted
+}
 let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
 let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
+// Velocidad del grafo. Slider 1..10 -> factor 0.1..1.0. Default 5 (factor 0.5).
+// Luismi: el default antiguo (1.0) mareaba. Persistido por usuario.
+let graphSpeedSlider = (() => {
+  const raw = Number(localStorage.getItem('poweragent_graph_speed'))
+  if (!Number.isFinite(raw) || raw < 1 || raw > 10) return 5
+  return Math.round(raw)
+})()
+function graphSpeedFactor () { return graphSpeedSlider / 10 }
 // No persistimos "pausa" entre arranques para evitar que el grafo parezca roto.
 let graphPaused = false
 localStorage.removeItem('poweragent.graph.paused')
@@ -674,9 +752,20 @@ let graphRefreshInFlight = false
 let graphLastActivePath = ''
 
 function extType (label) {
-  const ext = (label.split('.').pop() || '').toLowerCase()
+  const name = String(label || '')
+  // Sin punto, o el punto es inicial (dotfile estilo `.env` -> ext = "env"),
+  // o termina en punto -> sin extensión real.
+  const lastDot = name.lastIndexOf('.')
+  if (lastDot <= 0 || lastDot === name.length - 1) {
+    // `.env`, `.gitignore` los tratamos por el sufijo (lo más útil al filtrar).
+    if (lastDot === 0 && name.length > 1) return name.slice(1).toLowerCase()
+    return NOEXT_KEY
+  }
+  // Extensiones compuestas tipo `.tar.gz` -> usamos la última (`gz`).
+  const ext = name.slice(lastDot + 1).toLowerCase()
+  if (!ext) return NOEXT_KEY
   if (ext === 'mjs' || ext === 'cjs') return 'js'
-  return ALL_TYPES.includes(ext) ? ext : 'otros'
+  return ext
 }
 
 function pathDir (p) {
@@ -735,14 +824,14 @@ function buildStructureGraph (nodes, dirs = []) {
 
   nodes.forEach(n => {
     const parentDir = pathDir(n.path) || root
-    if (folderMap.has(parentDir)) edges.push({ source: n.id, target: parentDir })
+    if (folderMap.has(parentDir)) edges.push({ source: n.id, target: parentDir, kind: 'parent-child' })
   })
 
   folderNodes.forEach(f => {
     if (f.id === root) return
     const parentDir = pathDir(f.id)
     const targetId = folderMap.has(parentDir) ? parentDir : root
-    if (targetId && targetId !== f.id) edges.push({ source: f.id, target: targetId })
+    if (targetId && targetId !== f.id) edges.push({ source: f.id, target: targetId, kind: 'parent-child' })
   })
 
   return { nodes: allNodes, edges }
@@ -808,6 +897,34 @@ function buildFilters () {
     buildFilters()
   })
   topRow.appendChild(btnPause)
+
+  // Slider de velocidad (1-10). 1 = muy lento, 10 = rápido. Default 5.
+  const speedWrap = document.createElement('label')
+  speedWrap.className = 'graph-speed-wrap'
+  speedWrap.title = 'Velocidad de la animación del grafo'
+  const speedLbl = document.createElement('span')
+  speedLbl.className = 'graph-speed-label'
+  speedLbl.textContent = 'Velocidad'
+  const speedInput = document.createElement('input')
+  speedInput.type = 'range'
+  speedInput.className = 'graph-speed-input'
+  speedInput.min = '1'
+  speedInput.max = '10'
+  speedInput.step = '1'
+  speedInput.value = String(graphSpeedSlider)
+  const speedVal = document.createElement('span')
+  speedVal.className = 'graph-speed-val'
+  speedVal.textContent = String(graphSpeedSlider)
+  speedInput.addEventListener('input', () => {
+    const v = Math.max(1, Math.min(10, Number(speedInput.value) || 5))
+    graphSpeedSlider = v
+    speedVal.textContent = String(v)
+    localStorage.setItem('poweragent_graph_speed', String(v))
+    if (graphInstance?.setSpeed) graphInstance.setSpeed(graphSpeedFactor())
+  })
+  speedWrap.append(speedLbl, speedInput, speedVal)
+  topRow.appendChild(speedWrap)
+
   graphFilters.appendChild(topRow)
 
   const searchRow = document.createElement('div')
@@ -815,30 +932,71 @@ function buildFilters () {
   const searchInput = document.createElement('input')
   searchInput.className = 'graph-search-input'
   searchInput.type = 'search'
-  searchInput.placeholder = 'Buscar por nombre, ruta o palabras'
+  searchInput.placeholder = 'Buscar en el directorio actual'
   searchInput.value = graphSearchQuery
-  const btnSearch = document.createElement('button')
-  btnSearch.className = 'btn-graph-search'
-  btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+  const btnPrev = document.createElement('button')
+  btnPrev.className = 'btn-graph-search-nav'
+  btnPrev.type = 'button'
+  btnPrev.textContent = '◀'
+  btnPrev.title = 'Coincidencia anterior'
+  const btnNext = document.createElement('button')
+  btnNext.className = 'btn-graph-search-nav'
+  btnNext.type = 'button'
+  btnNext.textContent = '▶'
+  btnNext.title = 'Coincidencia siguiente'
+  const countEl = document.createElement('span')
+  countEl.id = 'graph-search-count'
+  countEl.className = 'graph-search-count'
+  const refreshCount = (idx, total) => {
+    if (total > 0) {
+      countEl.textContent = `${idx + 1}/${total}`
+      countEl.style.visibility = 'visible'
+    } else if (graphSearchQuery) {
+      countEl.textContent = '0/0'
+      countEl.style.visibility = 'visible'
+    } else {
+      countEl.textContent = ''
+      countEl.style.visibility = 'hidden'
+    }
+  }
   const runSearch = ({ cycle = false } = {}) => {
     graphSearchQuery = searchInput.value.trim()
     localStorage.setItem('poweragent.graph.search', graphSearchQuery)
-    if (!graphInstance || !graphSearchQuery) {
+    if (!graphInstance) return
+    if (!graphSearchQuery) {
       graphSearchNo = 0
-      btnSearch.textContent = 'Buscar'
+      graphInstance.searchClear?.()
+      refreshCount(-1, 0)
       return
     }
-    const info = graphInstance.focusByQuery?.(graphSearchQuery, { resetCycle: !cycle }) || null
+    const info = graphInstance.focusByQuery?.(graphSearchQuery, {
+      resetCycle: !cycle,
+      scopeDir: rootPath || null,
+      step: cycle ? 1 : 0
+    }) || null
     graphSearchNo = Number(info?.total || 0)
-    btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
+    refreshCount(Number(info?.index ?? -1), graphSearchNo)
   }
   searchInput.addEventListener('input', () => runSearch({ cycle: false }))
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runSearch({ cycle: true }) }
   })
-  btnSearch.addEventListener('click', () => runSearch({ cycle: true }))
-  searchRow.append(searchInput, btnSearch)
+  btnPrev.addEventListener('click', () => {
+    if (!graphInstance?.searchPrev) return
+    const info = graphInstance.searchPrev()
+    graphSearchNo = Number(info?.total || 0)
+    refreshCount(Number(info?.index ?? -1), graphSearchNo)
+  })
+  btnNext.addEventListener('click', () => {
+    if (!graphInstance?.searchNext) return
+    const info = graphInstance.searchNext()
+    graphSearchNo = Number(info?.total || 0)
+    refreshCount(Number(info?.index ?? -1), graphSearchNo)
+  })
+  searchRow.append(searchInput, btnPrev, btnNext, countEl)
   graphFilters.appendChild(searchRow)
+  // Estado inicial del contador al (re)construir filtros
+  refreshCount(-1, graphSearchQuery ? graphSearchNo : 0)
 
   // Panel de fuerzas
   const forcesPanel = document.createElement('div')
@@ -870,21 +1028,26 @@ function buildFilters () {
   })
   graphFilters.appendChild(forcesPanel)
 
-  if (graphMode === 'refs') {
+  if (graphMode === 'refs' || graphMode === 'structure') {
     const chipsRow = document.createElement('div')
     chipsRow.className = 'graph-chips-row'
-    ALL_TYPES.forEach(type => {
+    const inactive = graphMode === 'refs' ? refsInactiveTypes : structureInactiveTypes
+    const persist = graphMode === 'refs' ? persistRefsInactive : persistStructureInactive
+    presentExts.forEach(type => {
       const chip = document.createElement('button')
-      chip.className = 'graph-chip' + (activeTypes.has(type) ? ' active' : '')
-      chip.textContent = type
-      chip.style.setProperty('--chip-color', COLORS_BY_TYPE[type])
+      const isActive = !inactive.has(type)
+      chip.className = 'graph-chip' + (isActive ? ' active' : '')
+      chip.textContent = extLabel(type)
+      chip.style.setProperty('--chip-color', colorForExt(type))
       chip.addEventListener('click', () => {
-        if (activeTypes.has(type)) {
-          if (activeTypes.size > 1) activeTypes.delete(type)
+        if (inactive.has(type)) {
+          inactive.delete(type)
+          chip.classList.add('active')
         } else {
-          activeTypes.add(type)
+          inactive.add(type)
+          chip.classList.remove('active')
         }
-        chip.classList.toggle('active', activeTypes.has(type))
+        persist()
         renderFiltered()
       })
       chipsRow.appendChild(chip)
@@ -897,15 +1060,25 @@ function renderFiltered () {
   if (!graphAllData) return
   let nodes, edges
   let sourceNodes = graphAllData.nodes
-  if (graphMode === 'refs') {
-    sourceNodes = sourceNodes.filter(n => activeTypes.has(extType(n.label)))
+  const activeSet = activeTypesFor(graphMode)
+  // Si el set efectivo está vacío (todo desactivado), no filtramos: el usuario
+  // probablemente quiso ver todo. Coherente con la spec.
+  const applyExtFilter = activeSet.size > 0 && activeSet.size < presentExts.length
+  if (applyExtFilter) {
+    sourceNodes = sourceNodes.filter(n => activeSet.has(extType(n.label)))
   }
   if (graphHotOnly) {
     const hotIds = pickHotNodeIds(sourceNodes)
     if (hotIds.size > 0) sourceNodes = sourceNodes.filter((n) => hotIds.has(n.id))
   }
   if (graphMode === 'structure') {
-    const structData = buildStructureGraph(sourceNodes, graphAllData.dirs || [])
+    // Si el filtro de extensiones está completo (todo activo), pasamos los
+    // dirs explícitos del proyecto (comportamiento original). Si hay filtro
+    // activo parcial, omitimos dirs para que las carpetas se deriven sólo de
+    // los archivos visibles y no queden directorios huérfanos colgando.
+    const allOn = !applyExtFilter
+    const dirsArg = allOn ? (graphAllData.dirs || []) : []
+    const structData = buildStructureGraph(sourceNodes, dirsArg)
     nodes = structData.nodes
     edges = structData.edges
   } else {
@@ -921,28 +1094,36 @@ function renderFiltered () {
       onDblClick: (filePath) => injectToPty(`@${filePath} `),
       onContextMenu: (node, x, y) => showGraphContextMenu(node, x, y),
       forces: graphForces,
-      autoPause: !graphPaused,
-      autoPauseDelay: 2500,
-      onAutoPause: () => {
-        graphPaused = true
-        buildFilters()
-      }
+      autoPause: false
     }
   )
   if (graphLastActivePath && graphInstance?.markActivePath) {
     graphInstance.markActivePath(graphLastActivePath)
   }
+  // Reaplicar velocidad tras (re)render — la nueva instancia parte de 1.0.
+  if (graphInstance?.setSpeed) graphInstance.setSpeed(graphSpeedFactor())
   if (graphPaused && graphInstance?.setPaused) {
     graphInstance.setPaused(graphPaused)
   }
   if (graphSearchQuery && graphInstance?.focusByQuery) {
-    const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
+    const info = graphInstance.focusByQuery(graphSearchQuery, {
+      resetCycle: true,
+      scopeDir: rootPath || null
+    })
     graphSearchNo = Number(info?.total || 0)
+    const cEl = graphFilters.querySelector('#graph-search-count')
+    if (cEl) {
+      if (graphSearchNo > 0) {
+        cEl.textContent = `${Number(info?.index ?? 0) + 1}/${graphSearchNo}`
+        cEl.style.visibility = 'visible'
+      } else {
+        cEl.textContent = '0/0'
+        cEl.style.visibility = 'visible'
+      }
+    }
   } else {
     graphSearchNo = 0
   }
-  const sb = graphFilters.querySelector('.btn-graph-search')
-  if (sb) sb.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
 }
 
 const BINARY_EXTS = new Set([
@@ -980,8 +1161,11 @@ function closeGraphContextMenu () {
 }
 
 function showGraphContextMenu (node, x, y) {
+  try { console.log('[graph-ctx] open', { path: node?.path, type: node?.type, x, y }) } catch {}
   const menu = document.getElementById('graph-context-menu')
-  if (!menu) return
+  if (!menu) { try { console.warn('[graph-ctx] missing #graph-context-menu element') } catch {}; return }
+  // Cierra cualquier menú zombie antes de abrir el nuevo (evita listeners duplicados).
+  if (graphCtxMenuOpen) closeGraphContextMenu()
   menu.innerHTML = ''
 
   const isFolder = node.type === 'folder'
@@ -1033,6 +1217,7 @@ function showGraphContextMenu (node, x, y) {
 let graphFileModalState = { path: null, originalText: null, editable: false }
 
 async function openGraphFileModal (node) {
+  try { console.log('[graph-modal] open', { path: node?.path }) } catch {}
   const modal = document.getElementById('graph-file-modal')
   const title = document.getElementById('graph-file-modal-title')
   const sub = document.getElementById('graph-file-modal-sub')
@@ -1040,7 +1225,8 @@ async function openGraphFileModal (node) {
   const notice = document.getElementById('graph-file-modal-notice')
   const saveBtn = document.getElementById('graph-file-modal-save')
   const statusEl = document.getElementById('graph-file-modal-status')
-  if (!modal) return
+  if (!modal) { try { console.warn('[graph-modal] missing #graph-file-modal element') } catch {}; return }
+  if (!node || !node.path) { try { console.warn('[graph-modal] node has no path', node) } catch {}; return }
 
   title.textContent = node.label || node.path.split('/').pop()
   sub.textContent = node.path
@@ -1056,6 +1242,7 @@ async function openGraphFileModal (node) {
     notice.classList.remove('hidden')
     saveBtn.disabled = true
     modal.classList.remove('hidden')
+    modal.style.display = 'flex'
     return
   }
 
@@ -1091,6 +1278,7 @@ function closeGraphFileModal () {
   const modal = document.getElementById('graph-file-modal')
   if (!modal) return
   modal.classList.add('hidden')
+  modal.style.display = ''
   graphFileModalState = { path: null, originalText: null, editable: false }
 }
 
@@ -1124,14 +1312,12 @@ function applyView (view) {
     treeEl.classList.add('hidden')
     graphCanvas.classList.remove('hidden')
     graphFilters.classList.remove('hidden')
-    btnGraphFullscreen.classList.remove('hidden')
     btnViewTree.classList.remove('active')
     btnViewGraph.classList.add('active')
     loadGraph()
   } else {
     graphCanvas.classList.add('hidden')
     graphFilters.classList.add('hidden')
-    btnGraphFullscreen.classList.add('hidden')
     treeEl.classList.remove('hidden')
     btnViewTree.classList.add('active')
     btnViewGraph.classList.remove('active')
@@ -1147,6 +1333,7 @@ async function loadGraph () {
   if (!result.ok) return
   if (currentView !== 'graph') return
   graphAllData = { nodes: result.nodes, edges: result.edges, dirs: result.dirs || [] }
+  recomputePresentExts(graphAllData.nodes)
   buildFilters()
   renderFiltered()
 }
@@ -1163,18 +1350,24 @@ function scheduleGraphRefresh () {
 
 btnViewTree.addEventListener('click', () => applyView('tree'))
 btnViewGraph.addEventListener('click', () => applyView('graph'))
-btnGraphFullscreen.addEventListener('click', () => {
-  if (!graphAllData) return
-  window.api.openGraphWindow(
-    graphAllData.nodes,
-    graphAllData.edges,
-    graphAllData.dirs || [],
-    graphMode,
-    Array.from(activeTypes),
-    graphForces,
-    { search: graphSearchQuery, hotOnly: graphHotOnly, paused: graphPaused }
-  )
-})
+if (btnOpenGraphWindow) {
+  btnOpenGraphWindow.addEventListener('click', async () => {
+    console.log('[graph-window] btn clicked, rootPath=', rootPath)
+    let root = rootPath
+    if (!root) {
+      try { root = await window.api.ptyCwd() } catch (e) { console.warn('[graph-window] ptyCwd error', e) }
+    }
+    console.log('[graph-window] resolved root=', root)
+    try {
+      const res = await window.api.openGraphWindowStandalone(root || null)
+      console.log('[graph-window] open result=', res)
+    } catch (e) {
+      console.error('[graph-window] open error', e)
+    }
+  })
+} else {
+  console.warn('[graph-window] btn-open-graph-window not found in DOM')
+}
 
 const EXT_ICONS = {
   js: '🟨', ts: '🔷', tsx: '⚛', jsx: '⚛', json: '🔧',

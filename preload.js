@@ -68,5 +68,6 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   sidebarGetGraph: (rootPath) => ipcRenderer.invoke('sidebar:get-graph', rootPath),
-  openGraphWindow: (nodes, edges, dirs, mode, activeTypes, forces, ui) => ipcRenderer.invoke('graph-window:open', { nodes, edges, dirs, mode, activeTypes, forces, ui }),
+  openGraphWindow: (nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes) => ipcRenderer.invoke('graph-window:open', { nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes }),
+  openGraphWindowStandalone: (rootPath) => ipcRenderer.invoke('graph-window:open', { selfFetch: true, rootPath: rootPath || null }),
 })

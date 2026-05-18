@@ -11,6 +11,7 @@
 //   in:  { type: 'init', nodes: [{id, isRoot, fx, fy, radiusPad}], edges: [{source, target}], width, height, forces: {repulsion, linkDistance, compactness} }
 //   in:  { type: 'setSize', width, height }
 //   in:  { type: 'setForces', repulsion?, linkDistance?, compactness? }
+//   in:  { type: 'setSpeed', factor }   // factor∈[0.1,1.0] -> velocityDecay∈[0.95,0.4]
 //   in:  { type: 'pause' } | { type: 'resume', alpha=0.42 }
 //   in:  { type: 'reheat', alpha=0.3 } | { type: 'reheatTarget', target=0.3 }
 //   in:  { type: 'dragStart', id } | { type: 'drag', id, x, y } | { type: 'dragEnd', id, fixed }
@@ -65,6 +66,33 @@ let disposed = false
 let width = 800
 let height = 600
 let forces = { repulsion: -220, linkDistance: 80, compactness: 0.06 }
+// Velocidad de la simulación. factor ∈ [0.1,1.0] (1.0 = rápido por defecto d3).
+// Mapeo: velocityDecay = 0.4 + (1 - factor) * 0.55 → factor=1→0.4 / factor=0.1→0.95.
+// alphaDecay también se ajusta sutilmente para que el reheat dure proporcional sin trabar.
+let speedFactor = 1.0
+function speedToVelocityDecay (f) { return 0.4 + (1 - f) * 0.55 }
+function speedToAlphaDecay (f) {
+  // d3 default ≈ 0.0228 (1 - 0.001^(1/300)). Bajamos hasta ~0.0114 cuando f=0.1
+  // para que el grafo no se "muera" en seco al ir lento.
+  return 0.0228 - (1 - f) * 0.0114
+}
+function applySpeedToSim () {
+  if (!sim) return
+  sim.velocityDecay(speedToVelocityDecay(speedFactor))
+  sim.alphaDecay(speedToAlphaDecay(speedFactor))
+}
+// F-hier: parámetros de jerarquía. Distancia/fuerza de aristas según kind.
+//   parent-child → más corto y rígido (estructura visible).
+//   reference    → más largo y flexible (referencias entre archivos).
+const HIER = {
+  pcDistance: 35,
+  refDistance: 90,
+  pcStrength: 0.9,
+  refStrength: 0.3,
+  clusterStrength: 0.18 // intensidad de la fuerza cluster (multiplicada por alpha)
+}
+// Centroides por parentId, recalculados cada tick antes de aplicar la fuerza.
+const clusterCentroid = new Map()
 
 function ensureBuffers (len) {
   const bytes = len * 2
@@ -72,17 +100,67 @@ function ensureBuffers (len) {
   if (!bufB || bufB.length !== bytes || bufB.buffer.byteLength === 0) bufB = new Float32Array(bytes)
 }
 
+function linkDistanceFor (e) {
+  // F-hier: parent-child más corto; reference (o sin kind) más largo.
+  // Si el usuario tunea linkDistance desde UI, lo respetamos como base para refs.
+  if (e && e.kind === 'parent-child') return HIER.pcDistance
+  return forces.linkDistance
+}
+function linkStrengthFor (e) {
+  if (e && e.kind === 'parent-child') return HIER.pcStrength
+  return HIER.refStrength
+}
+
+// F-hier: fuerza cluster. Atrae cada nodo (con parentId) hacia el centroide de
+// sus hermanos (nodos con el mismo parentId). El centroide se recalcula al
+// inicio de cada llamada (un tick = una llamada). Coste O(n) por tick.
+// Limitación conocida: en grafos enormes (>5k nodos) puede notarse leve coste;
+// d3-quadtree no se usa aquí porque la agrupación es por id, no por proximidad.
+function forceCluster (alpha) {
+  if (!nodes.length) return
+  clusterCentroid.clear()
+  // Acumular sumas por parentId.
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const pid = n.__parentId
+    if (!pid) continue
+    let c = clusterCentroid.get(pid)
+    if (!c) { c = { x: 0, y: 0, n: 0 }; clusterCentroid.set(pid, c) }
+    c.x += n.x
+    c.y += n.y
+    c.n += 1
+  }
+  // Promediar.
+  clusterCentroid.forEach(c => { if (c.n) { c.x /= c.n; c.y /= c.n } })
+  // Aplicar velocidad hacia centroide. k = clusterStrength * alpha.
+  const k = HIER.clusterStrength * alpha
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const pid = n.__parentId
+    if (!pid) continue
+    const c = clusterCentroid.get(pid)
+    if (!c || c.n < 2) continue // hijo único: no cluster (evita ruido)
+    n.vx += (c.x - n.x) * k
+    n.vy += (c.y - n.y) * k
+  }
+}
+
 function buildSim () {
   if (sim) { sim.stop(); sim = null }
   sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(simEdges).id(d => d.id).distance(forces.linkDistance))
+    .force('link', d3.forceLink(simEdges).id(d => d.id)
+      .distance(linkDistanceFor)
+      .strength(linkStrengthFor))
     .force('charge', d3.forceManyBody().strength(forces.repulsion))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('x', d3.forceX(width / 2).strength(forces.compactness))
     .force('y', d3.forceY(height / 2).strength(forces.compactness))
     .force('collide', d3.forceCollide().radius(d => (d.__pad || 12) + 10))
+    .force('cluster', forceCluster)
     .on('tick', emitTick)
     .on('end', () => { if (!disposed) self.postMessage({ type: 'end' }) })
+  // Reaplicar velocidad tras cada (re)build de la simulación.
+  applySpeedToSim()
   if (paused) sim.stop()
 }
 
@@ -116,6 +194,9 @@ self.onmessage = (ev) => {
       width = msg.width || width
       height = msg.height || height
       if (msg.forces) forces = { ...forces, ...msg.forces }
+      if (typeof msg.speedFactor === 'number') {
+        speedFactor = Math.max(0.1, Math.min(1, msg.speedFactor))
+      }
       // Construir nodos locales (clonados, no refs a originales del main)
       nodes = (msg.nodes || []).map(n => {
         const o = {
@@ -124,7 +205,9 @@ self.onmessage = (ev) => {
           y: n.y ?? (height / 2 + (Math.random() - 0.5) * 40),
           vx: 0,
           vy: 0,
-          __pad: n.radiusPad || 12
+          __pad: n.radiusPad || 12,
+          // F-hier: metadata jerárquica para forceCluster.
+          __parentId: n.parentId || null
         }
         if (n.fx != null) o.fx = n.fx
         if (n.fy != null) o.fy = n.fy
@@ -135,7 +218,8 @@ self.onmessage = (ev) => {
       simEdges = (msg.edges || []).map(e => {
         const s = typeof e.source === 'object' ? e.source.id : e.source
         const t = typeof e.target === 'object' ? e.target.id : e.target
-        return { source: nodeById.get(s) || s, target: nodeById.get(t) || t }
+        // F-hier: preservar kind para callbacks de distance/strength.
+        return { source: nodeById.get(s) || s, target: nodeById.get(t) || t, kind: e.kind || 'reference' }
       })
       ids = nodes.map(n => n.id)
       // Resetear pool: tamaño puede haber cambiado.
@@ -171,7 +255,10 @@ self.onmessage = (ev) => {
       }
       if (msg.linkDistance !== undefined) {
         forces.linkDistance = msg.linkDistance
-        if (sim) sim.force('link', d3.forceLink(simEdges).id(n => n.id).distance(forces.linkDistance))
+        // F-hier: rebuild link force preservando callbacks por kind.
+        if (sim) sim.force('link', d3.forceLink(simEdges).id(n => n.id)
+          .distance(linkDistanceFor)
+          .strength(linkStrengthFor))
       }
       if (msg.compactness !== undefined) {
         forces.compactness = msg.compactness
@@ -181,6 +268,13 @@ self.onmessage = (ev) => {
         }
       }
       if (!paused && sim) sim.alpha(0.4).restart()
+      break
+    }
+    case 'setSpeed': {
+      if (typeof msg.factor === 'number') {
+        speedFactor = Math.max(0.1, Math.min(1, msg.factor))
+        applySpeedToSim()
+      }
       break
     }
     case 'pause': {
