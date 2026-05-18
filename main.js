@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -14,6 +14,7 @@ const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
 const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
+const { createWhatsAppClient, MEDIA_DIR: WA_MEDIA_DIR, MEDIA_PROTOCOL: WA_MEDIA_PROTOCOL, CONFIG_PATH: WA_CONFIG_PATH } = require('./whatsapp/whatsapp-client')
 
 const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi', 'automation-builder', 'patterns.md')
 
@@ -66,6 +67,9 @@ let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
 let telegramBridge = null
+let whatsappClient = null
+let whatsappReachable = false
+let whatsappRetryTimer = null
 
 const DEFAULT_CONFIG = Object.freeze({
   cli: {
@@ -2313,6 +2317,49 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ── WhatsApp bridge client ──
+  try {
+    fs.mkdirSync(WA_MEDIA_DIR, { recursive: true })
+    protocol.registerFileProtocol(WA_MEDIA_PROTOCOL, (request, callback) => {
+      try {
+        const u = new URL(request.url)
+        const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
+        const safe = path.basename(name)
+        callback({ path: path.join(WA_MEDIA_DIR, safe) })
+      } catch {
+        callback({ error: -6 })
+      }
+    })
+  } catch (err) {
+    console.error('[whatsapp] protocol register failed:', err?.message || err)
+  }
+
+  whatsappClient = createWhatsAppClient({
+    buildRuntimeEnv,
+    transcribeAudio: (mediaPath) => transcribeAudioFile(mediaPath, buildRuntimeEnv())
+  })
+  whatsappClient.on('new-message', (payload) => broadcastToAllWindows('whatsapp:new-message', payload))
+  whatsappClient.on('chat-updated', (payload) => broadcastToAllWindows('whatsapp:chat-updated', payload))
+  whatsappClient.on('status-changed', (status) => {
+    whatsappReachable = status !== 'disconnected'
+    broadcastToAllWindows('whatsapp:status-changed', status)
+  })
+
+  async function tryStartWhatsapp() {
+    try {
+      const res = await fetch('http://127.0.0.1:3031/status').catch(() => null)
+      if (!res || !res.ok) throw new Error('bridge no responde en 3031')
+      whatsappReachable = true
+      whatsappClient.start()
+    } catch (err) {
+      whatsappReachable = false
+      console.warn('[whatsapp] bridge not reachable, retrying in 10s:', err?.message || err)
+      whatsappRetryTimer = setTimeout(tryStartWhatsapp, 10_000)
+      whatsappRetryTimer.unref?.()
+    }
+  }
+  tryStartWhatsapp()
+
   globalShortcut.register('CommandOrControl+Shift+T', () => openTasksManager())
 
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
@@ -2350,6 +2397,8 @@ app.on('before-quit', () => {
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
   telegramBridge?.stop()
+  try { whatsappClient?.stop() } catch {}
+  if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
   try { tasksScheduler?.destroy() } catch {}
 })
 
@@ -4072,4 +4121,85 @@ ipcMain.handle('automation-chat:window-minimize', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win && !win.isDestroyed()) win.minimize()
   return { ok: true }
+})
+
+// ── WhatsApp IPC ──
+function requireWhatsapp() {
+  if (!whatsappClient) throw new Error('WhatsApp client no inicializado')
+  return whatsappClient
+}
+
+ipcMain.handle('whatsapp:status', async () => {
+  if (!whatsappClient) return { connected: false, qrPresent: false, reachable: false, ownerNumber: '', authorizedNumbers: [], autoReply: false }
+  try {
+    const s = await whatsappClient.getStatus()
+    return { ...s, reachable: whatsappReachable }
+  } catch (err) {
+    return { connected: false, qrPresent: false, reachable: false, error: err?.message }
+  }
+})
+
+ipcMain.handle('whatsapp:get-qr', async () => {
+  if (!whatsappClient) return { qr: null }
+  try { return await whatsappClient.getQr() } catch (err) { return { qr: null, error: err?.message } }
+})
+
+ipcMain.handle('whatsapp:get-chats', () => {
+  if (!whatsappClient) return []
+  try { return whatsappClient.getChats() } catch { return [] }
+})
+
+ipcMain.handle('whatsapp:get-history', (_e, jid, opts = {}) => {
+  if (!whatsappClient) return []
+  try { return whatsappClient.getHistory(jid, opts || {}) } catch { return [] }
+})
+
+ipcMain.handle('whatsapp:send-text', async (_e, jid, text) => {
+  try { return await requireWhatsapp().sendText(jid, text) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:send-image', async (_e, jid, filePath, caption) => {
+  try { return await requireWhatsapp().sendMedia(jid, filePath, 'image', { caption: caption || '' }) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:send-audio', async (_e, jid, filePath, ptt) => {
+  try { return await requireWhatsapp().sendMedia(jid, filePath, 'audio', { ptt: ptt !== false }) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:send-document', async (_e, jid, filePath, caption) => {
+  try { return await requireWhatsapp().sendMedia(jid, filePath, 'document', { caption: caption || '' }) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:set-mode', (_e, jid, mode) => {
+  try { return requireWhatsapp().setMode(jid, mode) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:mark-read', (_e, jid) => {
+  try { return requireWhatsapp().markRead(jid) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:get-config', () => {
+  try { return requireWhatsapp().getConfig() }
+  catch { try { return JSON.parse(fs.readFileSync(WA_CONFIG_PATH, 'utf-8')) } catch { return {} } }
+})
+
+ipcMain.handle('whatsapp:save-config', (_e, partial) => {
+  try { return { ok: true, config: requireWhatsapp().updateConfig(partial || {}) } }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
+  if (!mediaPath || !fs.existsSync(mediaPath)) return { ok: false, error: 'archivo no existe' }
+  try {
+    const text = await transcribeAudioFile(mediaPath, buildRuntimeEnv())
+    return { ok: true, text }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
 })
