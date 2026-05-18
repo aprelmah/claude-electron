@@ -193,13 +193,6 @@
     brainGrad.append('stop').attr('offset', '0%').attr('stop-color', '#e7fbff').attr('stop-opacity', 0.95)
     brainGrad.append('stop').attr('offset', '100%').attr('stop-color', '#8acbe0').attr('stop-opacity', 0.4)
 
-    const brainPhotoClip = defs.append('clipPath')
-      .attr('id', 'brain-photo-clip')
-      .attr('clipPathUnits', 'userSpaceOnUse')
-    brainPhotoClip.append('ellipse')
-      .attr('cx', 0).attr('cy', 0)
-      .attr('rx', ROOT_PHOTO_RX).attr('ry', ROOT_PHOTO_RY)
-
     // Gradiente nebulosa en el centro
     const radGrad = defs.append('radialGradient')
       .attr('id', 'nebula')
@@ -348,8 +341,7 @@
       .attr('xlink:href', ROOT_PHOTO_HREF)
       .attr('x', -ROOT_PHOTO_RX).attr('y', -ROOT_PHOTO_RY)
       .attr('width', ROOT_PHOTO_RX * 2).attr('height', ROOT_PHOTO_RY * 2)
-      .attr('preserveAspectRatio', 'xMidYMid slice')
-      .attr('clip-path', 'url(#brain-photo-clip)')
+      .attr('preserveAspectRatio', 'xMidYMid meet')
       .attr('opacity', 0.98)
 
     const brainShape = rootBrain.append('g')
