@@ -55,7 +55,7 @@ body {
   align-items: center;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: 4px 8px 4px 82px;
   min-height: 38px;
   user-select: none;
   flex-shrink: 0;

@@ -1,4 +1,4 @@
-document.getElementById('btn-close-graph').addEventListener('click', () => window.api.closeWindow())
+document.getElementById('btn-close-graph')?.addEventListener('click', () => window.api.closeWindow())
 
 // Filtros de extensión estables para evitar listas enormes con sufijos
 // accidentales cuando la raíz no es el proyecto esperado.

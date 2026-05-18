@@ -6,26 +6,33 @@
   <title>POWER-AGENT — Grafo</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; background: #050508; overflow: hidden; }
+    html, body { width: 100%; height: 100%; background: #1a1a1f; overflow: hidden; }
     #titlebar {
-      position: fixed; top: 0; left: 0; right: 0; height: 32px;
-      background: rgba(5,5,8,0.85); backdrop-filter: blur(8px);
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0 12px; z-index: 10; -webkit-app-region: drag;
+      position: fixed; top: 0; left: 0; right: 0; min-height: 38px;
+      background: #24242b; border-bottom: 1px solid #3a3a48;
+      display: flex; align-items: center;
+      padding: 4px 8px 4px 82px; gap: 8px; z-index: 10; -webkit-app-region: drag;
     }
-    #titlebar span { font-size: 11px; color: rgba(255,255,255,0.4); font-family: system-ui, sans-serif; }
-    #btn-close-graph {
-      -webkit-app-region: no-drag; background: none; border: none;
-      color: rgba(255,255,255,0.4); cursor: pointer; font-size: 16px; line-height: 1;
-      padding: 4px 6px; border-radius: 4px;
+    #titlebar .app-title-bolt {
+      width: 12px; height: 12px; fill: #facc15;
+      filter: drop-shadow(0 0 2px rgba(250, 204, 21, 0.55));
     }
-    #btn-close-graph:hover { color: #fff; background: rgba(255,255,255,0.1); }
+    #titlebar .app-title {
+      font-size: 10px; font-weight: 600; color: #9090a8;
+      letter-spacing: 0.6px; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 5px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #cwd-label {
+      font-size: 11px; color: rgba(255,255,255,0.4);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
     #controls {
-      position: fixed; top: 32px; left: 0; right: 0;
-      background: rgba(5,5,8,0.8); backdrop-filter: blur(8px);
+      position: fixed; top: 38px; left: 0; right: 0;
+      background: #1a1a1f;
       display: flex; flex-direction: column; gap: 4px;
       padding: 6px 12px; z-index: 9;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      border-bottom: 1px solid #3a3a48;
     }
     .graph-mode-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
     .graph-mode-btn {
@@ -231,9 +238,11 @@
 </head>
 <body>
   <div id="titlebar">
-    <span>⟁ POWER-AGENT — Grafo</span>
-    <span id="cwd-label" style="margin-left:12px;opacity:0.6;font-size:11px;font-family:system-ui,sans-serif;"></span>
-    <button id="btn-close-graph">×</button>
+    <span class="app-title">
+      <svg class="app-title-bolt" viewBox="0 0 24 24" aria-hidden="true"><polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/></svg>
+      POWER-AGENT — GRAFO
+    </span>
+    <span id="cwd-label"></span>
   </div>
   <div id="controls">
     <div class="graph-mode-row" id="mode-row"></div>

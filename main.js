@@ -1083,6 +1083,9 @@ function createWindow() {
     width: 1000,
     height: 680,
     frame: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 13 },
+    backgroundColor: appConfig?.ui?.theme === 'light' ? '#fafafd' : '#1a1a1f',
     resizable: true,
     alwaysOnTop: false,
     skipTaskbar: false,
@@ -3436,7 +3439,11 @@ ipcMain.handle('graph-window:open', (event, payload = {}) => {
   }
   const win = new BrowserWindow({
     width: 1200, height: 800,
-    frame: false, resizable: true, minimizable: true,
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 13 },
+    backgroundColor: '#1a1a1f',
+    resizable: true, minimizable: true,
     title: 'POWER-AGENT — Grafo',
     webPreferences: {
       preload: path.join(__dirname, 'graph-window-preload.js'),
@@ -3485,8 +3492,11 @@ ipcMain.handle('whatsapp-window:open', () => {
     minWidth: 640,
     minHeight: 480,
     resizable: true,
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 13 },
     title: 'POWER-AGENT — WhatsApp',
-    backgroundColor: '#111118',
+    backgroundColor: '#1a1a1f',
     webPreferences: {
       preload: path.join(__dirname, 'whatsapp-window-preload.js'),
       contextIsolation: true,
