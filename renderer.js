@@ -646,15 +646,17 @@ let graphAllData = null
 let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
 let graphMode = localStorage.getItem('poweragent.graph.mode') || 'refs'
 // v2: reset force defaults si vienen de la versión anterior
-if (localStorage.getItem('poweragent.graph.forces.v') !== '2') {
+if (localStorage.getItem('poweragent.graph.forces.v') !== '3') {
   localStorage.removeItem('poweragent.graph.repulsion')
   localStorage.removeItem('poweragent.graph.linkDistance')
-  localStorage.setItem('poweragent.graph.forces.v', '2')
+  localStorage.removeItem('poweragent.graph.compactness')
+  localStorage.setItem('poweragent.graph.forces.v', '3')
 }
 let graphForces = {
   repulsion: Number(localStorage.getItem('poweragent.graph.repulsion') ?? -80),
   linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance') ?? 40),
-  particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed') ?? 4000)
+  particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed') ?? 4000),
+  compactness: Number(localStorage.getItem('poweragent.graph.compactness') ?? 0.06)
 }
 let forcePanelOpen = false
 
@@ -664,6 +666,7 @@ let activeTypes = new Set(ALL_TYPES)
 let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
 let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
+let graphPaused = localStorage.getItem('poweragent.graph.paused') === '1'
 let graphRefreshDebounce = null
 let graphRefreshInFlight = false
 let graphLastActivePath = ''
@@ -792,6 +795,18 @@ function buildFilters () {
     renderFiltered()
   })
   topRow.appendChild(btnHot)
+
+  const btnPause = document.createElement('button')
+  btnPause.className = 'btn-graph-pause' + (graphPaused ? ' active' : '')
+  btnPause.textContent = graphPaused ? '▶ Reanudar' : '⏸ Pausar'
+  btnPause.title = graphPaused ? 'Reanudar movimiento del grafo' : 'Parar movimiento del grafo'
+  btnPause.addEventListener('click', () => {
+    graphPaused = !graphPaused
+    localStorage.setItem('poweragent.graph.paused', graphPaused ? '1' : '0')
+    if (graphInstance?.setPaused) graphInstance.setPaused(graphPaused)
+    buildFilters()
+  })
+  topRow.appendChild(btnPause)
   graphFilters.appendChild(topRow)
 
   const searchRow = document.createElement('div')
@@ -830,7 +845,8 @@ function buildFilters () {
   ;[
     ['Repulsión', 'repulsion', -800, -20, 10, v => -v],
     ['Distancia', 'linkDistance', 20, 300, 10, v => v],
-    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v]
+    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v],
+    ['Compactar', 'compactness', 0, 0.2, 0.005, v => `${Math.round(Number(v) * 100)}%`]
   ].forEach(([label, key, min, max, step, display]) => {
     const row = document.createElement('div')
     row.className = 'graph-force-row'
@@ -908,6 +924,9 @@ function renderFiltered () {
   )
   if (graphLastActivePath && graphInstance?.markActivePath) {
     graphInstance.markActivePath(graphLastActivePath)
+  }
+  if (graphInstance?.setPaused) {
+    graphInstance.setPaused(graphPaused)
   }
   if (graphSearchQuery && graphInstance?.focusByQuery) {
     const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
@@ -1146,7 +1165,7 @@ btnGraphFullscreen.addEventListener('click', () => {
     graphMode,
     Array.from(activeTypes),
     graphForces,
-    { search: graphSearchQuery, hotOnly: graphHotOnly }
+    { search: graphSearchQuery, hotOnly: graphHotOnly, paused: graphPaused }
   )
 })
 

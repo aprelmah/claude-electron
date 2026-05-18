@@ -254,6 +254,8 @@
     // Simulación D3 force
     let repulsion = forces.repulsion ?? -220
     let linkDistance = forces.linkDistance ?? 80
+    let compactness = forces.compactness ?? 0.06
+    let paused = !!forces.paused
 
     // Nodo raíz fijo en el centro
     nodes.forEach(d => {
@@ -264,6 +266,8 @@
       .force('link', d3.forceLink(simEdges).id(d => d.id).distance(linkDistance))
       .force('charge', d3.forceManyBody().strength(repulsion))
       .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('x', d3.forceX(width / 2).strength(compactness))
+      .force('y', d3.forceY(height / 2).strength(compactness))
       .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 10))
 
     // Capa de aristas
@@ -295,14 +299,14 @@
       .call(
         d3.drag()
           .on('start', (e, d) => {
-            if (!e.active) sim.alphaTarget(0.3).restart()
+            if (!paused && !e.active) sim.alphaTarget(0.3).restart()
             d.fx = d.x
             d.fy = d.y
             d3.select(e.sourceEvent.target.closest('.node')).attr('cursor', 'grabbing')
           })
           .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y })
           .on('end', (e, d) => {
-            if (!e.active) sim.alphaTarget(0)
+            if (!paused && !e.active) sim.alphaTarget(0)
             d3.select(e.sourceEvent.target.closest('.node')).attr('cursor', 'grab')
           })
       )
@@ -427,6 +431,10 @@
     let prevAnimTs = Date.now()
 
     function animateParticles () {
+      if (paused) {
+        rafId = null
+        return
+      }
       const now = Date.now()
       const dt = Math.max(0, now - prevAnimTs)
       prevAnimTs = now
@@ -459,7 +467,39 @@
       }
       rafId = requestAnimationFrame(animateParticles)
     }
-    animateParticles()
+
+    function startAnimationLoop () {
+      if (rafId != null || paused) return
+      prevAnimTs = Date.now()
+      rafId = requestAnimationFrame(animateParticles)
+    }
+
+    function stopAnimationLoop () {
+      if (rafId == null) return
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
+
+    function setPaused (nextPaused) {
+      const p = !!nextPaused
+      if (p === paused) return paused
+      paused = p
+      if (paused) {
+        sim.stop()
+        stopAnimationLoop()
+      } else {
+        sim.alpha(0.42).restart()
+        startAnimationLoop()
+      }
+      return paused
+    }
+
+    if (paused) {
+      sim.stop()
+      stopAnimationLoop()
+    } else {
+      startAnimationLoop()
+    }
 
     // Selección: atenúa todo excepto el nodo y sus vecinos
     function selectNode (d) {
@@ -568,13 +608,15 @@
       height = svgEl.clientHeight
       nodes.forEach(d => { if (d.isRoot) { d.fx = width / 2; d.fy = height / 2 } })
       sim.force('center', d3.forceCenter(width / 2, height / 2))
-      sim.alpha(0.3).restart()
+      sim.force('x', d3.forceX(width / 2).strength(compactness))
+      sim.force('y', d3.forceY(height / 2).strength(compactness))
+      if (!paused) sim.alpha(0.3).restart()
     })
     ro.observe(svgEl)
 
     return {
       destroy () {
-        cancelAnimationFrame(rafId)
+        stopAnimationLoop()
         sim.stop()
         ro.disconnect()
         try { hoverCard.remove() } catch {}
@@ -582,6 +624,7 @@
       },
       focusByQuery,
       markActivePath,
+      setPaused,
       pulseNode (filePath) {
         const node = nodes.find(n => n.path === filePath)
         if (!node || node.x == null) return
@@ -605,7 +648,7 @@
         // Label siempre visible durante el pulso
         nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
       },
-      setForces ({ repulsion: r, linkDistance: d, particleSpeed: p }) {
+      setForces ({ repulsion: r, linkDistance: d, particleSpeed: p, compactness: c }) {
         if (r !== undefined) {
           repulsion = r
           sim.force('charge', d3.forceManyBody().strength(repulsion))
@@ -615,7 +658,12 @@
           sim.force('link', d3.forceLink(simEdges).id(n => n.id).distance(linkDistance))
         }
         if (p !== undefined) particleSpeed = p
-        sim.alpha(0.4).restart()
+        if (c !== undefined) {
+          compactness = c
+          sim.force('x', d3.forceX(width / 2).strength(compactness))
+          sim.force('y', d3.forceY(height / 2).strength(compactness))
+        }
+        if (!paused) sim.alpha(0.4).restart()
       }
     }
   }

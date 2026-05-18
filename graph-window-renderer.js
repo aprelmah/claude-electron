@@ -8,10 +8,11 @@ let graphMode = 'refs'
 let activeTypes = new Set(ALL_TYPES)
 let graphInstance = null
 let forcePanelOpen = false
-let graphForces = { repulsion: -80, linkDistance: 40, particleSpeed: 4000 }
+let graphForces = { repulsion: -80, linkDistance: 40, particleSpeed: 4000, compactness: 0.06 }
 let graphSearchQuery = ''
 let graphSearchNo = 0
 let graphHotOnly = false
+let graphPaused = false
 
 const graphCanvas = document.getElementById('graph-canvas')
 const modeRow = document.getElementById('mode-row')
@@ -140,6 +141,7 @@ function renderFiltered () {
   }
   if (graphInstance) { graphInstance.destroy(); graphInstance = null }
   graphInstance = window.GraphRenderer.init(graphCanvas, { nodes, edges }, { forces: graphForces })
+  if (graphInstance?.setPaused) graphInstance.setPaused(graphPaused)
   if (graphSearchQuery && graphInstance?.focusByQuery) {
     const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
     graphSearchNo = Number(info?.total || 0)
@@ -182,6 +184,17 @@ function buildControls () {
     renderFiltered()
   })
   modeRow.appendChild(btnHot)
+
+  const btnPause = document.createElement('button')
+  btnPause.className = 'btn-graph-pause' + (graphPaused ? ' active' : '')
+  btnPause.textContent = graphPaused ? '▶ Reanudar' : '⏸ Pausar'
+  btnPause.title = graphPaused ? 'Reanudar movimiento del grafo' : 'Parar movimiento del grafo'
+  btnPause.addEventListener('click', () => {
+    graphPaused = !graphPaused
+    if (graphInstance?.setPaused) graphInstance.setPaused(graphPaused)
+    buildControls()
+  })
+  modeRow.appendChild(btnPause)
 
   const searchRow = document.getElementById('search-row')
   if (!searchRow) return
@@ -237,7 +250,8 @@ function buildControls () {
   ;[
     ['Repulsión', 'repulsion', -800, -20, 10, v => -v],
     ['Distancia', 'linkDistance', 20, 300, 10, v => v],
-    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v]
+    ['Partículas', 'particleSpeed', 500, 10000, 100, v => v],
+    ['Compactar', 'compactness', 0, 0.2, 0.005, v => `${Math.round(Number(v) * 100)}%`]
   ].forEach(([label, key, min, max, step, display]) => {
     const row = document.createElement('div')
     row.className = 'graph-force-row'
@@ -271,6 +285,7 @@ window.api.getGraphWindowData().then(data => {
   if (data.forces) graphForces = { ...graphForces, ...data.forces }
   graphSearchQuery = data?.ui?.search ? String(data.ui.search) : ''
   graphHotOnly = !!data?.ui?.hotOnly
+  graphPaused = !!data?.ui?.paused
   buildControls()
   renderFiltered()
 })
