@@ -666,7 +666,9 @@ let activeTypes = new Set(ALL_TYPES)
 let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
 let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
-let graphPaused = localStorage.getItem('poweragent.graph.paused') === '1'
+// No persistimos "pausa" entre arranques para evitar que el grafo parezca roto.
+let graphPaused = false
+localStorage.removeItem('poweragent.graph.paused')
 let graphRefreshDebounce = null
 let graphRefreshInFlight = false
 let graphLastActivePath = ''
@@ -802,7 +804,6 @@ function buildFilters () {
   btnPause.title = graphPaused ? 'Reanudar movimiento del grafo' : 'Parar movimiento del grafo'
   btnPause.addEventListener('click', () => {
     graphPaused = !graphPaused
-    localStorage.setItem('poweragent.graph.paused', graphPaused ? '1' : '0')
     if (graphInstance?.setPaused) graphInstance.setPaused(graphPaused)
     buildFilters()
   })
