@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('api', {
   sidebarGetGraph: (rootPath) => ipcRenderer.invoke('sidebar:get-graph', rootPath),
   openGraphWindow: (nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes) => ipcRenderer.invoke('graph-window:open', { nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes }),
   openGraphWindowStandalone: (rootPath) => ipcRenderer.invoke('graph-window:open', { selfFetch: true, rootPath: rootPath || null }),
+  openWhatsappWindow: () => ipcRenderer.invoke('whatsapp-window:open'),
 
   whatsapp: {
     status: () => ipcRenderer.invoke('whatsapp:status'),

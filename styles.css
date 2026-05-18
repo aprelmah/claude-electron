@@ -1386,6 +1386,18 @@ body.light {
 .wa-panel.wa-open { transform: translateX(0); }
 body.wa-resizing { cursor: ew-resize; user-select: none; }
 
+/* Modo ventana independiente: panel ocupa toda la ventana sin transform ni resizer. */
+.wa-panel.wa-standalone {
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%;
+  height: 100%;
+  transform: none;
+  transition: none;
+  border-left: none;
+  box-shadow: none;
+}
+.wa-panel.wa-standalone .wa-resizer { display: none; }
+
 .wa-resizer {
   position: absolute;
   top: 0; left: -3px; bottom: 0;

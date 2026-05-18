@@ -143,6 +143,9 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       chats.set(c.jid, {
         jid: c.jid,
         displayNumber: c.displayNumber || jidToNumber(c.jid),
+        // Identidad mejorada: nombre del contacto / pushName y número real (si se pudo resolver).
+        displayName: typeof c.displayName === 'string' ? c.displayName : '',
+        phoneNumber: typeof c.phoneNumber === 'string' ? c.phoneNumber : '',
         mode: c.mode === 'manual' ? 'manual' : 'auto',
         unread: Number(c.unread) || 0,
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
@@ -168,6 +171,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       c = {
         jid,
         displayNumber: jidToNumber(jid),
+        displayName: '',
+        phoneNumber: '',
         mode: 'auto',
         unread: 0,
         history: [],
@@ -195,9 +200,27 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     markDirty()
   }
 
+  function summarizeChat(jid) {
+    const c = chats.get(jid)
+    if (!c) return { jid }
+    const last = c.history.length ? c.history[c.history.length - 1] : null
+    return {
+      jid: c.jid,
+      displayNumber: c.displayNumber,
+      displayName: c.displayName || '',
+      phoneNumber: c.phoneNumber || '',
+      mode: c.mode,
+      unread: c.unread || 0,
+      lastActivity: c.lastActivity || 0,
+      lastMessage: last ? {
+        body: last.body, type: last.type, timestamp: last.timestamp, fromMe: last.fromMe
+      } : null
+    }
+  }
+
   function emitNewMessage(jid, msg) {
     emitter.emit('new-message', { jid, message: decorateMessage(msg) })
-    emitter.emit('chat-updated', { jid })
+    emitter.emit('chat-updated', summarizeChat(jid))
   }
 
   function emitStatus(status) {
@@ -244,6 +267,10 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     if (!isAuthorized(jid)) return // allowlist estricta
 
     const chat = ensureChat(jid)
+    // Enriquecer identidad si el bridge nos pasa nombre/numero.
+    // Orden de preferencia para mostrar: displayName → phoneNumber → displayNumber/JID.
+    if (raw.displayName && raw.displayName !== chat.displayName) { chat.displayName = String(raw.displayName); markDirty() }
+    if (raw.phoneNumber && raw.phoneNumber !== chat.phoneNumber) { chat.phoneNumber = String(raw.phoneNumber); markDirty() }
     const msg = {
       id: raw.id,
       from: jid,
@@ -276,7 +303,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       chat.escalatedUntil = Date.now() + ESCALATION_WINDOW_MS
       chat.mode = 'manual'
       markDirty()
-      emitter.emit('chat-updated', { jid })
+      emitter.emit('chat-updated', summarizeChat(jid))
       return
     }
 
@@ -413,7 +440,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     chat.mode = mode === 'manual' ? 'manual' : 'auto'
     if (chat.mode === 'auto') chat.escalatedUntil = 0
     markDirty()
-    emitter.emit('chat-updated', { jid: targetJid })
+    emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true, mode: chat.mode }
   }
 
@@ -422,7 +449,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const chat = ensureChat(targetJid)
     chat.unread = 0
     markDirty()
-    emitter.emit('chat-updated', { jid: targetJid })
+    emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true }
   }
 
@@ -434,6 +461,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         return {
           jid: c.jid,
           displayNumber: c.displayNumber,
+          displayName: c.displayName || '',
+          phoneNumber: c.phoneNumber || '',
           mode: c.mode,
           unread: c.unread || 0,
           lastActivity: c.lastActivity || 0,

@@ -3420,6 +3420,63 @@ ipcMain.handle('graph-window:open', (event, payload = {}) => {
 
 ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
 
+// Ventana WhatsApp independiente. Si ya existe, la trae al frente.
+let whatsappWindow = null
+const WA_WIN_BOUNDS_FILE = path.join(app.getPath('userData'), 'whatsapp-window-bounds.json')
+
+function loadWhatsappBounds() {
+  try {
+    const raw = fs.readFileSync(WA_WIN_BOUNDS_FILE, 'utf-8')
+    const b = JSON.parse(raw)
+    if (b && Number.isFinite(b.width) && Number.isFinite(b.height)) return b
+  } catch {}
+  return null
+}
+
+function saveWhatsappBounds(win) {
+  if (!win || win.isDestroyed()) return
+  try {
+    const b = win.getBounds()
+    fs.writeFileSync(WA_WIN_BOUNDS_FILE, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }))
+  } catch {}
+}
+
+ipcMain.handle('whatsapp-window:open', () => {
+  if (whatsappWindow && !whatsappWindow.isDestroyed()) {
+    if (whatsappWindow.isMinimized()) whatsappWindow.restore()
+    whatsappWindow.show()
+    whatsappWindow.focus()
+    return { ok: true, reused: true }
+  }
+  const saved = loadWhatsappBounds()
+  const opts = {
+    width: (saved && saved.width) || 980,
+    height: (saved && saved.height) || 720,
+    minWidth: 640,
+    minHeight: 480,
+    resizable: true,
+    title: 'POWER-AGENT — WhatsApp',
+    backgroundColor: '#111118',
+    webPreferences: {
+      preload: path.join(__dirname, 'whatsapp-window-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  }
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    opts.x = saved.x
+    opts.y = saved.y
+  }
+  whatsappWindow = new BrowserWindow(opts)
+  whatsappWindow.loadFile('whatsapp-window.html')
+  const flush = () => saveWhatsappBounds(whatsappWindow)
+  whatsappWindow.on('resize', flush)
+  whatsappWindow.on('move', flush)
+  whatsappWindow.on('close', flush)
+  whatsappWindow.on('closed', () => { whatsappWindow = null })
+  return { ok: true, reused: false }
+})
+
 ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
   let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
   if (!root) root = getCwdSync() || null

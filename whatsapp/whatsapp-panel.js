@@ -11,6 +11,9 @@
 
   const wa = (window.api && window.api.whatsapp) || null
   const bridgeReady = !!wa
+  // Modo standalone: el panel ocupa toda la ventana, sin botón flotante ni drawer.
+  // Lo expone whatsapp-window.html via window.WA_STANDALONE = true.
+  const STANDALONE = !!window.WA_STANDALONE
 
   // ── Estado ──
   let panelEl = null
@@ -121,6 +124,30 @@
     const s = String(displayNumber || '').replace(/\D/g, '')
     if (s.length >= 4) return s.slice(-4)
     return s || '?'
+  }
+
+  // Orden de preferencia para etiquetar un chat: displayName (nombre/pushName) →
+  // phoneNumber (número real resuelto) → displayNumber (lo que diera el JID, puede ser @lid).
+  function chatLabel(c) {
+    if (!c) return ''
+    if (c.displayName && c.displayName.trim()) return c.displayName.trim()
+    if (c.phoneNumber && c.phoneNumber.trim()) return c.phoneNumber.trim()
+    return c.displayNumber || c.jid || ''
+  }
+
+  function chatSubLabel(c) {
+    if (!c) return ''
+    if (c.displayName && c.displayName.trim()) {
+      if (c.phoneNumber && c.phoneNumber.trim()) return c.phoneNumber.trim()
+    }
+    return c.jid || ''
+  }
+
+  function avatarInitials(c) {
+    const name = chatLabel(c)
+    const letters = name.replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 2).toUpperCase()
+    if (letters) return letters
+    return initials(c && c.displayNumber)
   }
 
   // ── Beep para notificaciones ──
@@ -322,10 +349,10 @@
       if (c.unread > 0) row.classList.add('has-unread')
       const last = c.lastMessage
       row.innerHTML = `
-        <div class="wa-chat-avatar"><span>${escapeHtml(initials(c.displayNumber))}</span></div>
+        <div class="wa-chat-avatar"><span>${escapeHtml(avatarInitials(c))}</span></div>
         <div class="wa-chat-main">
           <div class="wa-chat-top">
-            <span class="wa-chat-name">${escapeHtml(c.displayNumber || c.jid)}</span>
+            <span class="wa-chat-name">${escapeHtml(chatLabel(c))}</span>
             <span class="wa-chat-time">${escapeHtml(last ? fmtRelative(last.timestamp) : '')}</span>
           </div>
           <div class="wa-chat-bottom">
@@ -373,9 +400,9 @@
     micBtnEl = $('#wa-btn-mic', inner)
     recIndicatorEl = $('.wa-rec-indicator', inner)
 
-    $('.wa-convo-avatar', inner).textContent = initials(chat.displayNumber)
-    $('.wa-convo-name', inner).textContent = chat.displayNumber || chat.jid
-    $('.wa-convo-jid', inner).textContent = chat.jid
+    $('.wa-convo-avatar', inner).textContent = avatarInitials(chat)
+    $('.wa-convo-name', inner).textContent = chatLabel(chat)
+    $('.wa-convo-jid', inner).textContent = chatSubLabel(chat)
 
     updateModeSwitch(chat.mode)
     renderMessages()
@@ -978,9 +1005,16 @@
     window.addEventListener('keydown', (e) => {
       const meta = e.metaKey || e.ctrlKey
       if (meta && e.shiftKey && e.key.toLowerCase() === 'w') {
-        // evita interferir con cerrar ventana solo si la combinación es exacta cmd+shift+w
         e.preventDefault()
-        togglePanel()
+        // En la app principal abrimos ventana standalone si está disponible; en la ventana
+        // standalone misma no hace nada (ya está abierta).
+        if (!STANDALONE) {
+          if (window.api && typeof window.api.openWhatsappWindow === 'function') {
+            window.api.openWhatsappWindow().catch(() => togglePanel())
+          } else {
+            togglePanel()
+          }
+        }
       }
       if (e.key === 'Escape') {
         if (!qrModalEl.classList.contains('hidden')) { qrModalEl.classList.add('hidden'); return }
@@ -994,38 +1028,55 @@
   function bindBridgeEvents() {
     if (!wa) return
     if (wa.onNewMessage) {
-      const u = wa.onNewMessage((msg) => {
-        if (!msg) return
-        if (msg.jid === currentJid) {
-          currentMessages.push(msg)
+      const u = wa.onNewMessage((payload) => {
+        // Backend emite { jid, message }. Antes se trataba payload como mensaje plano (bug).
+        if (!payload) return
+        const jid = payload.jid || (payload.message && payload.message.from) || null
+        const message = payload.message || payload
+        if (!jid || !message) return
+        if (jid === currentJid) {
+          // Evitar duplicar burbuja optimista al enviar texto (mismo id).
+          const dup = message.id && currentMessages.some(m => m && m.id === message.id)
+          if (!dup) currentMessages.push(message)
           renderMessages()
         } else {
-          // pulso visual en lista
-          const row = chatListEl.querySelector(`.wa-chat-row.has-unread`)
-          if (row) row.classList.add('wa-pulse')
-          setTimeout(() => row && row.classList.remove('wa-pulse'), 1200)
+          const row = chatListEl && chatListEl.querySelector('.wa-chat-row.has-unread')
+          if (row) {
+            row.classList.add('wa-pulse')
+            setTimeout(() => row && row.classList.remove('wa-pulse'), 1200)
+          }
         }
-        if (panelEl.classList.contains('hidden') || !document.hasFocus()) {
-          playBeep()
-        }
+        const drawerHidden = !STANDALONE && panelEl && panelEl.classList.contains('hidden')
+        if (drawerHidden || !document.hasFocus()) playBeep()
         refreshChats()
       })
       if (typeof u === 'function') unsubs.push(u)
     }
     if (wa.onChatUpdated) {
-      const u = wa.onChatUpdated((chat) => {
-        if (!chat) return
+      const u = wa.onChatUpdated((payload) => {
+        if (!payload) return
+        // Backend ahora emite el chat completo (summarizeChat). Si jid===null, refresco global.
+        if (!payload.jid) { refreshChats(); return }
+        const chat = payload
         const idx = chats.findIndex(c => c.jid === chat.jid)
-        // detectar hand-over a manual desde fuera
         if (idx >= 0 && chats[idx].mode === 'auto' && chat.mode === 'manual') {
           chat._handoverAt = Date.now()
         }
-        if (idx >= 0) chats[idx] = chat
+        if (idx >= 0) chats[idx] = { ...chats[idx], ...chat }
         else chats.push(chat)
         updateUnreadBadge()
         renderChatList()
         if (chat.jid === currentJid) {
           updateModeSwitch(chat.mode)
+          // Refrescar cabecera (nombre/número) sin reconstruir conversación entera.
+          if (convoHeaderEl) {
+            const nameEl = $('.wa-convo-name', convoHeaderEl)
+            const jidEl = $('.wa-convo-jid', convoHeaderEl)
+            const avEl = $('.wa-convo-avatar', convoHeaderEl)
+            if (nameEl) nameEl.textContent = chatLabel(chat)
+            if (jidEl) jidEl.textContent = chatSubLabel(chat)
+            if (avEl) avEl.textContent = avatarInitials(chat)
+          }
           if (chat._handoverAt && handoverBannerEl) {
             handoverBannerEl.classList.remove('hidden')
             handoverBannerEl.textContent = 'Cambiado a MANUAL porque escribiste desde otro dispositivo.'
@@ -1037,7 +1088,12 @@
     }
     if (wa.onStatusChanged) {
       const u = wa.onStatusChanged((s) => {
-        status = Object.assign(status, s || {})
+        // El main emite el string de estado del bridge ('ready'/'qr'/...), no el objeto.
+        if (typeof s === 'string') {
+          status = Object.assign(status, { connected: s === 'ready', qrPresent: s === 'qr' })
+        } else if (s && typeof s === 'object') {
+          status = Object.assign(status, s)
+        }
         updateStatusUI()
       })
       if (typeof u === 'function') unsubs.push(u)
@@ -1060,17 +1116,22 @@
 
   // ── Init ──
   function init() {
-    // 1. Botón en titlebar
-    toggleBtn = buildToggleButton()
-    unreadBadgeEl = toggleBtn.querySelector('.wa-badge')
-    const controls = document.getElementById('controls')
-    // insertar antes del telegram para mantener orden lógico
-    const tgWrap = document.getElementById('btn-send-telegram-wrap')
-    if (controls && tgWrap) controls.insertBefore(toggleBtn, tgWrap)
-    else if (controls) controls.appendChild(toggleBtn)
+    // 1. Botón en titlebar (solo modo drawer; en standalone el panel ocupa toda la ventana).
+    if (!STANDALONE) {
+      toggleBtn = buildToggleButton()
+      unreadBadgeEl = toggleBtn.querySelector('.wa-badge')
+      const controls = document.getElementById('controls')
+      const tgWrap = document.getElementById('btn-send-telegram-wrap')
+      if (controls && tgWrap) controls.insertBefore(toggleBtn, tgWrap)
+      else if (controls) controls.appendChild(toggleBtn)
+    }
 
     // 2. Panel
     panelEl = buildPanel()
+    if (STANDALONE) {
+      panelEl.classList.add('wa-standalone')
+      panelEl.classList.remove('hidden')
+    }
     document.body.appendChild(panelEl)
     chatListEl = $('.wa-chatlist', panelEl)
     convoEl = $('.wa-convo', panelEl)
@@ -1084,29 +1145,42 @@
     document.body.appendChild(imgViewerEl)
 
     // 4. Listeners de panel
-    toggleBtn.addEventListener('click', () => togglePanel())
-    $('#wa-btn-close', panelEl).addEventListener('click', () => togglePanel(false))
+    if (toggleBtn) toggleBtn.addEventListener('click', () => {
+      // En la app principal, el botón abre la ventana standalone (si está disponible).
+      if (window.api && typeof window.api.openWhatsappWindow === 'function') {
+        window.api.openWhatsappWindow().catch(() => togglePanel())
+      } else {
+        togglePanel()
+      }
+    })
+    $('#wa-btn-close', panelEl).addEventListener('click', () => {
+      if (STANDALONE && window.api && window.api.closeWindow) window.api.closeWindow()
+      else togglePanel(false)
+    })
     $('#wa-btn-qr', panelEl).addEventListener('click', openQrModal)
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
 
-    bindResize()
+    if (!STANDALONE) bindResize()
     bindShortcut()
     bindModalsClose()
     bindCfgModal()
     bindBridgeEvents()
 
-    // 5. Persistencia de ancho y apertura
-    try {
-      const w = parseInt(localStorage.getItem(LS_PANEL_W) || '', 10)
-      if (w > 0) panelEl.style.width = w + 'px'
-    } catch {}
+    // 5. Persistencia de ancho (solo drawer)
+    if (!STANDALONE) {
+      try {
+        const w = parseInt(localStorage.getItem(LS_PANEL_W) || '', 10)
+        if (w > 0) panelEl.style.width = w + 'px'
+      } catch {}
+    }
 
     // 6. Estado inicial
     updateStatusUI()
     if (!bridgeReady) {
-      // mostrar estado deshabilitado pero permitir abrir el panel para ver mensaje
-      toggleBtn.classList.add('wa-disabled')
-      toggleBtn.title = 'WhatsApp bridge no disponible'
+      if (toggleBtn) {
+        toggleBtn.classList.add('wa-disabled')
+        toggleBtn.title = 'WhatsApp bridge no disponible'
+      }
     } else {
       refreshStatus()
       refreshChats().then(() => {
@@ -1115,14 +1189,15 @@
           if (last && chats.find(c => c.jid === last)) selectChat(last)
         } catch {}
       })
-      // polling de respaldo cada 15s por si no hay onStatusChanged
       setInterval(() => { refreshStatus(); refreshChats() }, 15000)
     }
 
-    // 7. Restaurar apertura
-    try {
-      if (localStorage.getItem(LS_PANEL_OPEN) === '1') togglePanel(true)
-    } catch {}
+    // 7. Restaurar apertura del drawer (no aplica a standalone).
+    if (!STANDALONE) {
+      try {
+        if (localStorage.getItem(LS_PANEL_OPEN) === '1') togglePanel(true)
+      } catch {}
+    }
   }
 
   if (document.readyState === 'loading') {
