@@ -50,6 +50,7 @@
       "graph-window.html",
       "graph-window-preload.js",
       "graph-window-renderer.js",
+      "assets/**/*",
       "headless-runners.js",
       "tasks-manager.html",
       "tasks-manager-renderer.js",
