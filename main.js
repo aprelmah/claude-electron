@@ -2345,12 +2345,26 @@ app.whenReady().then(async () => {
     broadcastToAllWindows('whatsapp:status-changed', status)
   })
 
+  function pingBridge() {
+    return new Promise((resolve, reject) => {
+      const req = require('http').request({
+        host: '127.0.0.1', port: 3031, method: 'GET', path: '/status', timeout: 3000
+      }, (res) => {
+        res.resume()
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve()
+        else reject(new Error(`status ${res.statusCode}`))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(new Error('timeout')) })
+      req.end()
+    })
+  }
   async function tryStartWhatsapp() {
     try {
-      const res = await fetch('http://127.0.0.1:3031/status').catch(() => null)
-      if (!res || !res.ok) throw new Error('bridge no responde en 3031')
+      await pingBridge()
       whatsappReachable = true
       whatsappClient.start()
+      console.log('[whatsapp] bridge reachable, client started')
     } catch (err) {
       whatsappReachable = false
       console.warn('[whatsapp] bridge not reachable, retrying in 10s:', err?.message || err)

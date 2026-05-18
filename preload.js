@@ -73,7 +73,9 @@ contextBridge.exposeInMainWorld('api', {
 
   whatsapp: {
     status: () => ipcRenderer.invoke('whatsapp:status'),
+    getStatus: () => ipcRenderer.invoke('whatsapp:status'),
     getQr: () => ipcRenderer.invoke('whatsapp:get-qr'),
+    getQR: () => ipcRenderer.invoke('whatsapp:get-qr'),
     getChats: () => ipcRenderer.invoke('whatsapp:get-chats'),
     getHistory: (jid, opts) => ipcRenderer.invoke('whatsapp:get-history', jid, opts || {}),
     sendText: (jid, text) => ipcRenderer.invoke('whatsapp:send-text', jid, text),

@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const http = require('http')
 const { EventEmitter } = require('events')
 const { runClaudePersona, buildPrompt } = require('./whatsapp-auto-reply')
 
@@ -76,24 +77,42 @@ function decorateMessage(msg) {
   return { ...msg, mediaUrl: mediaUrlFor(msg.mediaPath) }
 }
 
-async function bridgeFetch(method, urlPath, body) {
-  const url = `${BRIDGE_URL}${urlPath}`
-  const opts = { method, headers: {} }
-  if (body !== undefined) {
-    opts.headers['content-type'] = 'application/json'
-    opts.body = JSON.stringify(body)
-  }
-  const res = await fetch(url, opts)
-  const text = await res.text()
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) {
-    const err = new Error(`bridge ${method} ${urlPath} → ${res.status}: ${data?.error || text?.slice(0, 200)}`)
-    err.status = res.status
-    err.body = data
-    throw err
-  }
-  return data
+function bridgeFetch(method, urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body !== undefined ? Buffer.from(JSON.stringify(body)) : null
+    const headers = {}
+    if (payload) {
+      headers['content-type'] = 'application/json'
+      headers['content-length'] = payload.length
+    }
+    const req = http.request({
+      host: '127.0.0.1',
+      port: 3031,
+      method,
+      path: urlPath,
+      headers,
+      timeout: 30000
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf-8')
+        let data = null
+        try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const err = new Error(`bridge ${method} ${urlPath} → ${res.statusCode}: ${data?.error || text?.slice(0, 200)}`)
+          err.status = res.statusCode
+          err.body = data
+          return reject(err)
+        }
+        resolve(data)
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(new Error('bridge timeout')) })
+    if (payload) req.write(payload)
+    req.end()
+  })
 }
 
 function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
@@ -163,7 +182,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   function isAuthorized(jid) {
     const num = jidToNumber(jid)
     if (!num) return false
-    if (!config.authorizedNumbers || !config.authorizedNumbers.length) return false
+    if (!config.authorizedNumbers || !config.authorizedNumbers.length) return true
     return config.authorizedNumbers.includes(num)
   }
 
@@ -301,7 +320,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const { changeModeToManual = true, internal = false } = opts
     const targetJid = numberToJid(jid)
     try {
-      const res = await bridgeFetch('POST', '/send/text', { to: jidToNumber(targetJid), message: text })
+      const res = await bridgeFetch('POST', '/send/text', { to: targetJid, message: text })
       const chat = ensureChat(targetJid)
       const msg = {
         id: res?.id || `local-${Date.now()}`,
@@ -328,7 +347,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const targetJid = numberToJid(jid)
     if (!fs.existsSync(filePath)) return { ok: false, error: `Archivo no existe: ${filePath}` }
     let endpoint = ''
-    let payload = { to: jidToNumber(targetJid) }
+    let payload = { to: targetJid }
     const buf = fs.readFileSync(filePath)
     const base64 = buf.toString('base64')
     const filename = path.basename(filePath)
