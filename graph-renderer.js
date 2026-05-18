@@ -52,6 +52,8 @@
       .toLowerCase()
   }
 
+  const ROOT_PHOTO_HREF = 'file:///Users/isabel/Downloads/f2e78215-c8b3-47d7-a325-54be9c70c50d.svg'
+
   function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
@@ -187,6 +189,13 @@
       .attr('cx', '50%').attr('cy', '42%').attr('r', '60%')
     brainGrad.append('stop').attr('offset', '0%').attr('stop-color', '#e7fbff').attr('stop-opacity', 0.95)
     brainGrad.append('stop').attr('offset', '100%').attr('stop-color', '#8acbe0').attr('stop-opacity', 0.4)
+
+    const brainPhotoClip = defs.append('clipPath')
+      .attr('id', 'brain-photo-clip')
+      .attr('clipPathUnits', 'userSpaceOnUse')
+    brainPhotoClip.append('ellipse')
+      .attr('cx', 0).attr('cy', 0)
+      .attr('rx', 20).attr('ry', 22)
 
     // Gradiente nebulosa en el centro
     const radGrad = defs.append('radialGradient')
@@ -332,8 +341,26 @@
       .attr('pointer-events', 'none')
       .attr('filter', 'url(#glow-brain)')
 
+    rootBrain.append('image')
+      .attr('href', ROOT_PHOTO_HREF)
+      .attr('xlink:href', ROOT_PHOTO_HREF)
+      .attr('x', -20).attr('y', -22)
+      .attr('width', 40).attr('height', 44)
+      .attr('preserveAspectRatio', 'xMidYMid slice')
+      .attr('clip-path', 'url(#brain-photo-clip)')
+      .attr('opacity', 0.98)
+
+    rootBrain.append('ellipse')
+      .attr('cx', 0).attr('cy', 0)
+      .attr('rx', 20).attr('ry', 22)
+      .attr('fill', 'none')
+      .attr('stroke', '#dff7ff')
+      .attr('stroke-width', 1.2)
+      .attr('stroke-opacity', 0.9)
+
     const brainShape = rootBrain.append('g')
       .attr('transform', 'translate(0,-1) scale(1.12)')
+      .attr('opacity', 0.22)
 
     brainShape.append('path')
       .attr('d', 'M0,-20 C-8.6,-20 -15.8,-15 -17.6,-8.2 C-19.4,-2.3 -18.8,4 -15.4,9.1 C-12.4,13.5 -7.8,16.6 -3.2,17.6 L-3.1,19.8 C-3,22.1 -1.8,24 0,24.4 C1.8,24 3,22.1 3.1,19.8 L3.2,17.6 C7.8,16.6 12.4,13.5 15.4,9.1 C18.8,4 19.4,-2.3 17.6,-8.2 C15.8,-15 8.6,-20 0,-20 Z')
