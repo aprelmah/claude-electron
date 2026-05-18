@@ -1131,6 +1131,11 @@
     if (STANDALONE) {
       panelEl.classList.add('wa-standalone')
       panelEl.classList.remove('hidden')
+      // Limpieza defensiva: ningún estilo inline del modo drawer puede sobrevivir.
+      panelEl.style.width = ''
+      panelEl.style.height = ''
+      panelEl.style.transform = ''
+      panelEl.style.position = ''
     }
     document.body.appendChild(panelEl)
     chatListEl = $('.wa-chatlist', panelEl)
