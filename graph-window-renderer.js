@@ -3,7 +3,7 @@ document.getElementById('btn-close-graph').addEventListener('click', () => windo
 const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
 const COLORS_BY_TYPE = { md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399', css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5', go: '#06b6d4', otros: '#6b7280' }
 
-let allNodes = [], allEdges = []
+let allNodes = [], allEdges = [], allDirs = []
 let graphMode = 'refs'
 let activeTypes = new Set(ALL_TYPES)
 let graphInstance = null
@@ -25,47 +25,85 @@ function extType (label) {
   return ALL_TYPES.includes(ext) ? ext : 'otros'
 }
 
-function commonRoot (nodes) {
+function pathDir (p) {
+  if (!p) return ''
+  const idx = p.lastIndexOf('/')
+  return idx > 0 ? p.slice(0, idx) : ''
+}
+
+function pathBase (p) {
+  if (!p) return ''
+  const idx = p.lastIndexOf('/')
+  return idx >= 0 ? (p.slice(idx + 1) || p) : p
+}
+
+function commonRoot (nodes, dirs = []) {
+  const explicitRoot = (dirs || []).find((d) => (typeof d === 'string' ? false : d?.isRoot))
+  if (explicitRoot && explicitRoot.path) return explicitRoot.path
   if (!nodes.length) return ''
-  let root = nodes[0].path.substring(0, nodes[0].path.lastIndexOf('/'))
+  let root = pathDir(nodes[0].path)
   for (const n of nodes) {
-    while (!n.path.startsWith(root + '/') && root.length > 1) {
-      root = root.substring(0, root.lastIndexOf('/'))
+    while (root && !n.path.startsWith(root + '/')) {
+      const parent = pathDir(root)
+      if (!parent || parent === root) break
+      root = parent
     }
   }
   return root
 }
 
-function buildStructureGraph (nodes) {
-  const root = commonRoot(nodes)
+function buildStructureGraph (nodes, dirs = []) {
+  const root = commonRoot(nodes, dirs)
   const folderMap = new Map()
-  if (root) folderMap.set(root, { id: root, label: root.split('/').pop() || root, path: root, connections: 0, type: 'folder', isRoot: true })
+  const ensureFolder = (dirPath) => {
+    if (!dirPath || folderMap.has(dirPath)) return
+    folderMap.set(dirPath, {
+      id: dirPath,
+      label: pathBase(dirPath),
+      path: dirPath,
+      connections: 0,
+      type: 'folder',
+      isRoot: dirPath === root
+    })
+  }
+  const ensureDirChain = (startDir) => {
+    let dir = startDir
+    while (dir) {
+      if (root && !(dir === root || dir.startsWith(root + '/'))) break
+      ensureFolder(dir)
+      if (root && dir === root) break
+      const parent = pathDir(dir)
+      if (!parent || parent === dir) break
+      dir = parent
+    }
+  }
+
+  if (root) ensureFolder(root)
+  for (const d of (dirs || [])) {
+    const p = typeof d === 'string' ? d : d?.path
+    if (!p) continue
+    ensureDirChain(p)
+  }
 
   nodes.forEach(n => {
-    let dir = n.path ? n.path.substring(0, n.path.lastIndexOf('/')) : root
-    while (dir && dir.length >= root.length) {
-      if (!folderMap.has(dir)) {
-        folderMap.set(dir, { id: dir, label: dir.split('/').pop(), path: dir, connections: 0, type: 'folder' })
-      }
-      if (dir === root) break
-      dir = dir.substring(0, dir.lastIndexOf('/'))
-    }
+    ensureDirChain(pathDir(n.path) || root)
   })
 
   const folderNodes = Array.from(folderMap.values())
-  const structNodes = [...folderNodes, ...nodes]
+  const fileNodes = nodes.map((n) => ({ ...n, showLabelAlways: true }))
+  const structNodes = [...folderNodes, ...fileNodes]
   const edges = []
 
   nodes.forEach(n => {
-    const parentDir = n.path ? n.path.substring(0, n.path.lastIndexOf('/')) : root
+    const parentDir = pathDir(n.path) || root
     if (folderMap.has(parentDir)) edges.push({ source: n.id, target: parentDir })
   })
 
   folderNodes.forEach(f => {
     if (f.id === root) return
-    const parentDir = f.id.substring(0, f.id.lastIndexOf('/'))
+    const parentDir = pathDir(f.id)
     const targetId = folderMap.has(parentDir) ? parentDir : root
-    if (targetId !== f.id) edges.push({ source: f.id, target: targetId })
+    if (targetId && targetId !== f.id) edges.push({ source: f.id, target: targetId })
   })
 
   return { nodes: structNodes, edges }
@@ -92,7 +130,7 @@ function renderFiltered () {
     if (hotIds.size > 0) sourceNodes = sourceNodes.filter((n) => hotIds.has(n.id))
   }
   if (graphMode === 'structure') {
-    const s = buildStructureGraph(sourceNodes)
+    const s = buildStructureGraph(sourceNodes, allDirs)
     nodes = s.nodes
     edges = s.edges
   } else {
@@ -151,26 +189,27 @@ function buildControls () {
   const searchInput = document.createElement('input')
   searchInput.className = 'graph-search-input'
   searchInput.type = 'search'
-  searchInput.placeholder = 'Buscar nodo (archivo/ruta)'
+  searchInput.placeholder = 'Buscar por nombre, ruta o palabras'
   searchInput.value = graphSearchQuery
   const btnSearch = document.createElement('button')
   btnSearch.className = 'btn-graph-search'
   btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
-  const runSearch = () => {
+  const runSearch = ({ cycle = false } = {}) => {
     graphSearchQuery = searchInput.value.trim()
     if (!graphInstance || !graphSearchQuery) {
       graphSearchNo = 0
       btnSearch.textContent = 'Buscar'
       return
     }
-    const info = graphInstance.focusByQuery?.(graphSearchQuery) || null
+    const info = graphInstance.focusByQuery?.(graphSearchQuery, { resetCycle: !cycle }) || null
     graphSearchNo = Number(info?.total || 0)
     btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
   }
+  searchInput.addEventListener('input', () => runSearch({ cycle: false }))
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); runSearch() }
+    if (e.key === 'Enter') { e.preventDefault(); runSearch({ cycle: true }) }
   })
-  btnSearch.addEventListener('click', runSearch)
+  btnSearch.addEventListener('click', () => runSearch({ cycle: true }))
   searchRow.append(searchInput, btnSearch)
 
   chipsRow.innerHTML = ''
@@ -226,6 +265,7 @@ window.api.getGraphWindowData().then(data => {
   document.getElementById('loading').remove()
   allNodes = data.nodes || []
   allEdges = data.edges || []
+  allDirs = data.dirs || []
   graphMode = data.mode || 'refs'
   activeTypes = data.activeTypes ? new Set(data.activeTypes) : new Set(ALL_TYPES)
   if (data.forces) graphForces = { ...graphForces, ...data.forces }

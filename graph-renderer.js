@@ -45,6 +45,13 @@
     return `glow-${COLORS[glowKey] ? glowKey : 'default'}`
   }
 
+  function normalizeText (value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+  }
+
   function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
@@ -227,49 +234,52 @@
       .attr('stroke-width', d => d.isRoot ? 1.8 : (d.type === 'folder' ? 1.5 : 1))
       .attr('filter', d => `url(#${glowIdForNode(d)})`)
 
-    // Nodo protagonista: cerebro luminoso girando
+    // Nodo protagonista: cerebro frontal luminoso (más fiel a referencia)
     const rootBrain = nodeG.filter(d => d.isRoot).append('g')
       .attr('class', 'root-brain')
       .attr('pointer-events', 'none')
       .attr('filter', 'url(#glow-brain)')
 
-    rootBrain.append('ellipse')
-      .attr('cx', 0).attr('cy', 0).attr('rx', 17).attr('ry', 14)
+    const brainShape = rootBrain.append('g')
+      .attr('transform', 'translate(0,-1) scale(1.12)')
+
+    brainShape.append('path')
+      .attr('d', 'M0,-20 C-8.6,-20 -15.8,-15 -17.6,-8.2 C-19.4,-2.3 -18.8,4 -15.4,9.1 C-12.4,13.5 -7.8,16.6 -3.2,17.6 L-3.1,19.8 C-3,22.1 -1.8,24 0,24.4 C1.8,24 3,22.1 3.1,19.8 L3.2,17.6 C7.8,16.6 12.4,13.5 15.4,9.1 C18.8,4 19.4,-2.3 17.6,-8.2 C15.8,-15 8.6,-20 0,-20 Z')
       .attr('fill', 'url(#brain-grad)')
       .attr('stroke', '#dff7ff')
+      .attr('stroke-width', 1.25)
       .attr('stroke-opacity', 0.95)
-      .attr('stroke-width', 1.2)
 
-    rootBrain.append('line')
-      .attr('x1', 0).attr('y1', -13).attr('x2', 0).attr('y2', 14)
-      .attr('stroke', '#dff7ff')
-      .attr('stroke-opacity', 0.75)
-      .attr('stroke-width', 1)
+    brainShape.append('path')
+      .attr('d', 'M0,-18.5 C-0.8,-15.6 -0.8,-12.8 0,-10 C0.8,-7.4 0.8,-4.4 0,-1.8 C-0.7,0.8 -0.7,3.8 0,6.3 C0.7,8.8 0.7,11.8 0,14.6')
+      .attr('fill', 'none')
+      .attr('stroke', '#f3feff')
+      .attr('stroke-width', 1.05)
+      .attr('stroke-opacity', 0.92)
 
     const gyri = [
-      'M-13,-2 C-16,-8 -10,-13 -6,-10 C-2,-8 -4,-3 -8,-1',
-      'M-10,4 C-14,1 -12,-6 -6,-6 C-2,-6 -1,0 -5,3',
-      'M-2,-11 C-6,-9 -6,-4 -2,-2 C1,-1 2,-5 1,-8',
-      'M8,-10 C5,-8 5,-3 9,-1 C13,1 13,-5 11,-8',
-      'M11,3 C7,0 8,-6 13,-6 C16,-5 17,0 14,3',
-      'M3,9 C0,7 0,3 4,2 C8,1 9,5 7,8',
-      'M-5,9 C-8,7 -8,3 -4,2 C0,1 1,5 -1,8'
+      'M-12.8,-7.8 C-14.3,-12 -9.8,-16.1 -5.7,-13.8 C-2.8,-12.1 -2.9,-8.1 -6.2,-6.6',
+      'M-12.2,1 C-14.2,-2.4 -11.7,-7.2 -7.5,-7 C-3.9,-6.9 -2.5,-2.7 -5.4,0.2',
+      'M-9.8,8.6 C-11.8,5.8 -10.7,2 -6.9,1.3 C-3.2,0.7 -1.4,4.3 -3.8,7',
+      'M12.8,-7.8 C14.3,-12 9.8,-16.1 5.7,-13.8 C2.8,-12.1 2.9,-8.1 6.2,-6.6',
+      'M12.2,1 C14.2,-2.4 11.7,-7.2 7.5,-7 C3.9,-6.9 2.5,-2.7 5.4,0.2',
+      'M9.8,8.6 C11.8,5.8 10.7,2 6.9,1.3 C3.2,0.7 1.4,4.3 3.8,7'
     ]
-    gyri.forEach((d) => {
-      rootBrain.append('path')
+    for (const d of gyri) {
+      brainShape.append('path')
         .attr('d', d)
         .attr('fill', 'none')
         .attr('stroke', '#ecfeff')
-        .attr('stroke-opacity', 0.88)
-        .attr('stroke-width', 1)
-    })
+        .attr('stroke-opacity', 0.86)
+        .attr('stroke-width', 0.95)
+    }
 
-    rootBrain.append('path')
-      .attr('d', 'M0,14 L0,23')
-      .attr('fill', 'none')
-      .attr('stroke', '#d2f3ff')
-      .attr('stroke-opacity', 0.85)
-      .attr('stroke-width', 1.2)
+    brainShape.append('path')
+      .attr('d', 'M-2.1,24.1 C-2.1,28.1 -1.8,31.2 0,33 C1.8,31.2 2.1,28.1 2.1,24.1')
+      .attr('fill', 'rgba(218,247,255,0.84)')
+      .attr('stroke', '#dff7ff')
+      .attr('stroke-width', 1)
+      .attr('stroke-opacity', 0.8)
 
     nodeG.append('text')
       .attr('class', 'node-label')
@@ -283,7 +293,9 @@
 
     // Ocultar labels en nodos con pocas conexiones (carpetas siempre visibles)
     nodeG.each(function (d) {
-      if (d.type !== 'folder' && d.connections < 3) d3.select(this).select('.node-label').attr('display', 'none')
+      if (d.type !== 'folder' && d.connections < 3 && !d.showLabelAlways) {
+        d3.select(this).select('.node-label').attr('display', 'none')
+      }
     })
 
     // Hover: agrandar y glow fuerte
@@ -302,7 +314,7 @@
           .transition().duration(140).ease(d3.easeCubicOut)
           .attr('r', nodeRadius(d))
           .attr('filter', () => `url(#${glowIdForNode(d)})`)
-        if (d.type !== 'folder' && d.connections < 3 && d !== selectedNode) {
+        if (d.type !== 'folder' && d.connections < 3 && !d.showLabelAlways && d !== selectedNode) {
           d3.select(this).select('.node-label').attr('display', 'none')
         }
       })
@@ -317,14 +329,14 @@
 
     // Loop de animación de partículas independiente de la simulación
     let particleSpeed = forces.particleSpeed ?? 4000
-    let brainAngle = 0
+    let brainPhase = 0
     let prevAnimTs = Date.now()
 
     function animateParticles () {
       const now = Date.now()
       const dt = Math.max(0, now - prevAnimTs)
       prevAnimTs = now
-      brainAngle = (brainAngle + dt * 0.018) % 360
+      brainPhase += dt * 0.0035
       particleSel.each(function (d, i) {
         const sx = d.source.x
         const sy = d.source.y
@@ -336,7 +348,10 @@
           .attr('cx', sx + (tx - sx) * t)
           .attr('cy', sy + (ty - sy) * t)
       })
-      rootBrain.attr('transform', `rotate(${brainAngle})`)
+      const bob = Math.sin(brainPhase) * 1.25
+      const tilt = Math.sin(brainPhase * 0.72) * 4.8
+      const pulse = 1 + Math.sin(brainPhase * 0.55) * 0.035
+      rootBrain.attr('transform', `translate(0,${bob.toFixed(2)}) rotate(${tilt.toFixed(2)}) scale(${pulse.toFixed(3)})`)
       rafId = requestAnimationFrame(animateParticles)
     }
     animateParticles()
@@ -385,22 +400,25 @@
     }
 
     function focusByQuery (query, { resetCycle = false } = {}) {
-      const q = String(query || '').trim().toLowerCase()
+      const qRaw = String(query || '').trim()
+      const q = normalizeText(qRaw)
       if (!q) {
         queryCycle = { q: '', i: -1, matches: [] }
         return { total: 0, index: -1, node: null }
       }
+      const terms = q.split(/\s+/).filter(Boolean)
       const matches = nodes.filter((n) => {
-        const label = String(n.label || '').toLowerCase()
-        const p = String(n.path || '').toLowerCase()
-        return label.includes(q) || p.includes(q)
+        const hay = normalizeText(`${n.label || ''} ${n.path || ''}`)
+        return terms.every((term) => hay.includes(term))
       })
       if (!matches.length) {
         queryCycle = { q, i: -1, matches: [] }
         return { total: 0, index: -1, node: null }
       }
       let idx = 0
-      if (!resetCycle && queryCycle.q === q && queryCycle.matches.length === matches.length) {
+      const sameMatchSet = queryCycle.matches.length === matches.length &&
+        queryCycle.matches.every((n, i) => n.id === matches[i].id)
+      if (!resetCycle && queryCycle.q === q && sameMatchSet) {
         idx = (queryCycle.i + 1) % matches.length
       }
       queryCycle = { q, i: idx, matches }

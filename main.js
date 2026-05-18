@@ -2376,34 +2376,46 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     '.dmg', '.app', '.zip', '.tar', '.gz', '.pdf', '.ttf', '.woff', '.woff2',
     '.eot', '.mp3', '.mp4', '.wav', '.ogg', '.db', '.sqlite'])
 
+  const MAX_GRAPH_FILES = 20000
+  const MAX_GRAPH_DIRS = 12000
   const allFiles = []
+  const allDirs = []
+  const dirSet = new Set()
   const fileMtime = new Map()
 
-  function walk(dir, depth) {
-    if (depth > 5) return
+  function addDir(p) {
+    if (!p || dirSet.has(p)) return
+    dirSet.add(p)
+    allDirs.push(p)
+  }
+
+  function walk(dir) {
     let entries
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
-      // Permitir .claude (memoria del proyecto) pero saltar el resto de dot-dirs y SKIP
-      if (SKIP.has(e.name)) continue
-      if (e.name.startsWith('.') && e.name !== '.claude') continue
+      if (allFiles.length > MAX_GRAPH_FILES || allDirs.length > MAX_GRAPH_DIRS) return
+      // Alineado con árbol lateral: solo saltar carpetas/archivos explícitamente ignorados.
+      if (SKIP.has(e.name) || e.name.startsWith('._')) continue
+      if (typeof e.isSymbolicLink === 'function' && e.isSymbolicLink()) continue
       const full = path.join(dir, e.name)
       if (e.isDirectory()) {
-        walk(full, depth + 1)
+        addDir(full)
+        walk(full)
       } else if (e.isFile()) {
-        const ext = path.extname(e.name).toLowerCase()
-        if (!BIN_EXTS.has(ext)) {
-          allFiles.push(full)
-          try { fileMtime.set(full, fs.statSync(full).mtimeMs || 0) } catch { fileMtime.set(full, 0) }
-        }
+        allFiles.push(full)
+        try { fileMtime.set(full, fs.statSync(full).mtimeMs || 0) } catch { fileMtime.set(full, 0) }
       }
     }
   }
 
-  walk(rootPath, 0)
+  addDir(rootPath)
+  walk(rootPath)
 
-  if (allFiles.length > 5000) {
-    return { ok: false, error: `Proyecto demasiado grande: ${allFiles.length} archivos (máx 5000)` }
+  if (allFiles.length > MAX_GRAPH_FILES) {
+    return { ok: false, error: `Proyecto demasiado grande: ${allFiles.length} archivos (máx ${MAX_GRAPH_FILES})` }
+  }
+  if (allDirs.length > MAX_GRAPH_DIRS) {
+    return { ok: false, error: `Proyecto demasiado grande: ${allDirs.length} carpetas (máx ${MAX_GRAPH_DIRS})` }
   }
 
   const fileByBasename = new Map()
@@ -2501,8 +2513,9 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
   for (const filePath of allFiles) {
     let content
     try { if (fs.statSync(filePath).size > 2 * 1024 * 1024) continue } catch { continue }
-    try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
     const ext = path.extname(filePath).toLowerCase()
+    if (BIN_EXTS.has(ext)) continue
+    try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
 
     if (ext === '.md') {
       const re = /\[\[([^\]|#]+?)(?:[|#][^\]]+)?\]\]/g
@@ -2667,7 +2680,16 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
     mtimeMs: Number(fileMtime.get(f) || 0)
   }))
 
-  return { ok: true, nodes, edges: uniqueEdges }
+  const dirs = allDirs.map((d) => ({
+    id: d,
+    label: path.basename(d) || d,
+    path: d,
+    type: 'folder',
+    isRoot: d === rootPath,
+    connections: 0
+  }))
+
+  return { ok: true, nodes, edges: uniqueEdges, dirs }
 })
 
 ipcMain.handle('fs-pick-folder', async (event) => {
@@ -3133,10 +3155,11 @@ ipcMain.on('window-new', () => {
 
 let graphWindowData = null
 
-ipcMain.handle('graph-window:open', (_event, { nodes, edges, mode, activeTypes, forces, ui }) => {
+ipcMain.handle('graph-window:open', (_event, { nodes, edges, dirs, mode, activeTypes, forces, ui }) => {
   graphWindowData = {
     nodes,
     edges,
+    dirs: dirs || [],
     mode: mode || 'refs',
     activeTypes: activeTypes || null,
     forces: forces || null,
@@ -3156,7 +3179,7 @@ ipcMain.handle('graph-window:open', (_event, { nodes, edges, mode, activeTypes, 
   return true
 })
 
-ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [] })
+ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
 
 ipcMain.handle('viewer-open', (_event, arg) => {
   const filePath = typeof arg === 'string' ? arg : arg?.path

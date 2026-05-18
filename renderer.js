@@ -664,6 +664,8 @@ let activeTypes = new Set(ALL_TYPES)
 let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
 let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
+let graphRefreshDebounce = null
+let graphRefreshInFlight = false
 
 function extType (label) {
   const ext = (label.split('.').pop() || '').toLowerCase()
@@ -671,37 +673,70 @@ function extType (label) {
   return ALL_TYPES.includes(ext) ? ext : 'otros'
 }
 
-function buildStructureGraph (nodes) {
+function pathDir (p) {
+  if (!p) return ''
+  const idx = p.lastIndexOf('/')
+  return idx > 0 ? p.slice(0, idx) : ''
+}
+
+function pathBase (p) {
+  if (!p) return ''
+  const idx = p.lastIndexOf('/')
+  return idx >= 0 ? (p.slice(idx + 1) || p) : p
+}
+
+function buildStructureGraph (nodes, dirs = []) {
   const root = rootPath || ''
   const folderMap = new Map()
+  const ensureFolder = (dirPath) => {
+    if (!dirPath || folderMap.has(dirPath)) return
+    folderMap.set(dirPath, {
+      id: dirPath,
+      label: pathBase(dirPath),
+      path: dirPath,
+      connections: 0,
+      type: 'folder',
+      isRoot: dirPath === root
+    })
+  }
+  const ensureDirChain = (startDir) => {
+    let dir = startDir
+    while (dir) {
+      if (root && !(dir === root || dir.startsWith(root + '/'))) break
+      ensureFolder(dir)
+      if (root && dir === root) break
+      const parent = pathDir(dir)
+      if (!parent || parent === dir) break
+      dir = parent
+    }
+  }
 
-  if (root) folderMap.set(root, { id: root, label: root.split('/').pop() || root, path: root, connections: 0, type: 'folder', isRoot: true })
+  if (root) ensureFolder(root)
+  for (const d of (dirs || [])) {
+    const p = typeof d === 'string' ? d : d?.path
+    if (!p) continue
+    ensureDirChain(p)
+  }
 
   nodes.forEach(n => {
-    let dir = n.path ? n.path.substring(0, n.path.lastIndexOf('/')) : root
-    while (dir && dir.length >= root.length) {
-      if (!folderMap.has(dir)) {
-        folderMap.set(dir, { id: dir, label: dir.split('/').pop(), path: dir, connections: 0, type: 'folder' })
-      }
-      if (dir === root) break
-      dir = dir.substring(0, dir.lastIndexOf('/'))
-    }
+    ensureDirChain(pathDir(n.path) || root)
   })
 
   const folderNodes = Array.from(folderMap.values())
-  const allNodes = [...folderNodes, ...nodes]
+  const fileNodes = nodes.map((n) => ({ ...n, showLabelAlways: true }))
+  const allNodes = [...folderNodes, ...fileNodes]
   const edges = []
 
   nodes.forEach(n => {
-    const parentDir = n.path ? n.path.substring(0, n.path.lastIndexOf('/')) : root
+    const parentDir = pathDir(n.path) || root
     if (folderMap.has(parentDir)) edges.push({ source: n.id, target: parentDir })
   })
 
   folderNodes.forEach(f => {
     if (f.id === root) return
-    const parentDir = f.id.substring(0, f.id.lastIndexOf('/'))
+    const parentDir = pathDir(f.id)
     const targetId = folderMap.has(parentDir) ? parentDir : root
-    if (targetId !== f.id) edges.push({ source: f.id, target: targetId })
+    if (targetId && targetId !== f.id) edges.push({ source: f.id, target: targetId })
   })
 
   return { nodes: allNodes, edges }
@@ -763,12 +798,12 @@ function buildFilters () {
   const searchInput = document.createElement('input')
   searchInput.className = 'graph-search-input'
   searchInput.type = 'search'
-  searchInput.placeholder = 'Buscar nodo (archivo/ruta)'
+  searchInput.placeholder = 'Buscar por nombre, ruta o palabras'
   searchInput.value = graphSearchQuery
   const btnSearch = document.createElement('button')
   btnSearch.className = 'btn-graph-search'
   btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
-  const runSearch = () => {
+  const runSearch = ({ cycle = false } = {}) => {
     graphSearchQuery = searchInput.value.trim()
     localStorage.setItem('poweragent.graph.search', graphSearchQuery)
     if (!graphInstance || !graphSearchQuery) {
@@ -776,14 +811,15 @@ function buildFilters () {
       btnSearch.textContent = 'Buscar'
       return
     }
-    const info = graphInstance.focusByQuery?.(graphSearchQuery) || null
+    const info = graphInstance.focusByQuery?.(graphSearchQuery, { resetCycle: !cycle }) || null
     graphSearchNo = Number(info?.total || 0)
     btnSearch.textContent = graphSearchNo > 0 ? `Buscar (${graphSearchNo})` : 'Buscar'
   }
+  searchInput.addEventListener('input', () => runSearch({ cycle: false }))
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); runSearch() }
+    if (e.key === 'Enter') { e.preventDefault(); runSearch({ cycle: true }) }
   })
-  btnSearch.addEventListener('click', runSearch)
+  btnSearch.addEventListener('click', () => runSearch({ cycle: true }))
   searchRow.append(searchInput, btnSearch)
   graphFilters.appendChild(searchRow)
 
@@ -851,7 +887,7 @@ function renderFiltered () {
     if (hotIds.size > 0) sourceNodes = sourceNodes.filter((n) => hotIds.has(n.id))
   }
   if (graphMode === 'structure') {
-    const structData = buildStructureGraph(sourceNodes)
+    const structData = buildStructureGraph(sourceNodes, graphAllData.dirs || [])
     nodes = structData.nodes
     edges = structData.edges
   } else {
@@ -1080,9 +1116,19 @@ async function loadGraph () {
   const result = await window.api.sidebarGetGraph(root)
   if (!result.ok) return
   if (currentView !== 'graph') return
-  graphAllData = { nodes: result.nodes, edges: result.edges }
+  graphAllData = { nodes: result.nodes, edges: result.edges, dirs: result.dirs || [] }
   buildFilters()
   renderFiltered()
+}
+
+function scheduleGraphRefresh () {
+  if (currentView !== 'graph') return
+  if (graphRefreshDebounce) clearTimeout(graphRefreshDebounce)
+  graphRefreshDebounce = setTimeout(async () => {
+    if (graphRefreshInFlight) return
+    graphRefreshInFlight = true
+    try { await loadGraph() } finally { graphRefreshInFlight = false }
+  }, 420)
 }
 
 btnViewTree.addEventListener('click', () => applyView('tree'))
@@ -1092,6 +1138,7 @@ btnGraphFullscreen.addEventListener('click', () => {
   window.api.openGraphWindow(
     graphAllData.nodes,
     graphAllData.edges,
+    graphAllData.dirs || [],
     graphMode,
     Array.from(activeTypes),
     graphForces,
@@ -1616,7 +1663,10 @@ window.addEventListener('keydown', (e) => {
 term.onData((data) => window.api.writePty(data))
 window.api.onPtyData((chunk) => term.write(chunk))
 window.api.onInjectPath((p) => injectToPty(`@${p} `))
-window.api.onGraphFileActive((p) => { if (graphInstance?.pulseNode) graphInstance.pulseNode(p) })
+window.api.onGraphFileActive((p) => {
+  if (graphInstance?.pulseNode) graphInstance.pulseNode(p)
+  scheduleGraphRefresh()
+})
 window.api.onPtyExit(() => term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n'))
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
@@ -1706,7 +1756,10 @@ cliSelector.addEventListener('change', async (e) => {
   applyView(currentView)
   setInterval(() => { refreshSessionStrip(false) }, 3500)
 
-  window.api.onTreeChanged(() => scheduleTreeRefresh())
+  window.api.onTreeChanged(() => {
+    scheduleTreeRefresh()
+    scheduleGraphRefresh()
+  })
 
   document.getElementById('btn-tasks')?.addEventListener('click', () => {
     try { window.api.openTasksManager?.() } catch {}
