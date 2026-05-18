@@ -666,6 +666,7 @@ let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
 let graphRefreshDebounce = null
 let graphRefreshInFlight = false
+let graphLastActivePath = ''
 
 function extType (label) {
   const ext = (label.split('.').pop() || '').toLowerCase()
@@ -905,6 +906,9 @@ function renderFiltered () {
       forces: graphForces
     }
   )
+  if (graphLastActivePath && graphInstance?.markActivePath) {
+    graphInstance.markActivePath(graphLastActivePath)
+  }
   if (graphSearchQuery && graphInstance?.focusByQuery) {
     const info = graphInstance.focusByQuery(graphSearchQuery, { resetCycle: true })
     graphSearchNo = Number(info?.total || 0)
@@ -1664,6 +1668,8 @@ term.onData((data) => window.api.writePty(data))
 window.api.onPtyData((chunk) => term.write(chunk))
 window.api.onInjectPath((p) => injectToPty(`@${p} `))
 window.api.onGraphFileActive((p) => {
+  graphLastActivePath = p || graphLastActivePath
+  if (graphInstance?.markActivePath) graphInstance.markActivePath(graphLastActivePath)
   if (graphInstance?.pulseNode) graphInstance.pulseNode(p)
   scheduleGraphRefresh()
 })

@@ -61,6 +61,94 @@
     let rafId = null
     let selectedNode = null
     let queryCycle = { q: '', i: -1, matches: [] }
+    let activeNode = null
+    let activeCircleSel = null
+    let activeLabelSel = null
+    let activePhase = 0
+
+    const rootForRel = nodes.find((n) => n?.isRoot && n?.path)?.path || ''
+    const hoverCard = document.createElement('div')
+    hoverCard.style.cssText = [
+      'position:fixed',
+      'z-index:999999',
+      'pointer-events:none',
+      'max-width:420px',
+      'background:rgba(10,14,22,0.96)',
+      'border:1px solid rgba(148,163,184,0.35)',
+      'box-shadow:0 8px 30px rgba(0,0,0,0.45)',
+      'backdrop-filter:blur(4px)',
+      'color:#e5eefb',
+      'font:12px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif',
+      'border-radius:10px',
+      'padding:9px 10px',
+      'opacity:0',
+      'transform:translateY(3px)',
+      'transition:opacity .08s linear, transform .08s ease-out',
+      'display:none'
+    ].join(';')
+    document.body.appendChild(hoverCard)
+
+    const escHtml = (value) => String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+
+    const relPath = (p) => {
+      const s = String(p || '')
+      if (!s || !rootForRel) return s
+      if (s === rootForRel) return '.'
+      return s.startsWith(rootForRel + '/') ? s.slice(rootForRel.length + 1) : s
+    }
+
+    const fmtDate = (ms) => {
+      if (!ms || Number.isNaN(Number(ms))) return '—'
+      try { return new Date(Number(ms)).toLocaleString('es-ES') } catch { return '—' }
+    }
+
+    const showHoverCard = (ev, d) => {
+      const kind = d.type === 'folder' ? 'Carpeta' : 'Archivo'
+      const conn = Number(d.connections || 0)
+      const pathText = escHtml(relPath(d.path))
+      const fullText = escHtml(d.path || '')
+      const title = escHtml(d.label || '')
+      const updated = fmtDate(d.mtimeMs)
+      hoverCard.innerHTML = [
+        `<div style="font-weight:700;color:#f8fbff;margin-bottom:4px;white-space:normal;word-break:break-word">${title}</div>`,
+        `<div style="font-size:11px;color:#9fb3d8;margin-bottom:2px">${kind}</div>`,
+        `<div style="font-size:11px;color:#d7e5ff;margin-bottom:3px;white-space:normal;word-break:break-word"><b>Ruta:</b> ${pathText}</div>`,
+        `<div style="font-size:10px;color:#8fa3c6;margin-bottom:3px;white-space:normal;word-break:break-word">${fullText}</div>`,
+        `<div style="font-size:11px;color:#c9daf8"><b>Conexiones:</b> ${conn} · <b>Actualizado:</b> ${escHtml(updated)}</div>`
+      ].join('')
+      hoverCard.style.display = 'block'
+      hoverCard.style.opacity = '1'
+      hoverCard.style.transform = 'translateY(0)'
+      moveHoverCard(ev)
+    }
+
+    const hideHoverCard = () => {
+      hoverCard.style.opacity = '0'
+      hoverCard.style.transform = 'translateY(3px)'
+      hoverCard.style.display = 'none'
+    }
+
+    function moveHoverCard (ev) {
+      const x = ev?.clientX ?? 0
+      const y = ev?.clientY ?? 0
+      const vw = window.innerWidth || document.documentElement.clientWidth || 1280
+      const vh = window.innerHeight || document.documentElement.clientHeight || 800
+      const rect = hoverCard.getBoundingClientRect()
+      const gap = 14
+      let left = x + gap
+      let top = y + gap
+      if (left + rect.width > vw - 8) left = x - rect.width - gap
+      if (top + rect.height > vh - 8) top = y - rect.height - gap
+      if (left < 8) left = 8
+      if (top < 8) top = 8
+      hoverCard.style.left = `${Math.round(left)}px`
+      hoverCard.style.top = `${Math.round(top)}px`
+    }
 
     // Defs: filtros glow por tipo de archivo
     const defs = svg.append('defs')
@@ -126,7 +214,7 @@
 
     svg.call(zoom)
     svg.on('dblclick.zoom', null)
-    svg.on('click.deselect', () => deselect())
+    svg.on('click.deselect', () => { deselect(); hideHoverCard() })
     let _dblClickState = 'fit' // alterna entre 'fit' y 'root'
     svg.on('dblclick.reset', (e) => {
       if (e.target.closest && e.target.closest('.node')) return
@@ -301,6 +389,7 @@
     // Hover: agrandar y glow fuerte
     nodeG
       .on('mouseenter', function (e, d) {
+        showHoverCard(e, d)
         d3.select(this).select('.node-circle')
           .interrupt()
           .transition().duration(120).ease(d3.easeCubicOut)
@@ -308,7 +397,12 @@
           .attr('filter', 'url(#glow-strong)')
         d3.select(this).select('.node-label').attr('display', null)
       })
+      .on('mousemove', function (e) {
+        moveHoverCard(e)
+      })
       .on('mouseleave', function (e, d) {
+        hideHoverCard()
+        if (activeNode && d.id === activeNode.id) return
         d3.select(this).select('.node-circle')
           .interrupt()
           .transition().duration(140).ease(d3.easeCubicOut)
@@ -337,6 +431,7 @@
       const dt = Math.max(0, now - prevAnimTs)
       prevAnimTs = now
       brainPhase += dt * 0.0035
+      activePhase += dt * 0.014
       particleSel.each(function (d, i) {
         const sx = d.source.x
         const sy = d.source.y
@@ -352,6 +447,16 @@
       const tilt = Math.sin(brainPhase * 0.72) * 4.8
       const pulse = 1 + Math.sin(brainPhase * 0.55) * 0.035
       rootBrain.attr('transform', `translate(0,${bob.toFixed(2)}) rotate(${tilt.toFixed(2)}) scale(${pulse.toFixed(3)})`)
+
+      if (activeNode && activeCircleSel) {
+        const base = nodeRadius(activeNode)
+        const beat = Math.max(0, Math.sin(activePhase))
+        const glowR = base * (1 + 0.34 * beat)
+        activeCircleSel
+          .attr('r', glowR)
+          .attr('filter', 'url(#glow-strong)')
+          .attr('stroke-width', 2.2 + beat * 1.4)
+      }
       rafId = requestAnimationFrame(animateParticles)
     }
     animateParticles()
@@ -384,6 +489,36 @@
       })
       linkSel.attr('stroke-opacity', 0.22)
       particleSel.attr('opacity', 0.75)
+      if (activeNode && activeCircleSel) {
+        activeCircleSel.attr('filter', 'url(#glow-strong)')
+        if (activeLabelSel) activeLabelSel.attr('display', null)
+      }
+    }
+
+    function markActivePath (filePath) {
+      const node = nodes.find((n) => n.path === filePath)
+      if (!node) return false
+
+      if (activeNode && activeNode.id !== node.id && activeCircleSel) {
+        activeCircleSel
+          .interrupt()
+          .attr('r', nodeRadius(activeNode))
+          .attr('stroke-width', activeNode.isRoot ? 1.8 : (activeNode.type === 'folder' ? 1.5 : 1))
+          .attr('filter', `url(#${glowIdForNode(activeNode)})`)
+      }
+
+      activeNode = node
+      activePhase = 0
+      activeCircleSel = nodeG.filter((d) => d.id === node.id).select('.node-circle')
+      activeLabelSel = nodeG.filter((d) => d.id === node.id).select('.node-label')
+      if (activeLabelSel) activeLabelSel.attr('display', null)
+      if (activeCircleSel) {
+        activeCircleSel
+          .interrupt()
+          .attr('filter', 'url(#glow-strong)')
+          .attr('stroke-width', 2.5)
+      }
+      return true
     }
 
     function focusNode (node, scale = null) {
@@ -442,21 +577,17 @@
         cancelAnimationFrame(rafId)
         sim.stop()
         ro.disconnect()
+        try { hoverCard.remove() } catch {}
         svg.selectAll('*').remove()
       },
       focusByQuery,
+      markActivePath,
       pulseNode (filePath) {
         const node = nodes.find(n => n.path === filePath)
         if (!node || node.x == null) return
+        markActivePath(filePath)
 
-        // Zoom suave hacia el nodo
-        const k = Math.max(d3.zoomTransform(svgEl).k, 1.2)
-        svg.transition().duration(900).ease(d3.easeCubicOut)
-          .call(zoom.transform, d3.zoomIdentity
-            .translate(width / 2 - k * node.x, height / 2 - k * node.y)
-            .scale(k))
-
-        // Pulso: escala → glow fuerte → vuelta a normal
+        // Pulso inmediato adicional sobre el latido persistente
         const r = nodeRadius(node)
         const circle = nodeG.filter(d => d.id === node.id).select('.node-circle')
         circle.interrupt()
@@ -468,8 +599,8 @@
             .attr('r', r * 1.8)
           .transition().duration(700).ease(d3.easeCubicInOut)
             .attr('r', r)
-            .attr('stroke-width', node.isRoot ? 1.8 : (node.type === 'folder' ? 1.5 : 1))
-            .attr('filter', () => `url(#${glowIdForNode(node)})`)
+            .attr('stroke-width', activeNode && activeNode.id === node.id ? 2.4 : (node.isRoot ? 1.8 : (node.type === 'folder' ? 1.5 : 1)))
+            .attr('filter', () => (activeNode && activeNode.id === node.id) ? 'url(#glow-strong)' : `url(#${glowIdForNode(node)})`)
 
         // Label siempre visible durante el pulso
         nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
