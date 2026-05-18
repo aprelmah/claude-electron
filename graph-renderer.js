@@ -54,7 +54,7 @@
 
   const ROOT_REACTOR_RADIUS = 18 * 3
 
-  function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
+  function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {}, autoPause = false, autoPauseDelay = 2500, onAutoPause = null } = {}) {
     const svg = d3.select(svgEl)
     svg.selectAll('*').remove()
 
@@ -270,24 +270,182 @@
       target: nodeById.get(e.target) || e.target
     }))
 
-    // Simulación D3 force
+    // Simulación D3 force → ahora corre en Web Worker.
+    // El main thread solo recibe posiciones y dibuja. Mantiene refs locales a nodos/edges
+    // para que el render (linkSel, nodeG) siga leyendo n.x/n.y como antes.
     let repulsion = forces.repulsion ?? -220
     let linkDistance = forces.linkDistance ?? 80
     let compactness = forces.compactness ?? 0.06
     let paused = !!forces.paused
 
-    // Nodo raíz fijo en el centro
+    // Nodo raíz fijo en el centro (en main, para fit/zoom y consistencia).
     nodes.forEach(d => {
       if (d.isRoot) { d.fx = width / 2; d.fy = height / 2 }
     })
 
-    const sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(simEdges).id(d => d.id).distance(linkDistance))
-      .force('charge', d3.forceManyBody().strength(repulsion))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('x', d3.forceX(width / 2).strength(compactness))
-      .force('y', d3.forceY(height / 2).strength(compactness))
-      .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 10))
+    // Posición inicial razonable antes del primer tick del worker.
+    nodes.forEach((d, i) => {
+      if (d.x == null || d.y == null) {
+        const a = i * 0.5
+        d.x = width / 2 + Math.cos(a) * 50
+        d.y = height / 2 + Math.sin(a) * 50
+      }
+    })
+
+    // — Wrapper del worker (API equivalente a d3.forceSimulation usada por el render) —
+    let workerIds = []
+    let workerIndexById = new Map()
+    let workerEnded = true
+    const sim = createSimWorker()
+
+    function createSimWorker () {
+      const w = new Worker('graph-worker.js')
+      const handlers = []
+      let wDisposed = false
+      // Errores del worker (p.ej. fallo al cargar). Loguear y dejar
+      // workerEnded=true para que el renderer no se quede esperando ticks.
+      w.onerror = (e) => {
+        try { console.error('[graph-worker] error', e?.message || e) } catch {}
+        workerEnded = true
+      }
+      w.onmessageerror = () => { workerEnded = true }
+      w.onmessage = (ev) => {
+        // Defensa anti-race: tras dispose() pueden seguir llegando mensajes
+        // en cola del worker (init-ack/tick) antes de que el terminate surta efecto.
+        // Ignorarlos evita aplicar posiciones a un grafo ya destruido.
+        if (wDisposed) return
+        const m = ev.data || {}
+        if (m.type === 'init-ack') {
+          workerIds = m.ids || []
+          workerIndexById = new Map(workerIds.map((id, i) => [id, i]))
+        } else if (m.type === 'tick') {
+          workerEnded = false
+          applyPositions(m.positions)
+          handlers.forEach(fn => fn())
+        } else if (m.type === 'end') {
+          workerEnded = true
+        }
+      }
+
+      function applyPositions (buf) {
+        // buf: Float32Array [x0,y0,x1,y1,...] alineado con workerIds
+        for (let i = 0; i < workerIds.length; i++) {
+          const n = nodeById.get(workerIds[i])
+          if (!n) continue
+          n.x = buf[i * 2]
+          n.y = buf[i * 2 + 1]
+        }
+      }
+
+      // Estado interno (mock alpha para drag start/end semántica)
+      let alphaTargetVal = 0
+      let alphaVal = 0.6
+
+      const api = {
+        _worker: w,
+        on (event, fn) {
+          if (event === 'tick') handlers.push(fn)
+          return api
+        },
+        stop () { if (wDisposed) return api; w.postMessage({ type: 'pause' }); return api },
+        restart () { if (wDisposed) return api; w.postMessage({ type: 'resume', alpha: alphaVal }); return api },
+        alpha (v) {
+          if (v === undefined) return alphaVal
+          alphaVal = +v
+          if (wDisposed) return api
+          w.postMessage({ type: 'reheat', alpha: alphaVal })
+          return api
+        },
+        alphaTarget (v) {
+          if (v === undefined) return alphaTargetVal
+          alphaTargetVal = +v
+          if (wDisposed) return api
+          // Solo "reheat" si se sube el target (drag start). Bajar a 0 no debe reiniciar.
+          w.postMessage({ type: 'alphaTarget', target: alphaTargetVal, restart: alphaTargetVal > 0 })
+          return api
+        },
+        force (name, force) {
+          // Compat shim para llamadas legacy: convertimos a setForces.
+          // Solo nos importa interceptar lo que el caller usa.
+          if (force == null) return undefined
+          if (wDisposed) return api
+          if (name === 'charge' && typeof force.strength === 'function') {
+            const s = force.strength()
+            w.postMessage({ type: 'setForces', repulsion: typeof s === 'number' ? s : repulsion })
+          } else if (name === 'link') {
+            const dist = typeof force.distance === 'function' ? force.distance() : linkDistance
+            w.postMessage({ type: 'setForces', linkDistance: typeof dist === 'number' ? dist : linkDistance })
+          } else if (name === 'x' || name === 'y') {
+            const s = typeof force.strength === 'function' ? force.strength() : compactness
+            w.postMessage({ type: 'setForces', compactness: typeof s === 'number' ? s : compactness })
+          } else if (name === 'center') {
+            // No-op: el worker recalcula center con setSize.
+          }
+          return api
+        },
+        setForcesDirect (patch) {
+          if (wDisposed) return api
+          w.postMessage({ type: 'setForces', ...patch })
+          return api
+        },
+        setSize (w_, h_) {
+          if (wDisposed) return api
+          w.postMessage({ type: 'setSize', width: w_, height: h_ })
+          return api
+        },
+        setRootFixed (id) {
+          if (wDisposed) return api
+          w.postMessage({ type: 'setRootFixed', id })
+          return api
+        },
+        dragStart (id) { if (wDisposed) return api; w.postMessage({ type: 'dragStart', id }); return api },
+        drag (id, x, y) { if (wDisposed) return api; w.postMessage({ type: 'drag', id, x, y }); return api },
+        dragEnd (id, keepFixed) { if (wDisposed) return api; w.postMessage({ type: 'dragEnd', id, keepFixed: !!keepFixed }); return api },
+        dispose () {
+          if (wDisposed) return
+          wDisposed = true
+          // Notificar al worker para que pare la sim y cierre self antes de terminate().
+          // Si postMessage falla (worker ya muerto), seguimos a terminate igual.
+          try { w.postMessage({ type: 'dispose' }) } catch {}
+          // Limpiar handlers: si terminate tarda un microtask y entra un mensaje
+          // en cola, no debe ejecutarse nada.
+          try { w.onmessage = null } catch {}
+          try { w.onerror = null } catch {}
+          try { w.onmessageerror = null } catch {}
+          handlers.length = 0
+          try { w.terminate() } catch {}
+        },
+        isDisposed () { return wDisposed },
+        init () {
+          const initNodes = nodes.map(n => ({
+            id: n.id,
+            isRoot: !!n.isRoot,
+            x: n.x,
+            y: n.y,
+            fx: n.fx,
+            fy: n.fy,
+            radiusPad: nodeRadius(n)
+          }))
+          const initEdges = simEdges.map(e => ({
+            source: typeof e.source === 'object' ? e.source.id : e.source,
+            target: typeof e.target === 'object' ? e.target.id : e.target
+          }))
+          w.postMessage({
+            type: 'init',
+            nodes: initNodes,
+            edges: initEdges,
+            width,
+            height,
+            forces: { repulsion, linkDistance, compactness },
+            alpha: 0.6
+          })
+        }
+      }
+      return api
+    }
+
+    sim.init()
+    if (paused) sim.stop()
 
     // Capa de aristas
     const linkSel = g.append('g').attr('class', 'links')
@@ -319,13 +477,29 @@
         d3.drag()
           .on('start', (e, d) => {
             if (!paused && !e.active) sim.alphaTarget(0.3).restart()
+            else if (paused) sim.alpha(0.3).restart()
             d.fx = d.x
             d.fy = d.y
+            sim.dragStart(d.id)
             d3.select(e.sourceEvent.target.closest('.node')).attr('cursor', 'grabbing')
           })
-          .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y })
+          .on('drag', (e, d) => {
+            d.fx = e.x
+            d.fy = e.y
+            sim.drag(d.id, e.x, e.y)
+          })
           .on('end', (e, d) => {
             if (!paused && !e.active) sim.alphaTarget(0)
+            // Liberar nodo (no mantener fijo tras drag), excepto root.
+            if (!d.isRoot) {
+              d.fx = null
+              d.fy = null
+              sim.dragEnd(d.id, false)
+            } else {
+              sim.dragEnd(d.id, true)
+            }
+            // En pausa: volver a parar la sim tras el reheat del drag.
+            if (paused) sim.stop()
             d3.select(e.sourceEvent.target.closest('.node')).attr('cursor', 'grab')
           })
       )
@@ -497,8 +671,22 @@
       rafId = null
     }
 
-    function setPaused (nextPaused) {
+    // Auto-pause: tras montar y dejar que la fisica se asiente, parar simulacion.
+    // Se desarma en cuanto el usuario interactua con play/pause manual.
+    let autoPauseArmed = !!autoPause && !paused
+    let autoPauseTimer = null
+
+    function disarmAutoPause () {
+      autoPauseArmed = false
+      if (autoPauseTimer != null) {
+        clearTimeout(autoPauseTimer)
+        autoPauseTimer = null
+      }
+    }
+
+    function setPaused (nextPaused, { fromAuto = false } = {}) {
       const p = !!nextPaused
+      if (!fromAuto) disarmAutoPause()
       if (p === paused) return paused
       paused = p
       if (paused) {
@@ -516,6 +704,18 @@
       stopAnimationLoop()
     } else {
       startAnimationLoop()
+    }
+
+    if (autoPauseArmed) {
+      autoPauseTimer = setTimeout(() => {
+        autoPauseTimer = null
+        if (!autoPauseArmed) return
+        autoPauseArmed = false
+        setPaused(true, { fromAuto: true })
+        if (typeof onAutoPause === 'function') {
+          try { onAutoPause() } catch {}
+        }
+      }, Math.max(0, Number(autoPauseDelay) || 0))
     }
 
     // Selección: atenúa todo excepto el nodo y sus vecinos
@@ -621,23 +821,35 @@
 
     // ResizeObserver para adaptar el grafo al tamaño del sidebar
     const ro = new ResizeObserver(() => {
+      // Anti-race: si destroy() corrió entre dos callbacks del RO, sim ya está dispuesto.
+      if (sim.isDisposed && sim.isDisposed()) return
       width = svgEl.clientWidth
       height = svgEl.clientHeight
       nodes.forEach(d => { if (d.isRoot) { d.fx = width / 2; d.fy = height / 2 } })
-      sim.force('center', d3.forceCenter(width / 2, height / 2))
-      sim.force('x', d3.forceX(width / 2).strength(compactness))
-      sim.force('y', d3.forceY(height / 2).strength(compactness))
+      sim.setSize(width, height)
+      const rootNode = nodes.find(d => d.isRoot)
+      if (rootNode) sim.setRootFixed(rootNode.id)
       if (!paused) sim.alpha(0.3).restart()
     })
     ro.observe(svgEl)
 
+    let destroyed = false
     return {
       destroy () {
+        // Idempotente: si el caller llama destroy() dos veces (re-init rápido,
+        // cambio de proyecto), no debe romper.
+        if (destroyed) return
+        destroyed = true
+        disarmAutoPause()
         stopAnimationLoop()
-        sim.stop()
-        ro.disconnect()
+        try { sim.stop() } catch {}
+        try { sim.dispose() } catch {}
+        try { ro.disconnect() } catch {}
         try { hoverCard.remove() } catch {}
-        svg.selectAll('*').remove()
+        try { svg.on('.zoom', null) } catch {}
+        try { svg.on('click.deselect', null) } catch {}
+        try { svg.on('dblclick.reset', null) } catch {}
+        try { svg.selectAll('*').remove() } catch {}
       },
       focusByQuery,
       markActivePath,
@@ -669,20 +881,12 @@
         nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)
       },
       setForces ({ repulsion: r, linkDistance: d, particleSpeed: p, compactness: c }) {
-        if (r !== undefined) {
-          repulsion = r
-          sim.force('charge', d3.forceManyBody().strength(repulsion))
-        }
-        if (d !== undefined) {
-          linkDistance = d
-          sim.force('link', d3.forceLink(simEdges).id(n => n.id).distance(linkDistance))
-        }
+        const patch = {}
+        if (r !== undefined) { repulsion = r; patch.repulsion = repulsion }
+        if (d !== undefined) { linkDistance = d; patch.linkDistance = linkDistance }
+        if (c !== undefined) { compactness = c; patch.compactness = compactness }
         if (p !== undefined) particleSpeed = p
-        if (c !== undefined) {
-          compactness = c
-          sim.force('x', d3.forceX(width / 2).strength(compactness))
-          sim.force('y', d3.forceY(height / 2).strength(compactness))
-        }
+        if (Object.keys(patch).length) sim.setForcesDirect(patch)
         if (!paused) sim.alpha(0.4).restart()
       }
     }

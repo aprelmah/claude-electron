@@ -920,13 +920,19 @@ function renderFiltered () {
     {
       onDblClick: (filePath) => injectToPty(`@${filePath} `),
       onContextMenu: (node, x, y) => showGraphContextMenu(node, x, y),
-      forces: graphForces
+      forces: graphForces,
+      autoPause: !graphPaused,
+      autoPauseDelay: 2500,
+      onAutoPause: () => {
+        graphPaused = true
+        buildFilters()
+      }
     }
   )
   if (graphLastActivePath && graphInstance?.markActivePath) {
     graphInstance.markActivePath(graphLastActivePath)
   }
-  if (graphInstance?.setPaused) {
+  if (graphPaused && graphInstance?.setPaused) {
     graphInstance.setPaused(graphPaused)
   }
   if (graphSearchQuery && graphInstance?.focusByQuery) {
@@ -1685,10 +1691,40 @@ window.addEventListener('keydown', (e) => {
 })
 
 // ── PTY bridge ──
-term.onData((data) => window.api.writePty(data))
-window.api.onPtyData((chunk) => term.write(chunk))
+// PERF telemetry (flag-gated). Activar: localStorage.setItem('poweragent_perf','1') y recargar.
+const PERF = (() => { try { return localStorage.getItem('poweragent_perf') === '1' } catch { return false } })()
+const perfKeyQueue = PERF ? [] : null // FIFO de { t, bytes }, máx 50
+const perfGraphCounter = PERF ? { n: 0 } : null
+if (PERF) {
+  console.log('[PERF] renderer telemetry enabled (localStorage.poweragent_perf=1)')
+  setInterval(() => {
+    if (perfGraphCounter.n) {
+      console.log(`[PERF renderer] graph:file-active received=${perfGraphCounter.n} (5s window)`)
+      perfGraphCounter.n = 0
+    }
+  }, 5000)
+}
+
+term.onData((data) => {
+  if (PERF) {
+    const bytes = (typeof data === 'string') ? new Blob([data]).size : (data?.length || 0)
+    perfKeyQueue.push({ t: performance.now(), bytes })
+    if (perfKeyQueue.length > 50) perfKeyQueue.shift()
+  }
+  window.api.writePty(data)
+})
+window.api.onPtyData((chunk) => {
+  if (PERF && perfKeyQueue.length) {
+    const item = perfKeyQueue.shift()
+    const dt = performance.now() - item.t
+    const chunkBytes = (typeof chunk === 'string') ? new Blob([chunk]).size : (chunk?.length || 0)
+    console.log(`[PERF renderer] key→render=${dt.toFixed(1)}ms keyBytes=${item.bytes} chunkBytes=${chunkBytes}`)
+  }
+  term.write(chunk)
+})
 window.api.onInjectPath((p) => injectToPty(`@${p} `))
 window.api.onGraphFileActive((p) => {
+  if (PERF) perfGraphCounter.n++
   graphLastActivePath = p || graphLastActivePath
   if (graphInstance?.markActivePath) graphInstance.markActivePath(graphLastActivePath)
   if (graphInstance?.pulseNode) graphInstance.pulseNode(p)

@@ -42,6 +42,21 @@ const CONFIG_FILENAME = 'claude-novak.config.json'
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
+// ── PERF telemetry (flag-gated, no overhead when OFF) ──
+const PERF = process.env.POWERAGENT_PERF === '1'
+const perfPtyLastInputByWc = PERF ? new Map() : null // wcId -> { t0, bytes }
+const perfWatchCounters = PERF ? { events: 0, graphActive: 0, treeChanged: 0 } : null
+if (PERF) {
+  setInterval(() => {
+    const c = perfWatchCounters
+    if (c.events || c.graphActive || c.treeChanged) {
+      console.log(`[PERF watch] events=${c.events} graph:file-active=${c.graphActive} tree-changed=${c.treeChanged}`)
+      c.events = 0; c.graphActive = 0; c.treeChanged = 0
+    }
+  }, 5000).unref?.()
+  console.log('[PERF] telemetry enabled (POWERAGENT_PERF=1)')
+}
+
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
@@ -361,6 +376,7 @@ function notifyTreeChangedFor(session, reason) {
   session.treeWatchDebounce = setTimeout(() => {
     if (!sessions.has(session.wcId)) return
     if (session.win && !session.win.isDestroyed()) {
+      if (PERF) perfWatchCounters.treeChanged++
       session.win.webContents.send('tree-changed', reason)
     }
   }, delay)
@@ -958,6 +974,15 @@ function startPty(session, cols, rows, cwd, args = []) {
       try { s.relayListener(data) } catch {}
     }
     if (s) s.lastPtyDataAt = Date.now()
+    if (PERF && s) {
+      const last = perfPtyLastInputByWc.get(s.wcId)
+      if (last && (Date.now() - last.t0) < 2000) {
+        const dt = Date.now() - last.t0
+        const outBytes = (typeof data === 'string') ? Buffer.byteLength(data) : (data?.length || 0)
+        console.log(`[PERF pty] in→out=${dt}ms inBytes=${last.bytes} outBytes=${outBytes} wc=${s.wcId}`)
+        perfPtyLastInputByWc.delete(s.wcId)
+      }
+    }
     if (!s || !s.win || s.win.isDestroyed()) return
     // Mantener siempre espejo local: aunque Telegram esté en relay activo,
     // la ventana principal sigue mostrando el stream real de la PTY.
@@ -1997,6 +2022,7 @@ function guessCodexSessionFromHistory(session) {
 }
 
 function readClaudeSessionTitle(cwd, sessionId) {
+  const _perfT0 = PERF ? Date.now() : 0
   const sid = String(sessionId || '').trim()
   if (!sid) return { title: '', path: null }
   const dir = resolveClaudeProjectDir(cwd)
@@ -2009,8 +2035,12 @@ function readClaudeSessionTitle(cwd, sessionId) {
   let stat = null
   try { stat = fs.statSync(file) } catch {}
   const cached = claudeSessionTitleCache.get(file)
-  if (cached?.locked) return { title: cached.title || '', path: file }
+  if (cached?.locked) {
+    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-locked)`) }
+    return { title: cached.title || '', path: file }
+  }
   if (cached && stat && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-stat)`) }
     return { title: cached.title || '', path: file }
   }
 
@@ -2036,10 +2066,12 @@ function readClaudeSessionTitle(cwd, sessionId) {
     size: Number(stat?.size || 0),
     locked: !!title
   })
+  if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (read size=${Number(stat?.size || 0)})`) }
   return { title, path: file }
 }
 
 function buildCurrentSessionMeta(session) {
+  const _perfT0 = PERF ? Date.now() : 0
   const cli = session?.activeCli === 'codex' ? 'codex' : 'claude'
   const cwd = session?.cwd || os.homedir()
 
@@ -2053,13 +2085,15 @@ function buildCurrentSessionMeta(session) {
       }
     }
     const info = readClaudeSessionTitle(cwd, sessionId)
-    return {
+    const _result = {
       cli,
       cwd,
       sessionId: sessionId || null,
       title: info.title || '(sin título)',
       path: info.path || null
     }
+    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(claude)=${dt}ms`) }
+    return _result
   }
 
   let sessionId = session?.codexSessionId || null
@@ -2077,13 +2111,15 @@ function buildCurrentSessionMeta(session) {
   const indexTitle = sessionId ? (loadCodexSessionIndexMap().get(sessionId) || '') : ''
   const title = clipText(stateMeta?.title || indexTitle || fallbackTitle, 160) || '(sin título)'
 
-  return {
+  const _result = {
     cli,
     cwd,
     sessionId: sessionId || null,
     title,
     path: null
   }
+  if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(codex)=${dt}ms`) }
+  return _result
 }
 
 function resolveSessionIdForRelay(session) {
@@ -2339,6 +2375,9 @@ ipcMain.on('pty-input', (event, data) => {
     return
   }
   if (s) s.lastLocalInputAt = Date.now()
+  if (PERF && s) {
+    perfPtyLastInputByWc.set(s.wcId, { t0: Date.now(), bytes: (typeof data === 'string') ? Buffer.byteLength(data) : (data?.length || 0) })
+  }
   s?.pty?.write(data)
 })
 
@@ -2785,6 +2824,7 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
   try {
     s.treeWatcher = fs.watch(dirPath, { recursive: true, persistent: false }, (_eventType, filename) => {
       if (!sessions.has(s.wcId)) return
+      if (PERF) perfWatchCounters.events++
       if (!filename) { safeCb(); return }
       const parts = filename.split('/')
       const base = parts[parts.length - 1]
@@ -2796,6 +2836,7 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
       // Pulso del grafo: incluye .claude/memory y cualquier archivo no-ruido
       const fullPath = path.join(dirPath, filename)
       if (s.win && !s.win.isDestroyed()) {
+        if (PERF) perfWatchCounters.graphActive++
         s.win.webContents.send('graph:file-active', fullPath)
       }
 
