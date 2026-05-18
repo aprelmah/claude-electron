@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const http = require('http')
 const { EventEmitter } = require('events')
 const { runClaudePersona, buildPrompt } = require('./whatsapp-auto-reply')
 
@@ -76,24 +77,42 @@ function decorateMessage(msg) {
   return { ...msg, mediaUrl: mediaUrlFor(msg.mediaPath) }
 }
 
-async function bridgeFetch(method, urlPath, body) {
-  const url = `${BRIDGE_URL}${urlPath}`
-  const opts = { method, headers: {} }
-  if (body !== undefined) {
-    opts.headers['content-type'] = 'application/json'
-    opts.body = JSON.stringify(body)
-  }
-  const res = await fetch(url, opts)
-  const text = await res.text()
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) {
-    const err = new Error(`bridge ${method} ${urlPath} → ${res.status}: ${data?.error || text?.slice(0, 200)}`)
-    err.status = res.status
-    err.body = data
-    throw err
-  }
-  return data
+function bridgeFetch(method, urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body !== undefined ? Buffer.from(JSON.stringify(body)) : null
+    const headers = {}
+    if (payload) {
+      headers['content-type'] = 'application/json'
+      headers['content-length'] = payload.length
+    }
+    const req = http.request({
+      host: '127.0.0.1',
+      port: 3031,
+      method,
+      path: urlPath,
+      headers,
+      timeout: 30000
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf-8')
+        let data = null
+        try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const err = new Error(`bridge ${method} ${urlPath} → ${res.statusCode}: ${data?.error || text?.slice(0, 200)}`)
+          err.status = res.statusCode
+          err.body = data
+          return reject(err)
+        }
+        resolve(data)
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(new Error('bridge timeout')) })
+    if (payload) req.write(payload)
+    req.end()
+  })
 }
 
 function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
@@ -124,6 +143,9 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       chats.set(c.jid, {
         jid: c.jid,
         displayNumber: c.displayNumber || jidToNumber(c.jid),
+        // Identidad mejorada: nombre del contacto / pushName y número real (si se pudo resolver).
+        displayName: typeof c.displayName === 'string' ? c.displayName : '',
+        phoneNumber: typeof c.phoneNumber === 'string' ? c.phoneNumber : '',
         mode: c.mode === 'manual' ? 'manual' : 'auto',
         unread: Number(c.unread) || 0,
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
@@ -149,6 +171,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       c = {
         jid,
         displayNumber: jidToNumber(jid),
+        displayName: '',
+        phoneNumber: '',
         mode: 'auto',
         unread: 0,
         history: [],
@@ -163,7 +187,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   function isAuthorized(jid) {
     const num = jidToNumber(jid)
     if (!num) return false
-    if (!config.authorizedNumbers || !config.authorizedNumbers.length) return false
+    if (!config.authorizedNumbers || !config.authorizedNumbers.length) return true
     return config.authorizedNumbers.includes(num)
   }
 
@@ -176,9 +200,27 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     markDirty()
   }
 
+  function summarizeChat(jid) {
+    const c = chats.get(jid)
+    if (!c) return { jid }
+    const last = c.history.length ? c.history[c.history.length - 1] : null
+    return {
+      jid: c.jid,
+      displayNumber: c.displayNumber,
+      displayName: c.displayName || '',
+      phoneNumber: c.phoneNumber || '',
+      mode: c.mode,
+      unread: c.unread || 0,
+      lastActivity: c.lastActivity || 0,
+      lastMessage: last ? {
+        body: last.body, type: last.type, timestamp: last.timestamp, fromMe: last.fromMe
+      } : null
+    }
+  }
+
   function emitNewMessage(jid, msg) {
     emitter.emit('new-message', { jid, message: decorateMessage(msg) })
-    emitter.emit('chat-updated', { jid })
+    emitter.emit('chat-updated', summarizeChat(jid))
   }
 
   function emitStatus(status) {
@@ -225,6 +267,10 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     if (!isAuthorized(jid)) return // allowlist estricta
 
     const chat = ensureChat(jid)
+    // Enriquecer identidad si el bridge nos pasa nombre/numero.
+    // Orden de preferencia para mostrar: displayName → phoneNumber → displayNumber/JID.
+    if (raw.displayName && raw.displayName !== chat.displayName) { chat.displayName = String(raw.displayName); markDirty() }
+    if (raw.phoneNumber && raw.phoneNumber !== chat.phoneNumber) { chat.phoneNumber = String(raw.phoneNumber); markDirty() }
     const msg = {
       id: raw.id,
       from: jid,
@@ -257,7 +303,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       chat.escalatedUntil = Date.now() + ESCALATION_WINDOW_MS
       chat.mode = 'manual'
       markDirty()
-      emitter.emit('chat-updated', { jid })
+      emitter.emit('chat-updated', summarizeChat(jid))
       return
     }
 
@@ -301,7 +347,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const { changeModeToManual = true, internal = false } = opts
     const targetJid = numberToJid(jid)
     try {
-      const res = await bridgeFetch('POST', '/send/text', { to: jidToNumber(targetJid), message: text })
+      const res = await bridgeFetch('POST', '/send/text', { to: targetJid, message: text })
       const chat = ensureChat(targetJid)
       const msg = {
         id: res?.id || `local-${Date.now()}`,
@@ -328,7 +374,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const targetJid = numberToJid(jid)
     if (!fs.existsSync(filePath)) return { ok: false, error: `Archivo no existe: ${filePath}` }
     let endpoint = ''
-    let payload = { to: jidToNumber(targetJid) }
+    let payload = { to: targetJid }
     const buf = fs.readFileSync(filePath)
     const base64 = buf.toString('base64')
     const filename = path.basename(filePath)
@@ -394,7 +440,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     chat.mode = mode === 'manual' ? 'manual' : 'auto'
     if (chat.mode === 'auto') chat.escalatedUntil = 0
     markDirty()
-    emitter.emit('chat-updated', { jid: targetJid })
+    emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true, mode: chat.mode }
   }
 
@@ -403,7 +449,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     const chat = ensureChat(targetJid)
     chat.unread = 0
     markDirty()
-    emitter.emit('chat-updated', { jid: targetJid })
+    emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true }
   }
 
@@ -415,6 +461,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         return {
           jid: c.jid,
           displayNumber: c.displayNumber,
+          displayName: c.displayName || '',
+          phoneNumber: c.phoneNumber || '',
           mode: c.mode,
           unread: c.unread || 0,
           lastActivity: c.lastActivity || 0,
