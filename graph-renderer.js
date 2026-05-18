@@ -22,7 +22,7 @@
   }
 
   function nodeRadius (d) {
-    if (d.isRoot) return 86
+    if (d.isRoot) return ROOT_REACTOR_RADIUS
     if (d.type === 'folder') return 14
     return Math.max(6, Math.min(18, 6 + d.connections * 1.5))
   }
@@ -38,7 +38,7 @@
   }
 
   function glowIdForNode (d) {
-    if (d.isRoot) return 'glow-brain'
+    if (d.isRoot) return 'glow-reactor'
     if (d.type === 'folder') return 'glow-folder'
     const ext = (d.label.split('.').pop() || '').toLowerCase()
     const glowKey = (ext === 'mjs' || ext === 'cjs') ? 'js' : ext
@@ -52,10 +52,7 @@
       .toLowerCase()
   }
 
-  const ROOT_PHOTO_HREF = './assets/graph-root-photo.png'
-  const ROOT_PHOTO_SCALE = 4
-  const ROOT_PHOTO_RX = 20 * ROOT_PHOTO_SCALE
-  const ROOT_PHOTO_RY = 22 * ROOT_PHOTO_SCALE
+  const ROOT_REACTOR_RADIUS = 18 * 3
 
   function init (svgEl, { nodes, edges }, { onDblClick, onContextMenu, forces = {} } = {}) {
     const svg = d3.select(svgEl)
@@ -178,27 +175,37 @@
     ms.append('feMergeNode').attr('in', 'blur')
     ms.append('feMergeNode').attr('in', 'SourceGraphic')
 
-    const fBrain = defs.append('filter')
-      .attr('id', 'glow-brain')
-      .attr('x', '-90%').attr('y', '-90%')
-      .attr('width', '280%').attr('height', '280%')
-    fBrain.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur')
-    const mb = fBrain.append('feMerge')
-    mb.append('feMergeNode').attr('in', 'blur')
-    mb.append('feMergeNode').attr('in', 'SourceGraphic')
+    const fReactor = defs.append('filter')
+      .attr('id', 'glow-reactor')
+      .attr('x', '-120%').attr('y', '-120%')
+      .attr('width', '340%').attr('height', '340%')
+    fReactor.append('feGaussianBlur').attr('stdDeviation', '4.8').attr('result', 'blur')
+    const mr = fReactor.append('feMerge')
+    mr.append('feMergeNode').attr('in', 'blur')
+    mr.append('feMergeNode').attr('in', 'SourceGraphic')
 
-    const brainGrad = defs.append('radialGradient')
-      .attr('id', 'brain-grad')
-      .attr('cx', '50%').attr('cy', '42%').attr('r', '60%')
-    brainGrad.append('stop').attr('offset', '0%').attr('stop-color', '#e7fbff').attr('stop-opacity', 0.95)
-    brainGrad.append('stop').attr('offset', '100%').attr('stop-color', '#8acbe0').attr('stop-opacity', 0.4)
+    const fReactorSoft = defs.append('filter')
+      .attr('id', 'glow-reactor-soft')
+      .attr('x', '-120%').attr('y', '-120%')
+      .attr('width', '340%').attr('height', '340%')
+    fReactorSoft.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'blur')
+    const mrs = fReactorSoft.append('feMerge')
+    mrs.append('feMergeNode').attr('in', 'blur')
+    mrs.append('feMergeNode').attr('in', 'SourceGraphic')
 
-    const brainPhotoClip = defs.append('clipPath')
-      .attr('id', 'brain-photo-clip')
-      .attr('clipPathUnits', 'userSpaceOnUse')
-    brainPhotoClip.append('ellipse')
-      .attr('cx', 0).attr('cy', 0)
-      .attr('rx', ROOT_PHOTO_RX).attr('ry', ROOT_PHOTO_RY)
+    const reactorCoreGrad = defs.append('radialGradient')
+      .attr('id', 'reactor-core-grad')
+      .attr('cx', '48%').attr('cy', '42%').attr('r', '62%')
+    reactorCoreGrad.append('stop').attr('offset', '0%').attr('stop-color', '#102843').attr('stop-opacity', 1)
+    reactorCoreGrad.append('stop').attr('offset', '62%').attr('stop-color', '#0a1630').attr('stop-opacity', 0.98)
+    reactorCoreGrad.append('stop').attr('offset', '100%').attr('stop-color', '#060d1f').attr('stop-opacity', 0.98)
+
+    const reactorInnerGrad = defs.append('radialGradient')
+      .attr('id', 'reactor-inner-grad')
+      .attr('cx', '54%').attr('cy', '44%').attr('r', '68%')
+    reactorInnerGrad.append('stop').attr('offset', '0%').attr('stop-color', '#7cf2ff').attr('stop-opacity', 0.95)
+    reactorInnerGrad.append('stop').attr('offset', '50%').attr('stop-color', '#9a9cff').attr('stop-opacity', 0.58)
+    reactorInnerGrad.append('stop').attr('offset', '100%').attr('stop-color', '#ff8fd6').attr('stop-opacity', 0.14)
 
     // Gradiente nebulosa en el centro
     const radGrad = defs.append('radialGradient')
@@ -333,75 +340,55 @@
     nodeG.append('circle')
       .attr('class', 'node-circle')
       .attr('r', d => nodeRadius(d))
-      .attr('fill', d => d.isRoot ? 'rgba(170, 236, 255, 0.08)' : (nodeColor(d) + '2a'))
-      .attr('stroke', d => d.isRoot ? '#c6f4ff' : nodeColor(d))
-      .attr('stroke-width', d => d.isRoot ? 1.8 : (d.type === 'folder' ? 1.5 : 1))
-      .attr('filter', d => `url(#${glowIdForNode(d)})`)
+      .attr('fill', d => d.isRoot ? 'transparent' : (nodeColor(d) + '2a'))
+      .attr('stroke', d => d.isRoot ? 'none' : nodeColor(d))
+      .attr('stroke-width', d => d.isRoot ? 0 : (d.type === 'folder' ? 1.5 : 1))
+      .attr('filter', d => d.isRoot ? null : `url(#${glowIdForNode(d)})`)
 
-    // Nodo protagonista: cerebro frontal luminoso (más fiel a referencia)
-    const rootBrain = nodeG.filter(d => d.isRoot).append('g')
-      .attr('class', 'root-brain')
+    // Nodo protagonista: nucleo reactor (x3 de la bola maxima)
+    const rootReactor = nodeG.filter(d => d.isRoot).append('g')
+      .attr('class', 'root-reactor')
       .attr('pointer-events', 'none')
-      .attr('filter', 'url(#glow-brain)')
 
-    rootBrain.append('image')
-      .attr('href', ROOT_PHOTO_HREF)
-      .attr('xlink:href', ROOT_PHOTO_HREF)
-      .attr('x', -ROOT_PHOTO_RX).attr('y', -ROOT_PHOTO_RY)
-      .attr('width', ROOT_PHOTO_RX * 2).attr('height', ROOT_PHOTO_RY * 2)
-      .attr('preserveAspectRatio', 'xMidYMid slice')
-      .attr('clip-path', 'url(#brain-photo-clip)')
-      .attr('opacity', 0.98)
-
-    rootBrain.append('ellipse')
+    rootReactor.append('circle')
       .attr('cx', 0).attr('cy', 0)
-      .attr('rx', ROOT_PHOTO_RX).attr('ry', ROOT_PHOTO_RY)
+      .attr('r', ROOT_REACTOR_RADIUS * 1.15)
       .attr('fill', 'none')
-      .attr('stroke', '#dff7ff')
-      .attr('stroke-width', 1.6)
-      .attr('stroke-opacity', 0.9)
+      .attr('stroke', '#9fefff')
+      .attr('stroke-width', 2.4)
+      .attr('stroke-opacity', 0.24)
+      .attr('filter', 'url(#glow-reactor-soft)')
 
-    const brainShape = rootBrain.append('g')
-      .attr('transform', `translate(0,${-2 * ROOT_PHOTO_SCALE}) scale(${1.12 * ROOT_PHOTO_SCALE})`)
-      .attr('opacity', 0.16)
-
-    brainShape.append('path')
-      .attr('d', 'M0,-20 C-8.6,-20 -15.8,-15 -17.6,-8.2 C-19.4,-2.3 -18.8,4 -15.4,9.1 C-12.4,13.5 -7.8,16.6 -3.2,17.6 L-3.1,19.8 C-3,22.1 -1.8,24 0,24.4 C1.8,24 3,22.1 3.1,19.8 L3.2,17.6 C7.8,16.6 12.4,13.5 15.4,9.1 C18.8,4 19.4,-2.3 17.6,-8.2 C15.8,-15 8.6,-20 0,-20 Z')
-      .attr('fill', 'url(#brain-grad)')
-      .attr('stroke', '#dff7ff')
-      .attr('stroke-width', 1.25)
+    rootReactor.append('circle')
+      .attr('cx', 0).attr('cy', 0)
+      .attr('r', ROOT_REACTOR_RADIUS * 1.01)
+      .attr('fill', 'none')
+      .attr('stroke', '#d7fbff')
+      .attr('stroke-width', 2.2)
       .attr('stroke-opacity', 0.95)
+      .attr('filter', 'url(#glow-reactor)')
 
-    brainShape.append('path')
-      .attr('d', 'M0,-18.5 C-0.8,-15.6 -0.8,-12.8 0,-10 C0.8,-7.4 0.8,-4.4 0,-1.8 C-0.7,0.8 -0.7,3.8 0,6.3 C0.7,8.8 0.7,11.8 0,14.6')
-      .attr('fill', 'none')
-      .attr('stroke', '#f3feff')
-      .attr('stroke-width', 1.05)
-      .attr('stroke-opacity', 0.92)
+    rootReactor.append('circle')
+      .attr('cx', 0).attr('cy', 0)
+      .attr('r', ROOT_REACTOR_RADIUS * 0.98)
+      .attr('fill', 'url(#reactor-core-grad)')
+      .attr('stroke', '#dbfbff')
+      .attr('stroke-width', 1.25)
+      .attr('stroke-opacity', 0.84)
 
-    const gyri = [
-      'M-12.8,-7.8 C-14.3,-12 -9.8,-16.1 -5.7,-13.8 C-2.8,-12.1 -2.9,-8.1 -6.2,-6.6',
-      'M-12.2,1 C-14.2,-2.4 -11.7,-7.2 -7.5,-7 C-3.9,-6.9 -2.5,-2.7 -5.4,0.2',
-      'M-9.8,8.6 C-11.8,5.8 -10.7,2 -6.9,1.3 C-3.2,0.7 -1.4,4.3 -3.8,7',
-      'M12.8,-7.8 C14.3,-12 9.8,-16.1 5.7,-13.8 C2.8,-12.1 2.9,-8.1 6.2,-6.6',
-      'M12.2,1 C14.2,-2.4 11.7,-7.2 7.5,-7 C3.9,-6.9 2.5,-2.7 5.4,0.2',
-      'M9.8,8.6 C11.8,5.8 10.7,2 6.9,1.3 C3.2,0.7 1.4,4.3 3.8,7'
-    ]
-    for (const d of gyri) {
-      brainShape.append('path')
-        .attr('d', d)
-        .attr('fill', 'none')
-        .attr('stroke', '#ecfeff')
-        .attr('stroke-opacity', 0.86)
-        .attr('stroke-width', 0.95)
-    }
+    rootReactor.append('circle')
+      .attr('cx', 0).attr('cy', 0)
+      .attr('r', ROOT_REACTOR_RADIUS * 0.58)
+      .attr('fill', 'url(#reactor-inner-grad)')
+      .attr('opacity', 0.88)
+      .attr('filter', 'url(#glow-reactor-soft)')
 
-    brainShape.append('path')
-      .attr('d', 'M-2.1,24.1 C-2.1,28.1 -1.8,31.2 0,33 C1.8,31.2 2.1,28.1 2.1,24.1')
-      .attr('fill', 'rgba(218,247,255,0.84)')
-      .attr('stroke', '#dff7ff')
-      .attr('stroke-width', 1)
-      .attr('stroke-opacity', 0.8)
+    rootReactor.append('circle')
+      .attr('cx', ROOT_REACTOR_RADIUS * 0.09).attr('cy', -ROOT_REACTOR_RADIUS * 0.1)
+      .attr('r', ROOT_REACTOR_RADIUS * 0.16)
+      .attr('fill', '#c9fbff')
+      .attr('opacity', 0.93)
+      .attr('filter', 'url(#glow-reactor-soft)')
 
     nodeG.append('text')
       .attr('class', 'node-label')
@@ -457,7 +444,7 @@
 
     // Loop de animación de partículas independiente de la simulación
     let particleSpeed = forces.particleSpeed ?? 4000
-    let brainPhase = 0
+    let reactorPhase = 0
     let prevAnimTs = Date.now()
 
     function animateParticles () {
@@ -468,7 +455,7 @@
       const now = Date.now()
       const dt = Math.max(0, now - prevAnimTs)
       prevAnimTs = now
-      brainPhase += dt * 0.0035
+      reactorPhase += dt * 0.0035
       activePhase += dt * 0.014
       particleSel.each(function (d, i) {
         const sx = d.source.x
@@ -481,10 +468,10 @@
           .attr('cx', sx + (tx - sx) * t)
           .attr('cy', sy + (ty - sy) * t)
       })
-      const bob = Math.sin(brainPhase) * 1.25
-      const tilt = Math.sin(brainPhase * 0.72) * 4.8
-      const pulse = 1 + Math.sin(brainPhase * 0.55) * 0.035
-      rootBrain.attr('transform', `translate(0,${bob.toFixed(2)}) rotate(${tilt.toFixed(2)}) scale(${pulse.toFixed(3)})`)
+      const bob = Math.sin(reactorPhase) * 0.85
+      const tilt = Math.sin(reactorPhase * 0.72) * 1.6
+      const pulse = 1 + Math.sin(reactorPhase * 0.55) * 0.045
+      rootReactor.attr('transform', `translate(0,${bob.toFixed(2)}) rotate(${tilt.toFixed(2)}) scale(${pulse.toFixed(3)})`)
 
       if (activeNode && activeCircleSel) {
         const base = nodeRadius(activeNode)
@@ -555,7 +542,7 @@
       selectedNode = null
       nodeG.attr('opacity', 1)
       nodeG.selectAll('.node-circle').each(function (d) {
-        d3.select(this).attr('filter', `url(#${glowIdForNode(d)})`)
+        d3.select(this).attr('filter', d.isRoot ? null : `url(#${glowIdForNode(d)})`)
       })
       linkSel.attr('stroke-opacity', 0.22)
       particleSel.attr('opacity', 0.75)
@@ -573,8 +560,8 @@
         activeCircleSel
           .interrupt()
           .attr('r', nodeRadius(activeNode))
-          .attr('stroke-width', activeNode.isRoot ? 1.8 : (activeNode.type === 'folder' ? 1.5 : 1))
-          .attr('filter', `url(#${glowIdForNode(activeNode)})`)
+          .attr('stroke-width', activeNode.isRoot ? 0 : (activeNode.type === 'folder' ? 1.5 : 1))
+          .attr('filter', activeNode.isRoot ? null : `url(#${glowIdForNode(activeNode)})`)
       }
 
       activeNode = node
@@ -672,8 +659,11 @@
             .attr('r', r * 1.8)
           .transition().duration(700).ease(d3.easeCubicInOut)
             .attr('r', r)
-            .attr('stroke-width', activeNode && activeNode.id === node.id ? 2.4 : (node.isRoot ? 1.8 : (node.type === 'folder' ? 1.5 : 1)))
-            .attr('filter', () => (activeNode && activeNode.id === node.id) ? 'url(#glow-strong)' : `url(#${glowIdForNode(node)})`)
+            .attr('stroke-width', activeNode && activeNode.id === node.id ? 2.4 : (node.isRoot ? 0 : (node.type === 'folder' ? 1.5 : 1)))
+            .attr('filter', () => {
+              if (activeNode && activeNode.id === node.id) return 'url(#glow-strong)'
+              return node.isRoot ? null : `url(#${glowIdForNode(node)})`
+            })
 
         // Label siempre visible durante el pulso
         nodeG.filter(d => d.id === node.id).select('.node-label').attr('display', null)

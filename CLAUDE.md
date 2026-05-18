@@ -2,6 +2,7 @@
 
 ## Latest Handoff
 - `HANDOFF-CLAUDE-2026-05-18.md` (estado final Telegram relay PTY, sesiones, lupa y grafo cerebro).
+- `HANDOFF-CLAUDE-2026-05-18-FINAL-REACTOR.md` (estado final actual: root reactor x3, despliegue limpio de una sola app).
 
 ## Scope
 - Project path: `/Users/isabel/Desktop/claude-electron`
