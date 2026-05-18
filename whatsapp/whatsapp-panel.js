@@ -12,8 +12,10 @@
   const wa = (window.api && window.api.whatsapp) || null
   const bridgeReady = !!wa
   // Modo standalone: el panel ocupa toda la ventana, sin botón flotante ni drawer.
-  // Lo expone whatsapp-window.html via window.WA_STANDALONE = true.
-  const STANDALONE = !!window.WA_STANDALONE
+  // Se detecta por flag global (compat), data-attribute o clase en <body>.
+  const STANDALONE = !!window.WA_STANDALONE ||
+    document.body?.dataset?.waStandalone === '1' ||
+    document.body?.classList?.contains('wa-standalone-host')
 
   // ── Estado ──
   let panelEl = null
@@ -23,6 +25,7 @@
   let convoHeaderEl = null
   let convoBodyEl = null
   let convoFooterEl = null
+  let requestPhoneBtnEl = null
   let modeSwitchEl = null
   let modeNoteEl = null
   let handoverBannerEl = null
@@ -40,7 +43,7 @@
   let chats = []
   let currentJid = null
   let currentMessages = []
-  let status = { connected: false, qrPresent: false, autoReply: true, ownerNumber: '', authorizedNumbers: [] }
+  let status = { connected: false, qrPresent: false, autoReply: true, ownerNumber: '', authorizedNumbers: [], model: '', effort: '' }
   let recording = false
   let mediaRecorder = null
   let recordedChunks = []
@@ -98,6 +101,35 @@
     })[c])
   }
 
+  function msgTimeBucket(ts) {
+    const n = Number(ts) || 0
+    return n > 9_999_999_999 ? Math.floor(n / 1000) : n
+  }
+
+  function msgSignature(m) {
+    if (!m) return ''
+    const body = String(m.body || '').trim().toLowerCase()
+    const media = String(m.mediaPath || m.mediaUrl || '')
+    return `${m.fromMe ? '1' : '0'}|${m.type || 'text'}|${msgTimeBucket(m.timestamp)}|${body}|${media}`
+  }
+
+  function dedupeMessages(list) {
+    const seenId = new Set()
+    const seenSig = new Set()
+    const out = []
+    for (const m of (Array.isArray(list) ? list : [])) {
+      if (!m || typeof m !== 'object') continue
+      const id = m.id ? String(m.id) : ''
+      if (id && seenId.has(id)) continue
+      const sig = msgSignature(m)
+      if (sig && seenSig.has(sig)) continue
+      if (id) seenId.add(id)
+      if (sig) seenSig.add(sig)
+      out.push(m)
+    }
+    return out
+  }
+
   function previewFromMessage(m) {
     if (!m) return ''
     const prefix = {
@@ -126,21 +158,52 @@
     return s || '?'
   }
 
+  function normalizeDigits(value) {
+    return String(value || '').replace(/\D/g, '')
+  }
+
+  function formatPhone(value) {
+    const d = normalizeDigits(value)
+    if (!d) return ''
+    if (d.length === 11 && d.startsWith('1')) return `+${d[0]} ${d.slice(1, 4)} ${d.slice(4, 7)} ${d.slice(7)}`
+    if (d.length === 10) return `+1 ${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`
+    if (d.length === 9) return `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`
+    if (d.length >= 11 && d.length <= 15) return `+${d}`
+    return d
+  }
+
+  function chatPhone(c) {
+    if (!c) return ''
+    const fromField = normalizeDigits(c.phoneNumber)
+    if (fromField) return formatPhone(fromField)
+    const jid = String(c.jid || '')
+    if (jid.endsWith('@lid')) return ''
+    if (jid.endsWith('@s.whatsapp.net')) return formatPhone(jid.split('@')[0])
+    const fromDisplay = normalizeDigits(c.displayNumber)
+    if (fromDisplay.length >= 8 && fromDisplay.length <= 15) return formatPhone(fromDisplay)
+    return ''
+  }
+
   // Orden de preferencia para etiquetar un chat: displayName (nombre/pushName) →
-  // phoneNumber (número real resuelto) → displayNumber (lo que diera el JID, puede ser @lid).
+  // phoneNumber (número real resuelto) → fallback no telefónico.
+  // Para @lid nunca usamos displayNumber como "teléfono" porque es un identificador privado.
   function chatLabel(c) {
     if (!c) return ''
     if (c.displayName && c.displayName.trim()) return c.displayName.trim()
-    if (c.phoneNumber && c.phoneNumber.trim()) return c.phoneNumber.trim()
+    const phone = chatPhone(c)
+    if (phone) return phone
+    const jid = String(c.jid || '')
+    if (jid.endsWith('@lid')) return 'Contacto privado'
     return c.displayNumber || c.jid || ''
   }
 
   function chatSubLabel(c) {
     if (!c) return ''
-    if (c.displayName && c.displayName.trim()) {
-      if (c.phoneNumber && c.phoneNumber.trim()) return c.phoneNumber.trim()
-    }
-    return c.jid || ''
+    const phone = chatPhone(c)
+    if (phone && c.displayName && c.displayName.trim()) return phone
+    const jid = String(c.jid || '')
+    if (jid.endsWith('@lid')) return 'ID privado (@lid)'
+    return jid || ''
   }
 
   function avatarInitials(c) {
@@ -227,6 +290,7 @@
         <div class="wa-convo-id">
           <div class="wa-convo-name"></div>
           <div class="wa-convo-jid"></div>
+          <button class="wa-request-phone hidden" id="wa-btn-request-phone" type="button">Solicitar teléfono</button>
         </div>
         <div class="wa-mode-wrap">
           <div class="wa-mode-switch" role="switch" tabindex="0" aria-label="Modo">
@@ -297,6 +361,28 @@
               <input type="checkbox" id="wa-cfg-autoreply" />
               <span>Auto-respuesta global activada</span>
             </label>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>Modelo Claude</span>
+                <select id="wa-cfg-model">
+                  <option value="">Default</option>
+                  <option value="haiku">Haiku (barato)</option>
+                  <option value="sonnet">Sonnet</option>
+                  <option value="opus">Opus (caro)</option>
+                </select>
+              </label>
+              <label class="settings-field">
+                <span>Esfuerzo</span>
+                <select id="wa-cfg-effort">
+                  <option value="">Por defecto</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </label>
+            </div>
             <label class="settings-field">
               <span>Ruta al persona.md</span>
               <input type="text" id="wa-cfg-persona" placeholder="/ruta/al/persona.md" />
@@ -391,6 +477,7 @@
     convoHeaderEl = $('.wa-convo-header', inner)
     convoBodyEl = $('.wa-convo-body', inner)
     convoFooterEl = $('.wa-convo-footer', inner)
+    requestPhoneBtnEl = $('#wa-btn-request-phone', inner)
     modeSwitchEl = $('.wa-mode-switch', inner)
     modeNoteEl = $('.wa-mode-note', inner)
     handoverBannerEl = $('.wa-handover-banner', inner)
@@ -403,11 +490,13 @@
     $('.wa-convo-avatar', inner).textContent = avatarInitials(chat)
     $('.wa-convo-name', inner).textContent = chatLabel(chat)
     $('.wa-convo-jid', inner).textContent = chatSubLabel(chat)
+    updateRequestPhoneButton(chat)
 
     updateModeSwitch(chat.mode)
     renderMessages()
     bindFooter(chat)
     bindModeSwitch(chat)
+    bindRequestPhone(chat)
 
     // hand-over banner si pasó a manual recientemente
     if (chat._handoverAt && Date.now() - chat._handoverAt < 30000) {
@@ -426,6 +515,46 @@
         : 'Solo tú respondes — Claude está silenciado'
       modeNoteEl.classList.toggle('manual', mode === 'manual')
     }
+  }
+
+  function shouldOfferPhoneRequest(chat) {
+    if (!chat) return false
+    const jid = String(chat.jid || '')
+    if (!jid.endsWith('@lid')) return false
+    return !chatPhone(chat)
+  }
+
+  function updateRequestPhoneButton(chat) {
+    if (!requestPhoneBtnEl) return
+    const show = shouldOfferPhoneRequest(chat)
+    requestPhoneBtnEl.classList.toggle('hidden', !show)
+    requestPhoneBtnEl.disabled = !show
+  }
+
+  function bindRequestPhone(chat) {
+    if (!requestPhoneBtnEl || !chat) return
+    requestPhoneBtnEl.addEventListener('click', async () => {
+      if (!wa || typeof wa.requestPhone !== 'function') return
+      requestPhoneBtnEl.disabled = true
+      requestPhoneBtnEl.textContent = 'Solicitando…'
+      try {
+        const res = await wa.requestPhone(chat.jid)
+        if (res && res.ok) {
+          await refreshChats()
+          const msgs = await wa.getHistory(chat.jid, { limit: 200 })
+          currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
+          renderMessages()
+        } else {
+          showInputError((res && res.error) || 'No se pudo solicitar teléfono')
+        }
+      } catch (e) {
+        showInputError(e.message || 'No se pudo solicitar teléfono')
+      } finally {
+        const latest = chats.find(c => c && c.jid === chat.jid) || chat
+        requestPhoneBtnEl.textContent = 'Solicitar teléfono'
+        updateRequestPhoneButton(latest)
+      }
+    })
   }
 
   function renderMessages() {
@@ -516,7 +645,7 @@
     try { await wa.markRead(jid) } catch {}
     try {
       const msgs = await wa.getHistory(jid, { limit: 200 })
-      currentMessages = Array.isArray(msgs) ? msgs : []
+      currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : [])
       renderMessages()
       // forzar scroll abajo al abrir chat
       if (convoBodyEl) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
@@ -565,8 +694,11 @@
     }
     const sub = $('#wa-header-sub', panelEl)
     if (sub) {
+      const modelLbl = status.model ? status.model : 'default'
+      const effortLbl = status.effort ? `/${status.effort}` : ''
+      const owner = formatPhone(status.ownerNumber) || status.ownerNumber || ''
       if (!bridgeReady) sub.textContent = 'bridge no disponible'
-      else if (status.connected) sub.textContent = status.ownerNumber ? `conectado · ${status.ownerNumber}` : 'conectado'
+      else if (status.connected) sub.textContent = owner ? `conectado · ${owner} · ${modelLbl}${effortLbl}` : `conectado · ${modelLbl}${effortLbl}`
       else if (status.qrPresent) sub.textContent = 'esperando QR…'
       else sub.textContent = 'desconectado'
     }
@@ -642,18 +774,10 @@
       if (res && res.ok) {
         inputEl.value = ''
         autosize(inputEl)
-        // optimistic: añadir burbuja local
-        currentMessages.push({
-          id: res.id || `local-${Date.now()}`,
-          jid: currentJid,
-          fromMe: true,
-          timestamp: Date.now(),
-          type: 'text',
-          body: text
-        })
-        renderMessages()
-        // backend pasa a manual al enviar — refrescar
         await refreshChats()
+        const msgs = await wa.getHistory(currentJid, { limit: 200 })
+        currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
+        renderMessages()
         const chat = chats.find(c => c.jid === currentJid)
         if (chat) updateModeSwitch(chat.mode)
       } else {
@@ -705,7 +829,7 @@
         inputEl.value = ''
         await refreshChats()
         const msgs = await wa.getHistory(currentJid, { limit: 200 })
-        currentMessages = Array.isArray(msgs) ? msgs : currentMessages
+        currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
         renderMessages()
       } else {
         showInputError(res && res.error || 'Error adjuntando')
@@ -771,31 +895,14 @@
           }
           const arr = await blob.arrayBuffer()
           const b64 = bufferToBase64(arr)
-          // Convención propuesta: el backend acepta base64 con prefijo data:audio/webm;base64,
-          // o filePath. Probamos primero base64; si falla, escribimos a tmp con fileWrite.
           const dataUrl = `data:audio/webm;base64,${b64}`
           let res = null
-          try {
-            res = await wa.sendAudio(currentJid, dataUrl, true)
-          } catch (e) {
-            res = { ok: false, error: e.message || 'sendAudio error' }
-          }
-          if (!res || !res.ok) {
-            // Fallback: intentar escribir a tmp si fileWrite existe
-            if (window.api && window.api.fileWrite) {
-              const tmp = `/tmp/poweragent-wa-rec-${Date.now()}.webm`
-              try {
-                await window.api.fileWrite(tmp, b64)
-                res = await wa.sendAudio(currentJid, tmp, true)
-              } catch (e) {
-                res = { ok: false, error: e.message || 'no se pudo persistir audio' }
-              }
-            }
-          }
+          try { res = await wa.sendAudio(currentJid, dataUrl, true) }
+          catch (e) { res = { ok: false, error: e.message || 'sendAudio error' } }
           if (res && res.ok) {
             await refreshChats()
             const msgs = await wa.getHistory(currentJid, { limit: 200 })
-            currentMessages = Array.isArray(msgs) ? msgs : currentMessages
+            currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
             renderMessages()
           } else {
             showInputError(res && res.error || 'Error enviando audio')
@@ -883,6 +990,8 @@
     try {
       const c = await wa.getConfig()
       $('#wa-cfg-autoreply', cfgModalEl).checked = !!(c && c.autoReply)
+      $('#wa-cfg-model', cfgModalEl).value = (c && c.model) || ''
+      $('#wa-cfg-effort', cfgModalEl).value = (c && c.effort) || ''
       $('#wa-cfg-persona', cfgModalEl).value = (c && c.personaPath) || ''
       renderAllowlist((c && c.authorizedNumbers) || [])
     } catch (e) {
@@ -932,12 +1041,15 @@
     $('#wa-cfg-save', cfgModalEl).addEventListener('click', async () => {
       const partial = {
         autoReply: $('#wa-cfg-autoreply', cfgModalEl).checked,
+        model: $('#wa-cfg-model', cfgModalEl).value.trim(),
+        effort: $('#wa-cfg-effort', cfgModalEl).value.trim(),
         personaPath: $('#wa-cfg-persona', cfgModalEl).value.trim(),
         authorizedNumbers: currentAllowlist()
       }
       $('#wa-cfg-status', cfgModalEl).textContent = 'Guardando…'
       try {
         const r = await wa.saveConfig(partial)
+        await refreshStatus()
         $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok) ? 'Guardado.' : 'Error guardando'
       } catch (e) {
         $('#wa-cfg-status', cfgModalEl).textContent = e.message || 'Error guardando'
@@ -1035,9 +1147,11 @@
         const message = payload.message || payload
         if (!jid || !message) return
         if (jid === currentJid) {
-          // Evitar duplicar burbuja optimista al enviar texto (mismo id).
-          const dup = message.id && currentMessages.some(m => m && m.id === message.id)
-          if (!dup) currentMessages.push(message)
+          const dupId = message.id && currentMessages.some(m => m && m.id === message.id)
+          const sig = msgSignature(message)
+          const dupSig = sig && currentMessages.some((m) => msgSignature(m) === sig)
+          if (!dupId && !dupSig) currentMessages.push(message)
+          currentMessages = dedupeMessages(currentMessages)
           renderMessages()
         } else {
           const row = chatListEl && chatListEl.querySelector('.wa-chat-row.has-unread')
@@ -1076,6 +1190,7 @@
             if (nameEl) nameEl.textContent = chatLabel(chat)
             if (jidEl) jidEl.textContent = chatSubLabel(chat)
             if (avEl) avEl.textContent = avatarInitials(chat)
+            updateRequestPhoneButton(chat)
           }
           if (chat._handoverAt && handoverBannerEl) {
             handoverBannerEl.classList.remove('hidden')

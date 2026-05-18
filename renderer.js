@@ -645,51 +645,86 @@ let graphInstance = null
 let graphAllData = null
 let currentView = localStorage.getItem('poweragent.sidebar.view') || 'tree'
 let graphMode = localStorage.getItem('poweragent.graph.mode') || 'refs'
-// v2: reset force defaults si vienen de la versión anterior
-if (localStorage.getItem('poweragent.graph.forces.v') !== '3') {
+const DEFAULT_GRAPH_FORCES = Object.freeze({
+  repulsion: -220,
+  linkDistance: 96,
+  particleSpeed: 3600,
+  compactness: 0.03
+})
+const DEFAULT_GRAPH_SPEED = 6
+
+function clampGraphNumber (value, min, max, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(max, n))
+}
+
+function sanitizeGraphForces (raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  return {
+    repulsion: Math.round(clampGraphNumber(src.repulsion, -900, -20, DEFAULT_GRAPH_FORCES.repulsion) / 10) * 10,
+    linkDistance: Math.round(clampGraphNumber(src.linkDistance, 20, 320, DEFAULT_GRAPH_FORCES.linkDistance) / 2) * 2,
+    particleSpeed: Math.round(clampGraphNumber(src.particleSpeed, 500, 12000, DEFAULT_GRAPH_FORCES.particleSpeed) / 50) * 50,
+    compactness: clampGraphNumber(src.compactness, 0, 0.2, DEFAULT_GRAPH_FORCES.compactness)
+  }
+}
+
+function persistGraphForces () {
+  localStorage.setItem('poweragent.graph.repulsion', String(graphForces.repulsion))
+  localStorage.setItem('poweragent.graph.linkDistance', String(graphForces.linkDistance))
+  localStorage.setItem('poweragent.graph.particleSpeed', String(graphForces.particleSpeed))
+  localStorage.setItem('poweragent.graph.compactness', String(graphForces.compactness))
+}
+
+function resetGraphViewSettings () {
+  graphForces = { ...DEFAULT_GRAPH_FORCES }
+  graphSpeedSlider = DEFAULT_GRAPH_SPEED
+  persistGraphForces()
+  localStorage.setItem('poweragent_graph_speed', String(graphSpeedSlider))
+  if (graphInstance?.setForces) graphInstance.setForces(graphForces)
+  if (graphInstance?.setSpeed) graphInstance.setSpeed(graphSpeedFactor())
+  buildFilters()
+  renderFiltered()
+}
+
+// v4: reset de fuerzas/velocidad para recuperar legibilidad del layout.
+if (localStorage.getItem('poweragent.graph.forces.v') !== '4') {
   localStorage.removeItem('poweragent.graph.repulsion')
   localStorage.removeItem('poweragent.graph.linkDistance')
+  localStorage.removeItem('poweragent.graph.particleSpeed')
   localStorage.removeItem('poweragent.graph.compactness')
-  localStorage.setItem('poweragent.graph.forces.v', '3')
+  localStorage.removeItem('poweragent_graph_speed')
+  localStorage.setItem('poweragent.graph.forces.v', '4')
 }
-let graphForces = {
-  repulsion: Number(localStorage.getItem('poweragent.graph.repulsion') ?? -80),
-  linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance') ?? 40),
-  particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed') ?? 4000),
-  compactness: Number(localStorage.getItem('poweragent.graph.compactness') ?? 0.06)
-}
+let graphForces = sanitizeGraphForces({
+  repulsion: Number(localStorage.getItem('poweragent.graph.repulsion')),
+  linkDistance: Number(localStorage.getItem('poweragent.graph.linkDistance')),
+  particleSpeed: Number(localStorage.getItem('poweragent.graph.particleSpeed')),
+  compactness: Number(localStorage.getItem('poweragent.graph.compactness'))
+})
+persistGraphForces()
 let forcePanelOpen = false
 
-// Extensiones conocidas con color fijo (compat histórico). El resto se colorea
-// por hash determinista contra COLOR_PALETTE para que misma ext = mismo color
-// en cada sesión. `__noext__` agrupa archivos sin extensión (Makefile, LICENSE).
-const NOEXT_KEY = '__noext__'
-const KNOWN_COLORS_BY_TYPE = {
-  md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399',
-  css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5',
+// Filtros de extensión estables (evita chips "basura" cuando la raíz del grafo
+// contiene backups/logs/temporales).
+const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
+const KNOWN_TYPES = new Set(ALL_TYPES.filter((t) => t !== 'otros'))
+const COLORS_BY_TYPE = {
+  md: '#a78bfa',
+  js: '#fbbf24',
+  ts: '#38bdf8',
+  json: '#34d399',
+  css: '#fb7185',
+  html: '#f97316',
+  py: '#22c55e',
+  php: '#4f7cf5',
   go: '#06b6d4',
-  [NOEXT_KEY]: '#6b7280'
+  otros: '#6b7280'
 }
-const COLOR_PALETTE = [
-  '#f43f5e', '#ec4899', '#d946ef', '#a855f7', '#8b5cf6', '#6366f1',
-  '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e',
-  '#84cc16', '#eab308', '#f59e0b', '#f97316', '#ef4444', '#78716c'
-]
-function hashStr (s) {
-  let h = 0
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0 }
-  return Math.abs(h)
-}
-function colorForExt (type) {
-  if (KNOWN_COLORS_BY_TYPE[type]) return KNOWN_COLORS_BY_TYPE[type]
-  return COLOR_PALETTE[hashStr(type) % COLOR_PALETTE.length]
-}
-function extLabel (type) { return type === NOEXT_KEY ? 'sin ext' : type }
+function colorForExt (type) { return COLORS_BY_TYPE[type] || COLORS_BY_TYPE.otros }
+function extLabel (type) { return type }
 
-// Conjunto de extensiones detectadas en el grafo actual. Se recalcula al cargar
-// el grafo y al cambiar de modo. Mantenido ordenado alfabéticamente con
-// `__noext__` al final para que el orden no salte al toggle.
-let presentExts = []
+let presentExts = ALL_TYPES.slice()
 
 // Persistimos las extensiones INACTIVAS, no las activas: así, cuando aparece
 // una extensión nueva en un proyecto, arranca activa por defecto.
@@ -719,28 +754,19 @@ function persistStructureInactive () {
 // menos los inactivos persistidos. Nuevas extensiones arrancan activas.
 function activeTypesFor (mode) {
   const inactive = mode === 'structure' ? structureInactiveTypes : refsInactiveTypes
-  return new Set(presentExts.filter((t) => !inactive.has(t)))
+  return new Set(ALL_TYPES.filter((t) => !inactive.has(t)))
 }
 function recomputePresentExts (nodes) {
-  const set = new Set()
-  for (const n of (nodes || [])) {
-    if (!n || n.type === 'folder') continue
-    set.add(extType(n.label))
-  }
-  const arr = Array.from(set)
-  const noext = arr.includes(NOEXT_KEY)
-  const sorted = arr.filter((t) => t !== NOEXT_KEY).sort()
-  if (noext) sorted.push(NOEXT_KEY)
-  presentExts = sorted
+  presentExts = ALL_TYPES.slice()
 }
 let graphSearchQuery = localStorage.getItem('poweragent.graph.search') || ''
 let graphSearchNo = 0
 let graphHotOnly = localStorage.getItem('poweragent.graph.hotOnly') === '1'
-// Velocidad del grafo. Slider 1..10 -> factor 0.1..1.0. Default 5 (factor 0.5).
+// Velocidad del grafo. Slider 1..10 -> factor 0.1..1.0. Default 6 (factor 0.6).
 // Luismi: el default antiguo (1.0) mareaba. Persistido por usuario.
 let graphSpeedSlider = (() => {
   const raw = Number(localStorage.getItem('poweragent_graph_speed'))
-  if (!Number.isFinite(raw) || raw < 1 || raw > 10) return 5
+  if (!Number.isFinite(raw) || raw < 1 || raw > 10) return DEFAULT_GRAPH_SPEED
   return Math.round(raw)
 })()
 function graphSpeedFactor () { return graphSpeedSlider / 10 }
@@ -753,19 +779,16 @@ let graphLastActivePath = ''
 
 function extType (label) {
   const name = String(label || '')
-  // Sin punto, o el punto es inicial (dotfile estilo `.env` -> ext = "env"),
-  // o termina en punto -> sin extensión real.
   const lastDot = name.lastIndexOf('.')
   if (lastDot <= 0 || lastDot === name.length - 1) {
-    // `.env`, `.gitignore` los tratamos por el sufijo (lo más útil al filtrar).
-    if (lastDot === 0 && name.length > 1) return name.slice(1).toLowerCase()
-    return NOEXT_KEY
+    return 'otros'
   }
-  // Extensiones compuestas tipo `.tar.gz` -> usamos la última (`gz`).
   const ext = name.slice(lastDot + 1).toLowerCase()
-  if (!ext) return NOEXT_KEY
+  if (!ext) return 'otros'
   if (ext === 'mjs' || ext === 'cjs') return 'js'
-  return ext
+  if (ext === 'tsx') return 'ts'
+  if (ext === 'jsx') return 'js'
+  return KNOWN_TYPES.has(ext) ? ext : 'otros'
 }
 
 function pathDir (p) {
@@ -1033,7 +1056,7 @@ function buildFilters () {
     chipsRow.className = 'graph-chips-row'
     const inactive = graphMode === 'refs' ? refsInactiveTypes : structureInactiveTypes
     const persist = graphMode === 'refs' ? persistRefsInactive : persistStructureInactive
-    presentExts.forEach(type => {
+    ALL_TYPES.forEach(type => {
       const chip = document.createElement('button')
       const isActive = !inactive.has(type)
       chip.className = 'graph-chip' + (isActive ? ' active' : '')
@@ -1063,7 +1086,7 @@ function renderFiltered () {
   const activeSet = activeTypesFor(graphMode)
   // Si el set efectivo está vacío (todo desactivado), no filtramos: el usuario
   // probablemente quiso ver todo. Coherente con la spec.
-  const applyExtFilter = activeSet.size > 0 && activeSet.size < presentExts.length
+  const applyExtFilter = activeSet.size > 0 && activeSet.size < ALL_TYPES.length
   if (applyExtFilter) {
     sourceNodes = sourceNodes.filter(n => activeSet.has(extType(n.label)))
   }
@@ -1354,6 +1377,9 @@ if (btnOpenGraphWindow) {
   btnOpenGraphWindow.addEventListener('click', async () => {
     console.log('[graph-window] btn clicked, rootPath=', rootPath)
     let root = rootPath
+    if (!root) {
+      try { root = localStorage.getItem(ROOT_KEY) || '' } catch {}
+    }
     if (!root) {
       try { root = await window.api.ptyCwd() } catch (e) { console.warn('[graph-window] ptyCwd error', e) }
     }

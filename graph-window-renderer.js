@@ -1,34 +1,27 @@
 document.getElementById('btn-close-graph').addEventListener('click', () => window.api.closeWindow())
 
-// Chips dinámicos: se generan a partir de las extensiones presentes en el
-// grafo actual. Persistimos las INACTIVAS (no las activas) para que nuevas
-// extensiones detectadas arranquen activas por defecto.
-const NOEXT_KEY = '__noext__'
-const KNOWN_COLORS_BY_TYPE = {
-  md: '#a78bfa', js: '#fbbf24', ts: '#38bdf8', json: '#34d399',
-  css: '#fb7185', html: '#f97316', py: '#22c55e', php: '#4f7cf5',
+// Filtros de extensión estables para evitar listas enormes con sufijos
+// accidentales cuando la raíz no es el proyecto esperado.
+const ALL_TYPES = ['md', 'js', 'ts', 'json', 'css', 'html', 'py', 'php', 'go', 'otros']
+const KNOWN_TYPES = new Set(ALL_TYPES.filter((t) => t !== 'otros'))
+const COLORS_BY_TYPE = {
+  md: '#a78bfa',
+  js: '#fbbf24',
+  ts: '#38bdf8',
+  json: '#34d399',
+  css: '#fb7185',
+  html: '#f97316',
+  py: '#22c55e',
+  php: '#4f7cf5',
   go: '#06b6d4',
-  [NOEXT_KEY]: '#6b7280'
+  otros: '#6b7280'
 }
-const COLOR_PALETTE = [
-  '#f43f5e', '#ec4899', '#d946ef', '#a855f7', '#8b5cf6', '#6366f1',
-  '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e',
-  '#84cc16', '#eab308', '#f59e0b', '#f97316', '#ef4444', '#78716c'
-]
-function hashStr (s) {
-  let h = 0
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0 }
-  return Math.abs(h)
-}
-function colorForExt (type) {
-  if (KNOWN_COLORS_BY_TYPE[type]) return KNOWN_COLORS_BY_TYPE[type]
-  return COLOR_PALETTE[hashStr(type) % COLOR_PALETTE.length]
-}
-function extLabel (type) { return type === NOEXT_KEY ? 'sin ext' : type }
+function colorForExt (type) { return COLORS_BY_TYPE[type] || COLORS_BY_TYPE.otros }
+function extLabel (type) { return type }
 
 let allNodes = [], allEdges = [], allDirs = []
 let graphMode = 'refs'
-let presentExts = []
+let presentExts = ALL_TYPES.slice()
 let refsInactiveTypes = (() => {
   try {
     const raw = localStorage.getItem('poweragent_graph_refs_exts_inactive')
@@ -53,19 +46,10 @@ function persistStructureInactive () {
 }
 function activeTypesFor (mode) {
   const inactive = mode === 'structure' ? structureInactiveTypes : refsInactiveTypes
-  return new Set(presentExts.filter((t) => !inactive.has(t)))
+  return new Set(ALL_TYPES.filter((t) => !inactive.has(t)))
 }
 function recomputePresentExts (nodes) {
-  const set = new Set()
-  for (const n of (nodes || [])) {
-    if (!n || n.type === 'folder') continue
-    set.add(extType(n.label))
-  }
-  const arr = Array.from(set)
-  const noext = arr.includes(NOEXT_KEY)
-  const sorted = arr.filter((t) => t !== NOEXT_KEY).sort()
-  if (noext) sorted.push(NOEXT_KEY)
-  presentExts = sorted
+  presentExts = ALL_TYPES.slice()
 }
 let graphInstance = null
 let forcePanelOpen = false
@@ -93,13 +77,14 @@ function extType (label) {
   const name = String(label || '')
   const lastDot = name.lastIndexOf('.')
   if (lastDot <= 0 || lastDot === name.length - 1) {
-    if (lastDot === 0 && name.length > 1) return name.slice(1).toLowerCase()
-    return NOEXT_KEY
+    return 'otros'
   }
   const ext = name.slice(lastDot + 1).toLowerCase()
-  if (!ext) return NOEXT_KEY
+  if (!ext) return 'otros'
   if (ext === 'mjs' || ext === 'cjs') return 'js'
-  return ext
+  if (ext === 'tsx') return 'ts'
+  if (ext === 'jsx') return 'js'
+  return KNOWN_TYPES.has(ext) ? ext : 'otros'
 }
 
 function pathDir (p) {
@@ -380,7 +365,7 @@ function renderFiltered () {
   let nodes, edges
   let sourceNodes = allNodes
   const activeSet = activeTypesFor(graphMode)
-  const applyExtFilter = activeSet.size > 0 && activeSet.size < presentExts.length
+  const applyExtFilter = activeSet.size > 0 && activeSet.size < ALL_TYPES.length
   if (applyExtFilter) {
     sourceNodes = sourceNodes.filter(n => activeSet.has(extType(n.label)))
   }
@@ -576,7 +561,7 @@ function buildControls () {
   if (graphMode === 'refs' || graphMode === 'structure') {
     const inactive = graphMode === 'refs' ? refsInactiveTypes : structureInactiveTypes
     const persist = graphMode === 'refs' ? persistRefsInactive : persistStructureInactive
-    presentExts.forEach(type => {
+    ALL_TYPES.forEach(type => {
       const chip = document.createElement('button')
       const isActive = !inactive.has(type)
       chip.className = 'graph-chip' + (isActive ? ' active' : '')

@@ -14,9 +14,21 @@ const POLL_MS = 1500
 const STATUS_POLL_MS = 5000
 const STATE_FLUSH_MS = 5000
 const HISTORY_MAX = 200
-const ESCALATION_WINDOW_MS = 5 * 60_000
 
 const MEDIA_PROTOCOL = 'wa-media'
+const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+const AUTO_REPLY_FALLBACK_TEXT = 'Recibido. Te responde Luismi en breve.'
+const TOXIC_REPLY_PATTERNS = [
+  /\bgilipollas?\b/i,
+  /\bidiot[ao]s?\b/i,
+  /\bimbecil(?:es)?\b/i,
+  /\bestupid[oa]s?\b/i,
+  /\bsubnormal(?:es)?\b/i,
+  /\bcapull[oa]s?\b/i,
+  /\bpringad[oa]s?\b/i,
+  /\bpayas[oa]s?\b/i,
+  /\b(mierda|joder|vete a la mierda)\b/i
+]
 
 function nowTs() { return Math.floor(Date.now() / 1000) }
 
@@ -35,21 +47,38 @@ function safeWrite(p, obj) {
   }
 }
 
-function loadConfig() {
-  const raw = safeRead(CONFIG_PATH) || {}
+function cleanModel(v) {
+  return typeof v === 'string' ? v.trim() : ''
+}
+
+function cleanEffort(v) {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  return VALID_EFFORTS.has(s) ? s : ''
+}
+
+function normalizeConfig(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
   return {
-    autoReply: raw.autoReply !== false,
-    authorizedNumbers: Array.isArray(raw.authorizedNumbers) ? raw.authorizedNumbers.map(String) : [],
-    claudePath: raw.claudePath || path.join(os.homedir(), '.local/bin/claude'),
-    ownerNumber: raw.ownerNumber || '',
-    maxHistory: Number.isFinite(raw.maxHistory) ? raw.maxHistory : 20,
-    personaPath: raw.personaPath || path.join(BRIDGE_DIR, 'persona.md')
+    autoReply: src.autoReply !== false,
+    authorizedNumbers: Array.isArray(src.authorizedNumbers) ? src.authorizedNumbers.map(String) : [],
+    claudePath: src.claudePath || path.join(os.homedir(), '.local/bin/claude'),
+    ownerNumber: src.ownerNumber || '',
+    maxHistory: Number.isFinite(src.maxHistory) ? src.maxHistory : 20,
+    personaPath: src.personaPath || path.join(BRIDGE_DIR, 'persona.md'),
+    model: cleanModel(src.model),
+    effort: cleanEffort(src.effort),
+    // Mantiene handover por defecto para mensajes escritos desde otro dispositivo.
+    handoverOnFromMe: src.handoverOnFromMe !== false
   }
+}
+
+function loadConfig() {
+  return normalizeConfig(safeRead(CONFIG_PATH) || {})
 }
 
 function saveConfig(next) {
   const current = loadConfig()
-  const merged = { ...current, ...next }
+  const merged = normalizeConfig({ ...current, ...(next || {}) })
   fs.mkdirSync(BRIDGE_DIR, { recursive: true })
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf-8')
   return merged
@@ -57,7 +86,46 @@ function saveConfig(next) {
 
 function jidToNumber(jid) {
   if (!jid) return ''
-  return String(jid).split('@')[0].replace(/\D/g, '')
+  const s = String(jid)
+  // @lid es un identificador enmascarado de WhatsApp, no teléfono real.
+  if (s.endsWith('@lid')) return ''
+  return s.split('@')[0].replace(/\D/g, '')
+}
+
+function jidLocalId(jid) {
+  if (!jid) return ''
+  return String(jid).split('@')[0] || ''
+}
+
+function digitsOnly(v) {
+  return String(v || '').replace(/\D/g, '')
+}
+
+function sanitizePhoneForJid(jid, phone) {
+  const s = String(phone || '').trim()
+  if (!s) return ''
+  if (String(jid || '').endsWith('@lid')) {
+    const local = digitsOnly(jidLocalId(jid))
+    if (local && digitsOnly(s) === local) return ''
+  }
+  return s
+}
+
+function normalizeForModeration(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function sanitizeAutoReplyText(text) {
+  const compact = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!compact) return ''
+  const normalized = normalizeForModeration(compact)
+  if (TOXIC_REPLY_PATTERNS.some((rx) => rx.test(normalized))) return ''
+  return compact
 }
 
 function numberToJid(num) {
@@ -75,6 +143,22 @@ function mediaUrlFor(mediaPath) {
 function decorateMessage(msg) {
   if (!msg) return msg
   return { ...msg, mediaUrl: mediaUrlFor(msg.mediaPath) }
+}
+
+function messageSignature(msg) {
+  if (!msg) return ''
+  const t = Number(msg.timestamp) || 0
+  const bucket = t > 9_999_999_999 ? Math.floor(t / 1000) : t
+  const body = String(msg.body || '').trim().toLowerCase()
+  const media = String(msg.mediaPath || '')
+  return `${msg.fromMe ? '1' : '0'}|${msg.type || 'text'}|${bucket}|${body}|${media}`
+}
+
+function parseDataUrlBase64(value) {
+  if (typeof value !== 'string') return null
+  const m = value.match(/^data:([^;,]+);base64,(.+)$/i)
+  if (!m) return null
+  return { mimetype: m[1], base64: m[2] }
 }
 
 function bridgeFetch(method, urlPath, body) {
@@ -140,12 +224,13 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     if (!data || !Array.isArray(data.chats)) return
     for (const c of data.chats) {
       if (!c || !c.jid) continue
+      const safePhone = sanitizePhoneForJid(c.jid, c.phoneNumber)
       chats.set(c.jid, {
         jid: c.jid,
-        displayNumber: c.displayNumber || jidToNumber(c.jid),
+        displayNumber: c.displayNumber || jidToNumber(c.jid) || jidLocalId(c.jid),
         // Identidad mejorada: nombre del contacto / pushName y número real (si se pudo resolver).
         displayName: typeof c.displayName === 'string' ? c.displayName : '',
-        phoneNumber: typeof c.phoneNumber === 'string' ? c.phoneNumber : '',
+        phoneNumber: safePhone,
         mode: c.mode === 'manual' ? 'manual' : 'auto',
         unread: Number(c.unread) || 0,
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
@@ -170,7 +255,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     if (!c) {
       c = {
         jid,
-        displayNumber: jidToNumber(jid),
+        displayNumber: jidToNumber(jid) || jidLocalId(jid),
         displayName: '',
         phoneNumber: '',
         mode: 'auto',
@@ -184,20 +269,25 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     return c
   }
 
-  function isAuthorized(jid) {
-    const num = jidToNumber(jid)
-    if (!num) return false
+function isAuthorized(jid) {
     if (!config.authorizedNumbers || !config.authorizedNumbers.length) return true
-    return config.authorizedNumbers.includes(num)
+    const num = jidToNumber(jid)
+    const lidDigits = digitsOnly(jidLocalId(jid))
+    return (num && config.authorizedNumbers.includes(num)) || (lidDigits && config.authorizedNumbers.includes(lidDigits))
   }
 
   function pushHistory(chat, msg) {
+    if (!chat || !msg) return false
+    if (msg.id && chat.history.some((m) => m && m.id === msg.id)) return false
+    const sig = messageSignature(msg)
+    if (sig && chat.history.some((m) => messageSignature(m) === sig)) return false
     chat.history.push(msg)
     if (chat.history.length > HISTORY_MAX) {
       chat.history = chat.history.slice(-HISTORY_MAX)
     }
     chat.lastActivity = msg.timestamp || nowTs()
     markDirty()
+    return true
   }
 
   function summarizeChat(jid) {
@@ -270,7 +360,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     // Enriquecer identidad si el bridge nos pasa nombre/numero.
     // Orden de preferencia para mostrar: displayName → phoneNumber → displayNumber/JID.
     if (raw.displayName && raw.displayName !== chat.displayName) { chat.displayName = String(raw.displayName); markDirty() }
-    if (raw.phoneNumber && raw.phoneNumber !== chat.phoneNumber) { chat.phoneNumber = String(raw.phoneNumber); markDirty() }
+    const safeIncomingPhone = sanitizePhoneForJid(jid, raw.phoneNumber)
+    if (safeIncomingPhone && safeIncomingPhone !== chat.phoneNumber) { chat.phoneNumber = safeIncomingPhone; markDirty() }
     const msg = {
       id: raw.id,
       from: jid,
@@ -283,29 +374,20 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
 
     // Hand-over automático: si Luismi escribe desde otro lado, pasa a manual.
     if (msg.fromMe) {
-      chat.mode = 'manual'
-      pushHistory(chat, msg)
-      emitNewMessage(jid, msg)
+      if (config.handoverOnFromMe) chat.mode = 'manual'
+      const added = pushHistory(chat, msg)
+      if (added) emitNewMessage(jid, msg)
       return
     }
 
+    const added = pushHistory(chat, msg)
+    if (!added) return
     chat.unread = (chat.unread || 0) + 1
-    pushHistory(chat, msg)
     emitNewMessage(jid, msg)
 
     // Decisión auto-respuesta
     if (!config.autoReply) return
     if (chat.mode !== 'auto') return
-    if (chat.escalatedUntil && Date.now() < chat.escalatedUntil) return
-
-    // Tipos no soportados → escalar 5min
-    if (msg.type === 'image' || msg.type === 'video' || msg.type === 'document' || msg.type === 'sticker') {
-      chat.escalatedUntil = Date.now() + ESCALATION_WINDOW_MS
-      chat.mode = 'manual'
-      markDirty()
-      emitter.emit('chat-updated', summarizeChat(jid))
-      return
-    }
 
     let promptBody = msg.body
     if (msg.type === 'audio') {
@@ -320,6 +402,20 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       } else {
         promptBody = '[Audio del cliente, sin transcripción disponible]'
       }
+    } else if (msg.type === 'image') {
+      promptBody = msg.body && msg.body.trim()
+        ? `[Imagen del cliente con texto: "${msg.body.trim()}"]`
+        : '[Imagen del cliente]'
+    } else if (msg.type === 'video') {
+      promptBody = msg.body && msg.body.trim()
+        ? `[Vídeo del cliente con texto: "${msg.body.trim()}"]`
+        : '[Vídeo del cliente]'
+    } else if (msg.type === 'document') {
+      promptBody = msg.body && msg.body.trim()
+        ? `[Documento del cliente: ${msg.body.trim()}]`
+        : '[Documento del cliente]'
+    } else if (msg.type === 'sticker') {
+      promptBody = '[Sticker del cliente]'
     }
 
     if (!promptBody || !promptBody.trim()) return
@@ -334,12 +430,26 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
           body: promptBody,
           maxHistory: config.maxHistory
         }),
-        env: typeof buildRuntimeEnv === 'function' ? buildRuntimeEnv() : process.env
+        env: typeof buildRuntimeEnv === 'function' ? buildRuntimeEnv() : process.env,
+        model: config.model || '',
+        effort: config.effort || ''
       })
-      if (!text || !text.trim()) return
-      await sendText(jid, text.trim(), { changeModeToManual: false, internal: true })
+      const safeReply = sanitizeAutoReplyText(text)
+      if (!safeReply) {
+        console.warn('[whatsapp] auto-reply bloqueado por tono agresivo; se usa fallback y se pasa a manual')
+        chat.mode = 'manual'
+        markDirty()
+        emitter.emit('chat-updated', summarizeChat(jid))
+        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true })
+        return
+      }
+      await sendText(jid, safeReply, { changeModeToManual: false, internal: true })
     } catch (err) {
       console.error('[whatsapp] auto-reply error:', err?.message || err)
+      // Fallback defensivo: evita que el cliente se quede sin respuesta si falla Claude.
+      try {
+        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true })
+      } catch {}
     }
   }
 
@@ -358,12 +468,12 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         body: text,
         mediaPath: null
       }
-      pushHistory(chat, msg)
+      const added = pushHistory(chat, msg)
       if (changeModeToManual && !internal) {
         chat.mode = 'manual'
         markDirty()
       }
-      emitNewMessage(targetJid, msg)
+      if (added) emitNewMessage(targetJid, msg)
       return { ok: true, id: msg.id }
     } catch (err) {
       return { ok: false, error: err?.message || String(err) }
@@ -372,13 +482,28 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
 
   async function sendMedia(jid, filePath, kind, extras = {}) {
     const targetJid = numberToJid(jid)
-    if (!fs.existsSync(filePath)) return { ok: false, error: `Archivo no existe: ${filePath}` }
     let endpoint = ''
     let payload = { to: targetJid }
-    const buf = fs.readFileSync(filePath)
-    const base64 = buf.toString('base64')
-    const filename = path.basename(filePath)
-    const mimeGuess = guessMime(filePath, kind)
+    const input = String(filePath || '')
+    const inline = parseDataUrlBase64(input)
+    let base64 = ''
+    let filename = ''
+    let mimeGuess = ''
+    let mediaPathForHistory = null
+
+    if (inline) {
+      base64 = inline.base64
+      mimeGuess = inline.mimetype || guessMime('', kind)
+      filename = `${kind}-${Date.now()}`
+    } else {
+      if (!fs.existsSync(filePath)) return { ok: false, error: `Archivo no existe: ${filePath}` }
+      const buf = fs.readFileSync(filePath)
+      base64 = buf.toString('base64')
+      filename = path.basename(filePath)
+      mimeGuess = guessMime(filePath, kind)
+      mediaPathForHistory = filePath
+    }
+
     if (kind === 'image') {
       endpoint = '/send/image'
       payload = { ...payload, base64, mimetype: mimeGuess, caption: extras.caption || '' }
@@ -405,12 +530,39 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         timestamp: nowTs(),
         type: kind,
         body: extras.caption || filename,
-        mediaPath: filePath
+        mediaPath: mediaPathForHistory
       }
-      pushHistory(chat, msg)
+      const added = pushHistory(chat, msg)
       chat.mode = 'manual'
       markDirty()
-      emitNewMessage(targetJid, msg)
+      if (added) emitNewMessage(targetJid, msg)
+      return { ok: true, id: msg.id }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+  }
+
+  async function requestPhone(jid, opts = {}) {
+    const { changeModeToManual = true } = opts || {}
+    const targetJid = numberToJid(jid)
+    try {
+      const res = await bridgeFetch('POST', '/send/request-phone', { to: targetJid })
+      const chat = ensureChat(targetJid)
+      const msg = {
+        id: res?.id || `local-${Date.now()}`,
+        from: targetJid,
+        fromMe: true,
+        timestamp: nowTs(),
+        type: 'text',
+        body: '[Solicitud de teléfono enviada]',
+        mediaPath: null
+      }
+      const added = pushHistory(chat, msg)
+      if (changeModeToManual) {
+        chat.mode = 'manual'
+        markDirty()
+      }
+      if (added) emitNewMessage(targetJid, msg)
       return { ok: true, id: msg.id }
     } catch (err) {
       return { ok: false, error: err?.message || String(err) }
@@ -501,7 +653,9 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
       status: lastStatus,
       ownerNumber: config.ownerNumber,
       authorizedNumbers: config.authorizedNumbers.slice(),
-      autoReply: config.autoReply
+      autoReply: config.autoReply,
+      model: config.model || '',
+      effort: config.effort || ''
     }
   }
 
@@ -565,6 +719,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
     getHistory,
     sendText,
     sendMedia,
+    requestPhone,
     setMode,
     markRead,
     getConfig,

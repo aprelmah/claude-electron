@@ -14,7 +14,22 @@ const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
 const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
-const { createWhatsAppClient, MEDIA_DIR: WA_MEDIA_DIR, MEDIA_PROTOCOL: WA_MEDIA_PROTOCOL, CONFIG_PATH: WA_CONFIG_PATH } = require('./whatsapp/whatsapp-client')
+let createWhatsAppClient = null
+let WA_MEDIA_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'media')
+let WA_MEDIA_PROTOCOL = 'wa-media'
+let WA_CONFIG_PATH = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'config.json')
+let whatsappModuleLoadError = null
+try {
+  ({
+    createWhatsAppClient,
+    MEDIA_DIR: WA_MEDIA_DIR,
+    MEDIA_PROTOCOL: WA_MEDIA_PROTOCOL,
+    CONFIG_PATH: WA_CONFIG_PATH
+  } = require('./whatsapp/whatsapp-client'))
+} catch (err) {
+  whatsappModuleLoadError = err
+  console.error('[whatsapp] module load failed:', err?.message || err)
+}
 
 const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi', 'automation-builder', 'patterns.md')
 
@@ -2318,61 +2333,66 @@ app.whenReady().then(async () => {
   }
 
   // ── WhatsApp bridge client ──
-  try {
-    fs.mkdirSync(WA_MEDIA_DIR, { recursive: true })
-    protocol.registerFileProtocol(WA_MEDIA_PROTOCOL, (request, callback) => {
-      try {
-        const u = new URL(request.url)
-        const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
-        const safe = path.basename(name)
-        callback({ path: path.join(WA_MEDIA_DIR, safe) })
-      } catch {
-        callback({ error: -6 })
-      }
-    })
-  } catch (err) {
-    console.error('[whatsapp] protocol register failed:', err?.message || err)
-  }
-
-  whatsappClient = createWhatsAppClient({
-    buildRuntimeEnv,
-    transcribeAudio: (mediaPath) => transcribeAudioFile(mediaPath, buildRuntimeEnv())
-  })
-  whatsappClient.on('new-message', (payload) => broadcastToAllWindows('whatsapp:new-message', payload))
-  whatsappClient.on('chat-updated', (payload) => broadcastToAllWindows('whatsapp:chat-updated', payload))
-  whatsappClient.on('status-changed', (status) => {
-    whatsappReachable = status !== 'disconnected'
-    broadcastToAllWindows('whatsapp:status-changed', status)
-  })
-
-  function pingBridge() {
-    return new Promise((resolve, reject) => {
-      const req = require('http').request({
-        host: '127.0.0.1', port: 3031, method: 'GET', path: '/status', timeout: 3000
-      }, (res) => {
-        res.resume()
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve()
-        else reject(new Error(`status ${res.statusCode}`))
-      })
-      req.on('error', reject)
-      req.on('timeout', () => { req.destroy(new Error('timeout')) })
-      req.end()
-    })
-  }
-  async function tryStartWhatsapp() {
+  if (createWhatsAppClient) {
     try {
-      await pingBridge()
-      whatsappReachable = true
-      whatsappClient.start()
-      console.log('[whatsapp] bridge reachable, client started')
+      fs.mkdirSync(WA_MEDIA_DIR, { recursive: true })
+      protocol.registerFileProtocol(WA_MEDIA_PROTOCOL, (request, callback) => {
+        try {
+          const u = new URL(request.url)
+          const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
+          const safe = path.basename(name)
+          callback({ path: path.join(WA_MEDIA_DIR, safe) })
+        } catch {
+          callback({ error: -6 })
+        }
+      })
     } catch (err) {
-      whatsappReachable = false
-      console.warn('[whatsapp] bridge not reachable, retrying in 10s:', err?.message || err)
-      whatsappRetryTimer = setTimeout(tryStartWhatsapp, 10_000)
-      whatsappRetryTimer.unref?.()
+      console.error('[whatsapp] protocol register failed:', err?.message || err)
     }
+
+    whatsappClient = createWhatsAppClient({
+      buildRuntimeEnv,
+      transcribeAudio: (mediaPath) => transcribeAudioFile(mediaPath, buildRuntimeEnv())
+    })
+    whatsappClient.on('new-message', (payload) => broadcastToAllWindows('whatsapp:new-message', payload))
+    whatsappClient.on('chat-updated', (payload) => broadcastToAllWindows('whatsapp:chat-updated', payload))
+    whatsappClient.on('status-changed', (status) => {
+      whatsappReachable = status !== 'disconnected'
+      broadcastToAllWindows('whatsapp:status-changed', status)
+    })
+
+    function pingBridge() {
+      return new Promise((resolve, reject) => {
+        const req = require('http').request({
+          host: '127.0.0.1', port: 3031, method: 'GET', path: '/status', timeout: 3000
+        }, (res) => {
+          res.resume()
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve()
+          else reject(new Error(`status ${res.statusCode}`))
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(new Error('timeout')) })
+        req.end()
+      })
+    }
+    async function tryStartWhatsapp() {
+      try {
+        await pingBridge()
+        whatsappReachable = true
+        whatsappClient.start()
+        console.log('[whatsapp] bridge reachable, client started')
+      } catch (err) {
+        whatsappReachable = false
+        console.warn('[whatsapp] bridge not reachable, retrying in 10s:', err?.message || err)
+        whatsappRetryTimer = setTimeout(tryStartWhatsapp, 10_000)
+        whatsappRetryTimer.unref?.()
+      }
+    }
+    tryStartWhatsapp()
+  } else {
+    whatsappReachable = false
+    console.warn('[whatsapp] disabled: module unavailable', whatsappModuleLoadError?.message || '')
   }
-  tryStartWhatsapp()
 
   globalShortcut.register('CommandOrControl+Shift+T', () => openTasksManager())
 
@@ -3371,11 +3391,21 @@ ipcMain.handle('graph-window:open', (event, payload = {}) => {
     selfFetch, rootPath
   } = payload || {}
   let cwd = null
+  const payloadRoot = (typeof rootPath === 'string' && rootPath.trim()) ? rootPath.trim() : null
+  if (payloadRoot) {
+    cwd = payloadRoot
+  } else {
+    try {
+      const s = getSessionByEvent(event)
+      cwd = s ? s.cwd : null
+    } catch { cwd = null }
+    if (!cwd) cwd = getCwdSync() || os.homedir()
+  }
   try {
-    const s = getSessionByEvent(event)
-    cwd = s ? s.cwd : null
-  } catch { cwd = null }
-  if (!cwd) cwd = (typeof rootPath === 'string' && rootPath) ? rootPath : (getCwdSync() || os.homedir())
+    if (!cwd || !fs.existsSync(cwd)) cwd = getCwdSync() || os.homedir()
+  } catch {
+    cwd = getCwdSync() || os.homedir()
+  }
   if (selfFetch) {
     // La ventana standalone se autosirve: no precargamos nodos/edges.
     graphWindowData = {
@@ -4196,12 +4226,27 @@ ipcMain.handle('automation-chat:window-minimize', (event) => {
 
 // ── WhatsApp IPC ──
 function requireWhatsapp() {
-  if (!whatsappClient) throw new Error('WhatsApp client no inicializado')
+  if (!whatsappClient) {
+    const detail = whatsappModuleLoadError?.message
+      ? ` (${whatsappModuleLoadError.message})`
+      : ''
+    throw new Error(`WhatsApp client no inicializado${detail}`)
+  }
   return whatsappClient
 }
 
 ipcMain.handle('whatsapp:status', async () => {
-  if (!whatsappClient) return { connected: false, qrPresent: false, reachable: false, ownerNumber: '', authorizedNumbers: [], autoReply: false }
+  if (!whatsappClient) {
+    return {
+      connected: false,
+      qrPresent: false,
+      reachable: false,
+      ownerNumber: '',
+      authorizedNumbers: [],
+      autoReply: false,
+      error: whatsappModuleLoadError?.message || null
+    }
+  }
   try {
     const s = await whatsappClient.getStatus()
     return { ...s, reachable: whatsappReachable }
@@ -4242,6 +4287,11 @@ ipcMain.handle('whatsapp:send-audio', async (_e, jid, filePath, ptt) => {
 
 ipcMain.handle('whatsapp:send-document', async (_e, jid, filePath, caption) => {
   try { return await requireWhatsapp().sendMedia(jid, filePath, 'document', { caption: caption || '' }) }
+  catch (err) { return { ok: false, error: err?.message || String(err) } }
+})
+
+ipcMain.handle('whatsapp:request-phone', async (_e, jid) => {
+  try { return await requireWhatsapp().requestPhone(jid, { changeModeToManual: true }) }
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 

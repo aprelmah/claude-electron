@@ -3,7 +3,7 @@ const fs = require('fs')
 
 // Lanza claude headless con persona como --system-prompt y devuelve texto.
 // No usa --resume; cada turno es independiente (todo el contexto va en el prompt).
-function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs = 60_000, signal }) {
+function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs = 60_000, signal, model = '', effort = '' }) {
   return new Promise((resolve, reject) => {
     if (!claudeBin || !fs.existsSync(claudeBin)) {
       return reject(new Error(`Claude no disponible (${claudeBin})`))
@@ -15,6 +15,8 @@ function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs
       '--output-format', 'text',
       '--no-session-persistence'
     ]
+    if (model) args.push('--model', model)
+    if (effort) args.push('--effort', effort)
 
     let child
     try {
