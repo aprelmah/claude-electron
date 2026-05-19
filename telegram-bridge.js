@@ -7,6 +7,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function _atomicWriteJsonSync(filePath, data) {
+  const tmp = `${filePath}.tmp`
+  const json = JSON.stringify(data, null, 2)
+  fs.writeFileSync(tmp, json, 'utf-8')
+  fs.renameSync(tmp, filePath)
+}
+
 function splitByLimit(text, limit = 3500) {
   const out = []
   let rest = text
@@ -186,6 +193,9 @@ class TelegramBridge {
     this.sessionsPath = path.join(tmpDir, 'telegram-sessions.json')
     this.sessions = this._loadSessions()
 
+    this.statePath = path.join(tmpDir, 'telegram-state.json')
+    this.offset = this._loadOffset()
+
     this.botUsername = ''
     this.lastError = ''
     this.lastInfo = 'Telegram desactivado'
@@ -205,7 +215,25 @@ class TelegramBridge {
 
   _saveSessions() {
     try {
-      fs.writeFileSync(this.sessionsPath, JSON.stringify(this.sessions, null, 2), 'utf-8')
+      _atomicWriteJsonSync(this.sessionsPath, this.sessions)
+    } catch {}
+  }
+
+  _loadOffset() {
+    try {
+      if (!fs.existsSync(this.statePath)) return 0
+      const raw = fs.readFileSync(this.statePath, 'utf-8')
+      const data = JSON.parse(raw)
+      const v = Number(data?.offset)
+      return Number.isFinite(v) && v >= 0 ? v : 0
+    } catch {
+      return 0
+    }
+  }
+
+  _saveOffset() {
+    try {
+      _atomicWriteJsonSync(this.statePath, { offset: this.offset, updatedAt: Date.now() })
     } catch {}
   }
 
@@ -319,10 +347,9 @@ class TelegramBridge {
     this.lastError = ''
     this.lastInfo = 'Conectando Telegram...'
     this.startedAt = Date.now()
-    this.offset = 0
     this._emitStatus()
 
-    await this._api('deleteWebhook', { drop_pending_updates: true })
+    await this._api('deleteWebhook')
     const me = await this._api('getMe')
     this.botUsername = me?.username || ''
     this.lastInfo = this.botUsername ? `Telegram activo (@${this.botUsername})` : 'Telegram activo'
@@ -358,10 +385,16 @@ class TelegramBridge {
           this.abortController.signal
         )
         this.abortController = null
+        let advanced = false
         for (const update of updates) {
-          this.offset = Math.max(this.offset, (update.update_id || 0) + 1)
+          const next = (update.update_id || 0) + 1
+          if (next > this.offset) {
+            this.offset = next
+            advanced = true
+          }
           this._handleUpdate(update).catch((err) => this._setError(err?.message || err))
         }
+        if (advanced) this._saveOffset()
       } catch (err) {
         if (!this.running) break
         if (err?.name === 'AbortError') break

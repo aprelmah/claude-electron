@@ -1,7 +1,19 @@
 const { spawn } = require('child_process')
 
+const MAX_BUF = 1 * 1024 * 1024
+const TRUNCATED_TAG = '...[truncated]...'
+const DEFAULT_HEADLESS_TIMEOUT_MS = 300_000
+
+function appendBounded(buf, chunk) {
+  const combined = buf + chunk
+  if (combined.length > MAX_BUF) {
+    return TRUNCATED_TAG + combined.slice(-MAX_BUF)
+  }
+  return combined
+}
+
 function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildFdLimitCommand, getCwdSync }) {
-  function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd }) {
+  function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs }) {
     const meta = cliMeta('claude')
     const env = buildRuntimeEnv()
     if (!commandExists(meta.bin, env)) {
@@ -19,7 +31,9 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     if (sessionId) args.push('--resume', sessionId)
 
     return new Promise((resolve, reject) => {
+      const startedAt = Date.now()
       let killed = false
+      let timedOut = false
       let child
       try {
         child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
@@ -31,15 +45,24 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
         return reject(err)
       }
 
-      const abortHandler = () => {
-        killed = true
+      const killNow = () => {
         try { child.kill('SIGTERM') } catch {}
         setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+      }
+      const abortHandler = () => {
+        killed = true
+        killNow()
       }
       if (signal) {
         if (signal.aborted) return abortHandler()
         signal.addEventListener('abort', abortHandler, { once: true })
       }
+
+      const effectiveTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_HEADLESS_TIMEOUT_MS
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true
+        killNow()
+      }, effectiveTimeout)
 
       let buffer = ''
       let stderrBuf = ''
@@ -48,7 +71,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       let resultError = null
 
       child.stdout.on('data', (chunk) => {
-        buffer += chunk.toString('utf8')
+        buffer = appendBounded(buffer, chunk.toString('utf8'))
         let nl
         while ((nl = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, nl).trim()
@@ -77,13 +100,21 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
         }
       })
 
-      child.stderr.on('data', (d) => { stderrBuf += d.toString() })
+      child.stderr.on('data', (d) => { stderrBuf = appendBounded(stderrBuf, d.toString()) })
       child.on('error', (err) => {
+        clearTimeout(timeoutHandle)
         if (signal) signal.removeEventListener('abort', abortHandler)
         reject(err)
       })
       child.on('close', (code) => {
+        clearTimeout(timeoutHandle)
         if (signal) signal.removeEventListener('abort', abortHandler)
+        if (timedOut) {
+          const err = new Error(`claude timeout tras ${effectiveTimeout} ms`)
+          err.timedOut = true
+          err.duration = Date.now() - startedAt
+          return reject(err)
+        }
         if (killed) {
           const err = new Error('Cancelado')
           err.name = 'AbortError'
@@ -98,7 +129,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     })
   }
 
-  function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd }) {
+  function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs }) {
     const meta = cliMeta('codex')
     const env = buildRuntimeEnv()
     if (!commandExists(meta.bin, env)) {
@@ -114,7 +145,9 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       : ['exec', ...baseFlags, prompt]
 
     return new Promise((resolve, reject) => {
+      const startedAt = Date.now()
       let killed = false
+      let timedOut = false
       let child
       try {
         child = spawn('/bin/bash', ['-c', buildFdLimitCommand(meta.bin, args)], {
@@ -126,15 +159,24 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
         return reject(err)
       }
 
-      const abortHandler = () => {
-        killed = true
+      const killNow = () => {
         try { child.kill('SIGTERM') } catch {}
         setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+      }
+      const abortHandler = () => {
+        killed = true
+        killNow()
       }
       if (signal) {
         if (signal.aborted) return abortHandler()
         signal.addEventListener('abort', abortHandler, { once: true })
       }
+
+      const effectiveTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_HEADLESS_TIMEOUT_MS
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true
+        killNow()
+      }, effectiveTimeout)
 
       let buffer = ''
       let stderrBuf = ''
@@ -142,7 +184,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       let finalText = ''
 
       child.stdout.on('data', (chunk) => {
-        buffer += chunk.toString('utf8')
+        buffer = appendBounded(buffer, chunk.toString('utf8'))
         let nl
         while ((nl = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, nl).trim()
@@ -162,13 +204,21 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
         }
       })
 
-      child.stderr.on('data', (d) => { stderrBuf += d.toString() })
+      child.stderr.on('data', (d) => { stderrBuf = appendBounded(stderrBuf, d.toString()) })
       child.on('error', (err) => {
+        clearTimeout(timeoutHandle)
         if (signal) signal.removeEventListener('abort', abortHandler)
         reject(err)
       })
       child.on('close', (code) => {
+        clearTimeout(timeoutHandle)
         if (signal) signal.removeEventListener('abort', abortHandler)
+        if (timedOut) {
+          const err = new Error(`codex timeout tras ${effectiveTimeout} ms`)
+          err.timedOut = true
+          err.duration = Date.now() - startedAt
+          return reject(err)
+        }
         if (killed) {
           const err = new Error('Cancelado')
           err.name = 'AbortError'
