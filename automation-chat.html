@@ -12,7 +12,7 @@
       --fg: #e8e8ea;
       --fg-muted: #9a9aa0;
       --border: #34343a;
-      --accent: #4a8cf7;
+      --accent: #7c6af7;
       --accent-fg: #fff;
       --agent-bubble: #2c2c30;
       --code-bg: #161618;
@@ -417,6 +417,16 @@
       margin-top: 8px;
     }
     .row.system .err-actions .btn { font-size: 10.5px; padding: 3px 8px; }
+
+    /* A11y: foco visible para navegación por teclado (WCAG 2.4.7) */
+    :focus-visible {
+      outline: 2px solid var(--accent, #7c6af7);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    :focus:not(:focus-visible) {
+      outline: none;
+    }
   </style>
 </head>
 <body>
@@ -427,21 +437,21 @@
     </div>
     <div class="header-right" style="-webkit-app-region: no-drag; display: flex; align-items: center; gap: 6px;">
     <div class="header-prefs">
-      <select id="provider-select" title="Proveedor del agente">
+      <select id="provider-select" title="Proveedor del agente" aria-label="Proveedor del agente">
         <option value="claude">Claude</option>
         <option value="codex">Codex</option>
       </select>
-      <button class="switch-provider-btn" id="btn-switch-provider" title="Cambiar proveedor (perderá contexto puro)">🔄</button>
-      <select id="model-select" title="Modelo del LLM">
+      <button class="switch-provider-btn" id="btn-switch-provider" title="Cambiar proveedor (perderá contexto puro)" aria-label="Cambiar proveedor">🔄</button>
+      <select id="model-select" title="Modelo del LLM" aria-label="Modelo del LLM">
         <option value="">Default</option>
       </select>
-      <select id="effort-select" title="Razonamiento del modelo">
+      <select id="effort-select" title="Razonamiento del modelo" aria-label="Esfuerzo de razonamiento">
         <option value="">Default</option>
       </select>
     </div>
     <div class="header-actions">
-      <button class="header-btn" id="btn-min" title="Minimizar">−</button>
-      <button class="header-btn" id="btn-close" title="Cerrar">×</button>
+      <button class="header-btn" id="btn-min" title="Minimizar" aria-label="Minimizar ventana">−</button>
+      <button class="header-btn" id="btn-close" title="Cerrar" aria-label="Cerrar ventana">×</button>
     </div>
     </div>
   </div>
@@ -460,10 +470,10 @@
         <label><input type="checkbox" id="opt-include-log" /> Incluir log reciente</label>
       </div>
     </div>
-    <button class="send-btn" id="btn-send" title="Enviar (Enter)">➤</button>
+    <button class="send-btn" id="btn-send" title="Enviar (Enter)" aria-label="Enviar mensaje">➤</button>
   </div>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <div class="modal-overlay" id="switch-modal">
     <div class="modal" role="dialog" aria-modal="true">

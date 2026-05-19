@@ -126,7 +126,7 @@ button {
 }
 
 #cli-selector:hover { background: var(--bg4); }
-#cli-selector:focus { outline: none; border-color: var(--accent); }
+#cli-selector:focus { border-color: var(--accent); }
 #cli-selector option { background: var(--bg2); color: var(--text); }
 
 button.icon-btn {
@@ -2040,3 +2040,13 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 }
 .wa-persona-status[data-kind="ok"] { color: #25d366; }
 .wa-persona-status[data-kind="err"] { color: #f04747; }
+
+/* A11y: foco visible para navegación por teclado (WCAG 2.4.7) */
+:focus-visible {
+  outline: 2px solid var(--accent, #7c6af7);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}

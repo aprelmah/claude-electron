@@ -1004,6 +1004,16 @@ input[type="radio"], input[type="checkbox"] {
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* A11y: foco visible para navegación por teclado (WCAG 2.4.7) */
+:focus-visible {
+  outline: 2px solid var(--accent, #7c6af7);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
 </style>
 </head>
 <body>
@@ -1011,11 +1021,11 @@ input[type="radio"], input[type="checkbox"] {
     <div id="header-title">POWER-AGENT — Programación</div>
     <div id="header-buttons">
       <button id="btn-new" class="btn btn-primary">+ Nueva</button>
-      <button id="btn-minimize" class="icon-btn" title="Minimizar">
-        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <button id="btn-minimize" class="icon-btn" title="Minimizar" aria-label="Minimizar ventana">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
-      <button id="btn-close" class="icon-btn" title="Cerrar">
-        <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      <button id="btn-close" class="icon-btn" title="Cerrar" aria-label="Cerrar ventana">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
       </button>
     </div>
   </div>
@@ -1229,15 +1239,15 @@ input[type="radio"], input[type="checkbox"] {
       <div id="modal-header">
         <div id="modal-title">Output</div>
         <button id="btn-modal-copy" class="btn">Copiar</button>
-        <button id="btn-modal-close" class="icon-btn" title="Cerrar">
-          <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+        <button id="btn-modal-close" class="icon-btn" title="Cerrar" aria-label="Cerrar modal">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
         </button>
       </div>
       <div id="modal-body"></div>
     </div>
   </div>
 
-  <div id="toast"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
 
   <script src="tasks-manager-renderer.js"></script>
 </body>

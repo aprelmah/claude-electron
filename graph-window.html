@@ -234,6 +234,16 @@
     }
     .graph-file-modal-actions button.primary:hover:not(:disabled) { filter: brightness(1.1); }
     .hidden { display: none !important; }
+
+    /* A11y: foco visible para navegación por teclado (WCAG 2.4.7) */
+    :focus-visible {
+      outline: 2px solid #7c6af7;
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    :focus:not(:focus-visible) {
+      outline: none;
+    }
   </style>
 </head>
 <body>
@@ -250,7 +260,7 @@
     <div class="graph-chips-row" id="chips-row"></div>
     <div class="graph-forces-panel" id="forces-row"></div>
   </div>
-  <div id="loading">Cargando grafo…</div>
+  <div id="loading" role="status" aria-live="polite">Cargando grafo…</div>
   <svg id="graph-canvas"></svg>
 
   <div id="graph-context-menu" class="hidden"></div>
@@ -261,7 +271,7 @@
       <div class="modal-header">
         <span class="modal-title" id="graph-file-modal-title">Archivo</span>
         <span class="modal-sub" id="graph-file-modal-sub"></span>
-        <button id="graph-file-modal-close" class="modal-close">×</button>
+        <button id="graph-file-modal-close" class="modal-close" aria-label="Cerrar modal de archivo">×</button>
       </div>
       <div class="graph-file-modal-body">
         <textarea id="graph-file-modal-textarea" spellcheck="false"></textarea>
