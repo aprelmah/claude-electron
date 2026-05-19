@@ -17,6 +17,9 @@ const HISTORY_MAX = 200
 const MEDIA_ESCALATION_SECS = 300 // 5 min en manual tras adjunto de cliente
 const MAX_PARALLEL_REPLIES = 3
 const PERSONA_RELOAD_DEBOUNCE_MS = 500
+const ESCALATION_SWEEP_MS = 60_000 // 1 min: revierte chats escalados-vencidos a auto
+const MAX_QUEUE_PER_JID = 5 // cola por JID: si se llena, escalamos a manual
+const CLAUDE_UNAVAILABLE_NOTIFY_MS = 10 * 60_000 // anti-spam del aviso al cliente
 const BRIDGE_TIMEOUT_DEFAULT_MS = 30_000
 const BRIDGE_TIMEOUT_LARGE_MS = 60_000
 const BRIDGE_LARGE_PAYLOAD_BYTES = 1_000_000
@@ -231,6 +234,9 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   let stopped = false
   let pollBackoffMs = POLL_MS
   let claudeBin = config.claudePath
+  let claudeAvailable = true
+  let lastClaudeUnavailableNotifyByJid = new Map() // jid → ts ms del último aviso
+  let escalationSweepTimer = null
   let personaText = ''
   let personaWatcher = null
   let personaWatchedPath = ''
@@ -238,8 +244,23 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   // Cola por JID: respuestas al MISMO cliente se serializan; entre clientes,
   // hasta MAX_PARALLEL_REPLIES en vuelo (semáforo global).
   const inflightByJid = new Map()
+  const queueLenByJid = new Map() // jid → nº mensajes en vuelo+pendientes para ese JID
   let inflightCount = 0
   const inflightWaiters = []
+
+  function checkClaudeBinary() {
+    try {
+      fs.accessSync(claudeBin, fs.constants.X_OK)
+      claudeAvailable = true
+    } catch (err) {
+      claudeAvailable = false
+      // console.error puede no llegar a stderr en Electron empaquetado, pero el
+      // proceso main de Electron sí redirige a ~/Library/Logs si está configurado.
+      // En el peor caso, este log es visible vía `npm run dev`.
+      console.error(`[wa-client] claude binary not executable: ${claudeBin} (${err?.message || err})`)
+    }
+    return claudeAvailable
+  }
 
   function acquireSlot() {
     return new Promise((resolve) => {
@@ -335,6 +356,9 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
         lastActivity: Number(c.lastActivity) || 0,
         escalatedUntil: Number(c.escalatedUntil) || 0,
+        // Origen del manual. Migración: chats antiguos sin flag → 'user' (más seguro,
+        // así no revertimos chats que Luismi puso manual a propósito antes del fix).
+        escalationReason: c.escalationReason === 'media' || c.escalationReason === 'user' ? c.escalationReason : (c.mode === 'manual' ? 'user' : null),
         isGroup: typeof c.isGroup === 'boolean' ? c.isGroup : String(c.jid).endsWith('@g.us')
       })
     }
@@ -363,6 +387,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         history: [],
         lastActivity: 0,
         escalatedUntil: 0,
+        escalationReason: null,
         isGroup: jid.endsWith('@g.us')
       }
       chats.set(jid, c)
@@ -501,7 +526,10 @@ function isAuthorized(jid) {
 
     // Hand-over automático: si Luismi escribe desde otro lado, pasa a manual.
     if (msg.fromMe) {
-      if (config.handoverOnFromMe) chat.mode = 'manual'
+      if (config.handoverOnFromMe) {
+        chat.mode = 'manual'
+        chat.escalationReason = 'user'
+      }
       const added = pushHistory(chat, msg)
       if (added) emitNewMessage(jid, msg)
       return
@@ -519,6 +547,7 @@ function isAuthorized(jid) {
     if (isEscalatingMedia) {
       chat.mode = 'manual'
       chat.escalatedUntil = nowTs() + MEDIA_ESCALATION_SECS
+      chat.escalationReason = 'media'
       markDirty()
       emitter.emit('chat-updated', summarizeChat(jid))
       return
@@ -528,21 +557,39 @@ function isAuthorized(jid) {
     if (chat.escalatedUntil && chat.escalatedUntil > nowTs()) return
 
     // Escalada ya vencida sobre texto entrante: volvemos a auto automáticamente.
-    if (chat.mode === 'manual' && chat.escalatedUntil && chat.escalatedUntil <= nowTs()) {
+    if (chat.mode === 'manual' && chat.escalatedUntil && chat.escalatedUntil <= nowTs() && chat.escalationReason === 'media') {
       chat.mode = 'auto'
       chat.escalatedUntil = 0
+      chat.escalationReason = null
       markDirty()
       emitter.emit('chat-updated', summarizeChat(jid))
     }
 
     if (chat.mode !== 'auto') return
 
+    // Cap de cola por JID: si el modelo es lento y un cliente envía 50 mensajes,
+    // la cola crecería sin techo. Decisión: cuando hay MAX_QUEUE_PER_JID en vuelo
+    // para ese JID, escalamos a manual (Luismi atiende) en lugar de descartar.
+    const pending = queueLenByJid.get(jid) || 0
+    if (pending >= MAX_QUEUE_PER_JID) {
+      chat.mode = 'manual'
+      chat.escalationReason = 'user'
+      markDirty()
+      console.warn(`[wa-client] cola saturada para ${jid} (${pending} pendientes); escalado a manual`)
+      emitter.emit('chat-updated', summarizeChat(jid))
+      return
+    }
+
     // Serializamos por JID y respetamos semáforo global. Fire-and-forget para no
     // bloquear el poll: el siguiente cliente puede entrar en paralelo.
+    queueLenByJid.set(jid, pending + 1)
     const prev = inflightByJid.get(jid) || Promise.resolve()
     const next = prev.then(() => acquireSlot().then(() => respondTo(jid, msg))).catch(() => {})
     const tracked = next.finally(() => {
       releaseSlot()
+      const cur = queueLenByJid.get(jid) || 0
+      if (cur <= 1) queueLenByJid.delete(jid)
+      else queueLenByJid.set(jid, cur - 1)
       if (inflightByJid.get(jid) === tracked) inflightByJid.delete(jid)
     })
     inflightByJid.set(jid, tracked)
@@ -551,6 +598,22 @@ function isAuthorized(jid) {
   async function respondTo(jid, msg) {
     const chat = chats.get(jid)
     if (!chat) return
+
+    // Pre-check: si el binario claude no está disponible, no intentamos spawn.
+    // Avisamos al cliente UNA vez cada CLAUDE_UNAVAILABLE_NOTIFY_MS (anti-spam) y
+    // silenciamos los siguientes. Así el cliente sabe que estamos "k.o." sin que
+    // Luismi reciba 30 mensajes idénticos.
+    if (!claudeAvailable) {
+      const nowMs = Date.now()
+      const last = lastClaudeUnavailableNotifyByJid.get(jid) || 0
+      if (nowMs - last >= CLAUDE_UNAVAILABLE_NOTIFY_MS) {
+        lastClaudeUnavailableNotifyByJid.set(jid, nowMs)
+        try {
+          await sendText(jid, '[Auto-reply deshabilitado: CLI claude no disponible. Configúralo en Ajustes.]', { changeModeToManual: false, internal: true, source: 'claude' })
+        } catch {}
+      }
+      return
+    }
 
     let promptBody = msg.body
     if (msg.type === 'audio') {
@@ -742,7 +805,13 @@ function isAuthorized(jid) {
     const targetJid = numberToJid(jid)
     const chat = ensureChat(targetJid)
     chat.mode = mode === 'manual' ? 'manual' : 'auto'
-    if (chat.mode === 'auto') chat.escalatedUntil = 0
+    if (chat.mode === 'auto') {
+      chat.escalatedUntil = 0
+      chat.escalationReason = null
+    } else {
+      // Manual puesto explícitamente por el usuario: el sweep NUNCA debe revertirlo.
+      chat.escalationReason = 'user'
+    }
     markDirty()
     emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true, mode: chat.mode }
@@ -828,9 +897,29 @@ function isAuthorized(jid) {
   function updateConfig(next) {
     config = saveConfig(next || {})
     claudeBin = config.claudePath
+    checkClaudeBinary()
     loadPersona()
     emitter.emit('chat-updated', { jid: null }) // refresh global
     return config
+  }
+
+  function sweepEscalations() {
+    const now = nowTs()
+    let changed = false
+    for (const chat of chats.values()) {
+      // Solo revertir escaladas multimedia vencidas. Manual puesto por el usuario
+      // (escalationReason='user') nunca se toca: Luismi decide cuándo volver a auto.
+      if (chat.mode === 'manual' && chat.escalationReason === 'media' && chat.escalatedUntil && chat.escalatedUntil <= now) {
+        chat.mode = 'auto'
+        chat.escalatedUntil = 0
+        chat.escalationReason = null
+        markDirty()
+        changed = true
+        console.log(`[wa-client] sweep: chat ${chat.jid} revertido a auto (escalada multimedia vencida)`)
+        emitter.emit('chat-updated', summarizeChat(chat.jid))
+      }
+    }
+    if (changed) persistState()
   }
 
   function start() {
@@ -840,6 +929,7 @@ function isAuthorized(jid) {
     fs.mkdirSync(BRIDGE_DIR, { recursive: true })
     config = loadConfig()
     claudeBin = config.claudePath
+    checkClaudeBinary()
     loadPersona()
     loadState()
     // No vaciamos el inbox al arrancar: si la app estaba cerrada y llegaron
@@ -851,6 +941,8 @@ function isAuthorized(jid) {
     statusTimer.unref?.()
     flushTimer = setInterval(persistState, STATE_FLUSH_MS)
     flushTimer.unref?.()
+    escalationSweepTimer = setInterval(sweepEscalations, ESCALATION_SWEEP_MS)
+    escalationSweepTimer.unref?.()
   }
 
   function stop() {
@@ -858,6 +950,7 @@ function isAuthorized(jid) {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
+    if (escalationSweepTimer) { clearInterval(escalationSweepTimer); escalationSweepTimer = null }
     stopPersonaWatcher()
     persistState()
   }

@@ -57,6 +57,8 @@
   let recStart = 0
   let recTimer = null
   let unsubs = []
+  let footerCleanup = null
+  let pollTimerId = null
 
   // ── Utilidades ──
   function $(sel, root = document) { return root.querySelector(sel) }
@@ -1047,18 +1049,25 @@
   // ── Footer (input, adjuntar, micro) ──
   function bindFooter(chat) {
     if (!inputEl) return
+    // bindFooter se reinvoca cada vez que se entra a un chat (openChat).
+    // Sin esta limpieza, los listeners globales sobre window se acumulaban
+    // y el micro disparaba stopRecording N veces por mouseup tras N chats.
+    if (footerCleanup) { try { footerCleanup() } catch {} ; footerCleanup = null }
+    const ac = new AbortController()
+    const sig = ac.signal
+
     inputEl.addEventListener('input', () => {
       sendBtnEl.disabled = !inputEl.value.trim()
       autosize(inputEl)
-    })
+    }, { signal: sig })
     inputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         sendCurrentText()
       }
-    })
-    sendBtnEl.addEventListener('click', sendCurrentText)
-    attachBtnEl.addEventListener('click', attachAndSend)
+    }, { signal: sig })
+    sendBtnEl.addEventListener('click', sendCurrentText, { signal: sig })
+    attachBtnEl.addEventListener('click', attachAndSend, { signal: sig })
 
     // Micro: pulsar y mantener
     let pressed = false
@@ -1074,10 +1083,12 @@
       pressed = false
       stopRecording(true)
     }
-    micBtnEl.addEventListener('mousedown', start)
-    micBtnEl.addEventListener('touchstart', start, { passive: false })
-    window.addEventListener('mouseup', stop)
-    window.addEventListener('touchend', stop)
+    micBtnEl.addEventListener('mousedown', start, { signal: sig })
+    micBtnEl.addEventListener('touchstart', start, { passive: false, signal: sig })
+    window.addEventListener('mouseup', stop, { signal: sig })
+    window.addEventListener('touchend', stop, { signal: sig })
+
+    footerCleanup = () => { try { ac.abort() } catch {} }
   }
 
   function autosize(ta) {
@@ -1763,8 +1774,14 @@
           if (last && chats.find(c => c.jid === last)) selectChat(last)
         } catch {}
       })
-      setInterval(() => { refreshStatus(); refreshChats() }, 15000)
+      pollTimerId = setInterval(() => { refreshStatus(); refreshChats() }, 15000)
     }
+
+    window.addEventListener('beforeunload', () => {
+      if (pollTimerId) { clearInterval(pollTimerId); pollTimerId = null }
+      if (footerCleanup) { try { footerCleanup() } catch {} ; footerCleanup = null }
+      while (unsubs.length) { try { unsubs.pop()() } catch {} }
+    }, { once: true })
 
     // 7. Restaurar apertura del drawer (no aplica a standalone).
     if (!STANDALONE) {
