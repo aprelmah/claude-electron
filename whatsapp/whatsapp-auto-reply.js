@@ -10,12 +10,12 @@ function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs
     }
     // --tools "" desactiva TODOS los tools en la CLI: garantía dura de que
     // un cliente no puede provocar Bash/Edit/Read/etc por mucho que lo intente.
-    // --bare evita hooks, plugins, memoria y auto-discovery (sin sorpresas de entorno).
+    // NOTA: NO usar --bare con claude >=2.1.144 — fuerza ANTHROPIC_API_KEY e
+    // ignora la sesión OAuth (Max). Sin clave de API, sale "Not logged in".
     const args = [
       '-p', prompt,
       '--system-prompt', systemPrompt,
       '--tools', '',
-      '--bare',
       '--output-format', 'text',
       '--no-session-persistence'
     ]
