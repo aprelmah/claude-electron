@@ -334,7 +334,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         unread: Number(c.unread) || 0,
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
         lastActivity: Number(c.lastActivity) || 0,
-        escalatedUntil: Number(c.escalatedUntil) || 0
+        escalatedUntil: Number(c.escalatedUntil) || 0,
+        isGroup: typeof c.isGroup === 'boolean' ? c.isGroup : String(c.jid).endsWith('@g.us')
       })
     }
   }
@@ -361,7 +362,8 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
         unread: 0,
         history: [],
         lastActivity: 0,
-        escalatedUntil: 0
+        escalatedUntil: 0,
+        isGroup: jid.endsWith('@g.us')
       }
       chats.set(jid, c)
     }
@@ -369,6 +371,10 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   }
 
 function isAuthorized(jid) {
+    // Grupos: los JIDs `@g.us` no tienen número de teléfono asociado y no caben
+    // en la allowlist individual. Si Luismi quiere bloquear un grupo concreto lo
+    // hará por otra vía (mute, salir del grupo).
+    if (jid && String(jid).endsWith('@g.us')) return true
     if (!config.authorizedNumbers || !config.authorizedNumbers.length) return true
     const num = jidToNumber(jid)
     const lidDigits = digitsOnly(jidLocalId(jid))
@@ -401,6 +407,7 @@ function isAuthorized(jid) {
       mode: c.mode,
       unread: c.unread || 0,
       lastActivity: c.lastActivity || 0,
+      isGroup: c.isGroup || false,
       lastMessage: last ? {
         body: last.body, type: last.type, timestamp: last.timestamp, fromMe: last.fromMe
       } : null
@@ -468,7 +475,27 @@ function isAuthorized(jid) {
       timestamp: Number(raw.timestamp) || nowTs(),
       type: raw.type || 'text',
       body: raw.body || '',
-      mediaPath: raw.mediaPath || null
+      mediaPath: raw.mediaPath || null,
+      source: raw.source || null,
+      participant: raw.participant || null,
+      participantName: raw.participantName || null,
+      isGroup: Boolean(raw.isGroup),
+      quotedMsg: raw.quotedMsg || null
+    }
+
+    // Grupos: nunca auto-reply, siempre manual. Persistimos historial y emitimos
+    // pero no entramos en la lógica de hand-over ni de auto-reply.
+    if (jid.endsWith('@g.us')) {
+      if (msg.fromMe) {
+        const added = pushHistory(chat, msg)
+        if (added) emitNewMessage(jid, msg)
+        return
+      }
+      const added = pushHistory(chat, msg)
+      if (!added) return
+      chat.unread = (chat.unread || 0) + 1
+      emitNewMessage(jid, msg)
+      return
     }
 
     // Hand-over automático: si Luismi escribe desde otro lado, pasa a manual.
@@ -561,24 +588,26 @@ function isAuthorized(jid) {
         chat.mode = 'manual'
         markDirty()
         emitter.emit('chat-updated', summarizeChat(jid))
-        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true })
+        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
         return
       }
-      await sendText(jid, safeReply, { changeModeToManual: false, internal: true })
+      await sendText(jid, safeReply, { changeModeToManual: false, internal: true, source: 'claude' })
     } catch (err) {
       console.error('[whatsapp] auto-reply error:', err?.message || err)
       // Fallback defensivo: evita que el cliente se quede sin respuesta si falla Claude.
       try {
-        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true })
+        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
       } catch {}
     }
   }
 
   async function sendText(jid, text, opts = {}) {
-    const { changeModeToManual = true, internal = false } = opts
+    const { changeModeToManual = true, internal = false, source = 'luismi', quotedId = null } = opts
     const targetJid = numberToJid(jid)
     try {
-      const res = await bridgeFetch('POST', '/send/text', { to: targetJid, message: text })
+      const payload = { to: targetJid, message: text }
+      if (quotedId) payload.quotedId = quotedId
+      const res = await bridgeFetch('POST', '/send/text', payload)
       const chat = ensureChat(targetJid)
       const msg = {
         id: res?.id || `local-${Date.now()}`,
@@ -587,7 +616,8 @@ function isAuthorized(jid) {
         timestamp: nowTs(),
         type: 'text',
         body: text,
-        mediaPath: null
+        mediaPath: null,
+        source
       }
       const added = pushHistory(chat, msg)
       if (changeModeToManual && !internal) {

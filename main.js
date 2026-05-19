@@ -4376,8 +4376,8 @@ ipcMain.handle('whatsapp:get-history', (_e, jid, opts = {}) => {
   try { return whatsappClient.getHistory(jid, opts || {}) } catch { return [] }
 })
 
-ipcMain.handle('whatsapp:send-text', async (_e, jid, text) => {
-  try { return await requireWhatsapp().sendText(jid, text) }
+ipcMain.handle('whatsapp:send-text', async (_e, jid, text, opts) => {
+  try { return await requireWhatsapp().sendText(jid, text, opts || {}) }
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 

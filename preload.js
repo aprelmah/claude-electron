@@ -79,7 +79,7 @@ contextBridge.exposeInMainWorld('api', {
     getQR: () => ipcRenderer.invoke('whatsapp:get-qr'),
     getChats: () => ipcRenderer.invoke('whatsapp:get-chats'),
     getHistory: (jid, opts) => ipcRenderer.invoke('whatsapp:get-history', jid, opts || {}),
-    sendText: (jid, text) => ipcRenderer.invoke('whatsapp:send-text', jid, text),
+    sendText: (jid, text, opts) => ipcRenderer.invoke('whatsapp:send-text', jid, text, opts),
     sendImage: (jid, filePath, caption) => ipcRenderer.invoke('whatsapp:send-image', jid, filePath, caption || ''),
     sendAudio: (jid, filePath, ptt) => ipcRenderer.invoke('whatsapp:send-audio', jid, filePath, ptt !== false),
     sendDocument: (jid, filePath, caption) => ipcRenderer.invoke('whatsapp:send-document', jid, filePath, caption || ''),

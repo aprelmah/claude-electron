@@ -48,6 +48,8 @@
   let chats = []
   let currentJid = null
   let currentMessages = []
+  let replyTo = null
+  let emojiPickerEl = null
   let status = { connected: false, qrPresent: false, autoReply: true, ownerNumber: '', authorizedNumbers: [], model: '', effort: '' }
   let recording = false
   let mediaRecorder = null
@@ -260,6 +262,68 @@
     } catch {}
   }
 
+  // ── Estilos extra (inyectados, no se modifica styles.css) ──
+  function injectExtraStyles() {
+    if (document.getElementById('wa-panel-extra-styles')) return
+    const css = `
+.wa-bubble-bot-claude { color: #a8d8a8; }
+.wa-bubble-bot-luismi { color: #c8e6c9; }
+.wa-bubble-row.me .wa-bubble { background: #005c4b; }
+.wa-bubble-row.me .wa-bubble.wa-bubble-claude { background: #1a6b3a; }
+.wa-bubble-participant { font-size: 11px; font-weight: 600; color: #53bdeb; margin-bottom: 2px; }
+.wa-group-icon { margin-right: 2px; opacity: .85; }
+.wa-bubble-row { position: relative; }
+.wa-reply-btn {
+  display: none; position: absolute; top: 4px; right: 4px;
+  background: rgba(0,0,0,0.4); border: none; border-radius: 50%;
+  width: 24px; height: 24px; cursor: pointer; color: #ccc;
+  align-items: center; justify-content: center; padding: 0;
+}
+.wa-bubble-row:hover .wa-reply-btn { display: flex; }
+.wa-bubble-row.me .wa-reply-btn { right: auto; left: 4px; }
+.wa-reply-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; background: rgba(255,255,255,0.05);
+  border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px;
+}
+.wa-reply-bar { width: 3px; height: 32px; background: #00a884; border-radius: 2px; flex-shrink: 0; }
+.wa-reply-content { flex: 1; min-width: 0; }
+.wa-reply-author { color: #00a884; font-weight: 600; display: block; }
+.wa-reply-preview { color: #8696a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.wa-reply-cancel { background: none; border: none; color: #8696a0; cursor: pointer; padding: 4px; font-size: 14px; }
+.wa-bubble-quoted {
+  background: rgba(0,0,0,0.2); border-left: 3px solid #00a884;
+  border-radius: 4px; padding: 4px 8px; margin-bottom: 4px; font-size: 12px;
+}
+.wa-bubble-quoted-author { color: #00a884; font-weight: 600; display: block; }
+.wa-bubble-quoted-body { color: #8696a0; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wa-convo-footer { position: relative; }
+.wa-emoji-picker {
+  position: absolute; bottom: 100%; left: 0; right: 0;
+  background: #1f2c34; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px; padding: 8px; z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.wa-emoji-picker.hidden { display: none; }
+.wa-emoji-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+.wa-emoji-tab {
+  background: none; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px; color: #8696a0; cursor: pointer; padding: 2px 6px; font-size: 16px;
+}
+.wa-emoji-tab.active { background: rgba(0,168,132,0.2); border-color: #00a884; }
+.wa-emoji-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; max-height: 160px; overflow-y: auto; }
+.wa-emoji-item {
+  background: none; border: none; cursor: pointer; font-size: 18px;
+  padding: 4px; border-radius: 4px; text-align: center;
+}
+.wa-emoji-item:hover { background: rgba(255,255,255,0.1); }
+`
+    const style = document.createElement('style')
+    style.id = 'wa-panel-extra-styles'
+    style.textContent = css
+    document.head.appendChild(style)
+  }
+
   // ── Construcción de DOM ──
   function buildToggleButton() {
     const btn = el('button', {
@@ -346,6 +410,7 @@
         <button class="icon-btn small wa-footer-btn" id="wa-btn-mic" title="Mantén pulsado para grabar" aria-label="Grabar audio">
           <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
         </button>
+        <button class="icon-btn small wa-footer-btn wa-emoji-btn" id="wa-btn-emoji" title="Emojis" aria-label="Insertar emoji">😊</button>
         <textarea class="wa-input" rows="1" placeholder="Escribe como Luismi…" aria-label="Mensaje"></textarea>
         <button class="icon-btn wa-send-btn" id="wa-btn-send" title="Enviar (Enter)" aria-label="Enviar" disabled>
           <svg viewBox="0 0 24 24" width="16" height="16"><path d="M3 12l18-9-4 18-7-7-7 3z" fill="currentColor" stroke="none"/></svg>
@@ -502,7 +567,7 @@
         <div class="wa-chat-avatar"><span>${escapeHtml(avatarInitials(c))}</span></div>
         <div class="wa-chat-main">
           <div class="wa-chat-top">
-            <span class="wa-chat-name">${escapeHtml(chatLabel(c))}</span>
+            <span class="wa-chat-name">${c.jid && c.jid.endsWith('@g.us') ? '<span class="wa-group-icon">👥 </span>' : ''}${escapeHtml(chatLabel(c))}</span>
             <span class="wa-chat-time">${escapeHtml(last ? fmtRelative(last.timestamp) : '')}</span>
           </div>
           <div class="wa-chat-bottom">
@@ -561,6 +626,7 @@
     bindFooter(chat)
     bindModeSwitch(chat)
     bindRequestPhone(chat)
+    setupEmojiPicker()
 
     // hand-over banner si pasó a manual recientemente
     if (chat._handoverAt && Date.now() - chat._handoverAt < 30000) {
@@ -679,10 +745,38 @@
   function renderBubble(m, isAutoChat, transcripts) {
     const row = el('div', { cls: `wa-bubble-row ${m.fromMe ? 'me' : 'them'}` })
     const bubble = el('div', { cls: `wa-bubble wa-bubble-${m.type || 'text'}` })
+    if (m.source === 'claude') bubble.classList.add('wa-bubble-claude')
 
-    // Prefijo bot si fromMe + chat auto
-    if (m.fromMe && isAutoChat) {
-      bubble.appendChild(el('div', { cls: 'wa-bubble-bot', text: '🤖 Claude' }))
+    // Mensaje citado (reply): pintar caja con autor + preview
+    if (m.quotedMsg) {
+      const q = m.quotedMsg
+      const qAuthor = q.fromMe ? 'Tú' : (q.participantName || 'Ellos')
+      const qPreview = q.type && q.type !== 'text' ? `[${q.type}]` : (q.body || '').slice(0, 80)
+      const quotedEl = el('div', { cls: 'wa-bubble-quoted' })
+      quotedEl.innerHTML = `
+        <span class="wa-bubble-quoted-author">${escapeHtml(qAuthor)}</span>
+        <span class="wa-bubble-quoted-body">${escapeHtml(qPreview)}</span>
+      `
+      bubble.appendChild(quotedEl)
+    }
+
+    // Nombre del participante en grupos (solo mensajes ajenos)
+    const chatForBubble = chats.find(c => c.jid === currentJid)
+    const isGroupChat = chatForBubble?.isGroup || (currentJid && currentJid.endsWith('@g.us'))
+    if (!m.fromMe && isGroupChat && (m.participantName || m.participant)) {
+      const name = m.participantName || (m.participant ? m.participant.split('@')[0] : '')
+      bubble.appendChild(el('div', { cls: 'wa-bubble-participant', text: name }))
+    }
+
+    // Identificación Luismi vs Claude en burbujas fromMe
+    if (m.fromMe) {
+      if (m.source === 'claude') {
+        bubble.appendChild(el('div', { cls: 'wa-bubble-bot wa-bubble-bot-claude', text: '🤖 Claude' }))
+      } else if (isAutoChat || m.source === 'luismi') {
+        if (isAutoChat) {
+          bubble.appendChild(el('div', { cls: 'wa-bubble-bot wa-bubble-bot-luismi', text: '👤 Tú' }))
+        }
+      }
     }
 
     // Cuerpo según tipo
@@ -736,12 +830,138 @@
     bubble.appendChild(meta)
 
     row.appendChild(bubble)
+
+    // Botón reply (hover)
+    const replyBtn = el('button', { cls: 'wa-reply-btn', attrs: { title: 'Responder', 'aria-label': 'Responder' } })
+    replyBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`
+    replyBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      replyTo = {
+        id: m.id,
+        body: m.body || '',
+        type: m.type || 'text',
+        fromMe: !!m.fromMe,
+        participantName: m.participantName || null
+      }
+      renderReplyBanner()
+      const inputElLocal = convoFooterEl?.querySelector('.wa-input')
+      if (inputElLocal) inputElLocal.focus()
+    })
+    row.appendChild(replyBtn)
+
     return row
   }
+
+  function renderReplyBanner() {
+    if (!convoFooterEl) return
+    let banner = convoFooterEl.querySelector('.wa-reply-banner')
+    if (!replyTo) {
+      if (banner) banner.remove()
+      return
+    }
+    if (!banner) {
+      banner = el('div', { cls: 'wa-reply-banner' })
+      convoFooterEl.insertBefore(banner, convoFooterEl.firstChild)
+    }
+    const author = replyTo.fromMe ? 'Tú' : (replyTo.participantName || 'Ellos')
+    const preview = replyTo.type !== 'text'
+      ? `[${replyTo.type}]`
+      : (replyTo.body.slice(0, 60) + (replyTo.body.length > 60 ? '…' : ''))
+    banner.innerHTML = `
+      <div class="wa-reply-bar"></div>
+      <div class="wa-reply-content">
+        <span class="wa-reply-author">${escapeHtml(author)}</span>
+        <span class="wa-reply-preview">${escapeHtml(preview)}</span>
+      </div>
+      <button class="wa-reply-cancel" aria-label="Cancelar respuesta">✕</button>
+    `
+    banner.querySelector('.wa-reply-cancel').addEventListener('click', () => {
+      replyTo = null
+      renderReplyBanner()
+    })
+  }
+
+  // ── Emoji picker ──
+  const EMOJI_GROUPS = [
+    { label: '😀 Caras', emojis: ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','😋','😛','😜','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🥴','😵','🤯','🤠','😎','🥸','🤓','🧐','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','💀','👻','👽','🤖'] },
+    { label: '👋 Gestos', emojis: ['👍','👎','👌','✌️','🤞','🖖','🤟','🤘','🤙','👈','👉','👆','👇','☝️','✋','🤚','🖐️','👋','🤏','🤜','🤛','👊','✊','🙌','👐','🤲','🙏','💪','🦾','🖕'] },
+    { label: '❤️ Corazones', emojis: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','❤️‍🔥','❤️‍🩹'] },
+    { label: '🎉 Celebración', emojis: ['🎉','🎊','🥳','🎈','🎁','🎀','🪄','✨','🌟','⭐','💫','🔥','💥','🌈','☀️','🌙','⚡','❄️','🌊','🍀'] },
+    { label: '📱 Objetos', emojis: ['📱','💻','⌨️','🖥️','🖨️','📷','📸','🎥','📹','🎞️','📞','☎️','📟','📠','📺','📻','🧭','⏱️','⏰','⌚','📡','🔋','🔌','💡','🔦','🕯️','🪔','💰','💵','💴','💶','💷','💸','💳','🏆','🥇','🥈','🥉','🏅','🎖️'] }
+  ]
+
+  function buildEmojiPicker() {
+    const picker = el('div', { cls: 'wa-emoji-picker hidden', attrs: { id: 'wa-emoji-picker' } })
+    const tabs = el('div', { cls: 'wa-emoji-tabs' })
+    const content = el('div', { cls: 'wa-emoji-content' })
+
+    function renderGroup(idx) {
+      content.innerHTML = ''
+      const group = EMOJI_GROUPS[idx]
+      const grid = el('div', { cls: 'wa-emoji-grid' })
+      for (const emoji of group.emojis) {
+        const btn = el('button', { cls: 'wa-emoji-item', text: emoji, attrs: { title: emoji } })
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          insertEmoji(emoji)
+        })
+        grid.appendChild(btn)
+      }
+      content.appendChild(grid)
+    }
+
+    EMOJI_GROUPS.forEach((g, i) => {
+      const tab = el('button', { cls: `wa-emoji-tab${i === 0 ? ' active' : ''}`, text: g.label.split(' ')[0] })
+      tab.addEventListener('click', (e) => {
+        e.stopPropagation()
+        tabs.querySelectorAll('.wa-emoji-tab').forEach(t => t.classList.remove('active'))
+        tab.classList.add('active')
+        renderGroup(i)
+      })
+      tabs.appendChild(tab)
+    })
+
+    picker.appendChild(tabs)
+    picker.appendChild(content)
+    renderGroup(0)
+    picker.addEventListener('click', (e) => e.stopPropagation())
+    return picker
+  }
+
+  function insertEmoji(emoji) {
+    const input = convoFooterEl?.querySelector('.wa-input')
+    if (!input) return
+    const start = input.selectionStart || 0
+    const end = input.selectionEnd || 0
+    const val = input.value
+    input.value = val.slice(0, start) + emoji + val.slice(end)
+    input.selectionStart = input.selectionEnd = start + emoji.length
+    input.dispatchEvent(new Event('input'))
+    input.focus()
+  }
+
+  function setupEmojiPicker() {
+    if (!convoFooterEl) return
+    emojiPickerEl = buildEmojiPicker()
+    convoFooterEl.appendChild(emojiPickerEl)
+    const btn = convoFooterEl.querySelector('#wa-btn-emoji')
+    if (btn) {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        emojiPickerEl.classList.toggle('hidden')
+      })
+    }
+  }
+
+  // Cerrar emoji picker al hacer click fuera (una sola vez)
+  document.addEventListener('click', () => {
+    if (emojiPickerEl) emojiPickerEl.classList.add('hidden')
+  })
 
   // ── Acciones ──
   async function selectChat(jid) {
     currentJid = jid
+    replyTo = null
     try { localStorage.setItem(LS_LAST_CHAT, jid) } catch {}
     renderChatList()
     renderConvo()
@@ -873,11 +1093,14 @@
     if (!text) return
     inputEl.disabled = true
     sendBtnEl.disabled = true
+    const quotedId = replyTo?.id || null
     try {
-      const res = await wa.sendText(currentJid, text)
+      const res = await wa.sendText(currentJid, text, { quotedId })
       if (res && res.ok) {
         inputEl.value = ''
         autosize(inputEl)
+        replyTo = null
+        renderReplyBanner()
         await refreshChats()
         const msgs = await wa.getHistory(currentJid, { limit: 200 })
         currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
@@ -1443,6 +1666,7 @@
 
   // ── Init ──
   function init() {
+    injectExtraStyles()
     // 1. Botón en titlebar (solo modo drawer; en standalone el panel ocupa toda la ventana).
     if (!STANDALONE) {
       toggleBtn = buildToggleButton()
