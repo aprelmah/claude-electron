@@ -26,9 +26,7 @@ const { test, describe } = require('node:test')
 const assert = require('node:assert')
 const path = require('path')
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..')
-// El worktree está en `.claude/worktrees/<agent-id>/`. La raíz del repo
-// (donde vive `whatsapp/`) son 4 niveles arriba.
+const REPO_ROOT = path.resolve(__dirname, '..')
 
 const { buildPrompt } = require(path.join(REPO_ROOT, 'whatsapp', 'whatsapp-auto-reply.js'))
 

@@ -1825,6 +1825,7 @@ async function openAutomationChatWindow(automationId) {
 function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
     tmpDir: TMP_DIR,
+    stateDir: app.getPath('userData'),
     onTranscribeFile: async (filePath) => {
       return transcribeAudioFile(filePath, buildRuntimeEnv())
     },
@@ -2203,6 +2204,10 @@ function resolveSessionIdForRelay(session) {
   return null
 }
 
+function escapeForCompactedPrompt(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
   if (!sessionId) return { sessionId, prompt }
   const baseCwd = cwd || getCwdSync()
@@ -2231,13 +2236,13 @@ function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
 
   const recent = turns.slice(-TG_HISTORY_KEEP)
   const transcript = recent
-    .map((t) => `${t.role === 'user' ? 'Usuario' : 'Asistente'}: ${t.text}`)
+    .map((t) => `${t.role === 'user' ? 'Usuario' : 'Asistente'}: ${escapeForCompactedPrompt(t.text)}`)
     .join('\n\n')
 
   const compactedPrompt =
     `[Contexto: conversación previa, últimos ${recent.length} turnos]\n\n` +
     transcript +
-    `\n\n[Nuevo mensaje del usuario]\n${prompt}`
+    `\n\n[Nuevo mensaje del usuario]\n${escapeForCompactedPrompt(prompt)}`
 
   return { sessionId: null, prompt: compactedPrompt }
 }

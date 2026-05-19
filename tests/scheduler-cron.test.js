@@ -7,7 +7,7 @@ const { test, describe } = require('node:test')
 const assert = require('node:assert')
 const path = require('path')
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..')
+const REPO_ROOT = path.resolve(__dirname, '..')
 const TaskScheduler = require(path.join(REPO_ROOT, 'scheduler', 'index.js'))
 
 function makeScheduler() {

@@ -163,6 +163,7 @@ class TelegramStream {
 class TelegramBridge {
   constructor({
     tmpDir,
+    stateDir,
     onTranscribeFile,
     onRunQuery,
     onGetActiveCli,
@@ -172,6 +173,7 @@ class TelegramBridge {
     onStatus
   }) {
     this.tmpDir = tmpDir
+    this.stateDir = stateDir || tmpDir
     this.onTranscribeFile = onTranscribeFile
     this.onRunQuery = onRunQuery
     this.onGetActiveCli = onGetActiveCli
@@ -190,16 +192,31 @@ class TelegramBridge {
     this.activeStreams = new Map()
     this.chatQueues = new Map()
 
-    this.sessionsPath = path.join(tmpDir, 'telegram-sessions.json')
-    this.sessions = this._loadSessions()
+    try { fs.mkdirSync(this.stateDir, { recursive: true }) } catch {}
 
-    this.statePath = path.join(tmpDir, 'telegram-state.json')
+    this.sessionsPath = path.join(this.stateDir, 'telegram-sessions.json')
+    this.statePath = path.join(this.stateDir, 'telegram-state.json')
+    this._migrateLegacyStateFromTmp()
+    this.sessions = this._loadSessions()
     this.offset = this._loadOffset()
 
     this.botUsername = ''
     this.lastError = ''
     this.lastInfo = 'Telegram desactivado'
     this.startedAt = 0
+  }
+
+  _migrateLegacyStateFromTmp() {
+    if (this.tmpDir === this.stateDir) return
+    for (const name of ['telegram-sessions.json', 'telegram-state.json']) {
+      const legacy = path.join(this.tmpDir, name)
+      const target = path.join(this.stateDir, name)
+      try {
+        if (fs.existsSync(legacy) && !fs.existsSync(target)) {
+          fs.copyFileSync(legacy, target)
+        }
+      } catch {}
+    }
   }
 
   _loadSessions() {
