@@ -1,8 +1,11 @@
 {
   "name": "claude-electron",
   "productName": "POWER-AGENT",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "main.js",
+  "engines": {
+    "node": ">=16.20.2 <21"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
@@ -13,7 +16,8 @@
     "build:dmg": "electron-builder --mac dmg --arm64 --x64",
     "doctor": "bash ./scripts/doctor.sh",
     "reset:state": "bash ./scripts/reset-macos-state.sh",
-    "deploy": "bash ./scripts/deploy.sh"
+    "deploy": "bash ./scripts/deploy.sh",
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -66,6 +70,7 @@
       "automation-pty-preload.js",
       "scheduler/**/*",
       "automations/**/*",
+      "main/**/*",
       "node_modules/**/*"
     ],
     "mac": {

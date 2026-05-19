@@ -3,9 +3,11 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "▶ 1/4 matando instancias activas..."
+pkill -9 -f "POWER-AGENT.app/Contents/MacOS/POWER-AGENT" 2>/dev/null || true
+pkill -9 -f "POWER-AGENT Helper" 2>/dev/null || true
 pkill -f "POWER-AGENT" 2>/dev/null || true
 pkill -f "electron \." 2>/dev/null || true
-sleep 1
+sleep 2
 
 echo "▶ 2/4 compilando build x64 (solo zip, sin dmg)..."
 if ! npx electron-builder --mac zip --x64 >/tmp/deploy-build.log 2>&1; then

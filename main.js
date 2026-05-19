@@ -4,6 +4,8 @@ const { spawn, spawnSync } = require('child_process')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
+const { atomicWriteJsonSync, atomicWriteFileSync } = require('./main/atomic-writes')
+const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
 const TaskScheduler = require('./scheduler')
@@ -269,8 +271,7 @@ function loadAppConfig() {
 function saveAppConfig(nextConfig) {
   const normalized = normalizeAppConfig(nextConfig)
   const p = configFilePath()
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, JSON.stringify(normalized, null, 2), 'utf-8')
+  atomicWriteJsonSync(p, normalized)
   appConfig = normalized
   return normalized
 }
@@ -351,6 +352,43 @@ function getSession(wcId) {
 
 function getSessionByEvent(event) {
   return sessions.get(event.sender.id) || null
+}
+
+// Roots permitidos para IPC handlers de FS: cwds vivos + userData + ~/.claude/.
+// Se evalúa por petición (la lista de cwds cambia con cada ventana abierta).
+function allowedFsRoots() {
+  const roots = new Set()
+  roots.add(path.join(os.homedir(), '.claude'))
+  roots.add(path.join(os.homedir(), '.codex'))
+  try { roots.add(app.getPath('userData')) } catch {}
+  try { roots.add(TMP_DIR) } catch {}
+  try { roots.add(WA_MEDIA_DIR) } catch {}
+  for (const s of sessions.values()) {
+    if (s && typeof s.cwd === 'string' && s.cwd) roots.add(s.cwd)
+  }
+  if (lastPrimarySnapshot && lastPrimarySnapshot.cwd) roots.add(lastPrimarySnapshot.cwd)
+  return Array.from(roots)
+}
+
+function assertSafeFsPath(p) {
+  if (!isPathSafe(p, allowedFsRoots())) {
+    const err = new Error('Path not allowed')
+    err.code = 'EPATH_NOT_ALLOWED'
+    throw err
+  }
+}
+
+// Wrapper para handlers nuevos/tocados. El resto (95) sigue con su patrón actual;
+// migración incremental para no introducir regresiones de retorno.
+function safeIpcHandle(channel, fn) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await fn(event, ...args)
+    } catch (err) {
+      console.error(`[ipc:${channel}]`, err?.message || err)
+      return { ok: false, error: err?.message || String(err) }
+    }
+  })
 }
 
 function winFromEvent(event) {
@@ -2590,25 +2628,22 @@ ipcMain.handle('pick-file', async (event) => {
 // ── Filesystem (sidebar) ──
 const IGNORE_NAMES = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache', '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode'])
 
-ipcMain.handle('fs-read-dir', async (event, dirPath) => {
-  try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
-    const result = entries
-      .filter(e => !IGNORE_NAMES.has(e.name) && !e.name.startsWith('._'))
-      .map(e => {
-        const full = path.join(dirPath, e.name)
-        let size = 0
-        try { if (e.isFile()) size = fs.statSync(full).size } catch {}
-        return { name: e.name, path: full, isDir: e.isDirectory(), size }
-      })
-      .sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-        return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })
-      })
-    return { ok: true, entries: result }
-  } catch (err) {
-    return { ok: false, error: err.message }
-  }
+safeIpcHandle('fs-read-dir', async (event, dirPath) => {
+  assertSafeFsPath(dirPath)
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+  const result = entries
+    .filter(e => !IGNORE_NAMES.has(e.name) && !e.name.startsWith('._'))
+    .map(e => {
+      const full = path.join(dirPath, e.name)
+      let size = 0
+      try { if (e.isFile()) size = fs.statSync(full).size } catch {}
+      return { name: e.name, path: full, isDir: e.isDirectory(), size }
+    })
+    .sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })
+    })
+  return { ok: true, entries: result }
 })
 
 function computeProjectGraph(rootPath) {
@@ -2984,6 +3019,9 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
     s.treeWatcherPath = null
   }
   if (!dirPath) return { ok: true }
+  if (!isPathSafe(dirPath, allowedFsRoots())) {
+    return { ok: false, error: 'Path not allowed' }
+  }
   const safeCb = () => {
     try {
       if (!sessions.has(s.wcId)) return
@@ -3054,47 +3092,39 @@ function fileKind(p) {
   }
 }
 
-ipcMain.handle('file-info', async (event, p) => {
-  try {
-    const stat = fs.statSync(p)
-    if (stat.isDirectory()) return { ok: false, error: 'es una carpeta' }
-    return {
-      ok: true,
-      path: p,
-      size: stat.size,
-      mtime: stat.mtime.getTime(),
-      kind: fileKind(p),
-      name: path.basename(p)
-    }
-  } catch (err) {
-    return { ok: false, error: err.message }
+safeIpcHandle('file-info', async (event, p) => {
+  assertSafeFsPath(p)
+  const stat = fs.statSync(p)
+  if (stat.isDirectory()) return { ok: false, error: 'es una carpeta' }
+  return {
+    ok: true,
+    path: p,
+    size: stat.size,
+    mtime: stat.mtime.getTime(),
+    kind: fileKind(p),
+    name: path.basename(p)
   }
 })
 
-ipcMain.handle('file-read', async (event, p) => {
-  try {
-    const kind = fileKind(p)
-    if (kind === 'image' || kind === 'binary') {
-      const data = fs.readFileSync(p)
-      return { ok: true, kind, base64: data.toString('base64'), size: data.length }
-    }
-    const stat = fs.statSync(p)
-    if (stat.size > 5 * 1024 * 1024) return { ok: false, error: 'Archivo demasiado grande (>5MB)' }
-    const text = fs.readFileSync(p, 'utf-8')
-    return { ok: true, kind, text }
-  } catch (err) {
-    return { ok: false, error: err.message }
+safeIpcHandle('file-read', async (event, p) => {
+  assertSafeFsPath(p)
+  const kind = fileKind(p)
+  if (kind === 'image' || kind === 'binary') {
+    const data = fs.readFileSync(p)
+    return { ok: true, kind, base64: data.toString('base64'), size: data.length }
   }
+  const stat = fs.statSync(p)
+  if (stat.size > 5 * 1024 * 1024) return { ok: false, error: 'Archivo demasiado grande (>5MB)' }
+  const text = fs.readFileSync(p, 'utf-8')
+  return { ok: true, kind, text }
 })
 
-ipcMain.handle('file-write', async (event, { path: p, text }) => {
-  try {
-    fs.writeFileSync(p, text, 'utf-8')
-    event.sender.send('graph:file-active', p)
-    return { ok: true }
-  } catch (err) {
-    return { ok: false, error: err.message }
-  }
+safeIpcHandle('file-write', async (event, { path: p, text }) => {
+  assertSafeFsPath(p)
+  if (typeof text !== 'string') throw new Error('text must be string')
+  atomicWriteFileSync(p, text, 'utf-8')
+  event.sender.send('graph:file-active', p)
+  return { ok: true }
 })
 
 // ── Sesiones de Claude ──
@@ -3140,8 +3170,13 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
 })
 
 ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
+  if (!isValidSessionId(sessionId)) return false
   const dir = resolveClaudeProjectDir(cwd)
+  if (!dir) return false
+  const claudeRoot = path.join(os.homedir(), '.claude', 'projects')
+  if (!isPathSafe(dir, [claudeRoot])) return false
   const file = path.join(dir, `${sessionId}.jsonl`)
+  if (!isPathSafe(file, [claudeRoot])) return false
   if (fs.existsSync(file)) {
     fs.unlinkSync(file)
     forgetClaudeSessionTitle(file)
@@ -3154,9 +3189,14 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
   try {
     const nextTitle = String(title || '').trim()
     if (!nextTitle) return { ok: false, error: 'El título no puede estar vacío.' }
+    if (!isValidSessionId(sessionId)) return { ok: false, error: 'sessionId inválido.' }
 
     const dir = resolveClaudeProjectDir(cwd)
+    if (!dir) return { ok: false, error: 'No encontré la carpeta de la sesión.' }
+    const claudeRoot = path.join(os.homedir(), '.claude', 'projects')
+    if (!isPathSafe(dir, [claudeRoot])) return { ok: false, error: 'Path not allowed' }
     const file = path.join(dir, `${sessionId}.jsonl`)
+    if (!isPathSafe(file, [claudeRoot])) return { ok: false, error: 'Path not allowed' }
     if (!fs.existsSync(file)) return { ok: false, error: 'No encontré el archivo de sesión.' }
 
     const raw = fs.readFileSync(file, 'utf-8')
@@ -3202,7 +3242,8 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
     }
 
     const out = lines.join('\n')
-    fs.writeFileSync(file, hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out, 'utf-8')
+    const finalText = hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out
+    atomicWriteFileSync(file, finalText, 'utf-8')
     let stat = null
     try { stat = fs.statSync(file) } catch {}
     rememberClaudeSessionTitle(file, {
@@ -3528,7 +3569,7 @@ function saveWhatsappBounds(win) {
   if (!win || win.isDestroyed()) return
   try {
     const b = win.getBounds()
-    fs.writeFileSync(WA_WIN_BOUNDS_FILE, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }))
+    atomicWriteJsonSync(WA_WIN_BOUNDS_FILE, { x: b.x, y: b.y, width: b.width, height: b.height })
   } catch {}
 }
 
@@ -3633,6 +3674,7 @@ ipcMain.handle('viewer-open', (_event, arg) => {
   const filePath = typeof arg === 'string' ? arg : arg?.path
   const hint = (arg && typeof arg === 'object') ? arg.hint : null
   if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'Invalid path' }
+  if (!isPathSafe(filePath, allowedFsRoots())) return { ok: false, error: 'Path not allowed' }
   openViewerWindow(filePath, hint)
   return { ok: true }
 })
@@ -4416,13 +4458,33 @@ ipcMain.handle('whatsapp:get-config', () => {
   catch { try { return JSON.parse(fs.readFileSync(WA_CONFIG_PATH, 'utf-8')) } catch { return {} } }
 })
 
+// Whitelist: solo campos seguros editables desde el renderer. claudePath/personaPath
+// quedan fijados por el bridge para evitar RCE vía override desde un XSS.
+const WA_SAFE_CONFIG_FIELDS = new Set([
+  'autoReply',
+  'authorizedNumbers',
+  'ownerNumber',
+  'maxHistory',
+  'model',
+  'effort',
+  'handoverOnFromMe'
+])
+
 ipcMain.handle('whatsapp:save-config', (_e, partial) => {
-  try { return { ok: true, config: requireWhatsapp().updateConfig(partial || {}) } }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
+  try {
+    const sanitized = {}
+    if (partial && typeof partial === 'object') {
+      for (const k of Object.keys(partial)) {
+        if (WA_SAFE_CONFIG_FIELDS.has(k)) sanitized[k] = partial[k]
+      }
+    }
+    return { ok: true, config: requireWhatsapp().updateConfig(sanitized) }
+  } catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 
 ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
   if (!mediaPath || !fs.existsSync(mediaPath)) return { ok: false, error: 'archivo no existe' }
+  if (!isPathSafe(mediaPath, [WA_MEDIA_DIR, TMP_DIR])) return { ok: false, error: 'Path not allowed' }
   try {
     const text = await transcribeAudioFile(mediaPath, buildRuntimeEnv())
     return { ok: true, text }
@@ -4433,12 +4495,14 @@ ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
 
 ipcMain.handle('whatsapp:get-persona', () => {
   const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
+  const personaRoot = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
   try {
     let resolved = personaPath
     try {
       const cfg = whatsappClient?.getConfig?.()
       if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
-        resolved = cfg.personaPath.trim()
+        const candidate = cfg.personaPath.trim()
+        if (isPathSafe(candidate, [personaRoot])) resolved = candidate
       }
     } catch {}
     if (!fs.existsSync(resolved)) {
@@ -4454,19 +4518,18 @@ ipcMain.handle('whatsapp:get-persona', () => {
 
 ipcMain.handle('whatsapp:save-persona', (_e, text) => {
   const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
+  const personaRoot = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
   try {
     let resolved = personaPath
     try {
       const cfg = whatsappClient?.getConfig?.()
       if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
-        resolved = cfg.personaPath.trim()
+        const candidate = cfg.personaPath.trim()
+        if (isPathSafe(candidate, [personaRoot])) resolved = candidate
       }
     } catch {}
     if (typeof text !== 'string') return { ok: false, error: 'Texto inválido' }
-    fs.mkdirSync(path.dirname(resolved), { recursive: true })
-    const tmp = `${resolved}.tmp`
-    fs.writeFileSync(tmp, text, 'utf-8')
-    fs.renameSync(tmp, resolved)
+    atomicWriteFileSync(resolved, text, 'utf-8')
     const stat = fs.statSync(resolved)
     return { ok: true, path: resolved, mtime: stat.mtimeMs }
   } catch (err) {
