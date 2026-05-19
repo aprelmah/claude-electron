@@ -1444,15 +1444,43 @@ body.wa-resizing { cursor: ew-resize; user-select: none; }
 }
 
 /* Lista de chats */
-.wa-chatlist {
+.wa-chatlist-wrap {
   width: 38%;
   min-width: 130px;
   max-width: 240px;
   border-right: 1px solid var(--border);
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.wa-search-wrap {
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+.wa-search-input {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-family: var(--font);
+  outline: none;
+  box-sizing: border-box;
+}
+.wa-search-input:focus { border-color: var(--wa-green); }
+.wa-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.wa-chatlist {
+  flex: 1;
+  background: var(--bg);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 .wa-chatlist::-webkit-scrollbar { width: 6px; }
 .wa-chatlist::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -1911,3 +1939,104 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
+
+/* Burbuja "Claude escribiendo" */
+.wa-bubble-typing {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--wa-bubble-them);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  opacity: 0.92;
+}
+.wa-typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 14px;
+}
+.wa-typing-dots span {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text2);
+  animation: wa-typing-bounce 1.2s infinite ease-in-out;
+}
+.wa-typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+.wa-typing-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes wa-typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.55; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.wa-typing-label { font-size: 10px; color: var(--text2); }
+
+/* Modal de personalidad (solo lectura) */
+.wa-persona-panel { max-width: 720px; width: 92%; max-height: 80vh; display: flex; flex-direction: column; }
+.wa-persona-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  min-height: 0;
+  flex: 1;
+}
+.wa-persona-text {
+  flex: 1;
+  margin: 0;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 12px;
+  font-family: Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-y: auto;
+  max-height: 56vh;
+  user-select: text;
+}
+.wa-persona-text::-webkit-scrollbar { width: 6px; }
+.wa-persona-text::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.wa-persona-note {
+  font-size: 11px;
+  color: var(--text2);
+  line-height: 1.4;
+}
+.wa-persona-note code {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
+}
+.wa-persona-edit {
+  flex: 1;
+  margin: 0;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 12px;
+  font-family: Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  max-height: 56vh;
+  min-height: 200px;
+  resize: vertical;
+  outline: none;
+  user-select: text;
+}
+.wa-persona-edit:focus {
+  border-color: var(--accent, #25d366);
+}
+.wa-persona-status {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text2);
+  align-self: center;
+}
+.wa-persona-status[data-kind="ok"] { color: #25d366; }
+.wa-persona-status[data-kind="err"] { color: #f04747; }

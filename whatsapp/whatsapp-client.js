@@ -14,10 +14,19 @@ const POLL_MS = 1500
 const STATUS_POLL_MS = 5000
 const STATE_FLUSH_MS = 5000
 const HISTORY_MAX = 200
+const MEDIA_ESCALATION_SECS = 300 // 5 min en manual tras adjunto de cliente
+const MAX_PARALLEL_REPLIES = 3
+const PERSONA_RELOAD_DEBOUNCE_MS = 500
+const BRIDGE_TIMEOUT_DEFAULT_MS = 30_000
+const BRIDGE_TIMEOUT_LARGE_MS = 60_000
+const BRIDGE_LARGE_PAYLOAD_BYTES = 1_000_000
 
 const MEDIA_PROTOCOL = 'wa-media'
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 const AUTO_REPLY_FALLBACK_TEXT = 'Recibido. Te responde Luismi en breve.'
+// Solo bloqueamos insultos directos a persona, no tacos coloquiales generales:
+// "joder" o "mierda" son normales en castellano de España y bloquearlos cortaría
+// respuestas legítimas. Sí cortamos cualquier insulto que ataque al cliente.
 const TOXIC_REPLY_PATTERNS = [
   /\bgilipollas?\b/i,
   /\bidiot[ao]s?\b/i,
@@ -26,8 +35,7 @@ const TOXIC_REPLY_PATTERNS = [
   /\bsubnormal(?:es)?\b/i,
   /\bcapull[oa]s?\b/i,
   /\bpringad[oa]s?\b/i,
-  /\bpayas[oa]s?\b/i,
-  /\b(mierda|joder|vete a la mierda)\b/i
+  /\bpayas[oa]s?\b/i
 ]
 
 function nowTs() { return Math.floor(Date.now() / 1000) }
@@ -37,12 +45,17 @@ function safeRead(p) {
 }
 
 function safeWrite(p, obj) {
+  // Write atómico: escribimos a .tmp y renombramos. Si crash a mitad, el .tmp
+  // queda huérfano pero el archivo original sigue íntegro.
+  const tmp = `${p}.tmp`
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, JSON.stringify(obj, null, 2), 'utf-8')
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8')
+    fs.renameSync(tmp, p)
     return true
   } catch (err) {
     console.error('[whatsapp] state write failed:', err?.message || err)
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp) } catch {}
     return false
   }
 }
@@ -79,8 +92,7 @@ function loadConfig() {
 function saveConfig(next) {
   const current = loadConfig()
   const merged = normalizeConfig({ ...current, ...(next || {}) })
-  fs.mkdirSync(BRIDGE_DIR, { recursive: true })
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf-8')
+  safeWrite(CONFIG_PATH, merged)
   return merged
 }
 
@@ -147,6 +159,10 @@ function decorateMessage(msg) {
 
 function messageSignature(msg) {
   if (!msg) return ''
+  // nowTs guarda timestamps en segundos: la mínima granularidad real de dedupe es 1s.
+  // Subir a milisegundos rompería compatibilidad con state.json existente. Mensajes
+  // distintos enviados dentro del mismo segundo con el mismo cuerpo se consideran
+  // duplicados (escenario muy poco probable con clientes reales).
   const t = Number(msg.timestamp) || 0
   const bucket = t > 9_999_999_999 ? Math.floor(t / 1000) : t
   const body = String(msg.body || '').trim().toLowerCase()
@@ -169,13 +185,17 @@ function bridgeFetch(method, urlPath, body) {
       headers['content-type'] = 'application/json'
       headers['content-length'] = payload.length
     }
+    // Subimos timeout para payloads grandes (envíos de media en base64).
+    const timeout = payload && payload.length > BRIDGE_LARGE_PAYLOAD_BYTES
+      ? BRIDGE_TIMEOUT_LARGE_MS
+      : BRIDGE_TIMEOUT_DEFAULT_MS
     const req = http.request({
       host: '127.0.0.1',
       port: 3031,
       method,
       path: urlPath,
       headers,
-      timeout: 30000
+      timeout
     }, (res) => {
       const chunks = []
       res.on('data', (c) => chunks.push(c))
@@ -212,10 +232,89 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   let pollBackoffMs = POLL_MS
   let claudeBin = config.claudePath
   let personaText = ''
+  let personaWatcher = null
+  let personaWatchedPath = ''
+  let personaReloadTimer = null
+  // Cola por JID: respuestas al MISMO cliente se serializan; entre clientes,
+  // hasta MAX_PARALLEL_REPLIES en vuelo (semáforo global).
+  const inflightByJid = new Map()
+  let inflightCount = 0
+  const inflightWaiters = []
+
+  function acquireSlot() {
+    return new Promise((resolve) => {
+      if (inflightCount < MAX_PARALLEL_REPLIES) {
+        inflightCount += 1
+        resolve()
+      } else {
+        inflightWaiters.push(resolve)
+      }
+    })
+  }
+
+  function releaseSlot() {
+    if (inflightWaiters.length) {
+      // Pasamos el slot directamente: count no cambia.
+      const next = inflightWaiters.shift()
+      next()
+    } else {
+      inflightCount = Math.max(0, inflightCount - 1)
+    }
+  }
+
+  function stopPersonaWatcher() {
+    if (personaReloadTimer) { clearTimeout(personaReloadTimer); personaReloadTimer = null }
+    if (personaWatcher) {
+      try { personaWatcher.close() } catch {}
+      personaWatcher = null
+      personaWatchedPath = ''
+    }
+  }
+
+  function reloadPersonaFromDisk() {
+    try {
+      personaText = fs.readFileSync(config.personaPath, 'utf-8')
+      console.log('[whatsapp] persona reloaded from disk')
+    } catch {
+      personaText = ''
+    }
+  }
+
+  function startPersonaWatcher() {
+    stopPersonaWatcher()
+    const target = config.personaPath
+    if (!target) return
+    try {
+      personaWatcher = fs.watch(target, () => {
+        if (personaReloadTimer) clearTimeout(personaReloadTimer)
+        personaReloadTimer = setTimeout(() => {
+          personaReloadTimer = null
+          reloadPersonaFromDisk()
+          // Si el archivo fue borrado y recreado, fs.watch puede dejar de notificar.
+          // Re-armamos el watcher para sobrevivir a editores que escriben con rename.
+          if (!fs.existsSync(target)) {
+            try { personaWatcher && personaWatcher.close() } catch {}
+            personaWatcher = null
+          }
+          if (!personaWatcher) startPersonaWatcher()
+        }, PERSONA_RELOAD_DEBOUNCE_MS)
+      })
+      personaWatchedPath = target
+      personaWatcher.on('error', () => {
+        // El watcher puede romperse en algunos sistemas; lo recreamos.
+        stopPersonaWatcher()
+        setTimeout(() => { if (!stopped) startPersonaWatcher() }, 1000)
+      })
+    } catch {
+      // Si el archivo no existe aún, reintentamos al cabo de un segundo.
+      setTimeout(() => { if (!stopped && !personaWatcher) startPersonaWatcher() }, 1000)
+    }
+  }
 
   function loadPersona() {
     try { personaText = fs.readFileSync(config.personaPath, 'utf-8') }
     catch { personaText = '' }
+    if (personaWatchedPath !== config.personaPath) startPersonaWatcher()
   }
 
   function loadState() {
@@ -385,9 +484,45 @@ function isAuthorized(jid) {
     chat.unread = (chat.unread || 0) + 1
     emitNewMessage(jid, msg)
 
-    // Decisión auto-respuesta
     if (!config.autoReply) return
+
+    // Multimedia entrante (no audio) escala 5 min a manual. Audio sigue el flujo normal.
+    const isEscalatingMedia = msg.type === 'image' || msg.type === 'video' || msg.type === 'document' || msg.type === 'sticker'
+    if (isEscalatingMedia) {
+      chat.mode = 'manual'
+      chat.escalatedUntil = nowTs() + MEDIA_ESCALATION_SECS
+      markDirty()
+      emitter.emit('chat-updated', summarizeChat(jid))
+      return
+    }
+
+    // Si la escalada multimedia sigue vigente, no respondemos.
+    if (chat.escalatedUntil && chat.escalatedUntil > nowTs()) return
+
+    // Escalada ya vencida sobre texto entrante: volvemos a auto automáticamente.
+    if (chat.mode === 'manual' && chat.escalatedUntil && chat.escalatedUntil <= nowTs()) {
+      chat.mode = 'auto'
+      chat.escalatedUntil = 0
+      markDirty()
+      emitter.emit('chat-updated', summarizeChat(jid))
+    }
+
     if (chat.mode !== 'auto') return
+
+    // Serializamos por JID y respetamos semáforo global. Fire-and-forget para no
+    // bloquear el poll: el siguiente cliente puede entrar en paralelo.
+    const prev = inflightByJid.get(jid) || Promise.resolve()
+    const next = prev.then(() => acquireSlot().then(() => respondTo(jid, msg))).catch(() => {})
+    const tracked = next.finally(() => {
+      releaseSlot()
+      if (inflightByJid.get(jid) === tracked) inflightByJid.delete(jid)
+    })
+    inflightByJid.set(jid, tracked)
+  }
+
+  async function respondTo(jid, msg) {
+    const chat = chats.get(jid)
+    if (!chat) return
 
     let promptBody = msg.body
     if (msg.type === 'audio') {
@@ -402,20 +537,6 @@ function isAuthorized(jid) {
       } else {
         promptBody = '[Audio del cliente, sin transcripción disponible]'
       }
-    } else if (msg.type === 'image') {
-      promptBody = msg.body && msg.body.trim()
-        ? `[Imagen del cliente con texto: "${msg.body.trim()}"]`
-        : '[Imagen del cliente]'
-    } else if (msg.type === 'video') {
-      promptBody = msg.body && msg.body.trim()
-        ? `[Vídeo del cliente con texto: "${msg.body.trim()}"]`
-        : '[Vídeo del cliente]'
-    } else if (msg.type === 'document') {
-      promptBody = msg.body && msg.body.trim()
-        ? `[Documento del cliente: ${msg.body.trim()}]`
-        : '[Documento del cliente]'
-    } else if (msg.type === 'sticker') {
-      promptBody = '[Sticker del cliente]'
     }
 
     if (!promptBody || !promptBody.trim()) return
@@ -689,8 +810,8 @@ function isAuthorized(jid) {
     claudeBin = config.claudePath
     loadPersona()
     loadState()
-    // Limpia inbox al arrancar para no procesar viejos.
-    bridgeFetch('DELETE', '/messages').catch(() => {})
+    // No vaciamos el inbox al arrancar: si la app estaba cerrada y llegaron
+    // mensajes, queremos procesarlos. El dedupe por id+firma evita repetir.
     pollStatus().catch(() => {})
     pollTimer = setTimeout(pollMessages, 250)
     pollTimer.unref?.()
@@ -705,7 +826,17 @@ function isAuthorized(jid) {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
+    stopPersonaWatcher()
     persistState()
+  }
+
+  // Flush de estado en SIGINT/SIGTERM. Sólo registramos una vez por proceso
+  // aunque se creen múltiples clientes.
+  if (!process._waSignalHandlersRegistered) {
+    const flushAndForget = () => { try { persistState() } catch {} }
+    process.once('SIGINT', flushAndForget)
+    process.once('SIGTERM', flushAndForget)
+    process._waSignalHandlersRegistered = true
   }
 
   return {

@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('api', {
     getConfig: () => ipcRenderer.invoke('whatsapp:get-config'),
     saveConfig: (cfg) => ipcRenderer.invoke('whatsapp:save-config', cfg || {}),
     transcribeAudio: (mediaPath) => ipcRenderer.invoke('whatsapp:transcribe-audio', mediaPath),
+    getPersona: () => ipcRenderer.invoke('whatsapp:get-persona'),
+    savePersona: (text) => ipcRenderer.invoke('whatsapp:save-persona', text),
     onNewMessage: (cb) => {
       const h = (_e, payload) => cb(payload)
       ipcRenderer.on('whatsapp:new-message', h)

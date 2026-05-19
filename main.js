@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, Notification } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -2364,6 +2364,59 @@ app.whenReady().then(async () => {
       broadcastToAllWindows('whatsapp:status-changed', status)
     })
 
+    whatsappClient.on('new-message', (payload) => {
+      try {
+        const message = payload && (payload.message || payload)
+        if (!message || message.fromMe === true) return
+        const mainFocused = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w !== whatsappWindow && w.isFocused())
+        const waFocused = !!(whatsappWindow && !whatsappWindow.isDestroyed() && whatsappWindow.isFocused())
+        if (waFocused || mainFocused) return
+        const jid = (payload && payload.jid) || message.from || ''
+        let chat = payload && payload.chat
+        if (!chat && jid) {
+          try { chat = (whatsappClient.getChats() || []).find(c => c && c.jid === jid) || null } catch {}
+        }
+        const title = (chat && (chat.displayName || chat.displayNumber)) ||
+                      message.pushName ||
+                      jid ||
+                      'WhatsApp'
+        const bodyType = {
+          audio: 'Mensaje de voz',
+          image: 'Imagen',
+          video: 'Vídeo',
+          document: 'Documento',
+          sticker: 'Sticker'
+        }[message.type] || ''
+        const body = (message.body && String(message.body).slice(0, 140)) || bodyType || 'Mensaje nuevo'
+        if (!Notification.isSupported()) return
+        const n = new Notification({ title: String(title), body, silent: false })
+        n.on('click', () => {
+          try { global.__openWhatsappWindow && global.__openWhatsappWindow() } catch {}
+        })
+        n.show()
+      } catch (err) {
+        console.warn('[whatsapp] native notification failed:', err?.message || err)
+      }
+    })
+
+    let waBadgeTimer = null
+    function refreshWaBadge() {
+      if (waBadgeTimer) return
+      waBadgeTimer = setTimeout(() => {
+        waBadgeTimer = null
+        try {
+          if (!whatsappClient || typeof app.setBadgeCount !== 'function') return
+          const list = whatsappClient.getChats() || []
+          const total = list.reduce((acc, c) => acc + (Number(c && c.unread) || 0), 0)
+          app.setBadgeCount(total > 0 ? total : 0)
+        } catch {}
+      }, 300)
+      waBadgeTimer.unref?.()
+    }
+    whatsappClient.on('new-message', refreshWaBadge)
+    whatsappClient.on('chat-updated', refreshWaBadge)
+    global.__waRefreshBadge = refreshWaBadge
+
     function pingBridge() {
       return new Promise((resolve, reject) => {
         const req = require('http').request({
@@ -2436,6 +2489,7 @@ app.on('before-quit', () => {
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
+  try { if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0) } catch {}
   try { tasksScheduler?.destroy() } catch {}
 })
 
@@ -3517,6 +3571,48 @@ ipcMain.handle('whatsapp-window:open', () => {
   return { ok: true, reused: false }
 })
 
+global.__openWhatsappWindow = () => {
+  try {
+    if (whatsappWindow && !whatsappWindow.isDestroyed()) {
+      if (whatsappWindow.isMinimized()) whatsappWindow.restore()
+      whatsappWindow.show()
+      whatsappWindow.focus()
+      return
+    }
+    const saved = loadWhatsappBounds()
+    const opts = {
+      width: (saved && saved.width) || 980,
+      height: (saved && saved.height) || 720,
+      minWidth: 640,
+      minHeight: 480,
+      resizable: true,
+      frame: false,
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 12, y: 13 },
+      title: 'POWER-AGENT — WhatsApp',
+      backgroundColor: '#1a1a1f',
+      webPreferences: {
+        preload: path.join(__dirname, 'whatsapp-window-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    }
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      opts.x = saved.x
+      opts.y = saved.y
+    }
+    whatsappWindow = new BrowserWindow(opts)
+    whatsappWindow.loadFile('whatsapp-window.html')
+    const flush = () => saveWhatsappBounds(whatsappWindow)
+    whatsappWindow.on('resize', flush)
+    whatsappWindow.on('move', flush)
+    whatsappWindow.on('close', flush)
+    whatsappWindow.on('closed', () => { whatsappWindow = null })
+  } catch (err) {
+    console.warn('[whatsapp] open from notification failed:', err?.message || err)
+  }
+}
+
 ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
   let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
   if (!root) root = getCwdSync() || null
@@ -4332,5 +4428,48 @@ ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
     return { ok: true, text }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('whatsapp:get-persona', () => {
+  const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
+  try {
+    let resolved = personaPath
+    try {
+      const cfg = whatsappClient?.getConfig?.()
+      if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
+        resolved = cfg.personaPath.trim()
+      }
+    } catch {}
+    if (!fs.existsSync(resolved)) {
+      return { ok: false, error: `No existe: ${resolved}`, path: resolved }
+    }
+    const text = fs.readFileSync(resolved, 'utf-8')
+    const stat = fs.statSync(resolved)
+    return { ok: true, text, path: resolved, mtime: stat.mtimeMs }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err), path: personaPath }
+  }
+})
+
+ipcMain.handle('whatsapp:save-persona', (_e, text) => {
+  const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
+  try {
+    let resolved = personaPath
+    try {
+      const cfg = whatsappClient?.getConfig?.()
+      if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
+        resolved = cfg.personaPath.trim()
+      }
+    } catch {}
+    if (typeof text !== 'string') return { ok: false, error: 'Texto inválido' }
+    fs.mkdirSync(path.dirname(resolved), { recursive: true })
+    const tmp = `${resolved}.tmp`
+    fs.writeFileSync(tmp, text, 'utf-8')
+    fs.renameSync(tmp, resolved)
+    const stat = fs.statSync(resolved)
+    return { ok: true, path: resolved, mtime: stat.mtimeMs }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err), path: personaPath }
   }
 })

@@ -36,9 +36,14 @@
   let qrModalEl = null
   let cfgModalEl = null
   let imgViewerEl = null
+  let personaModalEl = null
+  let searchInputEl = null
   let recIndicatorEl = null
   let statusDotEl = null
   let unreadBadgeEl = null
+  let searchQuery = ''
+  const typingTimers = new Map()
+  const TYPING_TIMEOUT_MS = 60000
 
   let chats = []
   let currentJid = null
@@ -99,6 +104,29 @@
     return String(s || '').replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[c])
+  }
+
+  function foldText(s) {
+    return String(s || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+  }
+
+  function chatMatchesQuery(c, q) {
+    if (!q) return true
+    const needle = foldText(q)
+    const haystacks = [
+      c && c.displayName,
+      c && c.phoneNumber,
+      c && c.displayNumber,
+      c && c.jid,
+      c && c.lastMessage && c.lastMessage.body
+    ]
+    for (const h of haystacks) {
+      if (h && foldText(h).includes(needle)) return true
+    }
+    return false
   }
 
   function msgTimeBucket(ts) {
@@ -260,6 +288,9 @@
         <button class="icon-btn small wa-header-btn" id="wa-btn-qr" title="Ver código QR" aria-label="Código QR">
           <svg viewBox="0 0 24 24" width="14" height="14"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><line x1="14" y1="14" x2="14" y2="21"/><line x1="14" y1="14" x2="21" y2="14"/><line x1="18" y1="18" x2="21" y2="18"/><line x1="18" y1="21" x2="21" y2="21"/></svg>
         </button>
+        <button class="icon-btn small wa-header-btn" id="wa-btn-persona" title="Ver personalidad de Claude" aria-label="Personalidad">
+          <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg>
+        </button>
         <button class="icon-btn small wa-header-btn" id="wa-btn-cfg" title="Configuración" aria-label="Configuración">
           <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
         </button>
@@ -268,8 +299,13 @@
         </button>
       </div>
       <div class="wa-body">
-        <aside class="wa-chatlist" role="listbox" aria-label="Lista de chats">
-          <div class="wa-chatlist-empty">Sin chats todavía.</div>
+        <aside class="wa-chatlist-wrap">
+          <div class="wa-search-wrap">
+            <input type="search" class="wa-search-input" id="wa-search-input" placeholder="Buscar chat…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="wa-chatlist" role="listbox" aria-label="Lista de chats">
+            <div class="wa-chatlist-empty">Sin chats todavía.</div>
+          </div>
         </aside>
         <section class="wa-convo">
           <div class="wa-convo-empty">
@@ -387,10 +423,6 @@
               <span>Ruta al persona.md</span>
               <input type="text" id="wa-cfg-persona" placeholder="/ruta/al/persona.md" />
             </label>
-            <div class="wa-cfg-actions">
-              <button class="icon-btn text-btn" id="wa-cfg-open-persona">Abrir persona</button>
-              <button class="icon-btn text-btn" id="wa-cfg-reload-persona">Recargar persona</button>
-            </div>
           </div>
           <div class="wa-cfg-pane hidden" data-pane="allowlist">
             <div class="wa-cfg-allow-row">
@@ -417,7 +449,32 @@
       </div>
     `
 
-    return { qr, cfg, img }
+    // Persona viewer + editor
+    const persona = el('div', { attrs: { id: 'wa-persona-modal' }, cls: 'wa-modal hidden' })
+    persona.innerHTML = `
+      <div class="modal-backdrop" data-close="wa-persona-modal"></div>
+      <div class="modal-panel wa-modal-panel wa-persona-panel">
+        <div class="modal-header">
+          <span class="modal-title">Personalidad de Claude</span>
+          <span class="modal-sub" id="wa-persona-path"></span>
+          <button class="modal-close" data-close="wa-persona-modal">×</button>
+        </div>
+        <div class="wa-persona-body">
+          <pre class="wa-persona-text" id="wa-persona-text">Cargando…</pre>
+          <textarea class="wa-persona-edit hidden" id="wa-persona-edit" spellcheck="false"></textarea>
+          <div class="wa-persona-note">Los cambios se aplican al instante en el próximo mensaje.</div>
+        </div>
+        <div class="settings-actions">
+          <span class="wa-persona-status" id="wa-persona-status"></span>
+          <button class="icon-btn text-btn" id="wa-persona-edit-btn">Editar</button>
+          <button class="icon-btn text-btn hidden" id="wa-persona-cancel-btn">Cancelar</button>
+          <button class="icon-btn text-btn primary hidden" id="wa-persona-save-btn">Guardar</button>
+          <button class="icon-btn text-btn" id="wa-persona-close-btn" data-close="wa-persona-modal">Cerrar</button>
+        </div>
+      </div>
+    `
+
+    return { qr, cfg, img, persona }
   }
 
   // ── Renderizado ──
@@ -428,7 +485,14 @@
       chatListEl.appendChild(empty)
       return
     }
-    const sorted = [...chats].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0))
+    const sorted = [...chats]
+      .filter(c => chatMatchesQuery(c, searchQuery))
+      .sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0))
+    if (!sorted.length) {
+      const empty = el('div', { cls: 'wa-chatlist-empty', text: 'Sin resultados.' })
+      chatListEl.appendChild(empty)
+      return
+    }
     for (const c of sorted) {
       const row = el('div', { cls: 'wa-chat-row', attrs: { role: 'option', tabindex: '0' } })
       if (c.jid === currentJid) row.classList.add('active')
@@ -569,7 +633,47 @@
       const bubble = renderBubble(m, isAutoChat, transcripts)
       convoBodyEl.appendChild(bubble)
     }
+    if (currentJid && typingTimers.has(currentJid)) appendTypingBubble()
     if (stickBottom) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
+  }
+
+  function appendTypingBubble() {
+    if (!convoBodyEl) return
+    if (convoBodyEl.querySelector('.wa-typing-row')) return
+    const row = el('div', { cls: 'wa-bubble-row them wa-typing-row' })
+    const bubble = el('div', { cls: 'wa-bubble wa-bubble-typing' })
+    bubble.innerHTML = `
+      <div class="wa-bubble-bot">🤖 Claude</div>
+      <div class="wa-typing-dots"><span></span><span></span><span></span></div>
+      <div class="wa-typing-label">escribiendo…</div>
+    `
+    row.appendChild(bubble)
+    convoBodyEl.appendChild(row)
+  }
+
+  function removeTypingBubble() {
+    if (!convoBodyEl) return
+    const r = convoBodyEl.querySelector('.wa-typing-row')
+    if (r) r.remove()
+  }
+
+  function showTypingFor(jid) {
+    if (!jid) return
+    const existing = typingTimers.get(jid)
+    if (existing) clearTimeout(existing)
+    const t = setTimeout(() => hideTypingFor(jid), TYPING_TIMEOUT_MS)
+    typingTimers.set(jid, t)
+    if (jid === currentJid) {
+      appendTypingBubble()
+      if (convoBodyEl) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
+    }
+  }
+
+  function hideTypingFor(jid) {
+    if (!jid) return
+    const t = typingTimers.get(jid)
+    if (t) { clearTimeout(t); typingTimers.delete(jid) }
+    if (jid === currentJid) removeTypingBubble()
   }
 
   function renderBubble(m, isAutoChat, transcripts) {
@@ -1055,15 +1159,112 @@
         $('#wa-cfg-status', cfgModalEl).textContent = e.message || 'Error guardando'
       }
     })
-    $('#wa-cfg-reload-persona', cfgModalEl).addEventListener('click', async () => {
-      $('#wa-cfg-status', cfgModalEl).textContent = 'Recargando persona…'
-      try {
-        const r = await wa.saveConfig({ reloadPersona: true })
-        $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok) ? 'Persona recargada.' : 'Error'
-      } catch (e) {
-        $('#wa-cfg-status', cfgModalEl).textContent = e.message || 'Error'
+  }
+
+  let personaModalBound = false
+  let personaCurrentText = ''
+
+  function setPersonaStatus(msg, kind) {
+    const s = personaModalEl && $('#wa-persona-status', personaModalEl)
+    if (!s) return
+    s.textContent = msg || ''
+    s.dataset.kind = kind || ''
+  }
+
+  function setPersonaMode(mode) {
+    if (!personaModalEl) return
+    const pre = $('#wa-persona-text', personaModalEl)
+    const ta = $('#wa-persona-edit', personaModalEl)
+    const editBtn = $('#wa-persona-edit-btn', personaModalEl)
+    const cancelBtn = $('#wa-persona-cancel-btn', personaModalEl)
+    const saveBtn = $('#wa-persona-save-btn', personaModalEl)
+    const editing = mode === 'edit'
+    if (pre) pre.classList.toggle('hidden', editing)
+    if (ta) ta.classList.toggle('hidden', !editing)
+    if (editBtn) editBtn.classList.toggle('hidden', editing)
+    if (cancelBtn) cancelBtn.classList.toggle('hidden', !editing)
+    if (saveBtn) saveBtn.classList.toggle('hidden', !editing)
+  }
+
+  function enterPersonaEdit() {
+    const ta = personaModalEl && $('#wa-persona-edit', personaModalEl)
+    if (!ta) return
+    ta.value = personaCurrentText || ''
+    setPersonaMode('edit')
+    setPersonaStatus('')
+    requestAnimationFrame(() => { try { ta.focus() } catch {} })
+  }
+
+  function cancelPersonaEdit() {
+    setPersonaMode('view')
+    setPersonaStatus('')
+  }
+
+  async function savePersonaEdit() {
+    const ta = personaModalEl && $('#wa-persona-edit', personaModalEl)
+    if (!ta) return
+    if (!wa || typeof wa.savePersona !== 'function') {
+      setPersonaStatus('No disponible: bridge desconectado.', 'err')
+      return
+    }
+    const text = ta.value
+    setPersonaStatus('Guardando…')
+    try {
+      const r = await wa.savePersona(text)
+      if (r && r.ok) {
+        personaCurrentText = text
+        const pre = $('#wa-persona-text', personaModalEl)
+        if (pre) pre.textContent = text || '(persona vacía)'
+        setPersonaMode('view')
+        setPersonaStatus('Guardado.', 'ok')
+        setTimeout(() => setPersonaStatus(''), 2500)
+      } else {
+        setPersonaStatus((r && r.error) || 'No se pudo guardar.', 'err')
       }
-    })
+    } catch (e) {
+      setPersonaStatus(e.message || 'Error guardando.', 'err')
+    }
+  }
+
+  function bindPersonaModalOnce() {
+    if (personaModalBound || !personaModalEl) return
+    personaModalBound = true
+    const editBtn = $('#wa-persona-edit-btn', personaModalEl)
+    const cancelBtn = $('#wa-persona-cancel-btn', personaModalEl)
+    const saveBtn = $('#wa-persona-save-btn', personaModalEl)
+    if (editBtn) editBtn.addEventListener('click', enterPersonaEdit)
+    if (cancelBtn) cancelBtn.addEventListener('click', cancelPersonaEdit)
+    if (saveBtn) saveBtn.addEventListener('click', () => { savePersonaEdit() })
+  }
+
+  async function openPersonaModal() {
+    if (!personaModalEl) return
+    bindPersonaModalOnce()
+    personaModalEl.classList.remove('hidden')
+    setPersonaMode('view')
+    setPersonaStatus('')
+    const pre = $('#wa-persona-text', personaModalEl)
+    const pathEl = $('#wa-persona-path', personaModalEl)
+    if (pre) pre.textContent = 'Cargando…'
+    if (pathEl) pathEl.textContent = ''
+    personaCurrentText = ''
+    if (!wa || typeof wa.getPersona !== 'function') {
+      if (pre) pre.textContent = 'No disponible: bridge desconectado.'
+      return
+    }
+    try {
+      const r = await wa.getPersona()
+      if (r && r.ok) {
+        personaCurrentText = r.text || ''
+        if (pre) pre.textContent = personaCurrentText || '(persona vacía)'
+        if (pathEl) pathEl.textContent = r.path || ''
+      } else {
+        if (pre) pre.textContent = (r && r.error) || 'No se pudo leer el archivo.'
+        if (pathEl) pathEl.textContent = (r && r.path) || ''
+      }
+    } catch (e) {
+      if (pre) pre.textContent = e.message || 'Error leyendo persona.'
+    }
   }
 
   // ── Apertura/cierre del panel ──
@@ -1132,6 +1333,7 @@
         if (!qrModalEl.classList.contains('hidden')) { qrModalEl.classList.add('hidden'); return }
         if (!cfgModalEl.classList.contains('hidden')) { cfgModalEl.classList.add('hidden'); return }
         if (!imgViewerEl.classList.contains('hidden')) { imgViewerEl.classList.add('hidden'); return }
+        if (personaModalEl && !personaModalEl.classList.contains('hidden')) { personaModalEl.classList.add('hidden'); return }
       }
     })
   }
@@ -1146,6 +1348,12 @@
         const jid = payload.jid || (payload.message && payload.message.from) || null
         const message = payload.message || payload
         if (!jid || !message) return
+        const chatRef = chats.find(c => c && c.jid === jid)
+        if (message.fromMe === true) {
+          hideTypingFor(jid)
+        } else if (chatRef && chatRef.mode === 'auto') {
+          showTypingFor(jid)
+        }
         if (jid === currentJid) {
           const dupId = message.id && currentMessages.some(m => m && m.id === message.id)
           const sig = msgSignature(message)
@@ -1227,6 +1435,10 @@
     // backdrop click cierra qr y cfg
     qrModalEl.querySelector('.modal-backdrop').addEventListener('click', () => qrModalEl.classList.add('hidden'))
     cfgModalEl.querySelector('.modal-backdrop').addEventListener('click', () => cfgModalEl.classList.add('hidden'))
+    if (personaModalEl) {
+      const bd = personaModalEl.querySelector('.modal-backdrop')
+      if (bd) bd.addEventListener('click', () => personaModalEl.classList.add('hidden'))
+    }
   }
 
   // ── Init ──
@@ -1256,13 +1468,15 @@
     chatListEl = $('.wa-chatlist', panelEl)
     convoEl = $('.wa-convo', panelEl)
     statusDotEl = $('.wa-status-dot', panelEl)
+    searchInputEl = $('#wa-search-input', panelEl)
 
     // 3. Modales
     const m = buildModals()
-    qrModalEl = m.qr; cfgModalEl = m.cfg; imgViewerEl = m.img
+    qrModalEl = m.qr; cfgModalEl = m.cfg; imgViewerEl = m.img; personaModalEl = m.persona
     document.body.appendChild(qrModalEl)
     document.body.appendChild(cfgModalEl)
     document.body.appendChild(imgViewerEl)
+    document.body.appendChild(personaModalEl)
 
     // 4. Listeners de panel
     if (toggleBtn) toggleBtn.addEventListener('click', () => {
@@ -1279,6 +1493,22 @@
     })
     $('#wa-btn-qr', panelEl).addEventListener('click', openQrModal)
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
+    const personaBtn = $('#wa-btn-persona', panelEl)
+    if (personaBtn) personaBtn.addEventListener('click', openPersonaModal)
+    if (searchInputEl) {
+      searchInputEl.addEventListener('input', () => {
+        searchQuery = searchInputEl.value || ''
+        renderChatList()
+      })
+      searchInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && searchInputEl.value) {
+          e.preventDefault(); e.stopPropagation()
+          searchInputEl.value = ''
+          searchQuery = ''
+          renderChatList()
+        }
+      })
+    }
 
     if (!STANDALONE) bindResize()
     bindShortcut()
