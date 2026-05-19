@@ -465,7 +465,8 @@ function isAuthorized(jid) {
     const chat = ensureChat(jid)
     // Enriquecer identidad si el bridge nos pasa nombre/numero.
     // Orden de preferencia para mostrar: displayName → phoneNumber → displayNumber/JID.
-    if (raw.displayName && raw.displayName !== chat.displayName) { chat.displayName = String(raw.displayName); markDirty() }
+    // Para grupos, raw.displayName viene del participante, no del grupo — no sobreescribir.
+    if (raw.displayName && raw.displayName !== chat.displayName && !jid.endsWith('@g.us')) { chat.displayName = String(raw.displayName); markDirty() }
     const safeIncomingPhone = sanitizePhoneForJid(jid, raw.phoneNumber)
     if (safeIncomingPhone && safeIncomingPhone !== chat.phoneNumber) { chat.phoneNumber = safeIncomingPhone; markDirty() }
     const msg = {
@@ -769,6 +770,7 @@ function isAuthorized(jid) {
           mode: c.mode,
           unread: c.unread || 0,
           lastActivity: c.lastActivity || 0,
+          isGroup: c.isGroup || false,
           lastMessage: last ? {
             body: last.body,
             type: last.type,
