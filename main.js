@@ -76,6 +76,15 @@ if (PERF) {
   console.log('[PERF] telemetry enabled (POWERAGENT_PERF=1)')
 }
 
+// ── PTY load-aware graph throttling ──
+const PTY_GRAPH_LOAD_WINDOW_MS = 1000
+const PTY_GRAPH_HIGH_EVENTS_PER_SEC = 60
+const PTY_GRAPH_HIGH_HOLD_MS = 5000
+const GRAPH_FILE_ACTIVE_MIN_MS_NORMAL = 120
+const GRAPH_FILE_ACTIVE_MIN_MS_BUSY = 1200
+const GRAPH_REFRESH_MIN_MS_NORMAL = 320
+const GRAPH_REFRESH_MIN_MS_BUSY = 1800
+
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
@@ -88,6 +97,36 @@ let telegramBridge = null
 let whatsappClient = null
 let whatsappReachable = false
 let whatsappRetryTimer = null
+
+function trackPtyLoadForGraph(session) {
+  if (!session) return
+  const now = Date.now()
+  if (!session.ptyLoadWindowStartAt || (now - session.ptyLoadWindowStartAt) > PTY_GRAPH_LOAD_WINDOW_MS) {
+    session.ptyLoadWindowStartAt = now
+    session.ptyLoadEvents = 0
+  }
+  session.ptyLoadEvents += 1
+  const elapsed = Math.max(1, now - session.ptyLoadWindowStartAt)
+  if (elapsed < 200) return
+  const rate = (session.ptyLoadEvents * 1000) / elapsed
+  if (rate >= PTY_GRAPH_HIGH_EVENTS_PER_SEC) {
+    session.ptyHighLoadUntil = Math.max(Number(session.ptyHighLoadUntil || 0), now + PTY_GRAPH_HIGH_HOLD_MS)
+  }
+}
+
+function isPtyGraphLoadHigh(session, now = Date.now()) {
+  return Number(session?.ptyHighLoadUntil || 0) > now
+}
+
+function markGraphCacheDirtyByPath(changedPath) {
+  const full = String(changedPath || '')
+  if (!full) return
+  for (const s of sessions.values()) {
+    const root = s?.graphCacheRoot
+    if (!root) continue
+    if (full === root || full.startsWith(root + path.sep)) s.graphCacheDirty = true
+  }
+}
 
 const DEFAULT_CONFIG = Object.freeze({
   cli: {
@@ -631,7 +670,8 @@ async function collectHealthSnapshot(session) {
 function notifyTreeChangedFor(session, reason) {
   if (!session) return
   if (session.treeWatchDebounce) clearTimeout(session.treeWatchDebounce)
-  const delay = reason === 'focus' ? 200 : 800
+  const baseDelay = reason === 'focus' ? 200 : 800
+  const delay = isPtyGraphLoadHigh(session) ? Math.max(baseDelay, 1800) : baseDelay
   session.treeWatchDebounce = setTimeout(() => {
     if (!sessions.has(session.wcId)) return
     if (session.win && !session.win.isDestroyed()) {
@@ -1229,6 +1269,7 @@ function startPty(session, cols, rows, cwd, args = []) {
   proc.onData((data) => {
     if (!proc._alive) return
     const s = sessions.get(myWcId)
+    if (s) trackPtyLoadForGraph(s)
     if (s?.relayListener) {
       try { s.relayListener(data) } catch {}
     }
@@ -1264,6 +1305,9 @@ function startPty(session, cols, rows, cwd, args = []) {
       s.relayActive = false
       s.relayListener = null
       s.relayCancel = null
+      s.ptyLoadWindowStartAt = 0
+      s.ptyLoadEvents = 0
+      s.ptyHighLoadUntil = 0
     }
   })
 
@@ -1284,6 +1328,9 @@ function killPty(session) {
   session.relayActive = false
   session.relayListener = null
   session.relayCancel = null
+  session.ptyLoadWindowStartAt = 0
+  session.ptyLoadEvents = 0
+  session.ptyHighLoadUntil = 0
 }
 
 function setActiveCli(session, cli) {
@@ -1301,6 +1348,10 @@ function setActiveCli(session, cli) {
 function destroySession(wcId) {
   const s = sessions.get(wcId)
   if (!s) return
+  const metaPrefix = `${wcId}|`
+  for (const key of currentSessionMetaCache.keys()) {
+    if (String(key).startsWith(metaPrefix)) currentSessionMetaCache.delete(key)
+  }
   if (s.treeWatchDebounce) { clearTimeout(s.treeWatchDebounce); s.treeWatchDebounce = null }
   if (s.treeWatcher) { try { s.treeWatcher.close() } catch {} s.treeWatcher = null }
   killPty(s)
@@ -1355,9 +1406,18 @@ function createWindow() {
     lastRelayInputWarnAt: 0,
     lastPtyDataAt: 0,
     lastLocalInputAt: 0,
+    ptyLoadWindowStartAt: 0,
+    ptyLoadEvents: 0,
+    ptyHighLoadUntil: 0,
     treeWatcher: null,
     treeWatcherPath: null,
-    treeWatchDebounce: null
+    treeWatchDebounce: null,
+    graphCacheRoot: '',
+    graphCacheDirty: true,
+    graphCacheBuiltAt: 0,
+    graphCacheResult: null,
+    graphFileActiveLastAt: 0,
+    graphFileActiveLastPath: ''
   }
   sessions.set(wcId, session)
 
@@ -1824,15 +1884,6 @@ function startAgentPty(session) {
         blocks.script ? 'SCRIPT(' + blocks.script.length + ')' : '-',
         blocks.plist ? 'PLIST(' + blocks.plist.length + ')' : '-')
       s.win.webContents.send('automation-pty:blocks-detected', { blocks })
-    } else if (!blocks) {
-      // Heurística de diagnóstico: si el tail menciona "SCRIPT" o "PLIST" o "DESCRIPCION"
-      // pero el parser no extrajo nada, log mínimo para ver qué está llegando.
-      const flat = flattenTerminal(stripAnsi(tail))
-      if (/<\s*SCRIPT|<\s*PLIST|<\s*DESCRIPCION|```bash|```xml/i.test(flat)) {
-        const idx = flat.search(/<\s*SCRIPT|<\s*PLIST|<\s*DESCRIPCION|```bash|```xml/i)
-        const sample = flat.slice(Math.max(0, idx - 40), idx + 200)
-        console.log('[automation-pty] potential blocks but no match. Sample:', JSON.stringify(sample))
-      }
     }
   })
 
@@ -2123,8 +2174,20 @@ function extractTurnText(obj) {
 let codexHistoryCache = { key: '', rows: [] }
 let codexSessionIndexCache = { key: '', byId: new Map() }
 let codexStateThreadCache = new Map()
+let codexStateDbCacheKey = ''
 const CLAUDE_TITLE_CACHE_MAX = 600
 const claudeSessionTitleCache = new Map()
+const SESSION_META_CACHE_MAX = 300
+const currentSessionMetaCache = new Map()
+
+function statCacheKey(stat) {
+  if (!stat) return ''
+  return `${Number(stat.mtimeMs || 0)}:${Number(stat.size || 0)}`
+}
+
+function safeStat(filePath) {
+  try { return fs.statSync(filePath) } catch { return null }
+}
 
 function rememberClaudeSessionTitle(filePath, entry) {
   if (!filePath || !entry) return
@@ -2141,13 +2204,18 @@ function forgetClaudeSessionTitle(filePath) {
   claudeSessionTitleCache.delete(filePath)
 }
 
-function fileCacheKey(filePath) {
-  try {
-    const st = fs.statSync(filePath)
-    return `${st.mtimeMs}:${st.size}`
-  } catch {
-    return ''
+function rememberSessionMeta(cacheKey, entry) {
+  if (!cacheKey || !entry) return
+  if (currentSessionMetaCache.has(cacheKey)) currentSessionMetaCache.delete(cacheKey)
+  currentSessionMetaCache.set(cacheKey, entry)
+  if (currentSessionMetaCache.size > SESSION_META_CACHE_MAX) {
+    const oldest = currentSessionMetaCache.keys().next().value
+    if (oldest) currentSessionMetaCache.delete(oldest)
   }
+}
+
+function fileCacheKey(filePath) {
+  return statCacheKey(safeStat(filePath))
 }
 
 function clipText(text, max = 160) {
@@ -2218,8 +2286,13 @@ function escapeSqlLiteral(text) {
 function readCodexStateThreadMeta(threadId) {
   const id = String(threadId || '').trim()
   if (!id) return null
+  const dbKey = fileCacheKey(CODEX_STATE_DB_PATH)
+  if (!dbKey) return null
+  if (codexStateDbCacheKey !== dbKey) {
+    codexStateDbCacheKey = dbKey
+    codexStateThreadCache = new Map()
+  }
   if (codexStateThreadCache.has(id)) return codexStateThreadCache.get(id)
-  if (!fs.existsSync(CODEX_STATE_DB_PATH)) return null
 
   const sql = `select json_object('title', coalesce(title,''), 'cwd', coalesce(cwd,'')) from threads where id='${escapeSqlLiteral(id)}' order by updated_at desc limit 1;`
   let meta = null
@@ -2287,24 +2360,36 @@ function guessCodexSessionFromHistory(session) {
 function readClaudeSessionTitle(cwd, sessionId) {
   const _perfT0 = PERF ? Date.now() : 0
   const sid = String(sessionId || '').trim()
-  if (!sid) return { title: '', path: null }
+  if (!sid) return { title: '', path: null, statKey: '' }
   const dir = resolveClaudeProjectDir(cwd)
   const file = dir ? path.join(dir, `${sid}.jsonl`) : null
-  if (!file || !fs.existsSync(file)) {
-    if (file) forgetClaudeSessionTitle(file)
-    return { title: '', path: file }
+  if (!file) {
+    return { title: '', path: null, statKey: '' }
   }
 
-  let stat = null
-  try { stat = fs.statSync(file) } catch {}
-  const cached = claudeSessionTitleCache.get(file)
-  if (cached?.locked) {
-    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-locked)`) }
-    return { title: cached.title || '', path: file }
+  const stat = safeStat(file)
+  if (!stat) {
+    if (file) forgetClaudeSessionTitle(file)
+    return { title: '', path: file, statKey: '' }
   }
-  if (cached && stat && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+
+  const nextStatKey = statCacheKey(stat)
+  const cached = claudeSessionTitleCache.get(file)
+  if (cached && cached.statKey === nextStatKey) {
     if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-stat)`) }
-    return { title: cached.title || '', path: file }
+    return { title: cached.title || '', path: file, statKey: nextStatKey }
+  }
+  // El título viene del primer turno de usuario y suele ser estable.
+  // Si el archivo solo crece (append), evitamos releer todo el JSONL.
+  if (cached && cached.title && Number(stat.size || 0) > Number(cached.size || 0)) {
+    rememberClaudeSessionTitle(file, {
+      title: cached.title,
+      statKey: nextStatKey,
+      mtimeMs: Number(stat.mtimeMs || 0),
+      size: Number(stat.size || 0)
+    })
+    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-append)`) }
+    return { title: cached.title || '', path: file, statKey: nextStatKey }
   }
 
   let title = ''
@@ -2325,18 +2410,19 @@ function readClaudeSessionTitle(cwd, sessionId) {
   } catch {}
   rememberClaudeSessionTitle(file, {
     title,
+    statKey: nextStatKey,
     mtimeMs: Number(stat?.mtimeMs || 0),
-    size: Number(stat?.size || 0),
-    locked: !!title
+    size: Number(stat?.size || 0)
   })
   if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (read size=${Number(stat?.size || 0)})`) }
-  return { title, path: file }
+  return { title, path: file, statKey: nextStatKey }
 }
 
 function buildCurrentSessionMeta(session) {
   const _perfT0 = PERF ? Date.now() : 0
   const cli = session?.activeCli === 'codex' ? 'codex' : 'claude'
   const cwd = session?.cwd || os.homedir()
+  const wcId = Number(session?.wcId || 0)
 
   if (cli === 'claude') {
     let sessionId = session?.claudeSessionId || null
@@ -2348,15 +2434,23 @@ function buildCurrentSessionMeta(session) {
       }
     }
     const info = readClaudeSessionTitle(cwd, sessionId)
-    const _result = {
+    const cacheKey = `${wcId}|claude|${cwd}|${sessionId || ''}`
+    const sourceKey = `${info.statKey || ''}|${sessionId || ''}`
+    const cachedMeta = currentSessionMetaCache.get(cacheKey)
+    if (cachedMeta && cachedMeta.sourceKey === sourceKey) {
+      if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(claude)=${dt}ms (cache-hit)`) }
+      return cachedMeta.meta
+    }
+    const nextMeta = {
       cli,
       cwd,
       sessionId: sessionId || null,
       title: info.title || '(sin título)',
       path: info.path || null
     }
+    rememberSessionMeta(cacheKey, { sourceKey, meta: nextMeta })
     if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(claude)=${dt}ms`) }
-    return _result
+    return nextMeta
   }
 
   let sessionId = session?.codexSessionId || null
@@ -2370,19 +2464,30 @@ function buildCurrentSessionMeta(session) {
     }
   }
 
+  const historyKey = fileCacheKey(CODEX_HISTORY_PATH)
+  const indexKey = fileCacheKey(CODEX_SESSION_INDEX_PATH)
+  const stateDbKey = fileCacheKey(CODEX_STATE_DB_PATH)
+  const cacheKey = `${wcId}|codex|${cwd}|${sessionId || ''}`
+  const sourceKey = `${historyKey}|${indexKey}|${stateDbKey}|${sessionId || ''}`
+  const cachedMeta = currentSessionMetaCache.get(cacheKey)
+  if (cachedMeta && cachedMeta.sourceKey === sourceKey) {
+    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(codex)=${dt}ms (cache-hit)`) }
+    return cachedMeta.meta
+  }
+
   const stateMeta = sessionId ? readCodexStateThreadMeta(sessionId) : null
   const indexTitle = sessionId ? (loadCodexSessionIndexMap().get(sessionId) || '') : ''
   const title = clipText(stateMeta?.title || indexTitle || fallbackTitle, 160) || '(sin título)'
-
-  const _result = {
+  const nextMeta = {
     cli,
     cwd,
     sessionId: sessionId || null,
     title,
     path: null
   }
+  rememberSessionMeta(cacheKey, { sourceKey, meta: nextMeta })
   if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(codex)=${dt}ms`) }
-  return _result
+  return nextMeta
 }
 
 function resolveSessionIdForRelay(session) {
@@ -3205,7 +3310,43 @@ function computeProjectGraph(rootPath) {
   return { ok: true, nodes, edges: uniqueEdges, dirs }
 }
 
-ipcMain.handle('sidebar:get-graph', (_event, rootPath) => computeProjectGraph(rootPath))
+function normalizeGraphRootPath(rootPath) {
+  const raw = String(rootPath || '').trim()
+  if (!raw) return ''
+  try { return path.resolve(raw) } catch { return raw }
+}
+
+function computeProjectGraphForSession(session, rootPath) {
+  const root = normalizeGraphRootPath(rootPath)
+  if (!root) return { ok: false, error: 'no rootPath' }
+  if (!session) return computeProjectGraph(root)
+
+  if (session.graphCacheRoot !== root) {
+    session.graphCacheRoot = root
+    session.graphCacheDirty = true
+  }
+
+  const now = Date.now()
+  const isBusy = isPtyGraphLoadHigh(session, now)
+  const minRebuildMs = isBusy ? GRAPH_REFRESH_MIN_MS_BUSY : GRAPH_REFRESH_MIN_MS_NORMAL
+  const hasCache = session.graphCacheResult != null
+  if (hasCache && !session.graphCacheDirty) {
+    if ((now - Number(session.graphCacheBuiltAt || 0)) < minRebuildMs) {
+      return session.graphCacheResult
+    }
+  }
+
+  const result = computeProjectGraph(root)
+  session.graphCacheResult = result
+  session.graphCacheBuiltAt = now
+  session.graphCacheDirty = false
+  return result
+}
+
+ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
+  const s = getSessionByEvent(event)
+  return computeProjectGraphForSession(s, rootPath)
+})
 
 ipcMain.handle('fs-pick-folder', async (event) => {
   const result = await dialog.showOpenDialog(winFromEvent(event), {
@@ -3225,13 +3366,22 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
     s.treeWatcher = null
     s.treeWatcherPath = null
   }
-  if (!dirPath) return { ok: true }
+  if (!dirPath) {
+    s.graphCacheRoot = ''
+    s.graphCacheDirty = true
+    s.graphCacheResult = null
+    s.graphCacheBuiltAt = 0
+    return { ok: true }
+  }
   if (!isPathSafe(dirPath, allowedFsRoots())) {
     return { ok: false, error: 'Path not allowed' }
   }
+  s.graphCacheRoot = normalizeGraphRootPath(dirPath)
+  s.graphCacheDirty = true
   const safeCb = () => {
     try {
       if (!sessions.has(s.wcId)) return
+      s.graphCacheDirty = true
       notifyTreeChangedFor(s, 'fs')
     } catch {}
   }
@@ -3249,9 +3399,19 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
 
       // Pulso del grafo: incluye .claude/memory y cualquier archivo no-ruido
       const fullPath = path.join(dirPath, filename)
+      markGraphCacheDirtyByPath(fullPath)
       if (s.win && !s.win.isDestroyed()) {
-        if (PERF) perfWatchCounters.graphActive++
-        s.win.webContents.send('graph:file-active', fullPath)
+        const now = Date.now()
+        const isBusy = isPtyGraphLoadHigh(s, now)
+        const minGap = isBusy ? GRAPH_FILE_ACTIVE_MIN_MS_BUSY : GRAPH_FILE_ACTIVE_MIN_MS_NORMAL
+        const lastAt = Number(s.graphFileActiveLastAt || 0)
+        const lastPath = String(s.graphFileActiveLastPath || '')
+        if ((now - lastAt) >= minGap || lastPath !== fullPath) {
+          if (PERF) perfWatchCounters.graphActive++
+          s.graphFileActiveLastAt = now
+          s.graphFileActiveLastPath = fullPath
+          s.win.webContents.send('graph:file-active', fullPath)
+        }
       }
 
       // tree-changed: solo archivos visibles (sin directorios punto)
@@ -3330,6 +3490,7 @@ safeIpcHandle('file-write', async (event, { path: p, text }) => {
   assertSafeFsPath(p)
   if (typeof text !== 'string') throw new Error('text must be string')
   atomicWriteFileSync(p, text, 'utf-8')
+  markGraphCacheDirtyByPath(p)
   event.sender.send('graph:file-active', p)
   return { ok: true }
 })
@@ -3455,9 +3616,9 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
     try { stat = fs.statSync(file) } catch {}
     rememberClaudeSessionTitle(file, {
       title: clipText(nextTitle),
+      statKey: statCacheKey(stat),
       mtimeMs: Number(stat?.mtimeMs || 0),
-      size: Number(stat?.size || 0),
-      locked: true
+      size: Number(stat?.size || 0)
     })
     return { ok: true, title: nextTitle, path: file }
   } catch (err) {
