@@ -129,6 +129,141 @@ button {
 #cli-selector:focus { border-color: var(--accent); }
 #cli-selector option { background: var(--bg2); color: var(--text); }
 
+.health-indicator {
+  width: auto !important;
+  min-width: 72px;
+  height: 28px;
+  padding: 0 8px !important;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-indicator:hover {
+  background: var(--bg4);
+}
+
+.health-global-dot,
+.health-dot {
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.health-global-dot {
+  width: 8px;
+  height: 8px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.24);
+}
+
+.health-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.health-dot {
+  width: 6px;
+  height: 6px;
+  opacity: 0.95;
+}
+
+.health-global-dot.state-ok,
+.health-dot.state-ok {
+  background: var(--ok);
+}
+
+.health-global-dot.state-warn,
+.health-dot.state-warn {
+  background: var(--warn);
+}
+
+.health-global-dot.state-error,
+.health-dot.state-error {
+  background: var(--error);
+}
+
+.health-global-dot.state-off,
+.health-dot.state-off {
+  background: var(--text2);
+  opacity: 0.6;
+}
+
+#health-indicator.global-error .health-global-dot {
+  animation: health-alert-blink 0.95s ease-in-out infinite;
+}
+
+@keyframes health-alert-blink {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 107, 122, 0.55); }
+  50% { opacity: 0.3; box-shadow: 0 0 0 7px rgba(255, 107, 122, 0); }
+}
+
+#health-popover {
+  position: fixed;
+  z-index: 140;
+  min-width: 300px;
+  max-width: 420px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  padding: 10px;
+}
+
+#health-popover.hidden {
+  display: none;
+}
+
+.health-popover-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.2px;
+  margin-bottom: 8px;
+}
+
+.health-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.health-popover-row {
+  display: grid;
+  grid-template-columns: 12px 98px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(127, 127, 140, 0.26);
+}
+
+.health-popover-row:last-child {
+  border-bottom: none;
+}
+
+.health-popover-service {
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.health-popover-detail {
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.health-popover-meta {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text2);
+}
+
 button.icon-btn {
   padding: 6px;
   display: inline-flex;

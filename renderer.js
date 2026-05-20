@@ -59,6 +59,16 @@ const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
 const sessionStripCli = document.getElementById('session-strip-cli')
 const sessionStripTitle = document.getElementById('session-strip-title')
 const sessionStripId = document.getElementById('session-strip-id')
+const healthIndicator = document.getElementById('health-indicator')
+const healthGlobalDot = document.getElementById('health-global-dot')
+const healthDotPty = document.getElementById('health-dot-pty')
+const healthDotTelegram = document.getElementById('health-dot-telegram')
+const healthDotWhatsapp = document.getElementById('health-dot-whatsapp')
+const healthDotLaunchd = document.getElementById('health-dot-launchd')
+const healthDotScheduler = document.getElementById('health-dot-scheduler')
+const healthPopover = document.getElementById('health-popover')
+const healthPopoverList = document.getElementById('health-popover-list')
+const healthPopoverMeta = document.getElementById('health-popover-meta')
 
 // ── Themes ──
 const THEMES = {
@@ -100,6 +110,8 @@ const webLinksAddon = new WebLinksAddon.WebLinksAddon()
 term.loadAddon(fitAddon)
 term.loadAddon(webLinksAddon)
 term.open(termEl)
+
+const HEALTH_POLL_MS = 15_000
 
 // Clic en el terminal → mover cursor readline a esa columna (solo fila activa del prompt)
 let _termClickPending = null
@@ -191,6 +203,216 @@ function showStatus(text, type = 'info', ms = 0) {
 }
 function hideStatus() {
   statusBar.classList.add('hidden')
+}
+
+let latestHealth = null
+let healthRefreshInFlight = false
+let healthPopoverOpen = false
+let healthOutsideClickHandler = null
+let healthEscapeHandler = null
+
+function setDotState(el, state) {
+  if (!el) return
+  el.classList.remove('state-ok', 'state-warn', 'state-error', 'state-off')
+  el.classList.add(`state-${state}`)
+}
+
+function mapPtyDotState(state) {
+  if (state === 'active') return 'ok'
+  if (state === 'error') return 'error'
+  return 'off'
+}
+
+function mapTelegramDotState(state) {
+  if (state === 'linked') return 'ok'
+  if (state === 'disconnected') return 'warn'
+  if (state === 'error') return 'error'
+  return 'off'
+}
+
+function mapWhatsappDotState(state) {
+  if (state === 'ready') return 'ok'
+  if (state === 'disconnected') return 'warn'
+  if (state === 'error') return 'error'
+  return 'off'
+}
+
+function mapLaunchdDotState(service) {
+  if (service?.state === 'error') return 'error'
+  const count = Number(service?.count || 0)
+  return count > 0 ? 'ok' : 'warn'
+}
+
+function mapSchedulerDotState(service) {
+  if (service?.state === 'error') return 'error'
+  const count = Number(service?.activeJobs || 0)
+  return count > 0 ? 'ok' : 'off'
+}
+
+function renderHealthPopoverRows(health) {
+  if (!healthPopoverList) return
+  const rows = [
+    {
+      name: 'PTY',
+      dot: mapPtyDotState(health?.pty?.state),
+      detail: `${health?.pty?.state || 'n/d'} · CLI ${health?.pty?.cli || 'claude'}`
+    },
+    {
+      name: 'Telegram',
+      dot: mapTelegramDotState(health?.telegram?.state),
+      detail: `${health?.telegram?.state || 'n/d'} · ${health?.telegram?.detail || '-'}`
+    },
+    {
+      name: 'WhatsApp',
+      dot: mapWhatsappDotState(health?.whatsapp?.state),
+      detail: `${health?.whatsapp?.state || 'n/d'} · ${health?.whatsapp?.detail || '-'}`
+    },
+    {
+      name: 'Launchd',
+      dot: mapLaunchdDotState(health?.launchd),
+      detail: `${Number(health?.launchd?.count || 0)} jobs com.luismi activos`
+    },
+    {
+      name: 'Scheduler',
+      dot: mapSchedulerDotState(health?.scheduler),
+      detail: `${Number(health?.scheduler?.activeJobs || 0)} jobs · ${Number(health?.scheduler?.runningJobs || 0)} ejecutándose`
+    }
+  ]
+
+  healthPopoverList.innerHTML = rows.map((row) => (
+    `<div class="health-popover-row">
+      <span class="health-dot state-${row.dot}"></span>
+      <span class="health-popover-service">${row.name}</span>
+      <span class="health-popover-detail" title="${row.detail.replace(/"/g, '&quot;')}">${row.detail}</span>
+    </div>`
+  )).join('')
+}
+
+function positionHealthPopover() {
+  if (!healthIndicator || !healthPopover || healthPopover.classList.contains('hidden')) return
+  const r = healthIndicator.getBoundingClientRect()
+  const gap = 8
+  const maxRight = window.innerWidth - 10
+  let left = r.right - healthPopover.offsetWidth
+  if (left < 10) left = 10
+  if (left + healthPopover.offsetWidth > maxRight) left = maxRight - healthPopover.offsetWidth
+  const top = Math.min(window.innerHeight - healthPopover.offsetHeight - 10, r.bottom + gap)
+  healthPopover.style.left = `${Math.max(10, left)}px`
+  healthPopover.style.top = `${Math.max(10, top)}px`
+}
+
+function closeHealthPopover() {
+  if (!healthPopover) return
+  healthPopover.classList.add('hidden')
+  healthPopoverOpen = false
+  if (healthIndicator) healthIndicator.setAttribute('aria-expanded', 'false')
+  if (healthOutsideClickHandler) {
+    document.removeEventListener('mousedown', healthOutsideClickHandler, true)
+    window.removeEventListener('resize', positionHealthPopover)
+    healthOutsideClickHandler = null
+  }
+  if (healthEscapeHandler) {
+    window.removeEventListener('keydown', healthEscapeHandler)
+    healthEscapeHandler = null
+  }
+}
+
+function openHealthPopover() {
+  if (!healthPopover || !healthIndicator) return
+  healthPopover.classList.remove('hidden')
+  healthPopoverOpen = true
+  healthIndicator.setAttribute('aria-expanded', 'true')
+  renderHealthPopoverRows(latestHealth)
+  positionHealthPopover()
+  healthOutsideClickHandler = (ev) => {
+    if (healthPopover.contains(ev.target) || healthIndicator.contains(ev.target)) return
+    closeHealthPopover()
+  }
+  healthEscapeHandler = (ev) => {
+    if (ev.key === 'Escape') closeHealthPopover()
+  }
+  document.addEventListener('mousedown', healthOutsideClickHandler, true)
+  window.addEventListener('resize', positionHealthPopover)
+  window.addEventListener('keydown', healthEscapeHandler)
+}
+
+function renderHealthIndicator(health) {
+  latestHealth = health || latestHealth
+  if (!healthIndicator) return
+
+  const ptyDot = mapPtyDotState(health?.pty?.state)
+  const telegramDot = mapTelegramDotState(health?.telegram?.state)
+  const whatsappDot = mapWhatsappDotState(health?.whatsapp?.state)
+  const launchdDot = mapLaunchdDotState(health?.launchd)
+  const schedulerDot = mapSchedulerDotState(health?.scheduler)
+
+  const hasError = [ptyDot, telegramDot, whatsappDot, launchdDot, schedulerDot].includes('error')
+  const hasWarn = [ptyDot, telegramDot, whatsappDot, launchdDot, schedulerDot].includes('warn')
+  const globalDot = hasError ? 'error' : (hasWarn ? 'warn' : 'ok')
+
+  setDotState(healthGlobalDot, globalDot)
+  setDotState(healthDotPty, ptyDot)
+  setDotState(healthDotTelegram, telegramDot)
+  setDotState(healthDotWhatsapp, whatsappDot)
+  setDotState(healthDotLaunchd, launchdDot)
+  setDotState(healthDotScheduler, schedulerDot)
+
+  healthIndicator.classList.toggle('global-error', globalDot === 'error')
+  const tooltip = [
+    `PTY: ${health?.pty?.state || 'n/d'} (${health?.pty?.cli || 'claude'})`,
+    `Telegram: ${health?.telegram?.state || 'n/d'}`,
+    `WhatsApp: ${health?.whatsapp?.state || 'n/d'}`,
+    `Launchd: ${Number(health?.launchd?.count || 0)} jobs`,
+    `Scheduler: ${Number(health?.scheduler?.activeJobs || 0)} jobs`
+  ].join('\n')
+  healthIndicator.title = tooltip
+
+  if (healthPopoverOpen) {
+    renderHealthPopoverRows(health)
+    if (healthPopoverMeta) {
+      const ts = Number(health?.ts || Date.now())
+      healthPopoverMeta.textContent = `Actualizado: ${new Date(ts).toLocaleTimeString('es-ES')}`
+    }
+    positionHealthPopover()
+  }
+}
+
+async function refreshHealth(force = false) {
+  if (!window.api.getHealth) return
+  if (healthRefreshInFlight && !force) return
+  healthRefreshInFlight = true
+  try {
+    const health = await window.api.getHealth()
+    renderHealthIndicator(health)
+    if (healthPopoverMeta && health?.ts) {
+      healthPopoverMeta.textContent = `Actualizado: ${new Date(health.ts).toLocaleTimeString('es-ES')}`
+    }
+  } catch (err) {
+    const fallback = {
+      ts: Date.now(),
+      pty: { state: 'error', cli: 'claude' },
+      telegram: { state: 'error' },
+      whatsapp: { state: 'error' },
+      launchd: { state: 'error', count: 0 },
+      scheduler: { state: 'error', activeJobs: 0, runningJobs: 0 }
+    }
+    renderHealthIndicator(fallback)
+    if (healthPopoverMeta) healthPopoverMeta.textContent = `Error: ${errorMessage(err)}`
+  } finally {
+    healthRefreshInFlight = false
+  }
+}
+
+if (healthIndicator) {
+  healthIndicator.addEventListener('click', async (ev) => {
+    ev.stopPropagation()
+    if (healthPopoverOpen) {
+      closeHealthPopover()
+      return
+    }
+    await refreshHealth(true)
+    openHealthPopover()
+  })
 }
 
 function errorMessage(err) {
@@ -308,6 +530,7 @@ async function fullRestart(cwd) {
   term.clear()
   await window.api.restartPty(cwd, term.cols, term.rows)
   await refreshSessionStrip(true)
+  await refreshHealth(true)
   fitAndSync()
 }
 
@@ -1949,11 +2172,15 @@ window.api.onGraphFileActive((p) => {
   if (graphInstance?.pulseNode) graphInstance.pulseNode(p)
   scheduleGraphRefresh()
 })
-window.api.onPtyExit(() => term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n'))
+window.api.onPtyExit(() => {
+  term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n')
+  refreshHealth(true)
+})
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
   term.write(`\r\n\x1b[31m[error] ${msg}\x1b[0m\r\n`)
   showStatus(msg, 'error', 7000)
+  refreshHealth(true)
 })
 if (typeof window.api.onPtyBusy === 'function') {
   window.api.onPtyBusy((message) => {
@@ -1962,6 +2189,7 @@ if (typeof window.api.onPtyBusy === 'function') {
 }
 window.api.onTelegramStatus((status) => {
   renderTelegramStatus(status)
+  refreshHealth(false)
 })
 
 // ── CLI selector ──
@@ -1985,6 +2213,7 @@ cliSelector.addEventListener('change', async (e) => {
   try {
     await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
     await refreshSessionStrip(true)
+    await refreshHealth(true)
     fitAndSync()
     term.focus()
     localStorage.setItem(CLI_KEY, newCli)
@@ -2000,6 +2229,7 @@ cliSelector.addEventListener('change', async (e) => {
         fitAndSync()
         await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
         await refreshSessionStrip(true)
+        await refreshHealth(true)
         fitAndSync()
         term.focus()
       } catch {}
@@ -2030,9 +2260,11 @@ cliSelector.addEventListener('change', async (e) => {
   cliSelector.value = initialCli
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshSessionStrip(true)
+  await refreshHealth(true)
 
   try {
     await window.api.startPty(term.cols, term.rows, initialRoot)
+    await refreshHealth(true)
   } catch (err) {
     showStatus(errorMessage(err), 'error')
     return
@@ -2042,6 +2274,7 @@ cliSelector.addEventListener('change', async (e) => {
   await refreshSessionStrip(true)
   applyView(currentView)
   setInterval(() => { refreshSessionStrip(false) }, 6000)
+  setInterval(() => { refreshHealth(false) }, HEALTH_POLL_MS)
 
   window.api.onTreeChanged(() => {
     scheduleTreeRefresh()

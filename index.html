@@ -16,6 +16,16 @@
         <option value="claude">Claude</option>
         <option value="codex">Codex</option>
       </select>
+      <button id="health-indicator" class="health-indicator" title="Estado del sistema" aria-label="Estado del sistema" aria-haspopup="dialog" aria-expanded="false">
+        <span id="health-global-dot" class="health-global-dot state-off"></span>
+        <span class="health-dots" aria-hidden="true">
+          <span id="health-dot-pty" class="health-dot state-off"></span>
+          <span id="health-dot-telegram" class="health-dot state-off"></span>
+          <span id="health-dot-whatsapp" class="health-dot state-off"></span>
+          <span id="health-dot-launchd" class="health-dot state-off"></span>
+          <span id="health-dot-scheduler" class="health-dot state-off"></span>
+        </span>
+      </button>
       <button id="btn-new-window" class="icon-btn" title="Nueva ventana (Cmd+N)" aria-label="Nueva ventana">
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
@@ -70,6 +80,11 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
       </button>
     </div>
+  </div>
+  <div id="health-popover" class="hidden" role="dialog" aria-label="Detalle de salud del sistema">
+    <div class="health-popover-title">Salud del sistema</div>
+    <div id="health-popover-list" class="health-popover-list"></div>
+    <div id="health-popover-meta" class="health-popover-meta">Sin datos</div>
   </div>
 
   <div id="session-strip">
