@@ -62,6 +62,7 @@ const FFMPEG_BIN = resolveCommand([
   'ffmpeg'
 ])
 const CONFIG_FILENAME = 'claude-novak.config.json'
+const DEFAULT_PROFILE_ID = 'default'
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -154,7 +155,15 @@ const DEFAULT_CONFIG = Object.freeze({
     claudeEffort: '',
     codexModel: '',
     codexEffort: ''
-  }
+  },
+  profiles: [{
+    id: DEFAULT_PROFILE_ID,
+    name: 'Personal',
+    claudeMdPath: '',
+    mcpServers: [],
+    cwd: ''
+  }],
+  activeProfile: DEFAULT_PROFILE_ID
 })
 
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
@@ -276,6 +285,8 @@ async function transcribeAudioFile(inputPath, env) {
 function normalizeAppConfig(raw) {
   const cli = raw?.cli || {}
   const telegram = raw?.telegram || {}
+  const profiles = normalizeProfiles(raw?.profiles)
+  const activeProfile = resolveActiveProfileId(profiles, raw?.activeProfile)
 
   const normalized = {
     cli: {
@@ -292,7 +303,9 @@ function normalizeAppConfig(raw) {
       claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
       codexModel: typeof telegram.codexModel === 'string' ? telegram.codexModel.trim() : '',
       codexEffort: typeof telegram.codexEffort === 'string' ? telegram.codexEffort.trim() : ''
-    }
+    },
+    profiles,
+    activeProfile
   }
 
   if (Array.isArray(telegram.allowedUsers)) {
@@ -303,6 +316,99 @@ function normalizeAppConfig(raw) {
   normalized.telegram.allowedUsers = Array.from(new Set(normalized.telegram.allowedUsers))
 
   return normalized
+}
+
+function normalizeMcpServerList(raw) {
+  const values = Array.isArray(raw)
+    ? raw
+    : (typeof raw === 'string' ? raw.split(',') : [])
+  return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)))
+}
+
+function sanitizeProfileId(rawId, fallback = '') {
+  const clean = String(rawId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+  if (clean) return clean
+  return String(fallback || '').trim() || DEFAULT_PROFILE_ID
+}
+
+function normalizeProfileEntry(raw, fallbackId = '') {
+  const id = sanitizeProfileId(raw?.id, fallbackId)
+  const name = String(raw?.name || '').trim() || 'Perfil'
+  const claudeMdPath = typeof raw?.claudeMdPath === 'string' ? raw.claudeMdPath.trim() : ''
+  const cwd = typeof raw?.cwd === 'string' ? raw.cwd.trim() : ''
+  const mcpServers = normalizeMcpServerList(raw?.mcpServers)
+  return { id, name, claudeMdPath, mcpServers, cwd }
+}
+
+function normalizeProfiles(rawProfiles) {
+  const list = Array.isArray(rawProfiles) ? rawProfiles : []
+  const seen = new Set()
+  const result = []
+  for (const item of list) {
+    const next = normalizeProfileEntry(item)
+    if (!next.id || seen.has(next.id)) continue
+    seen.add(next.id)
+    result.push(next)
+  }
+  if (!seen.has(DEFAULT_PROFILE_ID)) {
+    result.unshift({
+      id: DEFAULT_PROFILE_ID,
+      name: 'Personal',
+      claudeMdPath: '',
+      mcpServers: [],
+      cwd: ''
+    })
+  } else {
+    for (let i = 0; i < result.length; i += 1) {
+      if (result[i].id !== DEFAULT_PROFILE_ID) continue
+      result[i] = {
+        ...result[i],
+        id: DEFAULT_PROFILE_ID,
+        name: result[i].name || 'Personal',
+        mcpServers: normalizeMcpServerList(result[i].mcpServers)
+      }
+      break
+    }
+  }
+  return result
+}
+
+function resolveActiveProfileId(profiles, rawActiveProfile) {
+  const wanted = sanitizeProfileId(rawActiveProfile, '')
+  if (wanted && profiles.some((p) => p.id === wanted)) return wanted
+  if (profiles.some((p) => p.id === DEFAULT_PROFILE_ID)) return DEFAULT_PROFILE_ID
+  return profiles[0]?.id || DEFAULT_PROFILE_ID
+}
+
+function getProfileById(profileId, config = appConfig) {
+  const id = sanitizeProfileId(profileId, '')
+  if (!id) return null
+  const profiles = Array.isArray(config?.profiles) ? config.profiles : []
+  return profiles.find((p) => p.id === id) || null
+}
+
+function getActiveProfile(config = appConfig) {
+  const activeId = resolveActiveProfileId(Array.isArray(config?.profiles) ? config.profiles : [], config?.activeProfile)
+  return getProfileById(activeId, config) || getProfileById(DEFAULT_PROFILE_ID, config) || {
+    id: DEFAULT_PROFILE_ID,
+    name: 'Personal',
+    claudeMdPath: '',
+    mcpServers: [],
+    cwd: ''
+  }
+}
+
+function makeProfileIdFromName(name, existingIds = new Set()) {
+  const base = sanitizeProfileId(name, 'profile')
+  if (!existingIds.has(base)) return base
+  let n = 2
+  while (existingIds.has(`${base}-${n}`)) n += 1
+  return `${base}-${n}`
 }
 
 function configFilePath() {
@@ -326,6 +432,80 @@ function saveAppConfig(nextConfig) {
   atomicWriteJsonSync(p, normalized)
   appConfig = normalized
   return normalized
+}
+
+function listProfilesPayload(config = appConfig) {
+  const normalized = normalizeAppConfig(config)
+  return {
+    profiles: normalized.profiles.map((p) => ({ ...p, mcpServers: [...p.mcpServers] })),
+    activeProfile: normalized.activeProfile
+  }
+}
+
+function createProfile(profileInput) {
+  const current = listProfilesPayload()
+  const existing = new Set(current.profiles.map((p) => p.id))
+  const name = String(profileInput?.name || '').trim() || 'Nuevo perfil'
+  const generatedId = makeProfileIdFromName(name, existing)
+  const base = normalizeProfileEntry(profileInput, generatedId)
+  const nextProfile = { ...base, id: generatedId, name }
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    profiles: [...current.profiles, nextProfile]
+  })
+  saveAppConfig(merged)
+  return { profile: nextProfile, ...listProfilesPayload() }
+}
+
+function updateProfile(profileId, profileInput) {
+  const id = sanitizeProfileId(profileId, '')
+  if (!id) throw new Error('Perfil inválido')
+  const current = listProfilesPayload()
+  const idx = current.profiles.findIndex((p) => p.id === id)
+  if (idx < 0) throw new Error('Perfil no encontrado')
+  const prev = current.profiles[idx]
+  const draft = normalizeProfileEntry({
+    ...prev,
+    ...profileInput,
+    id
+  }, id)
+  if (id === DEFAULT_PROFILE_ID) draft.name = 'Personal'
+  current.profiles[idx] = draft
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    profiles: current.profiles
+  })
+  saveAppConfig(merged)
+  return { profile: draft, ...listProfilesPayload() }
+}
+
+function deleteProfile(profileId) {
+  const id = sanitizeProfileId(profileId, '')
+  if (!id) throw new Error('Perfil inválido')
+  if (id === DEFAULT_PROFILE_ID) throw new Error('El perfil Personal no se puede borrar')
+  const current = listProfilesPayload()
+  const exists = current.profiles.some((p) => p.id === id)
+  if (!exists) throw new Error('Perfil no encontrado')
+  const profiles = current.profiles.filter((p) => p.id !== id)
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    profiles,
+    activeProfile: current.activeProfile === id ? DEFAULT_PROFILE_ID : current.activeProfile
+  })
+  saveAppConfig(merged)
+  return listProfilesPayload()
+}
+
+function setActiveProfile(profileId) {
+  const id = sanitizeProfileId(profileId, '')
+  const current = listProfilesPayload()
+  if (!current.profiles.some((p) => p.id === id)) throw new Error('Perfil no encontrado')
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    activeProfile: id
+  })
+  saveAppConfig(merged)
+  return listProfilesPayload()
 }
 
 function getConfiguredBin(cli) {
@@ -1457,16 +1637,55 @@ async function syncSessionContextAfterTelegramDetach(session, chatId, cliHint = 
   return { ok: true, refreshed: !!claudeSid, mode: 'claude', sessionId: claudeSid || null }
 }
 
+function resolveExistingDir(inputPath) {
+  const value = typeof inputPath === 'string' ? inputPath.trim() : ''
+  if (!value) return ''
+  try {
+    const stat = fs.statSync(value)
+    return stat.isDirectory() ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+function getProfileStartupMessage(profile) {
+  const claudeMdPath = typeof profile?.claudeMdPath === 'string' ? profile.claudeMdPath.trim() : ''
+  if (!claudeMdPath) return ''
+  try {
+    const stat = fs.statSync(claudeMdPath)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 512 * 1024) return ''
+    const text = fs.readFileSync(claudeMdPath, 'utf-8').trim()
+    return text ? `${text}\n` : ''
+  } catch {
+    return ''
+  }
+}
+
+function scheduleProfileBootstrapMessage(session, proc, profile) {
+  const message = getProfileStartupMessage(profile)
+  if (!message) return
+  setTimeout(() => {
+    if (!proc?._alive) return
+    if (session?.pty !== proc) return
+    try { proc.write(message) } catch {}
+  }, 650)
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
   if (session.pty) return session.pty
+  const activeProfile = getActiveProfile()
+  session.profileId = activeProfile.id
   session.ptyStartedAt = Date.now()
   if (cols && rows) {
     session.cols = cols
     session.rows = rows
   }
-  if (cwd && fs.existsSync(cwd)) session.cwd = cwd
+  const requestedCwd = resolveExistingDir(cwd)
+  const profileCwd = resolveExistingDir(activeProfile.cwd)
+  if (requestedCwd) session.cwd = requestedCwd
+  else if (!resolveExistingDir(session.cwd)) session.cwd = profileCwd || os.homedir()
   const cliCheck = ensureCliAvailable(session.activeCli)
   if (!cliCheck.ok) {
     notifyPtyError(session, cliCheck.error)
@@ -1501,6 +1720,7 @@ function startPty(session, cols, rows, cwd, args = []) {
   proc._alive = true
   session.pty = proc
   const myWcId = session.wcId
+  scheduleProfileBootstrapMessage(session, proc, activeProfile)
   logSemanticForSession(session, 'pty_inicio', {
     detail: `cwd=${session.cwd || ''}`,
     ok: true
@@ -1647,6 +1867,8 @@ function createWindow() {
   })
 
   const wcId = win.webContents.id
+  const activeProfile = getActiveProfile()
+  const profileCwd = resolveExistingDir(activeProfile.cwd) || os.homedir()
   const session = {
     win,
     wcId,
@@ -1654,8 +1876,9 @@ function createWindow() {
     pty: null,
     cols: 120,
     rows: 35,
-    cwd: os.homedir(),
+    cwd: profileCwd,
     activeCli: appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude',
+    profileId: activeProfile.id,
     claudeSessionId: null,
     codexSessionId: null,
     ptyStartedAt: 0,
@@ -4053,7 +4276,62 @@ ipcMain.handle('set-active-cli', (event, cli) => {
   return result
 })
 
-ipcMain.handle('get-app-config', () => ({ ...appConfig }))
+ipcMain.handle('get-app-config', () => JSON.parse(JSON.stringify(appConfig)))
+
+ipcMain.handle('profiles:list', () => listProfilesPayload())
+
+ipcMain.handle('profiles:create', (_event, profileInput) => {
+  try {
+    return { ok: true, ...createProfile(profileInput) }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('profiles:update', (_event, { id, patch } = {}) => {
+  try {
+    return { ok: true, ...updateProfile(id, patch || {}) }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('profiles:delete', (_event, id) => {
+  try {
+    return { ok: true, ...deleteProfile(id) }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('profiles:set-active', (_event, id) => {
+  try {
+    const payload = setActiveProfile(id)
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('profiles:pick-claude-md', async (event) => {
+  const result = await dialog.showOpenDialog(winFromEvent(event), {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
+      { name: 'Todos', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || !result.filePaths.length) return ''
+  return result.filePaths[0]
+})
+
+ipcMain.handle('profiles:pick-cwd', async (event) => {
+  const result = await dialog.showOpenDialog(winFromEvent(event), {
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (result.canceled || !result.filePaths.length) return ''
+  return result.filePaths[0]
+})
 
 ipcMain.handle('save-app-config', async (event, partialConfig) => {
   const previousDefault = appConfig.cli.defaultCli
@@ -4061,7 +4339,9 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
     ...appConfig,
     ...partialConfig,
     cli: { ...appConfig.cli, ...(partialConfig?.cli || {}) },
-    telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) }
+    telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) },
+    profiles: partialConfig?.profiles ?? appConfig.profiles,
+    activeProfile: partialConfig?.activeProfile ?? appConfig.activeProfile
   })
   saveAppConfig(merged)
   const warnings = []

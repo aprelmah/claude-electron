@@ -29,6 +29,10 @@ const btnOpenGraphWindow = document.getElementById('btn-open-graph-window')
 const btnSendTelegram = document.getElementById('btn-send-telegram')
 const btnSendTelegramWrap = document.getElementById('btn-send-telegram-wrap')
 const cliSelector = document.getElementById('cli-selector')
+const profileSelector = document.getElementById('profile-selector')
+const profileReminder = document.getElementById('profile-reminder')
+const profileReminderName = document.getElementById('profile-reminder-name')
+const profileReminderMcp = document.getElementById('profile-reminder-mcp')
 const termEl = document.getElementById('terminal')
 const termWrap = document.getElementById('terminal-wrap')
 const dropOverlay = document.getElementById('drop-overlay')
@@ -84,6 +88,24 @@ const healthPopoverMeta = document.getElementById('health-popover-meta')
 const updateBanner = document.getElementById('update-banner')
 const updateBannerText = document.getElementById('update-banner-text')
 const btnInstallUpdate = document.getElementById('btn-install-update')
+const profilePopover = document.getElementById('profile-popover')
+const profilePopoverMain = document.getElementById('profile-popover-main')
+const profilePopoverClaudeMd = document.getElementById('profile-popover-claude-md')
+const profilePopoverCwd = document.getElementById('profile-popover-cwd')
+const profilePopoverMcps = document.getElementById('profile-popover-mcps')
+const profilesModal = document.getElementById('profiles-modal')
+const btnCloseProfiles = document.getElementById('btn-close-profiles')
+const profilesListEl = document.getElementById('profiles-list')
+const btnProfileNew = document.getElementById('btn-profile-new')
+const btnProfileDelete = document.getElementById('btn-profile-delete')
+const btnProfileSave = document.getElementById('btn-profile-save')
+const profileNameInput = document.getElementById('profile-name')
+const profileClaudeMdInput = document.getElementById('profile-claude-md')
+const profileMcpsInput = document.getElementById('profile-mcps')
+const profileCwdInput = document.getElementById('profile-cwd')
+const profileFormNote = document.getElementById('profile-form-note')
+const btnPickProfileClaudeMd = document.getElementById('btn-pick-profile-claude-md')
+const btnPickProfileCwd = document.getElementById('btn-pick-profile-cwd')
 
 // ── Themes ──
 const THEMES = {
@@ -579,7 +601,264 @@ if (typeof window.api.onUpdateDownloaded === 'function') {
   })
 }
 renderUpdateBanner()
+const PROFILE_MANAGE_VALUE = '__manage_profiles__'
+const DEFAULT_PROFILE_ID = 'default'
+let profilesState = { profiles: [], activeProfile: DEFAULT_PROFILE_ID }
+let profileModalSelectedId = DEFAULT_PROFILE_ID
+let profilePopoverOpen = false
+let profileOutsideClickHandler = null
+let profileEscapeHandler = null
 
+function copyProfilesState(payload) {
+  const profiles = Array.isArray(payload?.profiles)
+    ? payload.profiles.map((p) => ({
+      id: String(p?.id || '').trim(),
+      name: String(p?.name || '').trim(),
+      claudeMdPath: String(p?.claudeMdPath || '').trim(),
+      cwd: String(p?.cwd || '').trim(),
+      mcpServers: Array.isArray(p?.mcpServers) ? p.mcpServers.map((m) => String(m || '').trim()).filter(Boolean) : []
+    }))
+    : []
+  const activeProfile = String(payload?.activeProfile || DEFAULT_PROFILE_ID).trim() || DEFAULT_PROFILE_ID
+  return { profiles, activeProfile }
+}
+
+function getProfileById(id) {
+  const wanted = String(id || '').trim()
+  return profilesState.profiles.find((p) => p.id === wanted) || null
+}
+
+function getActiveProfile() {
+  return getProfileById(profilesState.activeProfile) || getProfileById(DEFAULT_PROFILE_ID) || null
+}
+
+function profileMcpLabel(profile) {
+  const count = Array.isArray(profile?.mcpServers) ? profile.mcpServers.length : 0
+  return `MCP ${count}`
+}
+
+function renderProfileSelector(selectedId = '') {
+  if (!profileSelector) return
+  const activeId = selectedId || profilesState.activeProfile
+  const options = profilesState.profiles.map((p) => ({
+    value: p.id,
+    label: p.name || p.id
+  }))
+  options.push({ value: PROFILE_MANAGE_VALUE, label: 'Gestionar perfiles...' })
+  profileSelector.innerHTML = ''
+  for (const opt of options) {
+    const el = document.createElement('option')
+    el.value = opt.value
+    el.textContent = opt.label
+    profileSelector.appendChild(el)
+  }
+  profileSelector.value = options.some((o) => o.value === activeId) ? activeId : profilesState.activeProfile
+}
+
+function renderProfileReminder() {
+  const active = getActiveProfile()
+  if (!profileReminderName || !profileReminderMcp) return
+  profileReminderName.textContent = active?.name || 'Perfil'
+  profileReminderMcp.textContent = profileMcpLabel(active)
+  if (profileReminder) {
+    profileReminder.title = active
+      ? `${active.name} · ${active.cwd || 'cwd actual'}`
+      : 'Perfil activo'
+  }
+  renderProfilePopover()
+}
+
+function renderProfilePopover() {
+  const active = getActiveProfile()
+  if (!profilePopoverMain) return
+  if (!active) {
+    profilePopoverMain.textContent = 'Sin perfil activo'
+    profilePopoverClaudeMd.textContent = '-'
+    profilePopoverCwd.textContent = '-'
+    profilePopoverMcps.textContent = '-'
+    return
+  }
+  const mcpList = (active.mcpServers || []).join(', ')
+  profilePopoverMain.textContent = `${active.name} (${active.id})`
+  profilePopoverClaudeMd.textContent = active.claudeMdPath || 'No configurado'
+  profilePopoverClaudeMd.title = active.claudeMdPath || 'No configurado'
+  profilePopoverCwd.textContent = active.cwd || 'Usar cwd actual'
+  profilePopoverCwd.title = active.cwd || 'Usar cwd actual'
+  profilePopoverMcps.textContent = mcpList || 'Sin recordatorios MCP'
+  profilePopoverMcps.title = mcpList || 'Sin recordatorios MCP'
+}
+
+function positionProfilePopover() {
+  if (!profileReminder || !profilePopover || profilePopover.classList.contains('hidden')) return
+  const r = profileReminder.getBoundingClientRect()
+  const gap = 8
+  let left = r.right - profilePopover.offsetWidth
+  if (left < 10) left = 10
+  if (left + profilePopover.offsetWidth > window.innerWidth - 10) {
+    left = window.innerWidth - profilePopover.offsetWidth - 10
+  }
+  const top = Math.min(window.innerHeight - profilePopover.offsetHeight - 10, r.bottom + gap)
+  profilePopover.style.left = `${Math.max(10, left)}px`
+  profilePopover.style.top = `${Math.max(10, top)}px`
+}
+
+function closeProfilePopover() {
+  if (!profilePopover) return
+  profilePopover.classList.add('hidden')
+  profilePopoverOpen = false
+  profileReminder?.setAttribute('aria-expanded', 'false')
+  if (profileOutsideClickHandler) {
+    document.removeEventListener('mousedown', profileOutsideClickHandler, true)
+    window.removeEventListener('resize', positionProfilePopover)
+    profileOutsideClickHandler = null
+  }
+  if (profileEscapeHandler) {
+    window.removeEventListener('keydown', profileEscapeHandler)
+    profileEscapeHandler = null
+  }
+}
+
+function openProfilePopover() {
+  if (!profilePopover || !profileReminder) return
+  renderProfilePopover()
+  profilePopover.classList.remove('hidden')
+  profilePopoverOpen = true
+  profileReminder.setAttribute('aria-expanded', 'true')
+  positionProfilePopover()
+  profileOutsideClickHandler = (ev) => {
+    if (profilePopover.contains(ev.target) || profileReminder.contains(ev.target)) return
+    closeProfilePopover()
+  }
+  profileEscapeHandler = (ev) => {
+    if (ev.key === 'Escape') closeProfilePopover()
+  }
+  document.addEventListener('mousedown', profileOutsideClickHandler, true)
+  window.addEventListener('resize', positionProfilePopover)
+  window.addEventListener('keydown', profileEscapeHandler)
+}
+
+async function refreshProfilesState() {
+  if (!window.api.listProfiles) return profilesState
+  try {
+    const payload = await window.api.listProfiles()
+    profilesState = copyProfilesState(payload)
+  } catch {
+    return profilesState
+  }
+  if (!profilesState.profiles.length) {
+    profilesState = {
+      profiles: [{ id: DEFAULT_PROFILE_ID, name: 'Personal', claudeMdPath: '', mcpServers: [], cwd: '' }],
+      activeProfile: DEFAULT_PROFILE_ID
+    }
+  }
+  if (!getProfileById(profilesState.activeProfile)) profilesState.activeProfile = profilesState.profiles[0].id
+  return profilesState
+}
+
+function readProfileForm() {
+  return {
+    name: profileNameInput?.value?.trim() || '',
+    claudeMdPath: profileClaudeMdInput?.value?.trim() || '',
+    mcpServers: (profileMcpsInput?.value || '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean),
+    cwd: profileCwdInput?.value?.trim() || ''
+  }
+}
+
+function fillProfileForm(profile) {
+  if (!profile) return
+  profileNameInput.value = profile.name || ''
+  profileClaudeMdInput.value = profile.claudeMdPath || ''
+  profileMcpsInput.value = Array.isArray(profile.mcpServers) ? profile.mcpServers.join(', ') : ''
+  profileCwdInput.value = profile.cwd || ''
+  const locked = profile.id === DEFAULT_PROFILE_ID
+  btnProfileDelete.disabled = locked
+  if (profileFormNote) {
+    profileFormNote.textContent = locked
+      ? 'El perfil Personal no se puede borrar.'
+      : 'Puedes borrar este perfil cuando quieras.'
+  }
+}
+
+function renderProfilesModalList() {
+  if (!profilesListEl) return
+  profilesListEl.innerHTML = ''
+  for (const profile of profilesState.profiles) {
+    const row = document.createElement('div')
+    row.className = 'profile-item' + (profile.id === profileModalSelectedId ? ' active' : '')
+    const mcps = Array.isArray(profile.mcpServers) ? profile.mcpServers.length : 0
+    const nameEl = document.createElement('div')
+    nameEl.className = 'profile-item-name'
+    nameEl.textContent = profile.name || profile.id
+    const metaEl = document.createElement('div')
+    metaEl.className = 'profile-item-meta'
+    metaEl.textContent = `${profile.id} · MCP ${mcps}`
+    row.append(nameEl, metaEl)
+    row.addEventListener('click', () => {
+      profileModalSelectedId = profile.id
+      renderProfilesModalList()
+      fillProfileForm(profile)
+    })
+    profilesListEl.appendChild(row)
+  }
+}
+
+async function openProfilesModal() {
+  closeProfilePopover()
+  await refreshProfilesState()
+  profileModalSelectedId = profilesState.activeProfile
+  renderProfilesModalList()
+  fillProfileForm(getProfileById(profileModalSelectedId))
+  profilesModal?.classList.remove('hidden')
+}
+
+async function applyProfileChange(newProfileId) {
+  const previousId = profilesState.activeProfile
+  if (!newProfileId || newProfileId === previousId) return true
+  closeProfilePopover()
+  const result = await window.api.setActiveProfile(newProfileId)
+  if (!result?.ok) {
+    showStatus(result?.error || 'No se pudo cambiar el perfil', 'error', 5000)
+    return false
+  }
+  profilesState = copyProfilesState(result)
+  renderProfileSelector()
+  renderProfileReminder()
+  const next = getActiveProfile()
+  showStatus(`Cambiando perfil: ${next?.name || newProfileId}…`, 'busy')
+  const restartCwd = next?.cwd || await window.api.ptyCwd()
+  try {
+    await fullRestart(restartCwd)
+    if (next?.cwd) {
+      try { await setRoot(next.cwd) } catch {}
+    }
+    await updateCwdLabel()
+    await refreshSessionStrip(true)
+    await refreshHealth(true)
+    showStatus(`Perfil activo: ${next?.name || newProfileId}`, 'ok', 2000)
+    return true
+  } catch (err) {
+    await window.api.setActiveProfile(previousId)
+    await refreshProfilesState()
+    renderProfileSelector()
+    renderProfileReminder()
+    showStatus(errorMessage(err), 'error', 6500)
+    return false
+  }
+}
+
+if (profileReminder) {
+  profileReminder.addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    if (profilePopoverOpen) {
+      closeProfilePopover()
+      return
+    }
+    openProfilePopover()
+  })
+}
 function errorMessage(err) {
   return err?.message || String(err)
 }
@@ -878,10 +1157,108 @@ if (typeof window.api.onProposalCleared === 'function') {
   })
 }
 
+if (profileSelector) {
+  profileSelector.addEventListener('change', async (e) => {
+    const value = String(e?.target?.value || '')
+    if (value === PROFILE_MANAGE_VALUE) {
+      renderProfileSelector()
+      await openProfilesModal()
+      return
+    }
+    const ok = await applyProfileChange(value)
+    if (!ok) renderProfileSelector()
+  })
+}
+
 btnSettings.addEventListener('click', async () => {
   await refreshSettings()
   settingsModal.classList.remove('hidden')
 })
+
+function closeProfilesModal() {
+  profilesModal?.classList.add('hidden')
+}
+
+if (btnCloseProfiles) btnCloseProfiles.addEventListener('click', closeProfilesModal)
+profilesModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeProfilesModal)
+
+if (btnProfileNew) {
+  btnProfileNew.addEventListener('click', async () => {
+    const result = await window.api.createProfile({ name: 'Nuevo perfil', claudeMdPath: '', mcpServers: [], cwd: '' })
+    if (!result?.ok) {
+      showStatus(result?.error || 'No pude crear el perfil', 'error', 5000)
+      return
+    }
+    profilesState = copyProfilesState(result)
+    const created = result.profile?.id || profilesState.profiles[profilesState.profiles.length - 1]?.id
+    profileModalSelectedId = created || profilesState.activeProfile
+    renderProfilesModalList()
+    fillProfileForm(getProfileById(profileModalSelectedId))
+    renderProfileSelector()
+    renderProfileReminder()
+  })
+}
+
+if (btnProfileSave) {
+  btnProfileSave.addEventListener('click', async () => {
+    const profile = getProfileById(profileModalSelectedId)
+    if (!profile) return
+    const patch = readProfileForm()
+    if (!patch.name) {
+      showStatus('El perfil necesita un nombre', 'warn', 3500)
+      return
+    }
+    const result = await window.api.updateProfile(profile.id, patch)
+    if (!result?.ok) {
+      showStatus(result?.error || 'No pude guardar el perfil', 'error', 5500)
+      return
+    }
+    profilesState = copyProfilesState(result)
+    renderProfilesModalList()
+    fillProfileForm(getProfileById(profile.id))
+    renderProfileSelector()
+    renderProfileReminder()
+    showStatus('Perfil guardado', 'ok', 1800)
+  })
+}
+
+if (btnProfileDelete) {
+  btnProfileDelete.addEventListener('click', async () => {
+    const profile = getProfileById(profileModalSelectedId)
+    if (!profile) return
+    if (profile.id === DEFAULT_PROFILE_ID) {
+      showStatus('El perfil Personal no se puede borrar', 'warn', 3000)
+      return
+    }
+    if (!confirm(`¿Borrar perfil "${profile.name}"?`)) return
+    const result = await window.api.deleteProfile(profile.id)
+    if (!result?.ok) {
+      showStatus(result?.error || 'No pude borrar el perfil', 'error', 5500)
+      return
+    }
+    profilesState = copyProfilesState(result)
+    profileModalSelectedId = profilesState.activeProfile
+    renderProfilesModalList()
+    fillProfileForm(getProfileById(profileModalSelectedId))
+    renderProfileSelector()
+    renderProfileReminder()
+    showStatus('Perfil borrado', 'ok', 1800)
+  })
+}
+
+if (btnPickProfileClaudeMd) {
+  btnPickProfileClaudeMd.addEventListener('click', async () => {
+    const picked = await window.api.pickProfileClaudeMd()
+    if (picked) profileClaudeMdInput.value = picked
+  })
+}
+
+if (btnPickProfileCwd) {
+  btnPickProfileCwd.addEventListener('click', async () => {
+    const picked = await window.api.pickProfileCwd()
+    if (picked) profileCwdInput.value = picked
+  })
+}
 
 btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'))
 settingsModal.querySelector('.modal-backdrop').addEventListener('click', () => settingsModal.classList.add('hidden'))
@@ -2166,12 +2543,6 @@ window.addEventListener('mouseup', () => {
   }
 })
 
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
-    settingsModal.classList.add('hidden')
-  }
-})
-
 // ── Sesiones (historial) ──
 
 function fmtRelative(ts) {
@@ -2330,12 +2701,24 @@ window.addEventListener('keydown', (e) => {
     closeProposalModal()
     return
   }
+  if (e.key === 'Escape' && !profilesModal.classList.contains('hidden')) {
+    closeProfilesModal()
+    return
+  }
   if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
     settingsModal.classList.add('hidden')
     return
   }
   if (e.key === 'Escape' && !sessionsModal.classList.contains('hidden')) {
     sessionsModal.classList.add('hidden')
+    return
+  }
+  if (e.key === 'Escape' && profilePopoverOpen) {
+    closeProfilePopover()
+    return
+  }
+  if (e.key === 'Escape' && healthPopoverOpen) {
+    closeHealthPopover()
   }
 })
 
@@ -2450,7 +2833,11 @@ cliSelector.addEventListener('change', async (e) => {
 
   const saved = localStorage.getItem(ROOT_KEY)
   const home = await window.api.homeDir()
-  const initialRoot = saved || home
+  await refreshProfilesState()
+  renderProfileSelector()
+  renderProfileReminder()
+  const activeProfile = getActiveProfile()
+  const initialRoot = activeProfile?.cwd || saved || home
 
   const activeCli = await window.api.getActiveCli()
   const appConfig = await window.api.getAppConfig()
@@ -2465,6 +2852,8 @@ cliSelector.addEventListener('change', async (e) => {
     }
   }
   cliSelector.value = initialCli
+  renderProfileSelector()
+  renderProfileReminder()
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshSessionStrip(true)
   await refreshHealth(true)

@@ -16,6 +16,11 @@
         <option value="claude">Claude</option>
         <option value="codex">Codex</option>
       </select>
+      <select id="profile-selector" title="Seleccionar perfil de encargo" aria-label="Perfil activo"></select>
+      <button id="profile-reminder" class="profile-reminder" title="Perfil activo" aria-label="Resumen del perfil activo" aria-haspopup="dialog" aria-expanded="false">
+        <span id="profile-reminder-name">Perfil</span>
+        <span id="profile-reminder-mcp">MCP 0</span>
+      </button>
       <button id="health-indicator" class="health-indicator" title="Estado del sistema" aria-label="Estado del sistema" aria-haspopup="dialog" aria-expanded="false">
         <span id="health-global-dot" class="health-global-dot state-off"></span>
         <span class="health-dots" aria-hidden="true">
@@ -100,6 +105,24 @@
     <div class="health-popover-title">Salud del sistema</div>
     <div id="health-popover-list" class="health-popover-list"></div>
     <div id="health-popover-meta" class="health-popover-meta">Sin datos</div>
+  </div>
+  <div id="profile-popover" class="hidden" role="dialog" aria-label="Detalle del perfil activo">
+    <div class="health-popover-title">Perfil activo</div>
+    <div id="profile-popover-main" class="profile-popover-main">Sin datos</div>
+    <div class="profile-popover-list">
+      <div class="profile-popover-row">
+        <span class="health-popover-service">CLAUDE.md</span>
+        <span id="profile-popover-claude-md" class="health-popover-detail">-</span>
+      </div>
+      <div class="profile-popover-row">
+        <span class="health-popover-service">CWD</span>
+        <span id="profile-popover-cwd" class="health-popover-detail">-</span>
+      </div>
+      <div class="profile-popover-row">
+        <span class="health-popover-service">MCPs</span>
+        <span id="profile-popover-mcps" class="health-popover-detail">-</span>
+      </div>
+    </div>
   </div>
 
   <div id="session-strip">
@@ -307,6 +330,52 @@
       <div class="proposal-modal-actions">
         <button id="btn-proposal-reject" class="icon-btn text-btn proposal-btn reject">RECHAZAR</button>
         <button id="btn-proposal-approve" class="icon-btn text-btn proposal-btn approve">APROBAR</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="profiles-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel profiles">
+      <div class="modal-header">
+        <span class="modal-title">Perfiles de encargo</span>
+        <span class="modal-sub">Selecciona un perfil y guarda cambios</span>
+        <button id="btn-close-profiles" class="modal-close" aria-label="Cerrar perfiles">×</button>
+      </div>
+      <div class="profiles-body">
+        <div class="profiles-list-panel">
+          <div id="profiles-list" class="profiles-list"></div>
+          <button id="btn-profile-new" class="icon-btn text-btn">Nuevo perfil</button>
+        </div>
+        <div class="profiles-form-panel">
+          <label class="settings-field">
+            <span>Nombre</span>
+            <input id="profile-name" type="text" placeholder="Nombre del perfil" />
+          </label>
+          <label class="settings-field">
+            <span>Ruta a CLAUDE.md</span>
+            <div class="profile-path-row">
+              <input id="profile-claude-md" type="text" placeholder="/ruta/a/CLAUDE.md" />
+              <button id="btn-pick-profile-claude-md" class="icon-btn text-btn" type="button">Elegir</button>
+            </div>
+          </label>
+          <label class="settings-field">
+            <span>MCP servers (separados por coma)</span>
+            <input id="profile-mcps" type="text" placeholder="filesystem, github, slack" />
+          </label>
+          <label class="settings-field">
+            <span>Directorio de trabajo</span>
+            <div class="profile-path-row">
+              <input id="profile-cwd" type="text" placeholder="/ruta/de/trabajo" />
+              <button id="btn-pick-profile-cwd" class="icon-btn text-btn" type="button">Elegir</button>
+            </div>
+          </label>
+          <div id="profile-form-note" class="settings-note">El perfil Personal no se puede borrar.</div>
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button id="btn-profile-delete" class="icon-btn text-btn danger">Borrar perfil</button>
+        <button id="btn-profile-save" class="icon-btn text-btn primary">Guardar perfil</button>
       </div>
     </div>
   </div>
