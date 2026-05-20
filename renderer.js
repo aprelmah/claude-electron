@@ -13,6 +13,7 @@ const btnImage = document.getElementById('btn-image')
 const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
 const btnSettings = document.getElementById('btn-settings')
+const btnBitacora = document.getElementById('btn-bitacora')
 const btnOpenGraphWindow = document.getElementById('btn-open-graph-window')
 const btnSendTelegram = document.getElementById('btn-send-telegram')
 const btnSendTelegramWrap = document.getElementById('btn-send-telegram-wrap')
@@ -673,6 +674,12 @@ if (btnSendTelegram) {
 
 if (btnNewWindow) {
   btnNewWindow.addEventListener('click', () => window.api.newWindow())
+}
+
+if (btnBitacora) {
+  btnBitacora.addEventListener('click', async () => {
+    try { await window.api.openBitacoraWindow?.() } catch {}
+  })
 }
 
 btnSettings.addEventListener('click', async () => {

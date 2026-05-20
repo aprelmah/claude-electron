@@ -283,6 +283,18 @@ button.icon-btn svg {
   stroke-linejoin: round;
 }
 
+.titlebar-text-btn {
+  gap: 5px;
+  padding: 4px 8px !important;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.titlebar-text-btn svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
 button.icon-btn.small { width: 24px; height: 24px; padding: 4px; }
 button.icon-btn.small svg { width: 13px; height: 13px; stroke-width: 2.2; }
 button.icon-btn.small:hover { transform: scale(1.14); }

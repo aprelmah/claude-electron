@@ -222,7 +222,7 @@ function bridgeFetch(method, urlPath, body) {
   })
 }
 
-function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
+function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySent } = {}) {
   const emitter = new EventEmitter()
   let config = loadConfig()
   let chats = new Map() // jid → chat
@@ -247,6 +247,11 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv } = {}) {
   const queueLenByJid = new Map() // jid → nº mensajes en vuelo+pendientes para ese JID
   let inflightCount = 0
   const inflightWaiters = []
+
+  function emitAutoReplySent(payload) {
+    if (typeof onAutoReplySent !== 'function') return
+    try { onAutoReplySent(payload || {}) } catch {}
+  }
 
   function checkClaudeBinary() {
     try {
@@ -652,15 +657,38 @@ function isAuthorized(jid) {
         chat.mode = 'manual'
         markDirty()
         emitter.emit('chat-updated', summarizeChat(jid))
-        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
+        const sent = await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
+        emitAutoReplySent({
+          jid,
+          ok: !!sent?.ok,
+          mode: 'fallback',
+          reason: 'sanitize',
+          text: AUTO_REPLY_FALLBACK_TEXT,
+          error: sent?.error || ''
+        })
         return
       }
-      await sendText(jid, safeReply, { changeModeToManual: false, internal: true, source: 'claude' })
+      const sent = await sendText(jid, safeReply, { changeModeToManual: false, internal: true, source: 'claude' })
+      emitAutoReplySent({
+        jid,
+        ok: !!sent?.ok,
+        mode: 'reply',
+        text: safeReply,
+        error: sent?.error || ''
+      })
     } catch (err) {
       console.error('[whatsapp] auto-reply error:', err?.message || err)
       // Fallback defensivo: evita que el cliente se quede sin respuesta si falla Claude.
       try {
-        await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
+        const sent = await sendText(jid, AUTO_REPLY_FALLBACK_TEXT, { changeModeToManual: false, internal: true, source: 'claude' })
+        emitAutoReplySent({
+          jid,
+          ok: !!sent?.ok,
+          mode: 'fallback',
+          reason: 'error',
+          text: AUTO_REPLY_FALLBACK_TEXT,
+          error: sent?.error || (err?.message || String(err))
+        })
       } catch {}
     }
   }

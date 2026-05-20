@@ -31,13 +31,14 @@ function buildPathsFromSlug(slug) {
 }
 
 class AutomationManager {
-  constructor({ userDataDir, runClaudeHeadless, appConfig, telegramBridge, broadcast } = {}) {
+  constructor({ userDataDir, runClaudeHeadless, appConfig, telegramBridge, broadcast, onSemanticEvent } = {}) {
     if (!userDataDir) throw new Error('AutomationManager: userDataDir requerido')
     if (typeof runClaudeHeadless !== 'function') throw new Error('AutomationManager: runClaudeHeadless requerido')
     this._userDataDir = userDataDir
     this._appConfig = appConfig || null
     this._telegramBridge = telegramBridge || null
     this._broadcast = typeof broadcast === 'function' ? broadcast : () => {}
+    this._onSemanticEvent = typeof onSemanticEvent === 'function' ? onSemanticEvent : null
     this._persistence = createPersistence({ userDataDir })
     this._generator = createGenerator({ runClaudeHeadless })
     this._installer = createInstaller()
@@ -363,6 +364,18 @@ class AutomationManager {
       }
       await this._persistence.upsert(updated)
       this._emitListChanged()
+      if (this._onSemanticEvent) {
+        try {
+          this._onSemanticEvent({
+            action: 'automatizacion_instalada',
+            cli: 'claude',
+            session: current?.chatSessionId || '',
+            detail: `${updated.name || updated.slug || id} (${updated.label || ''})`,
+            ok: true,
+            automationId: updated.id
+          })
+        } catch {}
+      }
       return { ok: true }
     } catch (err) {
       const msg = err && err.message ? err.message : String(err)

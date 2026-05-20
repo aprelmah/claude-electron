@@ -170,7 +170,9 @@ class TelegramBridge {
     onGetCwd,
     onSetCli,
     onUnlinkRelay,
-    onStatus
+    onStatus,
+    onSemanticInput,
+    onSemanticOutput
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -181,6 +183,8 @@ class TelegramBridge {
     this.onSetCli = onSetCli
     this.onUnlinkRelay = onUnlinkRelay
     this.onStatus = onStatus
+    this.onSemanticInput = onSemanticInput
+    this.onSemanticOutput = onSemanticOutput
 
     this.config = null
     this.running = false
@@ -492,6 +496,15 @@ class TelegramBridge {
     if (!this.running) return
     const cli = (await this.onGetActiveCli?.()) || 'claude'
     const sessionId = this._getSessionId(chatId, cli)
+    const promptText = String(prompt || '')
+    try {
+      this.onSemanticInput?.({
+        chatId: String(chatId),
+        cli,
+        sessionId: sessionId || null,
+        prompt: promptText
+      })
+    } catch {}
 
     if (this.activeStreams.has(chatId)) {
       try { this.activeStreams.get(chatId).abort() } catch {}
@@ -505,6 +518,9 @@ class TelegramBridge {
     }, 4000)
 
     const stream = new TelegramStream(this, chatId, null)
+    let runOk = false
+    let runError = ''
+    let resolvedSessionId = sessionId || null
 
     try {
       const fileHint = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]\n\n'
@@ -520,9 +536,12 @@ class TelegramBridge {
         onSessionId: (id) => this._setSessionId(chatId, cli, id)
       })
       if (result?.sessionId) this._setSessionId(chatId, cli, result.sessionId)
+      resolvedSessionId = result?.sessionId || this._getSessionId(chatId, cli) || resolvedSessionId
+      runOk = true
       clearInterval(typingInterval)
       await stream.finalize()
     } catch (err) {
+      runError = err?.message || String(err)
       clearInterval(typingInterval)
       if (err?.name === 'AbortError') {
         await stream.finalize('(cancelado)')
@@ -534,6 +553,16 @@ class TelegramBridge {
       if (this.activeStreams.get(chatId) === abortController) {
         this.activeStreams.delete(chatId)
       }
+      try {
+        this.onSemanticOutput?.({
+          chatId: String(chatId),
+          cli,
+          sessionId: resolvedSessionId || this._getSessionId(chatId, cli) || null,
+          prompt: promptText,
+          ok: runOk,
+          error: runError
+        })
+      } catch {}
     }
   }
 

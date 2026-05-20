@@ -7,6 +7,7 @@ const fs = require('fs')
 const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync } = require('./main/atomic-writes')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
+const { createSemanticLogger } = require('./main/semantic-logger')
 const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
 const TaskScheduler = require('./scheduler')
@@ -147,6 +148,7 @@ const DEFAULT_CONFIG = Object.freeze({
 })
 
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
+const semanticLogger = createSemanticLogger()
 
 function resolveCommand(candidates) {
   for (const cmd of candidates) {
@@ -664,6 +666,54 @@ async function collectHealthSnapshot(session) {
     launchd,
     scheduler
   }
+}
+
+function semanticCli(cliHint) {
+  const cli = cliHint || getActiveCliSync() || 'claude'
+  return cli === 'codex' ? 'codex' : 'claude'
+}
+
+function semanticSessionId(session, cliHint) {
+  const cli = semanticCli(cliHint || session?.activeCli)
+  if (!session) return ''
+  if (cli === 'codex') return String(session.codexSessionId || '')
+  return String(session.claudeSessionId || '')
+}
+
+function semanticDetail(detail) {
+  const text = String(detail || '').replace(/\s+/g, ' ').trim()
+  return text.length > 1200 ? `${text.slice(0, 1200)}…` : text
+}
+
+function logSemantic(action, payload = {}) {
+  if (!action) return
+  const event = payload && typeof payload === 'object' ? payload : {}
+  semanticLogger.log({
+    session: event.session || '',
+    cli: semanticCli(event.cli),
+    action: String(action),
+    detail: semanticDetail(event.detail || ''),
+    ok: event.ok !== false
+  })
+}
+
+function logSemanticForSession(session, action, payload = {}) {
+  const p = payload && typeof payload === 'object' ? payload : {}
+  logSemantic(action, {
+    session: p.session || semanticSessionId(session, p.cli),
+    cli: p.cli || session?.activeCli || getActiveCliSync(),
+    detail: p.detail || '',
+    ok: p.ok !== false
+  })
+}
+
+// Stubs listos para el flujo AGENT_PROPOSAL (Task D).
+function logProposalApprovedStub(payload = {}) {
+  logSemantic('propuesta_aprobada', payload)
+}
+
+function logProposalRejectedStub(payload = {}) {
+  logSemantic('propuesta_rechazada', payload)
 }
 
 // ── Tree watcher per-session ──
@@ -1250,6 +1300,10 @@ function startPty(session, cols, rows, cwd, args = []) {
   proc._alive = true
   session.pty = proc
   const myWcId = session.wcId
+  logSemanticForSession(session, 'pty_inicio', {
+    detail: `cwd=${session.cwd || ''}`,
+    ok: true
+  })
 
   // Poll continuo para capturar el sessionId que claude cree/actualice en ~/.claude/projects/...
   // Sigue hasta detectarlo o hasta que el PTY muera.
@@ -1317,6 +1371,10 @@ function startPty(session, cols, rows, cwd, args = []) {
 
 function killPty(session) {
   if (!session || !session.pty) return
+  logSemanticForSession(session, 'pty_fin', {
+    detail: `cwd=${session.cwd || ''}`,
+    ok: true
+  })
   if (typeof session.relayCancel === 'function') {
     const err = new Error('PTY reiniciado')
     err.name = 'RelayPtyClosed'
@@ -1499,6 +1557,7 @@ let tasksScheduler = null
 let automationManager = null
 let automationChat = null
 let tasksManagerWin = null
+let bitacoraWin = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
@@ -1549,6 +1608,50 @@ async function openTasksManager() {
   })
   tasksManagerWin.on('closed', () => { tasksManagerWin = null })
   return tasksManagerWin
+}
+
+async function openBitacoraWindow() {
+  if (bitacoraWin && !bitacoraWin.isDestroyed()) {
+    if (bitacoraWin.isMinimized()) bitacoraWin.restore()
+    bitacoraWin.show()
+    bitacoraWin.focus()
+    return bitacoraWin
+  }
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  bitacoraWin = new BrowserWindow({
+    width: 1040,
+    height: 720,
+    minWidth: 780,
+    minHeight: 500,
+    title: 'POWER-AGENT — Bitácora',
+    show: false,
+    backgroundColor: initialTheme === 'light' ? '#f7f7fb' : '#13131a',
+    webPreferences: {
+      preload: path.join(__dirname, 'bitacora-window-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  bitacoraWin.loadFile('bitacora-window.html', { query: { theme: initialTheme } })
+  bitacoraWin.once('ready-to-show', () => {
+    if (bitacoraWin && !bitacoraWin.isDestroyed()) bitacoraWin.show()
+  })
+  bitacoraWin.on('closed', () => { bitacoraWin = null })
+  return bitacoraWin
 }
 
 function broadcastToAllWindows(channel, payload) {
@@ -2147,7 +2250,26 @@ function initTelegramBridge() {
         : { ok: true, refreshed: false, reason: 'no-bound-session' }
       return { ok: true, linked: false, detached, chatId: key, sync }
     },
-    onStatus: () => broadcastTelegramStatus()
+    onStatus: () => broadcastTelegramStatus(),
+    onSemanticInput: ({ chatId, cli, sessionId, prompt }) => {
+      const charCount = String(prompt || '').length
+      logSemantic('telegram_entrada', {
+        session: sessionId || '',
+        cli: cli || getActiveCliSync(),
+        detail: `chat=${chatId || ''} chars=${charCount}`,
+        ok: true
+      })
+    },
+    onSemanticOutput: ({ chatId, cli, sessionId, ok, error }) => {
+      logSemantic('telegram_salida', {
+        session: sessionId || '',
+        cli: cli || getActiveCliSync(),
+        detail: ok === false
+          ? `chat=${chatId || ''} error=${error || 'unknown'}`
+          : `chat=${chatId || ''}`,
+        ok: ok !== false
+      })
+    }
   })
 }
 
@@ -2661,7 +2783,16 @@ app.whenReady().then(async () => {
       runClaudeHeadless,
       appConfig,
       telegramBridge,
-      broadcast: broadcastToAllWindows
+      broadcast: broadcastToAllWindows,
+      onSemanticEvent: (event) => {
+        if (!event || !event.action) return
+        logSemantic(event.action, {
+          session: event.session || '',
+          cli: event.cli || getActiveCliSync(),
+          detail: event.detail || '',
+          ok: event.ok !== false
+        })
+      }
     })
     await automationManager.init()
   } catch (e) {
@@ -2705,7 +2836,19 @@ app.whenReady().then(async () => {
 
     whatsappClient = createWhatsAppClient({
       buildRuntimeEnv,
-      transcribeAudio: (mediaPath) => transcribeAudioFile(mediaPath, buildRuntimeEnv())
+      transcribeAudio: (mediaPath) => transcribeAudioFile(mediaPath, buildRuntimeEnv()),
+      onAutoReplySent: ({ jid, ok, mode, reason, text, error }) => {
+        const chars = String(text || '').length
+        const modeTag = mode ? ` mode=${mode}` : ''
+        const reasonTag = reason ? ` reason=${reason}` : ''
+        const errorTag = error ? ` error=${error}` : ''
+        logSemantic('whatsapp_respuesta', {
+          session: '',
+          cli: 'claude',
+          detail: `jid=${jid || ''}${modeTag}${reasonTag} chars=${chars}${errorTag}`,
+          ok: ok !== false
+        })
+      }
     })
     whatsappClient.on('new-message', (payload) => broadcastToAllWindows('whatsapp:new-message', payload))
     whatsappClient.on('chat-updated', (payload) => broadcastToAllWindows('whatsapp:chat-updated', payload))
@@ -3852,6 +3995,38 @@ ipcMain.handle('is-pinned', (event) => {
 
 ipcMain.on('window-new', () => {
   createWindow()
+})
+
+ipcMain.handle('bitacora:open', async () => {
+  const win = await openBitacoraWindow()
+  return { ok: !!win }
+})
+
+ipcMain.handle('bitacora:list', (_event, payload = {}) => {
+  const limit = Number(payload?.limit) || 500
+  const entries = semanticLogger.readRecent({ limit: Math.max(1, Math.min(limit, 5000)) })
+  return { ok: true, entries, filePath: semanticLogger.filePath }
+})
+
+ipcMain.handle('bitacora:export-csv', async (event, payload = {}) => {
+  try {
+    const fallbackEntries = semanticLogger.readRecent({ limit: 500 })
+    const entries = Array.isArray(payload?.entries) ? payload.entries : fallbackEntries
+    const csv = semanticLogger.toCsv(entries)
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const suggested = payload?.name ? String(payload.name) : `power-agent-log-${stamp}.csv`
+    const parent = winFromEvent(event) || bitacoraWin || undefined
+    const save = await dialog.showSaveDialog(parent, {
+      title: 'Exportar Bitácora CSV',
+      defaultPath: path.join(os.homedir(), suggested),
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    })
+    if (save.canceled || !save.filePath) return { ok: false, cancelled: true }
+    fs.writeFileSync(save.filePath, csv, 'utf-8')
+    return { ok: true, path: save.filePath, count: entries.length }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
 })
 
 let graphWindowData = null
