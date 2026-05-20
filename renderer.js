@@ -72,6 +72,12 @@ const cfgTelegramClaudeEffort = document.getElementById('cfg-telegram-claude-eff
 const cfgTelegramCodexModel = document.getElementById('cfg-telegram-codex-model')
 const cfgTelegramCodexEffort = document.getElementById('cfg-telegram-codex-effort')
 const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
+const cfgLanEnabled = document.getElementById('cfg-lan-enabled')
+const cfgLanPort = document.getElementById('cfg-lan-port')
+const cfgLanStatus = document.getElementById('cfg-lan-status')
+const cfgLanUrl = document.getElementById('cfg-lan-url')
+const cfgLanClientUrl = document.getElementById('cfg-lan-client-url')
+const cfgLanQr = document.getElementById('cfg-lan-qr')
 const sessionStripCli = document.getElementById('session-strip-cli')
 const sessionStripTitle = document.getElementById('session-strip-title')
 const sessionStripId = document.getElementById('session-strip-id')
@@ -106,6 +112,10 @@ const profileCwdInput = document.getElementById('profile-cwd')
 const profileFormNote = document.getElementById('profile-form-note')
 const btnPickProfileClaudeMd = document.getElementById('btn-pick-profile-claude-md')
 const btnPickProfileCwd = document.getElementById('btn-pick-profile-cwd')
+const remoteSessionsPanel = document.getElementById('remote-sessions-panel')
+const remoteSessionsListEl = document.getElementById('remote-sessions-list')
+const remoteSessionsEmptyEl = document.getElementById('remote-sessions-empty')
+const remoteSessionsCountEl = document.getElementById('remote-sessions-count')
 
 // ── Themes ──
 const THEMES = {
@@ -251,6 +261,8 @@ let pendingProposal = null
 let proposalActionInFlight = false
 let updateState = 'idle'
 let updateInstallInFlight = false
+let lanServerSnapshot = null
+let lanStatusRefreshInFlight = false
 
 function renderUpdateBanner() {
   if (!updateBanner || !updateBannerText || !btnInstallUpdate) return
@@ -938,6 +950,103 @@ function renderTelegramStatus(status) {
   cfgTelegramStatus.textContent = lines.join('\n')
 }
 
+function clampLanPort(value) {
+  const n = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(n)) return 9999
+  if (n < 1024) return 1024
+  if (n > 65534) return 65534
+  return n
+}
+
+function formatConnectedAge(connectedAt) {
+  const ts = Number(connectedAt || 0)
+  if (!ts) return '-'
+  const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+function renderRemoteSessions(list) {
+  if (!remoteSessionsPanel || !remoteSessionsListEl || !remoteSessionsEmptyEl || !remoteSessionsCountEl) return
+  const rows = Array.isArray(list) ? list : []
+  remoteSessionsCountEl.textContent = String(rows.length)
+  remoteSessionsListEl.innerHTML = ''
+  const running = Boolean(lanServerSnapshot?.running)
+  remoteSessionsPanel.classList.toggle('hidden', !running)
+  remoteSessionsEmptyEl.style.display = rows.length ? 'none' : 'block'
+  for (const row of rows) {
+    const item = document.createElement('div')
+    item.className = 'remote-session-row'
+
+    const main = document.createElement('div')
+    main.className = 'remote-session-main'
+
+    const title = document.createElement('div')
+    title.className = 'remote-session-title'
+    title.textContent = `${row.ip || '-'} · ${row.cli || 'claude'}`
+
+    const meta = document.createElement('div')
+    meta.className = 'remote-session-meta'
+    meta.textContent = `${row.cwd || '-'} · ${formatConnectedAge(row.connectedAt)}`
+
+    const closeBtn = document.createElement('button')
+    closeBtn.className = 'remote-session-close'
+    closeBtn.textContent = 'Cerrar'
+    closeBtn.type = 'button'
+    closeBtn.dataset.remoteSessionClose = String(row.id || '')
+
+    main.appendChild(title)
+    main.appendChild(meta)
+    item.appendChild(main)
+    item.appendChild(closeBtn)
+    remoteSessionsListEl.appendChild(item)
+  }
+}
+
+function renderLanStatus(snapshot, errorText = '') {
+  lanServerSnapshot = snapshot || null
+  const running = Boolean(snapshot?.running)
+  const ip = String(snapshot?.ip || '').trim()
+  const port = Number(snapshot?.port || clampLanPort(cfgLanPort?.value || 9999))
+  const wsUrl = running && ip ? `ws://${ip}:${port}` : '-'
+  const clientUrl = running && snapshot?.clientUrl ? String(snapshot.clientUrl) : '-'
+  const sessionCount = Array.isArray(snapshot?.sessions) ? snapshot.sessions.length : 0
+  if (cfgLanStatus) {
+    const base = running ? `Estado: activo (${sessionCount} sesiones)` : 'Estado: detenido'
+    cfgLanStatus.textContent = errorText ? `${base}\nError: ${errorText}` : base
+  }
+  if (cfgLanUrl) cfgLanUrl.textContent = `URL: ${wsUrl}`
+  if (cfgLanClientUrl) cfgLanClientUrl.textContent = `Cliente: ${clientUrl}`
+  if (cfgLanQr) {
+    if (running && window.QRCode && typeof window.QRCode.toDataURL === 'function') {
+      cfgLanQr.textContent = `QR listo para ${wsUrl}`
+    } else if (running) {
+      cfgLanQr.textContent = 'QR no disponible (librería qrcode no instalada).'
+    } else {
+      cfgLanQr.textContent = 'QR no disponible'
+    }
+  }
+  renderRemoteSessions(snapshot?.sessions || [])
+}
+
+async function refreshLanServerStatus(force = false) {
+  if (!window.api.wsServerSessions) return
+  if (lanStatusRefreshInFlight && !force) return
+  lanStatusRefreshInFlight = true
+  try {
+    const status = await window.api.wsServerSessions()
+    renderLanStatus(status, status?.ok === false ? (status.error || 'Error') : '')
+  } catch (err) {
+    renderLanStatus(lanServerSnapshot, errorMessage(err))
+  } finally {
+    lanStatusRefreshInFlight = false
+  }
+}
+
 async function refreshSettings() {
   const config = await window.api.getAppConfig()
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
@@ -951,7 +1060,10 @@ async function refreshSettings() {
   cfgTelegramClaudeEffort.value = config?.telegram?.claudeEffort || ''
   cfgTelegramCodexModel.value = config?.telegram?.codexModel || ''
   cfgTelegramCodexEffort.value = config?.telegram?.codexEffort || ''
+  if (cfgLanEnabled) cfgLanEnabled.checked = Boolean(config?.lanServer?.enabled)
+  if (cfgLanPort) cfgLanPort.value = String(clampLanPort(config?.lanServer?.port ?? 9999))
   renderTelegramStatus(await window.api.getTelegramStatus())
+  await refreshLanServerStatus(true)
 }
 
 // ── Inyecta texto al PTY ──
@@ -1267,8 +1379,30 @@ btnRefreshTelegramStatus.addEventListener('click', async () => {
   renderTelegramStatus(await window.api.getTelegramStatus())
 })
 
+if (remoteSessionsListEl) {
+  remoteSessionsListEl.addEventListener('click', async (ev) => {
+    const btn = ev.target?.closest?.('button[data-remote-session-close]')
+    if (!btn) return
+    const id = String(btn.dataset.remoteSessionClose || '').trim()
+    if (!id) return
+    btn.disabled = true
+    try {
+      const res = await window.api.wsServerCloseSession?.(id)
+      if (!res?.ok) showStatus(res?.error || 'No pude cerrar la sesión remota', 'error', 3000)
+      await refreshLanServerStatus(true)
+    } catch (err) {
+      showStatus(errorMessage(err), 'error', 3000)
+    } finally {
+      btn.disabled = false
+    }
+  })
+}
+
 btnSaveSettings.addEventListener('click', async () => {
   showStatus('Guardando configuracion…', 'busy')
+  const lanEnabled = Boolean(cfgLanEnabled?.checked)
+  const lanPort = clampLanPort(cfgLanPort?.value || 9999)
+  if (cfgLanPort) cfgLanPort.value = String(lanPort)
   const payload = {
     cli: {
       defaultCli: cfgDefaultCli.value,
@@ -1287,6 +1421,10 @@ btnSaveSettings.addEventListener('click', async () => {
       claudeEffort: cfgTelegramClaudeEffort.value,
       codexModel: cfgTelegramCodexModel.value.trim(),
       codexEffort: cfgTelegramCodexEffort.value
+    },
+    lanServer: {
+      enabled: lanEnabled,
+      port: lanPort
     }
   }
 
@@ -1311,6 +1449,7 @@ btnSaveSettings.addEventListener('click', async () => {
   }
 
   await refreshSettings()
+  await refreshLanServerStatus(true)
   if (result.warnings?.length) {
     showStatus(result.warnings.join(' | '), 'warn', 6500)
   } else {
@@ -2857,6 +2996,7 @@ cliSelector.addEventListener('change', async (e) => {
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshSessionStrip(true)
   await refreshHealth(true)
+  await refreshLanServerStatus(true)
   setProposalBadge(pendingProposal ? 1 : 0)
   if (typeof window.api.getPendingProposal === 'function') {
     try {
@@ -2881,6 +3021,7 @@ cliSelector.addEventListener('change', async (e) => {
   applyView(currentView)
   setInterval(() => { refreshSessionStrip(false) }, 6000)
   setInterval(() => { refreshHealth(false) }, HEALTH_POLL_MS)
+  setInterval(() => { refreshLanServerStatus(false) }, 5000)
 
   window.api.onTreeChanged(() => {
     scheduleTreeRefresh()

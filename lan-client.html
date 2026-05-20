@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>POWER-AGENT LAN Client</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <style>
+    :root {
+      --bg: #0f1116;
+      --bg2: #171b24;
+      --fg: #dbe5ff;
+      --muted: #8fa0c7;
+      --ok: #27c281;
+      --warn: #f0b13a;
+      --err: #ff5f5f;
+      --line: #2a3142;
+      --accent: #4f8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 700px at 10% -20%, #1d2b4f, transparent), var(--bg);
+      color: var(--fg);
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 8px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg2);
+    }
+    .toolbar input {
+      width: 100%;
+      background: #0f1420;
+      border: 1px solid var(--line);
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 8px 10px;
+      outline: none;
+    }
+    .toolbar button {
+      border: 1px solid var(--line);
+      background: #1b2435;
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .toolbar button:hover { border-color: var(--accent); }
+    #status {
+      margin: 8px 10px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: #111625;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #terminal {
+      flex: 1;
+      min-height: 0;
+      padding: 8px;
+    }
+    .pill {
+      display: inline-block;
+      min-width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      margin-right: 7px;
+      background: #666;
+      vertical-align: middle;
+    }
+    .ok { background: var(--ok); }
+    .warn { background: var(--warn); }
+    .err { background: var(--err); }
+    .off { background: #66708a; }
+    @media (max-width: 900px) {
+      .toolbar {
+        grid-template-columns: 1fr 1fr;
+      }
+      .toolbar input {
+        grid-column: 1 / -1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <input id="ws-url" type="text" placeholder="ws://192.168.1.10:9999" aria-label="URL WebSocket" />
+    <button id="btn-connect" type="button">Conectar</button>
+    <button id="btn-autoreconnect" type="button">Auto: ON</button>
+    <button id="btn-mic" type="button">Micrófono</button>
+  </div>
+  <div id="status"><span class="pill off" id="status-dot"></span><span id="status-text">Desconectado</span></div>
+  <div id="terminal"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <script>
+    const wsUrlInput = document.getElementById('ws-url')
+    const btnConnect = document.getElementById('btn-connect')
+    const btnMic = document.getElementById('btn-mic')
+    const btnAutoReconnect = document.getElementById('btn-autoreconnect')
+    const statusText = document.getElementById('status-text')
+    const statusDot = document.getElementById('status-dot')
+
+    const term = new Terminal({
+      convertEol: true,
+      cursorBlink: true,
+      fontSize: 13,
+      theme: {
+        background: '#0f1116',
+        foreground: '#dbe5ff',
+        cursor: '#4f8cff'
+      }
+    })
+    const fitAddon = new FitAddon.FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(document.getElementById('terminal'))
+    fitAddon.fit()
+
+    let socket = null
+    let autoreconnect = true
+    let reconnectTimer = null
+    let manualClose = false
+    let mediaRecorder = null
+    let mediaStream = null
+
+    function setStatus(kind, text) {
+      statusDot.className = `pill ${kind}`
+      statusText.textContent = text
+    }
+
+    function inferDefaultWsUrl() {
+      const q = new URLSearchParams(window.location.search)
+      const host = q.get('host') || window.location.hostname || ''
+      const port = q.get('port') || '9999'
+      if (!host) return 'ws://127.0.0.1:9999'
+      return `ws://${host}:${port}`
+    }
+
+    function sendMessage(payload) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify(payload))
+    }
+
+    function scheduleReconnect() {
+      if (!autoreconnect || manualClose) return
+      if (reconnectTimer) return
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, 1500)
+    }
+
+    function connect() {
+      const url = wsUrlInput.value.trim()
+      if (!url) return
+      try {
+        manualClose = false
+        if (socket) {
+          try { socket.close() } catch {}
+          socket = null
+        }
+        setStatus('warn', 'Conectando...')
+        socket = new WebSocket(url)
+
+        socket.addEventListener('open', () => {
+          setStatus('ok', `Conectado a ${url}`)
+          btnConnect.textContent = 'Desconectar'
+          fitAddon.fit()
+          sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
+        })
+
+        socket.addEventListener('message', (event) => {
+          let msg = null
+          try { msg = JSON.parse(String(event.data || '')) } catch {}
+          if (!msg || typeof msg !== 'object') return
+          if (msg.type === 'output') {
+            term.write(String(msg.data || ''))
+            return
+          }
+          if (msg.type === 'transcript') {
+            term.write(`\r\n[voz] ${String(msg.text || '')}\r\n`)
+            return
+          }
+          if (msg.type === 'status') {
+            const state = String(msg.state || '')
+            if (state === 'connected') {
+              setStatus('ok', `Sesión ${msg.sessionId || ''} · ${msg.cli || ''} · ${msg.cwd || ''}`)
+            } else if (state === 'transcribing') {
+              setStatus('warn', 'Transcribiendo audio...')
+            } else if (state === 'error') {
+              setStatus('err', String(msg.message || 'Error'))
+              term.write(`\r\n[error] ${String(msg.message || 'error')}\r\n`)
+            } else if (state === 'pty-exit') {
+              setStatus('warn', 'PTY remoto finalizado')
+            }
+          }
+        })
+
+        socket.addEventListener('close', () => {
+          setStatus('off', 'Desconectado')
+          btnConnect.textContent = 'Conectar'
+          socket = null
+          scheduleReconnect()
+        })
+
+        socket.addEventListener('error', () => {
+          setStatus('err', 'Error de conexión WebSocket')
+        })
+      } catch (err) {
+        setStatus('err', err && err.message ? err.message : String(err))
+      }
+    }
+
+    function disconnect() {
+      manualClose = true
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      if (socket) {
+        try { socket.close() } catch {}
+      }
+      socket = null
+      btnConnect.textContent = 'Conectar'
+      setStatus('off', 'Desconectado')
+    }
+
+    async function startMic() {
+      if (mediaRecorder) return
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStream = stream
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm'
+      mediaRecorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorder.ondataavailable = async (ev) => {
+        if (!ev.data || ev.data.size === 0) return
+        const buffer = await ev.data.arrayBuffer()
+        let binary = ''
+        const bytes = new Uint8Array(buffer)
+        for (let i = 0; i < bytes.byteLength; i += 1) binary += String.fromCharCode(bytes[i])
+        const b64 = btoa(binary)
+        sendMessage({ type: 'audio', data: b64 })
+      }
+      mediaRecorder.start(1500)
+      btnMic.textContent = 'Parar micrófono'
+      setStatus('warn', 'Grabando y enviando audio...')
+    }
+
+    function stopMic() {
+      if (mediaRecorder) {
+        try { mediaRecorder.stop() } catch {}
+      }
+      mediaRecorder = null
+      if (mediaStream) {
+        for (const track of mediaStream.getTracks()) {
+          try { track.stop() } catch {}
+        }
+      }
+      mediaStream = null
+      btnMic.textContent = 'Micrófono'
+      setStatus(socket && socket.readyState === WebSocket.OPEN ? 'ok' : 'off', socket && socket.readyState === WebSocket.OPEN ? 'Conectado' : 'Desconectado')
+    }
+
+    btnConnect.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) disconnect()
+      else connect()
+    })
+
+    btnAutoReconnect.addEventListener('click', () => {
+      autoreconnect = !autoreconnect
+      btnAutoReconnect.textContent = `Auto: ${autoreconnect ? 'ON' : 'OFF'}`
+      if (!autoreconnect && reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+    })
+
+    btnMic.addEventListener('click', async () => {
+      if (mediaRecorder) {
+        stopMic()
+        return
+      }
+      try {
+        await startMic()
+      } catch (err) {
+        setStatus('err', err && err.message ? err.message : String(err))
+        stopMic()
+      }
+    })
+
+    term.onData((data) => sendMessage({ type: 'input', data }))
+
+    window.addEventListener('resize', () => {
+      fitAddon.fit()
+      sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
+    })
+
+    wsUrlInput.value = inferDefaultWsUrl()
+    term.writeln('POWER-AGENT LAN Client listo. Pulsa "Conectar".')
+  </script>
+</body>
+</html>

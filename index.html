@@ -162,6 +162,14 @@
       <div id="graph-filters" class="hidden"></div>
       <div id="tree"></div>
       <svg id="graph-canvas" class="hidden"></svg>
+      <div id="remote-sessions-panel" class="remote-sessions-panel hidden">
+        <div class="remote-sessions-header">
+          <span>Sesiones remotas LAN</span>
+          <span id="remote-sessions-count" class="remote-sessions-count">0</span>
+        </div>
+        <div id="remote-sessions-list" class="remote-sessions-list"></div>
+        <div id="remote-sessions-empty" class="remote-sessions-empty">Sin sesiones remotas</div>
+      </div>
       <div id="cwd-bar">
         <span class="cwd-label">claude cwd:</span>
         <span id="cwd-value">—</span>
@@ -295,6 +303,22 @@
             </label>
           </div>
           <div id="cfg-telegram-status" class="settings-note">Estado: -</div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Modo servidor LAN</div>
+          <label class="settings-check">
+            <input id="cfg-lan-enabled" type="checkbox" />
+            <span>Activar servidor WebSocket LAN</span>
+          </label>
+          <label class="settings-field">
+            <span>Puerto WebSocket</span>
+            <input id="cfg-lan-port" type="number" min="1024" max="65534" step="1" placeholder="9999" />
+          </label>
+          <div id="cfg-lan-status" class="settings-note">Estado: detenido</div>
+          <div id="cfg-lan-url" class="settings-note">URL: -</div>
+          <div id="cfg-lan-client-url" class="settings-note">Cliente: -</div>
+          <div id="cfg-lan-qr" class="settings-note">QR no disponible</div>
         </div>
       </div>
       <div class="settings-actions">

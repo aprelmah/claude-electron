@@ -8,6 +8,7 @@ const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync } = require('./main/atomic-writes')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
+const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
 const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
 const TaskScheduler = require('./scheduler')
@@ -105,6 +106,7 @@ let whatsappRetryTimer = null
 let agentProposalPollId = null
 let pendingAgentProposal = null
 let autoUpdater = null
+let lanWsServer = null
 const autoUpdateState = {
   available: false,
   downloaded: false
@@ -155,6 +157,10 @@ const DEFAULT_CONFIG = Object.freeze({
     claudeEffort: '',
     codexModel: '',
     codexEffort: ''
+  },
+  lanServer: {
+    enabled: false,
+    port: DEFAULT_LAN_WS_PORT
   },
   profiles: [{
     id: DEFAULT_PROFILE_ID,
@@ -285,6 +291,7 @@ async function transcribeAudioFile(inputPath, env) {
 function normalizeAppConfig(raw) {
   const cli = raw?.cli || {}
   const telegram = raw?.telegram || {}
+  const lanServer = normalizeLanServerConfig(raw?.lanServer)
   const profiles = normalizeProfiles(raw?.profiles)
   const activeProfile = resolveActiveProfileId(profiles, raw?.activeProfile)
 
@@ -304,6 +311,7 @@ function normalizeAppConfig(raw) {
       codexModel: typeof telegram.codexModel === 'string' ? telegram.codexModel.trim() : '',
       codexEffort: typeof telegram.codexEffort === 'string' ? telegram.codexEffort.trim() : ''
     },
+    lanServer,
     profiles,
     activeProfile
   }
@@ -323,6 +331,14 @@ function normalizeMcpServerList(raw) {
     ? raw
     : (typeof raw === 'string' ? raw.split(',') : [])
   return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)))
+}
+
+function normalizeLanServerConfig(raw) {
+  const cfg = raw && typeof raw === 'object' ? raw : {}
+  return {
+    enabled: Boolean(cfg.enabled),
+    port: clampLanPort(cfg.port)
+  }
 }
 
 function sanitizeProfileId(rawId, fallback = '') {
@@ -655,6 +671,99 @@ function getActiveCliSync() {
   const s = primaryWcId != null ? sessions.get(primaryWcId) : null
   if (s) return s.activeCli
   return lastPrimarySnapshot.activeCli
+}
+
+function getLanClientHtmlPath() {
+  return path.join(__dirname, 'lan-client.html')
+}
+
+function resolveLanSessionConfig() {
+  const cli = getActiveCliSync() === 'codex' ? 'codex' : 'claude'
+  const cliCheck = ensureCliAvailable(cli)
+  if (!cliCheck.ok) throw new Error(cliCheck.error)
+  const activeProfile = getActiveProfile()
+  const profileCwd = resolveExistingDir(activeProfile?.cwd)
+  const currentCwd = resolveExistingDir(getCwdSync())
+  const cwd = profileCwd || currentCwd || os.homedir()
+  return {
+    cli,
+    cwd,
+    bin: cliCheck.bin,
+    env: cliCheck.env,
+    args: []
+  }
+}
+
+function ensureLanWsServer() {
+  if (lanWsServer) return lanWsServer
+  lanWsServer = createLanWsServer({
+    clientHtmlPath: getLanClientHtmlPath(),
+    getSessionConfig: () => resolveLanSessionConfig(),
+    transcribeAudio: (audioPath) => transcribeAudioFile(audioPath, buildRuntimeEnv()),
+    buildExecCommand: buildFdLimitCommand,
+    logger: (message) => console.log(message)
+  })
+  return lanWsServer
+}
+
+function persistLanServerConfig(patch = {}) {
+  const current = appConfig?.lanServer || {}
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    lanServer: {
+      ...current,
+      ...patch
+    }
+  })
+  saveAppConfig(merged)
+  return merged.lanServer
+}
+
+async function startLanServer(options = {}) {
+  const server = ensureLanWsServer()
+  const port = clampLanPort(options?.port ?? appConfig?.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
+  const started = await server.start({
+    port,
+    clientHtmlPath: getLanClientHtmlPath()
+  })
+  if (options?.persist) persistLanServerConfig({ enabled: true, port })
+  return {
+    ok: true,
+    ...started,
+    sessions: server.listSessions()
+  }
+}
+
+async function stopLanServer(options = {}) {
+  const server = lanWsServer
+  if (server && server.isRunning()) {
+    await server.stop()
+  }
+  if (options?.persist) persistLanServerConfig({ enabled: false })
+  return { ok: true, ...getLanServerStatus() }
+}
+
+function getLanServerStatus() {
+  const configuredPort = clampLanPort(appConfig?.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
+  if (!lanWsServer) {
+    return {
+      running: false,
+      ip: '',
+      port: configuredPort,
+      httpPort: configuredPort + 1,
+      clientUrl: '',
+      sessions: []
+    }
+  }
+  const status = lanWsServer.getStatus()
+  return {
+    running: !!status.running,
+    ip: status.ip || '',
+    port: clampLanPort(status.port ?? configuredPort),
+    httpPort: Number(status.httpPort || (configuredPort + 1)),
+    clientUrl: status.clientUrl || '',
+    sessions: Array.isArray(status.sessions) ? status.sessions : []
+  }
 }
 
 function countConfiguredTelegramUsers(value) {
@@ -3199,6 +3308,11 @@ app.whenReady().then(async () => {
 
   createWindow()
   startAgentProposalPolling()
+  if (appConfig?.lanServer?.enabled) {
+    startLanServer({ port: appConfig.lanServer.port, persist: false }).catch((err) => {
+      console.warn('[lan] auto-start failed:', err?.message || err)
+    })
+  }
 
   try {
     ({ autoUpdater } = require('electron-updater'))
@@ -3434,6 +3548,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   globalShortcut.unregisterAll()
   pauseAgentProposalPolling()
+  try { lanWsServer?.stop() } catch {}
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
   telegramBridge?.stop()
@@ -4340,6 +4455,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
     ...partialConfig,
     cli: { ...appConfig.cli, ...(partialConfig?.cli || {}) },
     telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) },
+    lanServer: { ...appConfig.lanServer, ...(partialConfig?.lanServer || {}) },
     profiles: partialConfig?.profiles ?? appConfig.profiles,
     activeProfile: partialConfig?.activeProfile ?? appConfig.activeProfile
   })
@@ -4360,6 +4476,17 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   let telegramResult = { ok: true, running: false }
   if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
   broadcastTelegramStatus()
+  if (Object.prototype.hasOwnProperty.call(partialConfig || {}, 'lanServer')) {
+    if (appConfig.lanServer?.enabled) {
+      try {
+        await startLanServer({ port: appConfig.lanServer.port, persist: false })
+      } catch (err) {
+        warnings.push(`Config guardada pero no pude iniciar servidor LAN: ${err?.message || err}`)
+      }
+    } else {
+      try { await stopLanServer({ persist: false }) } catch {}
+    }
+  }
   return { ok: telegramResult.ok, telegram: telegramResult, warnings, config: appConfig }
 })
 
@@ -4368,6 +4495,41 @@ ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
 ipcMain.handle('health:get', async (event) => {
   const s = getSessionByEvent(event) || (primaryWcId != null ? sessions.get(primaryWcId) : null)
   return collectHealthSnapshot(s)
+})
+
+ipcMain.handle('ws-server:start', async (_event, payload = {}) => {
+  try {
+    const port = clampLanPort(payload?.port ?? appConfig?.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
+    const result = await startLanServer({ port, persist: true })
+    return { ok: true, ...result }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
+  }
+})
+
+ipcMain.handle('ws-server:stop', async () => {
+  try {
+    const result = await stopLanServer({ persist: true })
+    return { ok: true, ...result }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
+  }
+})
+
+ipcMain.handle('ws-server:sessions', async () => {
+  const status = getLanServerStatus()
+  return { ok: true, ...status, sessions: Array.isArray(status.sessions) ? status.sessions : [] }
+})
+
+ipcMain.handle('ws-server:close-session', async (_event, payload = {}) => {
+  const sessionId = String(payload?.id || '').trim()
+  if (!sessionId) return { ok: false, error: 'Falta id de sesión', ...getLanServerStatus() }
+  if (!lanWsServer || !lanWsServer.isRunning()) {
+    return { ok: false, error: 'Servidor LAN detenido', ...getLanServerStatus() }
+  }
+  const closed = lanWsServer.closeSession(sessionId, 'closed-by-operator')
+  if (!closed) return { ok: false, error: 'Sesión no encontrada', ...getLanServerStatus() }
+  return { ok: true, ...getLanServerStatus() }
 })
 
 ipcMain.handle('proposal:get-pending', () => {
