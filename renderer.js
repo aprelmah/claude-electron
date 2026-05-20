@@ -81,6 +81,9 @@ const healthDotScheduler = document.getElementById('health-dot-scheduler')
 const healthPopover = document.getElementById('health-popover')
 const healthPopoverList = document.getElementById('health-popover-list')
 const healthPopoverMeta = document.getElementById('health-popover-meta')
+const updateBanner = document.getElementById('update-banner')
+const updateBannerText = document.getElementById('update-banner-text')
+const btnInstallUpdate = document.getElementById('btn-install-update')
 
 // ── Themes ──
 const THEMES = {
@@ -224,6 +227,42 @@ let healthOutsideClickHandler = null
 let healthEscapeHandler = null
 let pendingProposal = null
 let proposalActionInFlight = false
+let updateState = 'idle'
+let updateInstallInFlight = false
+
+function renderUpdateBanner() {
+  if (!updateBanner || !updateBannerText || !btnInstallUpdate) return
+  if (updateState === 'idle') {
+    updateBanner.classList.add('hidden')
+    updateBanner.classList.remove('ready')
+    btnInstallUpdate.classList.add('hidden')
+    return
+  }
+  const downloaded = updateState === 'downloaded'
+  updateBanner.classList.remove('hidden')
+  updateBanner.classList.toggle('ready', downloaded)
+  updateBannerText.textContent = downloaded
+    ? 'Actualización descargada. Lista para instalar.'
+    : 'Nueva versión disponible, descargando...'
+  btnInstallUpdate.classList.toggle('hidden', !downloaded)
+  btnInstallUpdate.disabled = updateInstallInFlight
+}
+
+async function installDownloadedUpdate() {
+  if (updateInstallInFlight) return
+  if (!window.api.installUpdate) return
+  updateInstallInFlight = true
+  renderUpdateBanner()
+  showStatus('Instalando actualización y reiniciando…', 'busy')
+  try {
+    const result = await window.api.installUpdate()
+    if (result && result.ok === false) throw new Error(result.error || 'No se pudo instalar la actualización')
+  } catch (err) {
+    updateInstallInFlight = false
+    renderUpdateBanner()
+    showStatus(errorMessage(err), 'error', 7000)
+  }
+}
 
 function setDotState(el, state) {
   if (!el) return
@@ -517,6 +556,29 @@ async function rejectPendingProposal() {
     setProposalButtonsBusy(false)
   }
 }
+
+if (btnInstallUpdate) {
+  btnInstallUpdate.addEventListener('click', () => {
+    installDownloadedUpdate()
+  })
+}
+
+if (typeof window.api.onUpdateAvailable === 'function') {
+  window.api.onUpdateAvailable(() => {
+    updateState = 'available'
+    updateInstallInFlight = false
+    renderUpdateBanner()
+  })
+}
+
+if (typeof window.api.onUpdateDownloaded === 'function') {
+  window.api.onUpdateDownloaded(() => {
+    updateState = 'downloaded'
+    updateInstallInFlight = false
+    renderUpdateBanner()
+  })
+}
+renderUpdateBanner()
 
 function errorMessage(err) {
   return err?.message || String(err)

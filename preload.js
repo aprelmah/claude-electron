@@ -52,6 +52,17 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('proposal:cleared', h)
     return () => ipcRenderer.removeListener('proposal:cleared', h)
   },
+  onUpdateAvailable: (cb) => {
+    const h = () => cb()
+    ipcRenderer.on('update:available', h)
+    return () => ipcRenderer.removeListener('update:available', h)
+  },
+  onUpdateDownloaded: (cb) => {
+    const h = () => cb()
+    ipcRenderer.on('update:downloaded', h)
+    return () => ipcRenderer.removeListener('update:downloaded', h)
+  },
+  installUpdate: () => ipcRenderer.invoke('update:install'),
   onTelegramStatus: (cb) => ipcRenderer.on('telegram-status', (_, status) => cb(status)),
   canSendSessionToTelegram: () => ipcRenderer.invoke('app:can-send-to-telegram'),
   sendSessionToTelegram: () => ipcRenderer.invoke('app:send-session-to-telegram'),

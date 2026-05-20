@@ -103,6 +103,11 @@ let whatsappReachable = false
 let whatsappRetryTimer = null
 let agentProposalPollId = null
 let pendingAgentProposal = null
+let autoUpdater = null
+const autoUpdateState = {
+  available: false,
+  downloaded: false
+}
 
 function trackPtyLoadForGraph(session) {
   if (!session) return
@@ -1683,8 +1688,11 @@ function createWindow() {
   win.loadFile('index.html', { query: { wid: String(ordinal) } })
 
   win.webContents.on('did-finish-load', () => {
-    if (!win.isDestroyed()) win.webContents.send('telegram-status', telegramBridge?.getStatus() || null)
+    if (win.isDestroyed()) return
+    win.webContents.send('telegram-status', telegramBridge?.getStatus() || null)
     syncPendingProposalToWindow(win)
+    if (autoUpdateState.available) win.webContents.send('update:available')
+    if (autoUpdateState.downloaded) win.webContents.send('update:downloaded')
   })
 
   win.on('focus', () => {
@@ -1857,6 +1865,17 @@ function broadcastToAllWindows(channel, payload) {
       try { win.webContents.send(channel, payload) } catch {}
     }
   }
+}
+
+function notifyUpdateAvailable() {
+  autoUpdateState.available = true
+  broadcastToAllWindows('update:available')
+}
+
+function notifyUpdateDownloaded() {
+  autoUpdateState.available = true
+  autoUpdateState.downloaded = true
+  broadcastToAllWindows('update:downloaded')
 }
 
 // Emite eventos del chat solo a la ventana de chat correspondiente.
@@ -2957,6 +2976,22 @@ app.whenReady().then(async () => {
 
   createWindow()
   startAgentProposalPolling()
+
+  try {
+    ({ autoUpdater } = require('electron-updater'))
+    autoUpdater.on('update-available', () => {
+      notifyUpdateAvailable()
+    })
+    autoUpdater.on('update-downloaded', () => {
+      notifyUpdateDownloaded()
+    })
+    Promise.resolve(autoUpdater.checkForUpdatesAndNotify()).catch((err) => {
+      console.warn('[updater] check failed:', err?.message || err)
+    })
+  } catch (err) {
+    autoUpdater = null
+    console.warn('[updater] electron-updater not available:', err?.message || err)
+  }
 
   telegramBridge.applyConfig(appConfig.telegram).catch((err) => {
     const s = primaryWcId != null ? sessions.get(primaryWcId) : null
@@ -4115,6 +4150,16 @@ ipcMain.handle('proposal:reject', (event, payload = {}) => {
     ok: true,
     id: pending.id,
     markerPath: done.markerPath || ''
+  }
+})
+
+ipcMain.handle('update:install', async () => {
+  if (!autoUpdater) return { ok: false, error: 'autoUpdater no disponible' }
+  try {
+    autoUpdater.quitAndInstall()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
   }
 })
 

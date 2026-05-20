@@ -25,6 +25,7 @@
     "@xterm/xterm": "^5.5.0",
     "cron-parser": "^4.9.0",
     "d3": "^7.9.0",
+    "electron-updater": "^6.6.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.0.0"
   },
@@ -98,6 +99,11 @@
         "NSMicrophoneUsageDescription": "Dictado por voz con Whisper local.",
         "NSApplicationSupportsSecureRestorableState": true
       }
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "aprelmah",
+      "repo": "claude-electron"
     },
     "directories": {
       "output": "dist"

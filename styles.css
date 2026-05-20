@@ -129,6 +129,52 @@ button {
 #cli-selector:focus { border-color: var(--accent); }
 #cli-selector option { background: var(--bg2); color: var(--text); }
 
+.update-banner {
+  max-width: 360px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.update-banner.hidden {
+  display: none;
+}
+
+.update-banner.ready {
+  border-color: var(--ok);
+  background: rgba(124, 217, 156, 0.14);
+}
+
+#update-banner-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-install-btn {
+  padding: 4px 7px !important;
+  font-size: 11px;
+  border: 1px solid var(--ok);
+  color: var(--text);
+  background: rgba(124, 217, 156, 0.16);
+  border-radius: 6px;
+}
+
+.update-install-btn:hover {
+  background: rgba(124, 217, 156, 0.24);
+}
+
+.update-install-btn.hidden {
+  display: none;
+}
+
 .health-indicator {
   width: auto !important;
   min-width: 72px;
