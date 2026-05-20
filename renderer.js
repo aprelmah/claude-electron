@@ -14,6 +14,17 @@ const btnFile = document.getElementById('btn-file')
 const btnSidebar = document.getElementById('btn-sidebar')
 const btnSettings = document.getElementById('btn-settings')
 const btnBitacora = document.getElementById('btn-bitacora')
+const btnProposals = document.getElementById('btn-proposals')
+const proposalBadge = document.getElementById('proposal-badge')
+const proposalModal = document.getElementById('proposal-modal')
+const proposalModalId = document.getElementById('proposal-modal-id')
+const proposalTitle = document.getElementById('proposal-title')
+const proposalDescription = document.getElementById('proposal-description')
+const proposalCommand = document.getElementById('proposal-command')
+const proposalScriptPath = document.getElementById('proposal-script-path')
+const proposalScriptPreview = document.getElementById('proposal-script-preview')
+const btnProposalApprove = document.getElementById('btn-proposal-approve')
+const btnProposalReject = document.getElementById('btn-proposal-reject')
 const btnOpenGraphWindow = document.getElementById('btn-open-graph-window')
 const btnSendTelegram = document.getElementById('btn-send-telegram')
 const btnSendTelegramWrap = document.getElementById('btn-send-telegram-wrap')
@@ -211,6 +222,8 @@ let healthRefreshInFlight = false
 let healthPopoverOpen = false
 let healthOutsideClickHandler = null
 let healthEscapeHandler = null
+let pendingProposal = null
+let proposalActionInFlight = false
 
 function setDotState(el, state) {
   if (!el) return
@@ -414,6 +427,95 @@ if (healthIndicator) {
     await refreshHealth(true)
     openHealthPopover()
   })
+}
+
+function setProposalBadge(count) {
+  if (!proposalBadge) return
+  const n = Number(count || 0)
+  proposalBadge.textContent = String(n)
+  proposalBadge.classList.toggle('hidden', n <= 0)
+}
+
+function renderProposalModal(proposal) {
+  const p = proposal || {}
+  if (proposalModalId) proposalModalId.textContent = p.id ? `ID: ${p.id}` : ''
+  if (proposalTitle) proposalTitle.textContent = p.title || 'Propuesta pendiente'
+  if (proposalDescription) proposalDescription.textContent = p.description || '(sin descripción)'
+  if (proposalCommand) proposalCommand.textContent = p.command || '(sin comando)'
+  if (proposalScriptPath) proposalScriptPath.textContent = p.script_path || '(sin ruta)'
+  if (proposalScriptPreview) proposalScriptPreview.textContent = p.script_preview || '(sin preview)'
+}
+
+function openProposalModal() {
+  if (!proposalModal || !pendingProposal) return
+  proposalModal.classList.remove('hidden')
+}
+
+function closeProposalModal() {
+  if (!proposalModal) return
+  proposalModal.classList.add('hidden')
+}
+
+function setProposalButtonsBusy(busy) {
+  proposalActionInFlight = !!busy
+  if (btnProposalApprove) btnProposalApprove.disabled = !!busy
+  if (btnProposalReject) btnProposalReject.disabled = !!busy
+}
+
+function setPendingProposal(payload) {
+  if (!payload || typeof payload !== 'object') return
+  pendingProposal = {
+    id: String(payload.id || '').trim(),
+    title: String(payload.title || '').trim(),
+    description: String(payload.description || '').trim(),
+    command: String(payload.command || '').trim(),
+    script_path: String(payload.script_path || '').trim(),
+    script_preview: typeof payload.script_preview === 'string' ? payload.script_preview : ''
+  }
+  setProposalBadge(1)
+  renderProposalModal(pendingProposal)
+}
+
+function clearPendingProposal() {
+  pendingProposal = null
+  setProposalBadge(0)
+  closeProposalModal()
+}
+
+async function approvePendingProposal() {
+  if (!pendingProposal || proposalActionInFlight) return
+  setProposalButtonsBusy(true)
+  try {
+    const res = await window.api.proposalApprove?.(pendingProposal.id)
+    if (!res || res.ok === false) {
+      showStatus((res && res.error) || 'No se pudo aprobar la propuesta', 'error', 6500)
+      return
+    }
+    clearPendingProposal()
+    showStatus('Propuesta aprobada y enviada al PTY', 'ok', 3500)
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6500)
+  } finally {
+    setProposalButtonsBusy(false)
+  }
+}
+
+async function rejectPendingProposal() {
+  if (!pendingProposal || proposalActionInFlight) return
+  setProposalButtonsBusy(true)
+  try {
+    const res = await window.api.proposalReject?.(pendingProposal.id)
+    if (!res || res.ok === false) {
+      showStatus((res && res.error) || 'No se pudo rechazar la propuesta', 'error', 6500)
+      return
+    }
+    clearPendingProposal()
+    showStatus('Propuesta rechazada', 'warn', 3000)
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6500)
+  } finally {
+    setProposalButtonsBusy(false)
+  }
 }
 
 function errorMessage(err) {
@@ -679,6 +781,38 @@ if (btnNewWindow) {
 if (btnBitacora) {
   btnBitacora.addEventListener('click', async () => {
     try { await window.api.openBitacoraWindow?.() } catch {}
+  })
+}
+
+if (btnProposals) {
+  btnProposals.addEventListener('click', () => {
+    if (!pendingProposal) {
+      showStatus('No hay propuestas pendientes', 'info', 1800)
+      return
+    }
+    renderProposalModal(pendingProposal)
+    openProposalModal()
+  })
+}
+
+if (btnProposalApprove) btnProposalApprove.addEventListener('click', () => { approvePendingProposal() })
+if (btnProposalReject) btnProposalReject.addEventListener('click', () => { rejectPendingProposal() })
+proposalModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeProposalModal)
+
+if (typeof window.api.onProposalNew === 'function') {
+  window.api.onProposalNew((payload) => {
+    if (!payload || typeof payload !== 'object') return
+    setPendingProposal(payload)
+    openProposalModal()
+    showStatus('Nueva propuesta pendiente de aprobación', 'warn', 2800)
+  })
+}
+
+if (typeof window.api.onProposalCleared === 'function') {
+  window.api.onProposalCleared((payload) => {
+    const id = String(payload?.id || '').trim()
+    if (pendingProposal && id && pendingProposal.id && id !== pendingProposal.id) return
+    clearPendingProposal()
   })
 }
 
@@ -2130,6 +2264,10 @@ btnSessions.addEventListener('click', openSessions)
 btnCloseSessions.addEventListener('click', () => sessionsModal.classList.add('hidden'))
 sessionsModal.querySelector('.modal-backdrop').addEventListener('click', () => sessionsModal.classList.add('hidden'))
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && proposalModal && !proposalModal.classList.contains('hidden')) {
+    closeProposalModal()
+    return
+  }
   if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) {
     settingsModal.classList.add('hidden')
     return
@@ -2268,6 +2406,16 @@ cliSelector.addEventListener('change', async (e) => {
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshSessionStrip(true)
   await refreshHealth(true)
+  setProposalBadge(pendingProposal ? 1 : 0)
+  if (typeof window.api.getPendingProposal === 'function') {
+    try {
+      const state = await window.api.getPendingProposal()
+      if (state?.pending) {
+        setPendingProposal(state.pending)
+        openProposalModal()
+      }
+    } catch {}
+  }
 
   try {
     await window.api.startPty(term.cols, term.rows, initialRoot)

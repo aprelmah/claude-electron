@@ -39,6 +39,19 @@ contextBridge.exposeInMainWorld('api', {
   saveAppConfig: (config) => ipcRenderer.invoke('save-app-config', config),
   getTelegramStatus: () => ipcRenderer.invoke('get-telegram-status'),
   getHealth: () => ipcRenderer.invoke('health:get'),
+  getPendingProposal: () => ipcRenderer.invoke('proposal:get-pending'),
+  proposalApprove: (id) => ipcRenderer.invoke('proposal:approve', { id }),
+  proposalReject: (id) => ipcRenderer.invoke('proposal:reject', { id }),
+  onProposalNew: (cb) => {
+    const h = (_e, payload) => cb(payload)
+    ipcRenderer.on('proposal:new', h)
+    return () => ipcRenderer.removeListener('proposal:new', h)
+  },
+  onProposalCleared: (cb) => {
+    const h = (_e, payload) => cb(payload)
+    ipcRenderer.on('proposal:cleared', h)
+    return () => ipcRenderer.removeListener('proposal:cleared', h)
+  },
   onTelegramStatus: (cb) => ipcRenderer.on('telegram-status', (_, status) => cb(status)),
   canSendSessionToTelegram: () => ipcRenderer.invoke('app:can-send-to-telegram'),
   sendSessionToTelegram: () => ipcRenderer.invoke('app:send-session-to-telegram'),

@@ -63,6 +63,11 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
         <span>Bitácora</span>
       </button>
+      <button id="btn-proposals" class="icon-btn text-btn titlebar-text-btn" title="Propuestas pendientes del agente" aria-label="Propuestas pendientes del agente">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+        <span>Propuestas</span>
+        <span id="proposal-badge" class="topbar-badge hidden">0</span>
+      </button>
       <button id="btn-settings" class="icon-btn" title="Configuracion" aria-label="Abrir configuración">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
       </button>
@@ -266,6 +271,36 @@
       <div class="settings-actions">
         <button id="btn-refresh-telegram-status" class="icon-btn text-btn">Refrescar estado</button>
         <button id="btn-save-settings" class="icon-btn text-btn primary">Guardar configuracion</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="proposal-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel proposal-modal-panel">
+      <div class="modal-header">
+        <span class="modal-title">Propuesta del agente</span>
+        <span id="proposal-modal-id" class="modal-sub"></span>
+      </div>
+      <div class="proposal-modal-body">
+        <div id="proposal-title" class="proposal-title">Sin propuesta pendiente</div>
+        <div id="proposal-description" class="proposal-description"></div>
+        <div class="proposal-field">
+          <span class="proposal-label">Comando</span>
+          <code id="proposal-command" class="proposal-command">(sin comando)</code>
+        </div>
+        <div class="proposal-field">
+          <span class="proposal-label">Ruta script</span>
+          <code id="proposal-script-path" class="proposal-command">(sin ruta)</code>
+        </div>
+        <div class="proposal-field">
+          <span class="proposal-label">Preview script</span>
+          <pre id="proposal-script-preview" class="proposal-script-preview">(sin preview)</pre>
+        </div>
+      </div>
+      <div class="proposal-modal-actions">
+        <button id="btn-proposal-reject" class="icon-btn text-btn proposal-btn reject">RECHAZAR</button>
+        <button id="btn-proposal-approve" class="icon-btn text-btn proposal-btn approve">APROBAR</button>
       </div>
     </div>
   </div>
