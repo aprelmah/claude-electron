@@ -15,10 +15,18 @@ node --test --test-reporter=spec tests/*.test.js
 # Un archivo concreto
 node --test --test-reporter=spec tests/whatsapp-pure.test.js
 node --test --test-reporter=spec tests/scheduler-cron.test.js
+node --test --test-reporter=spec tests/path-sandbox.test.js
+node --test --test-reporter=spec tests/ws-server-pure.test.js
+node --test --test-reporter=spec tests/semantic-logger.test.js
+node --test --test-reporter=spec tests/enterprise-policy.test.js
 
 # Sólo verificar sintaxis sin ejecutar
 node --check tests/whatsapp-pure.test.js
 node --check tests/scheduler-cron.test.js
+node --check tests/path-sandbox.test.js
+node --check tests/ws-server-pure.test.js
+node --check tests/semantic-logger.test.js
+node --check tests/enterprise-policy.test.js
 ```
 
 > Nota Node 24+: `node --test tests/` (pasar un directorio) falla con
@@ -53,6 +61,58 @@ Tests directos:
   - 6 tipos de entrada no-string (vacío, null, undefined, número, objeto).
   - Preview de próximas 3 ejecuciones en ISO 8601 ordenado.
   - No muta el estado interno del scheduler.
+
+### `path-sandbox.test.js`
+
+- **`isPathSafe`** (`main/path-sandbox.js`) — ACL de rutas:
+  - Ruta dentro de root permitido.
+  - Root exacto permitido.
+  - Rechazo sin `allowedRoots`.
+  - Rechazo de path traversal (`..`) fuera de root.
+  - Prioridad de `DENY_ROOTS` sobre allowlist amplia.
+  - TODO explícito para hardening de symlink-escape vía `realpath`.
+- **`isValidSessionId`**:
+  - UUID válido (minúsculas/mayúsculas).
+  - IDs inválidos (mal formato/falsy).
+
+### `ws-server-pure.test.js`
+
+- **`clampLanPort`** (`main/ws-server.js`):
+  - Default en inputs inválidos.
+  - Clamp min (1024) y max (65534).
+  - Aceptación de puertos válidos.
+- **`pickLanIPv4`**:
+  - Prioriza privada sobre pública.
+  - Fallback a pública si no hay privada.
+  - Ignora IPv6/internal.
+  - Fallback final `127.0.0.1`.
+
+### `semantic-logger.test.js`
+
+- **`createSemanticLogger`** (`main/semantic-logger.js`):
+  - Normalización de eventos de auditoría empresa.
+  - Sanitizado (`detail` sin saltos de línea).
+  - Recorte de longitudes (`action/detail/session`).
+  - Orden y límite en `readRecent`.
+  - Escape CSV correcto para comillas/comas.
+
+### `enterprise-policy.test.js`
+
+- **`normalizeEnterpriseConfig`** (`main/enterprise-policy.js`):
+  - Inyección de rol por defecto.
+  - Saneado de ids/usernames.
+  - Dedupe de roots/MCPs.
+  - Filtro de `readOnlyRoots` fuera de `allowedRoots`.
+- **`normalizeRemoteContext`**:
+  - Normalización de aliases (`operator/profile/role/login`).
+  - Parse robusto de `enterpriseEnabled`.
+- **`resolveEffectiveSessionContext`**:
+  - Fallback legacy cuando enterprise está apagado.
+  - Compatibilidad legacy cuando no llega contexto remoto.
+  - Resolución enterprise por operador/rol/perfil.
+  - Precedencia de persona (operador > perfil).
+  - Intersección MCP rol+perfil.
+  - Fallback controlado de roots.
 
 ## Pendientes de export para testear
 
@@ -155,9 +215,9 @@ describe('funcUnderTest', () => {
 ## Estado actual (2026-05-19)
 
 ```
-Tests: 36 totales
-  Pass:    32
-  Skip:     4  (funciones pendientes de export)
+Tests: 65 totales
+  Pass:    60
+  Skip:     5  (funciones pendientes de export + TODO symlink hardening)
   Fail:     0
 ```
 
