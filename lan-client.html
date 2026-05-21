@@ -411,13 +411,14 @@
       }
       const context = sessionInfo.context || {}
       const caps = sessionCapabilities || {}
+      const mcpList = Array.isArray(context.allowedMcpServers) ? context.allowedMcpServers : []
       const pills = [
         `modo:${context.mode || 'legacy'}`,
         context.operatorId ? `op:${context.operatorId}` : 'op:-',
         context.roleId ? `rol:${context.roleId}` : 'rol:-',
         context.profileId ? `perfil:${context.profileId}` : 'perfil:-',
         `roots:${Array.isArray(context.allowedRoots) ? context.allowedRoots.length : 0}`,
-        `mcp:${Array.isArray(context.allowedMcpServers) ? context.allowedMcpServers.length : 0}`
+        mcpList.length ? `mcp:${mcpList.join('|')}` : 'mcp:-'
       ]
       for (const text of pills) {
         const span = document.createElement('span')
