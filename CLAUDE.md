@@ -1,6 +1,7 @@
 # POWER-AGENT Runbook
 
 ## Latest Handoff
+- `HANDOFF-CODEX-2026-05-21-REMOTE-SESSION-CONTINUIDAD-CHAT-FIRST.md` (continuidad final de sesión remota LAN: flujo cámara/archivo chat-first, fixes de ACL read-only, despliegue y pendientes de rediseño/refactor UX).
 - `HANDOFF-CODEX-2026-05-21-CONTINUIDAD-POST-PRUEBAS.md` (continuidad exacta tras modo empresa: estado, commits, incidencias reales de Luis, backlog móvil/visor/upload y prompt para nuevo Codex).
 - `HANDOFF-CODEX-2026-05-21-ENTERPRISE-MULTIOPERADOR.md` (modo empresa multioperador: modelo, ACL FS, persona por sesión, MCP policy básica y auditoría).
 - `HANDOFF-CLAUDE-2026-05-18.md` (estado final Telegram relay PTY, sesiones, lupa y grafo cerebro).
