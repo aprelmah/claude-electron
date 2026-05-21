@@ -981,17 +981,88 @@ function logEnterpriseSessionSemantic(ctx, meta = {}) {
 
 function logLanAuditSemantic(event = {}) {
   const action = String(event?.action || '').trim()
-  if (action !== 'empresa_permiso_denegado_fs') return
-  const parts = [
-    `session=${event?.sessionId || '-'}`,
-    `operator=${event?.operatorId || '-'}`,
-    `role=${event?.roleId || '-'}`,
-    `profile=${event?.profileId || '-'}`,
-    `op=${event?.op || '-'}`,
-    `path=${event?.path || '-'}`,
-    `code=${event?.code || '-'}`,
-    `msg=${event?.message || '-'}`
-  ]
+  if (!action) return
+  const safe = (value, max = 240) => {
+    const text = String(value == null ? '' : value).trim()
+    if (!text) return '-'
+    return text.length > max ? text.slice(0, max) : text
+  }
+
+  let parts = null
+  if (action === 'empresa_permiso_denegado_fs') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `operator=${safe(event?.operatorId, 120)}`,
+      `role=${safe(event?.roleId, 120)}`,
+      `profile=${safe(event?.profileId, 120)}`,
+      `op=${safe(event?.op, 60)}`,
+      `path=${safe(event?.path, 320)}`,
+      `code=${safe(event?.code, 80)}`,
+      `msg=${safe(event?.message, 320)}`
+    ]
+  } else if (action === 'empresa_upload_remoto') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `operator=${safe(event?.operatorId, 120)}`,
+      `role=${safe(event?.roleId, 120)}`,
+      `profile=${safe(event?.profileId, 120)}`,
+      `path=${safe(event?.path, 320)}`,
+      `size=${Number(event?.size || 0)}`,
+      `mime=${safe(event?.mime, 120)}`,
+      `ext=${safe(event?.ext, 40)}`
+    ]
+  } else if (action === 'empresa_upload_remoto_denegado') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `operator=${safe(event?.operatorId, 120)}`,
+      `role=${safe(event?.roleId, 120)}`,
+      `profile=${safe(event?.profileId, 120)}`,
+      `name=${safe(event?.name, 140)}`,
+      `mime=${safe(event?.mime, 120)}`,
+      `code=${safe(event?.code, 80)}`,
+      `msg=${safe(event?.message, 320)}`
+    ]
+  } else if (action === 'empresa_handshake_contexto_actualizado') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `source=${safe(event?.source, 80)}`,
+      `changed=${safe(event?.changed, 120)}`,
+      `requested_operator=${safe(event?.requestedOperatorId, 120)}`,
+      `requested_role=${safe(event?.requestedRoleId, 120)}`,
+      `requested_profile=${safe(event?.requestedProfileId, 120)}`,
+      `username_provided=${event?.usernameProvided ? '1' : '0'}`,
+      `late=${event?.late ? '1' : '0'}`
+    ]
+  } else if (action === 'empresa_contexto_resuelto') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `request_source=${safe(event?.requestSource, 80)}`,
+      `requested_operator=${safe(event?.requestedOperatorId, 120)}`,
+      `requested_role=${safe(event?.requestedRoleId, 120)}`,
+      `requested_profile=${safe(event?.requestedProfileId, 120)}`,
+      `username_provided=${event?.usernameProvided ? '1' : '0'}`,
+      `mode=${safe(event?.mode, 40)}`,
+      `enterprise=${event?.enterpriseEnabled ? '1' : '0'}`,
+      `applied_operator=${safe(event?.appliedOperatorId, 120)}`,
+      `applied_role=${safe(event?.appliedRoleId, 120)}`,
+      `applied_profile=${safe(event?.appliedProfileId, 120)}`
+    ]
+  } else if (action === 'empresa_fs_watch_iniciado' || action === 'empresa_fs_watch_detenido' || action === 'empresa_fs_watch_error') {
+    parts = [
+      `session=${safe(event?.sessionId, 120)}`,
+      `operator=${safe(event?.operatorId, 120)}`,
+      `role=${safe(event?.roleId, 120)}`,
+      `profile=${safe(event?.profileId, 120)}`,
+      `watch=${safe(event?.watchId, 120)}`,
+      `path=${safe(event?.path, 320)}`,
+      `reason=${safe(event?.reason || event?.fallback || '', 260)}`,
+      `code=${safe(event?.code, 80)}`,
+      `msg=${safe(event?.message, 320)}`,
+      `auto=${event?.auto ? '1' : '0'}`
+    ]
+  }
+
+  if (!parts || !parts.length) return
   logSemantic(action, { detail: parts.join(' ') })
 }
 
