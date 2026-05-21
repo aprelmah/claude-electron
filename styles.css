@@ -444,6 +444,15 @@ button.icon-btn.small svg { width: 13px; height: 13px; stroke-width: 2.2; }
 button.icon-btn.small:hover { transform: scale(1.14); }
 button.icon-btn.small:active { transform: scale(0.95); }
 
+.lan-toggle-btn {
+  width: auto !important;
+  min-width: 34px;
+  padding: 0 6px !important;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
 button:hover { background: var(--bg3); color: var(--text); }
 button:active { transform: scale(0.93); }
 
@@ -528,6 +537,41 @@ button:active { transform: scale(0.93); }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-strip-edit {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  border-radius: 7px;
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.session-strip-edit:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
+.session-strip-edit:not(:disabled):hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.session-strip-title-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--bg2);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 12px;
+  outline: none;
 }
 
 .session-strip-id {

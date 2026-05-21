@@ -44,6 +44,7 @@ const treeEl = document.getElementById('tree')
 const divider = document.getElementById('divider')
 const btnOpenFolder = document.getElementById('btn-open-folder')
 const btnRefreshTree = document.getElementById('btn-refresh-tree')
+const btnRemoteSessionsToggle = document.getElementById('btn-remote-sessions-toggle')
 const graphCanvas = document.getElementById('graph-canvas')
 const graphFilters = document.getElementById('graph-filters')
 const btnViewTree = document.getElementById('btn-view-tree')
@@ -83,6 +84,7 @@ const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
 const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
 const sessionStripCli = document.getElementById('session-strip-cli')
 const sessionStripTitle = document.getElementById('session-strip-title')
+const sessionStripEdit = document.getElementById('session-strip-edit')
 const sessionStripId = document.getElementById('session-strip-id')
 const healthIndicator = document.getElementById('health-indicator')
 const healthGlobalDot = document.getElementById('health-global-dot')
@@ -373,6 +375,17 @@ let updateState = 'idle'
 let updateInstallInFlight = false
 let lanServerSnapshot = null
 let lanStatusRefreshInFlight = false
+const REMOTE_SESSIONS_VISIBLE_KEY = `poweragent.remote-sessions.visible:${WID}`
+let remoteSessionsUserVisible = false
+try {
+  remoteSessionsUserVisible = localStorage.getItem(REMOTE_SESSIONS_VISIBLE_KEY) === '1'
+} catch {
+  remoteSessionsUserVisible = false
+}
+let sessionStripMetaSnapshot = null
+let sessionStripEditInput = null
+let fullRestartInFlight = null
+let queuedFullRestartCwd = ''
 const ENTERPRISE_PERMISSION_KEYS = [
   'pty.execute',
   'fs.read',
@@ -1696,17 +1709,111 @@ function ellipsize(text, max = 110) {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
 }
 
+function normalizeNonEmpty(value) {
+  const text = String(value || '').trim()
+  return text || ''
+}
+
+function cancelSessionStripInlineEdit() {
+  if (!sessionStripEditInput) return
+  const input = sessionStripEditInput
+  sessionStripEditInput = null
+  if (sessionStripTitle && !sessionStripTitle.isConnected && input.isConnected) {
+    try { input.replaceWith(sessionStripTitle) } catch {}
+  }
+}
+
+async function startSessionStripInlineEdit() {
+  if (!sessionStripTitle || sessionStripEditInput) return
+  const sid = normalizeNonEmpty(sessionStripMetaSnapshot?.sessionId)
+  if (!sid) {
+    showStatus('No hay sessionId activa para renombrar esta sesión.', 'warn', 3500)
+    return
+  }
+  const cwd = normalizeNonEmpty(sessionStripMetaSnapshot?.cwd)
+  if (!cwd) {
+    showStatus('No hay carpeta de sesión disponible para renombrar.', 'warn', 3500)
+    return
+  }
+  const current = normalizeNonEmpty(sessionStripMetaSnapshot?.rawTitle) || '(sin título)'
+  const input = document.createElement('input')
+  input.className = 'session-strip-title-input'
+  input.value = current === '(sin título)' ? '' : current
+  input.placeholder = 'Título de la sesión…'
+  sessionStripTitle.replaceWith(input)
+  sessionStripEditInput = input
+  sessionStripEdit?.setAttribute('aria-pressed', 'true')
+  input.focus()
+  input.select()
+
+  let cancelled = false
+  const rollback = () => {
+    cancelled = true
+    cancelSessionStripInlineEdit()
+    renderSessionStrip(sessionStripMetaSnapshot || null)
+  }
+  const commit = async () => {
+    if (cancelled || sessionStripEditInput !== input) return
+    const val = normalizeNonEmpty(input.value)
+    if (!val || val === current) {
+      rollback()
+      return
+    }
+    const res = await window.api.updateSessionTitle(cwd, sid, val)
+    if (!res || !res.ok) {
+      rollback()
+      showStatus((res && res.error) || 'No se pudo editar el título de la sesión.', 'error', 6000)
+      return
+    }
+    sessionMetaLastKey = ''
+    sessionStripMetaSnapshot = {
+      ...(sessionStripMetaSnapshot || {}),
+      title: res.title || val,
+      rawTitle: res.title || val,
+      sessionId: sid,
+      cwd
+    }
+    cancelSessionStripInlineEdit()
+    renderSessionStrip(sessionStripMetaSnapshot)
+    showStatus('Título de sesión actualizado', 'ok', 2200)
+    await refreshSessionStrip(true)
+  }
+
+  input.addEventListener('blur', () => { commit().catch(() => rollback()) })
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault()
+      input.blur()
+      return
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault()
+      rollback()
+    }
+  })
+}
+
 function renderSessionStrip(meta) {
   if (!sessionStripCli || !sessionStripTitle || !sessionStripId) return
   const cli = meta?.cli === 'codex' ? 'codex' : 'claude'
-  const sid = meta?.sessionId ? String(meta.sessionId).trim() : ''
-  const title = ellipsize(meta?.title || '(sin título)', 140)
+  const sid = normalizeNonEmpty(meta?.sessionId)
+  const rawTitle = normalizeNonEmpty(meta?.title) || '(sin título)'
+  const title = ellipsize(rawTitle, 140)
+  const cwd = normalizeNonEmpty(meta?.cwd)
   const displayCli = cli === 'codex' ? 'Codex' : 'Claude'
+  sessionStripMetaSnapshot = { ...meta, cli, sessionId: sid, title: rawTitle, rawTitle, cwd }
 
   sessionStripCli.textContent = displayCli
   sessionStripCli.classList.toggle('codex', cli === 'codex')
-  sessionStripTitle.textContent = `Sesión: ${title}`
-  sessionStripTitle.title = `${displayCli} · ${meta?.title || '(sin título)'}`
+  if (!sessionStripEditInput) {
+    sessionStripTitle.textContent = `Sesión: ${title}`
+    sessionStripTitle.title = `${displayCli} · ${rawTitle}`
+  }
+  if (sessionStripEdit) {
+    sessionStripEdit.disabled = !sid
+    sessionStripEdit.title = sid ? 'Editar título de la sesión' : 'No hay sessionId detectada'
+    sessionStripEdit.setAttribute('aria-pressed', sessionStripEditInput ? 'true' : 'false')
+  }
 
   if (sid) {
     sessionStripId.disabled = false
@@ -1730,6 +1837,13 @@ async function refreshSessionStrip(force = false) {
     const meta = await window.api.getCurrentSessionMeta()
     const key = `${meta?.cli || ''}|${meta?.sessionId || ''}|${meta?.title || ''}`
     if (force || key !== sessionMetaLastKey) {
+      if (sessionStripEditInput) {
+        const incomingSid = normalizeNonEmpty(meta?.sessionId)
+        const currentSid = normalizeNonEmpty(sessionStripMetaSnapshot?.sessionId)
+        if (!incomingSid || (currentSid && incomingSid !== currentSid)) {
+          cancelSessionStripInlineEdit()
+        }
+      }
       sessionMetaLastKey = key
       renderSessionStrip(meta || null)
     }
@@ -1745,6 +1859,12 @@ if (sessionStripId) {
     if (ok) showStatus('UID de sesión copiada', 'ok', 1500)
     else showStatus('No pude copiar la UID', 'error', 2500)
   })
+}
+if (sessionStripEdit) {
+  sessionStripEdit.addEventListener('click', () => { startSessionStripInlineEdit().catch(() => {}) })
+}
+if (sessionStripTitle) {
+  sessionStripTitle.addEventListener('dblclick', () => { startSessionStripInlineEdit().catch(() => {}) })
 }
 
 function renderTelegramStatus(status) {
@@ -1782,13 +1902,46 @@ function formatConnectedAge(connectedAt) {
   return `${s}s`
 }
 
+function isRemoteSessionsPanelVisible() {
+  return Boolean(lanServerSnapshot?.running) && remoteSessionsUserVisible
+}
+
+function renderRemoteSessionsToggle() {
+  if (!btnRemoteSessionsToggle) return
+  const visible = Boolean(remoteSessionsUserVisible)
+  const running = Boolean(lanServerSnapshot?.running)
+  btnRemoteSessionsToggle.classList.toggle('active', visible)
+  btnRemoteSessionsToggle.setAttribute('aria-pressed', visible ? 'true' : 'false')
+  if (visible) {
+    btnRemoteSessionsToggle.textContent = 'LAN · ON'
+    btnRemoteSessionsToggle.title = running
+      ? 'Ocultar sesiones remotas LAN'
+      : 'Sesiones LAN marcadas para mostrarse cuando el servidor esté activo'
+  } else {
+    btnRemoteSessionsToggle.textContent = 'LAN · OFF'
+    btnRemoteSessionsToggle.title = 'Mostrar sesiones remotas LAN'
+  }
+}
+
+function setRemoteSessionsUserVisible(next, { persist = true } = {}) {
+  remoteSessionsUserVisible = Boolean(next)
+  if (persist) {
+    try {
+      localStorage.setItem(REMOTE_SESSIONS_VISIBLE_KEY, remoteSessionsUserVisible ? '1' : '0')
+    } catch {}
+  }
+  renderRemoteSessionsToggle()
+  if (remoteSessionsPanel) {
+    remoteSessionsPanel.classList.toggle('hidden', !isRemoteSessionsPanelVisible())
+  }
+}
+
 function renderRemoteSessions(list) {
   if (!remoteSessionsPanel || !remoteSessionsListEl || !remoteSessionsEmptyEl || !remoteSessionsCountEl) return
   const rows = Array.isArray(list) ? list : []
   remoteSessionsCountEl.textContent = String(rows.length)
   remoteSessionsListEl.innerHTML = ''
-  const running = Boolean(lanServerSnapshot?.running)
-  remoteSessionsPanel.classList.toggle('hidden', !running)
+  remoteSessionsPanel.classList.toggle('hidden', !isRemoteSessionsPanelVisible())
   remoteSessionsEmptyEl.style.display = rows.length ? 'none' : 'block'
   for (const row of rows) {
     const item = document.createElement('div')
@@ -1903,6 +2056,7 @@ function renderLanStatus(snapshot, errorText = '') {
       cfgLanQr.textContent = 'QR no disponible'
     }
   }
+  renderRemoteSessionsToggle()
   renderRemoteSessions(snapshot?.sessions || [])
   renderProfileReminder()
 }
@@ -1956,13 +2110,34 @@ btnMinimize.addEventListener('click', () => window.api.minimizeWindow())
 btnClose.addEventListener('click', () => window.api.closeWindow())
 document.getElementById('drag-area').addEventListener('dblclick', () => window.api.toggleMaximize())
 async function fullRestart(cwd) {
-  fitAndSync()
-  term.reset()
-  term.clear()
-  await window.api.restartPty(cwd, term.cols, term.rows)
-  await refreshSessionStrip(true)
-  await refreshHealth(true)
-  fitAndSync()
+  const requestedCwd = normalizeNonEmpty(cwd)
+  if (fullRestartInFlight) {
+    if (requestedCwd) queuedFullRestartCwd = requestedCwd
+    await fullRestartInFlight
+    if (queuedFullRestartCwd) {
+      const nextCwd = queuedFullRestartCwd
+      queuedFullRestartCwd = ''
+      return fullRestart(nextCwd)
+    }
+    return
+  }
+
+  fullRestartInFlight = (async () => {
+    const targetCwd = requestedCwd || normalizeNonEmpty(await window.api.ptyCwd())
+    fitAndSync()
+    term.reset()
+    term.clear()
+    await window.api.restartPty(targetCwd || undefined, term.cols, term.rows)
+    await refreshSessionStrip(true)
+    await refreshHealth(true)
+    fitAndSync()
+  })()
+
+  try {
+    await fullRestartInFlight
+  } finally {
+    fullRestartInFlight = null
+  }
 }
 
 btnRestart.addEventListener('click', async () => {
@@ -2304,6 +2479,12 @@ if (remoteSessionsListEl) {
   })
 }
 
+if (btnRemoteSessionsToggle) {
+  btnRemoteSessionsToggle.addEventListener('click', () => {
+    setRemoteSessionsUserVisible(!remoteSessionsUserVisible)
+  })
+}
+
 btnSaveSettings.addEventListener('click', async () => {
   showStatus('Guardando configuracion…', 'busy')
   const lanEnabled = Boolean(cfgLanEnabled?.checked)
@@ -2344,9 +2525,7 @@ btnSaveSettings.addEventListener('click', async () => {
   const currentCli = await window.api.getActiveCli()
   cliSelector.value = currentCli
   try {
-    await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
-    await refreshSessionStrip(true)
-    fitAndSync()
+    await fullRestart()
     term.focus()
   } catch (err) {
     showStatus(errorMessage(err), 'error', 7000)
@@ -3861,14 +4040,8 @@ cliSelector.addEventListener('change', async (e) => {
 
   showStatus(`Cambiando a ${newCli.toUpperCase()}...`, 'busy')
   await new Promise(r => setTimeout(r, 300))
-  term.reset()
-  term.clear()
-  fitAndSync()
   try {
-    await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
-    await refreshSessionStrip(true)
-    await refreshHealth(true)
-    fitAndSync()
+    await fullRestart()
     term.focus()
     localStorage.setItem(CLI_KEY, newCli)
     showStatus(`${newCli.toUpperCase()} cargado`, 'info', 1500)
@@ -3878,13 +4051,7 @@ cliSelector.addEventListener('change', async (e) => {
     cliSelector.value = previousCli
     if (rollback.ok) {
       try {
-        term.reset()
-        term.clear()
-        fitAndSync()
-        await window.api.restartPty(await window.api.ptyCwd(), term.cols, term.rows)
-        await refreshSessionStrip(true)
-        await refreshHealth(true)
-        fitAndSync()
+        await fullRestart()
         term.focus()
       } catch {}
     }
@@ -3921,6 +4088,7 @@ cliSelector.addEventListener('change', async (e) => {
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshSessionStrip(true)
   await refreshHealth(true)
+  setRemoteSessionsUserVisible(remoteSessionsUserVisible, { persist: false })
   await refreshLanServerStatus(true)
   setProposalBadge(pendingProposal ? 1 : 0)
   if (typeof window.api.getPendingProposal === 'function') {
@@ -3934,6 +4102,8 @@ cliSelector.addEventListener('change', async (e) => {
   }
 
   try {
+    term.reset()
+    term.clear()
     await window.api.startPty(term.cols, term.rows, initialRoot)
     await refreshHealth(true)
   } catch (err) {
