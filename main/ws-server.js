@@ -936,6 +936,14 @@ function createLanWsServer(options = {}) {
 
   function onClientPayload(session, payload) {
     const msgType = trimToString(payload?.type, 100)
+    const normalizedMsgType = msgType.toLowerCase()
+
+    // El cliente puede reenviar handshake tras abrir socket.
+    // Si la sesión ya está inicializada, lo aceptamos como no-op
+    // para evitar ruido de "UNSUPPORTED_MESSAGE" en UI.
+    if (HANDSHAKE_TYPES.has(normalizedMsgType)) {
+      return
+    }
 
     if (msgType === 'input') {
       if (!session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
