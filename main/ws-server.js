@@ -29,7 +29,7 @@ const DEFAULT_FS_LIMITS = Object.freeze({
   maxReadBytes: 10 * 1024 * 1024,
   maxPreviewBytes: 10 * 1024 * 1024,
   maxTextPreviewBytes: 600 * 1024,
-  maxUploadBytes: 12 * 1024 * 1024
+  maxUploadBytes: 20 * 1024 * 1024
 })
 
 const HANDSHAKE_TYPES = new Set(['handshake', 'session:handshake', 'session-handshake', 'hello', 'session:init'])

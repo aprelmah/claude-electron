@@ -343,10 +343,13 @@
     #terminal-panel .panel-content {
       background: linear-gradient(180deg, rgba(19, 32, 46, 0.97), rgba(13, 24, 36, 0.98));
       padding: 8px;
+      grid-template-rows: minmax(260px, 1fr) auto;
+      align-content: start;
+      overflow: auto;
     }
 
     #terminal-wrap {
-      min-height: 380px;
+      min-height: 300px;
       border-radius: 10px;
       overflow: hidden;
       border: 1px solid rgba(216, 234, 255, 0.2);
@@ -355,7 +358,7 @@
     #terminal {
       width: 100%;
       height: 100%;
-      min-height: 380px;
+      min-height: 300px;
     }
 
     .files-layout {
@@ -694,6 +697,9 @@
       textarea.control#fs-editor {
         min-height: 360px;
       }
+      #terminal, #terminal-wrap {
+        min-height: 380px;
+      }
     }
 
     @media (min-width: 1020px) {
@@ -708,7 +714,7 @@
         grid-template-columns: repeat(4, minmax(0, 1fr));
       }
       #terminal, #terminal-wrap {
-        min-height: 520px;
+        min-height: 460px;
       }
     }
   </style>
@@ -779,17 +785,32 @@
       <section id="terminal-panel" class="panel" role="tabpanel" aria-labelledby="tab-terminal">
         <div class="panel-head">
           <h2>Terminal remoto</h2>
-          <small>Salida en tiempo real del CLI remoto</small>
+          <small>Chat operativo en tiempo real con adjuntos</small>
         </div>
         <div class="panel-content">
           <div id="terminal-wrap"><div id="terminal"></div></div>
+          <div class="upload-box" aria-labelledby="upload-title">
+            <h3 id="upload-title" style="margin:0;font-size:0.95rem;">Enviar foto/archivo al chat</h3>
+            <div class="upload-actions">
+              <input id="input-attach-file" class="sr-only" type="file" />
+              <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
+              <button id="btn-attach-photo" class="btn btn-primary" type="button">📷 Enviar foto</button>
+              <button id="btn-attach-file" class="btn btn-quiet" type="button">📎 Enviar archivo</button>
+            </div>
+            <label class="option-line" for="attach-confirm-chat">
+              <input id="attach-confirm-chat" type="checkbox" checked />
+              Confirmar antes de enviar al chat
+            </label>
+            <div id="upload-status" class="status-line" role="status" aria-live="polite">Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.</div>
+            <ul id="upload-log" class="upload-log" aria-label="Historial de envíos al chat"></ul>
+          </div>
         </div>
       </section>
 
       <section id="files-panel" class="panel" role="tabpanel" aria-labelledby="tab-files" hidden>
         <div class="panel-head">
           <h2>Archivos remotos</h2>
-          <small>Exploración, edición y adjuntos mobile</small>
+          <small>Exploración y edición (los adjuntos se envían desde Terminal)</small>
         </div>
         <div class="panel-content">
           <div class="files-layout">
@@ -818,25 +839,6 @@
             </div>
           </div>
 
-          <div class="upload-box" aria-labelledby="upload-title">
-            <h3 id="upload-title" style="margin:0;font-size:0.95rem;">Adjuntar foto/archivo desde móvil</h3>
-            <div class="upload-actions">
-              <input id="input-attach-file" class="sr-only" type="file" />
-              <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
-              <button id="btn-attach-file" class="btn btn-quiet" type="button">Adjuntar archivo</button>
-              <button id="btn-attach-photo" class="btn btn-quiet" type="button">Cámara / galería</button>
-            </div>
-            <label class="option-line" for="attach-inject-chat">
-              <input id="attach-inject-chat" type="checkbox" checked />
-              Inyectar la ruta subida en el chat remoto
-            </label>
-            <label class="option-line" for="attach-confirm-chat">
-              <input id="attach-confirm-chat" type="checkbox" checked />
-              Pedir confirmación antes de inyectar en chat
-            </label>
-            <div id="upload-status" class="status-line" role="status" aria-live="polite">Selecciona archivo o foto para iniciar subida remota.</div>
-            <ul id="upload-log" class="upload-log" aria-label="Historial de adjuntos"></ul>
-          </div>
         </div>
       </section>
 
@@ -871,7 +873,7 @@
           <div class="action-group">
             <h3>Próximas funciones</h3>
             <p class="future-line">Esta sección queda preparada para más acciones WS/MCP sin cambiar la arquitectura por pestañas.</p>
-            <p class="future-line">Hooks disponibles: `fs:event` push, polling fallback, y pipeline de adjuntos `fs:upload`.</p>
+            <p class="future-line">La cámara y archivos ya se envían desde la pestaña Terminal con flujo directo al chat.</p>
           </div>
         </div>
       </section>
@@ -927,7 +929,6 @@
       btnAttachPhoto: document.getElementById('btn-attach-photo'),
       attachFileInput: document.getElementById('input-attach-file'),
       attachPhotoInput: document.getElementById('input-attach-photo'),
-      attachInjectCheck: document.getElementById('attach-inject-chat'),
       attachConfirmCheck: document.getElementById('attach-confirm-chat'),
       uploadStatus: document.getElementById('upload-status'),
       uploadLog: document.getElementById('upload-log')
@@ -1280,7 +1281,7 @@
 
       if (msg?.ok === false && pending.type === 'fs:upload' && isUnsupportedFsOp(msg.error, 'fs:upload')) {
         appState.uploadSupport = 'unsupported'
-        setUploadStatus('Servidor legacy: `fs:upload` no soportado. Usa adjunto manual del chat.', 'warn')
+        setUploadStatus('Servidor legacy sin envío de adjuntos remoto.', 'warn')
       }
       pending.resolve(msg)
       return true
@@ -1493,37 +1494,40 @@
     async function uploadAttachment(file, sourceKind) {
       if (!file) return
       if (!isSocketOpen()) {
-        setUploadStatus('Conecta antes de subir adjuntos remotos.', 'warn')
+        setUploadStatus('Conecta primero para enviar fotos o archivos al chat.', 'warn')
         return
       }
-      if (file.size > 12 * 1024 * 1024) {
-        setUploadStatus('Archivo demasiado grande para cliente móvil (máx recomendado: 12 MB).', 'warn')
+      const canUpload = hasFsCapability('upload') || hasFsCapability('write')
+      if (!canUpload) {
+        setUploadStatus('Tu rol no tiene permiso para enviar adjuntos en esta sesión.', 'err')
+        addUploadLog(`Bloqueado: sin permiso para adjuntos (${sourceKind})`, 'err')
+        return
+      }
+      const maxUploadBytes = Number(appState.sessionCapabilities?.limits?.maxUploadBytes || (12 * 1024 * 1024))
+      if (file.size > maxUploadBytes) {
+        const mb = Math.max(1, Math.round(maxUploadBytes / (1024 * 1024)))
+        setUploadStatus(`Archivo demasiado grande (límite de sesión: ${mb} MB).`, 'warn')
         addUploadLog(`${file.name} rechazado por tamaño (${file.size} bytes)`, 'warn')
         return
       }
 
-      const targetRoot = refs.fsRootSelect.value || appState.sessionInfo?.context?.allowedRoots?.[0] || appState.sessionInfo?.cwd || ''
       setUploadStatus(`Preparando ${sourceKind}: ${file.name}...`)
 
       try {
         const base64 = await fileToBase64(file)
-        setUploadStatus(`Subiendo ${file.name} por fs:upload...`)
+        setUploadStatus(`Subiendo ${file.name} al servidor seguro...`)
         const res = await sendFsRequest('fs:upload', {
-          path: targetRoot,
-          filename: file.name,
           name: file.name,
           mimeType: file.type || 'application/octet-stream',
-          size: file.size,
-          data: base64,
-          contentBase64: base64
-        }, 30000)
+          base64
+        }, 60000)
 
         if (res?.ok === false) {
           if (isUnsupportedFsOp(res.error, 'fs:upload')) {
             appState.uploadSupport = 'unsupported'
-            const message = 'Servidor legacy sin soporte `fs:upload`. Adjunta manualmente desde el chat remoto.'
+            const message = 'Este servidor no soporta envío de adjuntos desde móvil.'
             setUploadStatus(message, 'warn')
-            addUploadLog(`${file.name} no subido: ${message}`, 'warn')
+            addUploadLog(`${file.name} no enviado: ${message}`, 'warn')
             return
           }
           setUploadStatus(formatFsError(res.error), 'err')
@@ -1533,29 +1537,31 @@
 
         appState.uploadSupport = 'supported'
         const uploadedPath = inferUploadedPath(res, file.name)
-        setUploadStatus(`Subida completada: ${uploadedPath}`, 'ok')
-        addUploadLog(`${file.name} subido en ${uploadedPath}`, 'ok')
+        const ptyRef = String(res?.ptyReference || '').trim() || `@${uploadedPath}`
+        setUploadStatus('Archivo recibido. Preparando envío al chat...', 'ok')
+        addUploadLog(`${file.name} cargado en servidor`, 'ok')
 
         if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'upload' }).catch(() => {})
 
-        if (refs.attachInjectCheck.checked) {
-          let proceed = true
-          const ptyRef = String(res?.ptyReference || '').trim() || `@${uploadedPath}`
-          if (refs.attachConfirmCheck.checked) {
-            proceed = window.confirm(`¿Inyectar en chat remoto la referencia subida?\n${ptyRef}`)
-          }
-          if (proceed) {
-            const injected = sendMessage({ type: 'input', data: `${ptyRef} ` })
-            if (injected) {
-              setUploadStatus(`Referencia inyectada en chat: ${ptyRef}`, 'ok')
-              addUploadLog('Referencia de imagen/archivo inyectada en chat remoto', 'ok')
-            } else {
-              setUploadStatus('No se pudo inyectar la referencia en chat remoto.', 'err')
-              addUploadLog('Fallo al inyectar referencia en chat', 'err')
-            }
-          } else {
-            setUploadStatus('Subida completada sin inyección en chat (cancelada por usuario).', 'warn')
-          }
+        let proceed = true
+        if (refs.attachConfirmCheck.checked) {
+          proceed = window.confirm(`¿Enviar ahora al chat este adjunto?\n${file.name}`)
+        }
+        if (!proceed) {
+          setUploadStatus('Adjunto subido, envío al chat cancelado por el usuario.', 'warn')
+          addUploadLog('Envío al chat cancelado', 'warn')
+          return
+        }
+
+        const injected = sendMessage({ type: 'input', data: `${ptyRef} ` })
+        if (injected) {
+          term.write(`\r\n[adjunto enviado] ${file.name}\r\n`)
+          setUploadStatus(`Enviado al chat: ${file.name}`, 'ok')
+          addUploadLog('Adjunto enviado al chat remoto', 'ok')
+          activateTab('terminal')
+        } else {
+          setUploadStatus('No se pudo enviar la referencia al chat remoto.', 'err')
+          addUploadLog('Fallo al enviar al chat', 'err')
         }
       } catch (err) {
         setUploadStatus(`Error en subida: ${errorText(err)}`, 'err')
@@ -1592,7 +1598,7 @@
       appState.uploadSupport = 'unknown'
       renderSessionContext()
       clearFsUi('Explorador remoto esperando conexión.')
-      setUploadStatus('Selecciona archivo o foto para iniciar subida remota.')
+      setUploadStatus('Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.')
       stopFsPolling()
     }
 
@@ -1700,7 +1706,7 @@
             }
             if (text.includes('fs:upload')) {
               appState.uploadSupport = 'unsupported'
-              setUploadStatus('Servidor no soporta `fs:upload`. Usa adjunto manual del chat.', 'warn')
+              setUploadStatus('Servidor sin soporte de adjuntos remotos.', 'warn')
               rejectPendingFsByType('fs:upload', 'Servidor no soporta fs:upload')
             }
           }
@@ -1919,7 +1925,7 @@
     refs.wsUrlInput.value = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
     clearFsUi('Explorador remoto esperando conexión.')
-    setUploadStatus('Selecciona archivo o foto para iniciar subida remota.')
+    setUploadStatus('Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.')
     setConnectionStatus('offline', 'Desconectado')
     setHandshakeStatus('warn', 'Handshake listo. Se enviará al conectar.', 'idle')
     renderSessionContext()
