@@ -42,6 +42,10 @@ const CONTEXT_SYNC_TYPES = new Set([
   'session:identity'
 ])
 
+const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+const CODEX_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
+const VALID_CLI_CHOICES = new Set(['claude', 'codex'])
+
 const PERMISSION_KEYS = Object.freeze({
   PTY_EXECUTE: 'pty.execute',
   FS_READ: 'fs.read',
@@ -176,6 +180,28 @@ function trimToString(value, maxLen = 5000) {
   if (!text) return ''
   if (text.length <= maxLen) return text
   return text.slice(0, maxLen)
+}
+
+function sanitizeModelName(raw, maxLen = 120) {
+  const text = trimToString(raw, maxLen)
+  if (!text) return ''
+  if (!/^[a-zA-Z0-9._:/-]+$/.test(text)) return ''
+  return text
+}
+
+function sanitizeEffortLevel(raw, cli = '') {
+  const text = trimToString(raw, 40).toLowerCase()
+  if (!text) return ''
+  if (cli === 'codex') return CODEX_EFFORT_LEVELS.has(text) ? text : ''
+  if (cli === 'claude') return CLAUDE_EFFORT_LEVELS.has(text) ? text : ''
+  if (CODEX_EFFORT_LEVELS.has(text) || CLAUDE_EFFORT_LEVELS.has(text)) return text
+  return ''
+}
+
+function sanitizeCliChoice(raw) {
+  const text = trimToString(raw, 30).toLowerCase()
+  if (!text) return ''
+  return VALID_CLI_CHOICES.has(text) ? text : ''
 }
 
 function normalizeStringList(values, maxLen = 5000) {
@@ -316,6 +342,9 @@ function extractRequestedContextFromQuery(req) {
     profileId: firstNonEmpty(params, ['profileId', 'profile', 'pf']),
     roleId: firstNonEmpty(params, ['roleId', 'role']),
     username: firstNonEmpty(params, ['username', 'user', 'login']),
+    cli: sanitizeCliChoice(firstNonEmpty(params, ['cli', 'provider', 'engine'])),
+    model: sanitizeModelName(firstNonEmpty(params, ['model', 'modelId', 'm'])),
+    effort: sanitizeEffortLevel(firstNonEmpty(params, ['effort', 'reasoningEffort', 'reasoning', 'e'])),
     raw: Object.fromEntries(params.entries()),
     source: 'query'
   }
@@ -335,8 +364,11 @@ function parseRequestedContextPayload(payload, options = {}) {
   const profileId = trimToString(nested.profileId || nested.profile || nested.pf, 300)
   const roleId = trimToString(nested.roleId || nested.role, 300)
   const username = trimToString(nested.username || nested.user || nested.login, 300)
+  const cli = sanitizeCliChoice(nested.cli || nested.provider || nested.engine)
+  const model = sanitizeModelName(nested.model || nested.modelId || nested.m)
+  const effort = sanitizeEffortLevel(nested.effort || nested.reasoningEffort || nested.reasoning || nested.e)
 
-  const hasContextHints = !!(operatorId || profileId || roleId || username)
+  const hasContextHints = !!(operatorId || profileId || roleId || username || cli || model || effort)
   if (!expectedTypeSet.has(type)) {
     if (!(acceptTypeLess && !type && hasContextHints)) return null
   }
@@ -348,6 +380,9 @@ function parseRequestedContextPayload(payload, options = {}) {
     profileId,
     roleId,
     username,
+    cli,
+    model,
+    effort,
     raw: nested,
     source: HANDSHAKE_TYPES.has(type) ? 'handshake' : (type || 'context-sync')
   }
@@ -361,6 +396,9 @@ function mergeRequestedContext(base, patch) {
     profileId: trimToString(next.profileId || current.profileId, 300),
     roleId: trimToString(next.roleId || current.roleId, 300),
     username: trimToString(next.username || current.username, 300),
+    cli: sanitizeCliChoice(next.cli || current.cli),
+    model: sanitizeModelName(next.model || current.model),
+    effort: sanitizeEffortLevel(next.effort || current.effort),
     raw: next.raw && typeof next.raw === 'object' ? next.raw : (current.raw || {}),
     source: next.source || current.source || 'none'
   }
@@ -404,7 +442,7 @@ function toPublicRootList(entries) {
 
 function normalizeResolvedSessionConfig(rawConfig, requestedContext, defaultFsLimits = DEFAULT_FS_LIMITS) {
   const raw = rawConfig && typeof rawConfig === 'object' ? rawConfig : {}
-  const cli = raw.cli === 'codex' ? 'codex' : 'claude'
+  const cli = sanitizeCliChoice(raw.cli || requestedContext.cli) || 'claude'
   const cwd = resolveExistingDir(raw.cwd) || resolveExistingDir(os.homedir()) || os.homedir()
   const permissions = normalizePermissionMap(raw.permissions)
 
@@ -420,6 +458,8 @@ function normalizeResolvedSessionConfig(rawConfig, requestedContext, defaultFsLi
   const operatorId = trimToString(raw.operatorId || requestedContext.operatorId, 300)
   const roleId = trimToString(raw.roleId || requestedContext.roleId, 300)
   const profileId = trimToString(raw.profileId || requestedContext.profileId, 300)
+  const model = sanitizeModelName(raw.model || raw.cliModel || requestedContext.model)
+  const effort = sanitizeEffortLevel(raw.effort || raw.cliEffort || requestedContext.effort, cli)
   const personaResolved = trimToString(raw.personaResolved, 30000)
   const personaSource = trimToString(raw.personaSource, 80) || (personaResolved ? 'operator-or-profile' : 'none')
   const bootstrapMessage = trimToString(raw.bootstrapMessage || '', 50000)
@@ -444,6 +484,9 @@ function normalizeResolvedSessionConfig(rawConfig, requestedContext, defaultFsLi
       operatorId: operatorId || null,
       roleId: roleId || null,
       profileId: profileId || null,
+      cli: cli || null,
+      model: model || null,
+      effort: effort || null,
       personaResolved: personaResolved || '',
       personaSource,
       allowedRoots: toPublicRootList(allowedRootEntries),
@@ -454,6 +497,9 @@ function normalizeResolvedSessionConfig(rawConfig, requestedContext, defaultFsLi
         profileId: requestedContext.profileId || null,
         roleId: requestedContext.roleId || null,
         username: requestedContext.username || null,
+        cli: sanitizeCliChoice(requestedContext.cli) || null,
+        model: sanitizeModelName(requestedContext.model) || null,
+        effort: sanitizeEffortLevel(requestedContext.effort, cli) || null,
         source: requestedContext.source || 'none'
       }
     },
@@ -845,6 +891,7 @@ function createLanWsServer(options = {}) {
     : (() => ({ cli: 'claude', cwd: os.homedir(), bin: 'claude', env: { ...process.env }, args: [] }))
   const resolveSessionContext = typeof options.resolveSessionContext === 'function' ? options.resolveSessionContext : null
   const transcribeAudio = typeof options.transcribeAudio === 'function' ? options.transcribeAudio : null
+  const runSemanticChatTurn = typeof options.runSemanticChatTurn === 'function' ? options.runSemanticChatTurn : null
   const logger = typeof options.logger === 'function' ? options.logger : (() => {})
   const buildExecCommand = typeof options.buildExecCommand === 'function' ? options.buildExecCommand : buildDefaultExec
   const onAuditEvent = typeof options.onAuditEvent === 'function' ? options.onAuditEvent : null
@@ -887,6 +934,7 @@ function createLanWsServer(options = {}) {
       },
       viewer: { open: !!perms[PERMISSION_KEYS.VIEWER_OPEN] },
       automations: { manage: !!perms[PERMISSION_KEYS.AUTOMATIONS_MANAGE] },
+      chat: { ask: !!runSemanticChatTurn },
       limits: {
         maxReadBytes: Number(session.fsLimits?.maxReadBytes || defaultFsLimits.maxReadBytes),
         maxPreviewBytes: Number(session.fsLimits?.maxPreviewBytes || defaultFsLimits.maxPreviewBytes),
@@ -907,6 +955,9 @@ function createLanWsServer(options = {}) {
       operatorId: context.operatorId || null,
       roleId: context.roleId || null,
       profileId: context.profileId || null,
+      cli: context.cli || null,
+      model: context.model || null,
+      effort: context.effort || null,
       personaResolved: context.personaResolved || '',
       personaSource: context.personaSource || 'none',
       allowedRoots: Array.isArray(context.allowedRoots) ? [...context.allowedRoots] : [],
@@ -917,6 +968,9 @@ function createLanWsServer(options = {}) {
         profileId: null,
         roleId: null,
         username: null,
+        cli: null,
+        model: null,
+        effort: null,
         source: 'none'
       }
     }
@@ -943,10 +997,23 @@ function createLanWsServer(options = {}) {
     session.ptyProcess = null
   }
 
+  function abortSessionChat(session, reason = 'session-closed') {
+    if (!session) return
+    const controller = session.chatAbortController
+    session.chatAbortController = null
+    session.chatBusy = false
+    if (controller) {
+      try { controller.abort(new Error(String(reason || 'session-closed'))) } catch {
+        try { controller.abort() } catch {}
+      }
+    }
+  }
+
   function closeSession(sessionId, reason = 'closed') {
     const session = sessions.get(String(sessionId || ''))
     if (!session) return false
     sessions.delete(session.id)
+    abortSessionChat(session, reason)
     closeAllFsWatchers(session, reason)
     killSessionPty(session)
     safeSend(session.ws, { type: 'status', state: reason, sessionId: session.id })
@@ -1004,6 +1071,95 @@ function createLanWsServer(options = {}) {
       })
     } finally {
       try { fs.unlinkSync(audioFilePath) } catch {}
+    }
+  }
+
+  async function handleSemanticChatAsk(session, payload) {
+    const requestId = trimToString(payload?.requestId, 160) || `chat-${Date.now()}`
+    const prompt = trimToString(payload?.text ?? payload?.prompt, 100000)
+
+    if (!runSemanticChatTurn) {
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: false,
+        error: { code: 'NOT_AVAILABLE', message: 'chat semántico no disponible en este servidor' },
+        sessionId: session.id
+      })
+      return
+    }
+
+    if (!session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: 'Permiso denegado: pty.execute' },
+        sessionId: session.id
+      })
+      return
+    }
+
+    if (!prompt) {
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: false,
+        error: { code: 'INVALID_REQUEST', message: 'mensaje vacío' },
+        sessionId: session.id
+      })
+      return
+    }
+
+    if (session.chatBusy) {
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: false,
+        error: { code: 'CHAT_BUSY', message: 'ya hay una respuesta en curso' },
+        sessionId: session.id
+      })
+      return
+    }
+
+    session.chatBusy = true
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    session.chatAbortController = controller
+    safeSend(session.ws, { type: 'chat:status', state: 'started', requestId, sessionId: session.id })
+
+    try {
+      const result = await runSemanticChatTurn({
+        session,
+        prompt,
+        requestId,
+        signal: controller?.signal || undefined
+      })
+      const text = trimToString(result?.text, 500000)
+      if (result?.sessionId) session.chatSessionId = trimToString(result.sessionId, 200)
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: true,
+        text: text || '',
+        chatSessionId: session.chatSessionId || null,
+        sessionId: session.id
+      })
+    } catch (err) {
+      const aborted = err?.name === 'AbortError'
+      safeSend(session.ws, {
+        type: 'chat:result',
+        requestId,
+        ok: false,
+        error: {
+          code: aborted ? 'ABORTED' : 'CHAT_FAILED',
+          message: err?.message || String(err || 'Error en chat semántico')
+        },
+        sessionId: session.id
+      })
+    } finally {
+      if (session.chatAbortController === controller) session.chatAbortController = null
+      session.chatBusy = false
+      safeSend(session.ws, { type: 'chat:status', state: 'idle', requestId, sessionId: session.id })
     }
   }
 
@@ -1781,6 +1937,9 @@ function createLanWsServer(options = {}) {
       if ((previous?.roleId || '') !== (session.requestedContext?.roleId || '')) changed.push('roleId')
       if ((previous?.profileId || '') !== (session.requestedContext?.profileId || '')) changed.push('profileId')
       if ((previous?.username || '') !== (session.requestedContext?.username || '')) changed.push('username')
+      if ((previous?.cli || '') !== (session.requestedContext?.cli || '')) changed.push('cli')
+      if ((previous?.model || '') !== (session.requestedContext?.model || '')) changed.push('model')
+      if ((previous?.effort || '') !== (session.requestedContext?.effort || '')) changed.push('effort')
       emitAudit('empresa_handshake_contexto_actualizado', {
         ...auditActor(session),
         source: contextSync.source,
@@ -1789,6 +1948,9 @@ function createLanWsServer(options = {}) {
         requestedRoleId: session.requestedContext?.roleId || null,
         requestedProfileId: session.requestedContext?.profileId || null,
         usernameProvided: !!session.requestedContext?.username,
+        requestedCli: session.requestedContext?.cli || null,
+        requestedModel: session.requestedContext?.model || null,
+        requestedEffort: session.requestedContext?.effort || null,
         late: session.initialized === true
       })
       return
@@ -1832,6 +1994,11 @@ function createLanWsServer(options = {}) {
       return
     }
 
+    if (msgType === 'chat:ask') {
+      handleSemanticChatAsk(session, payload).catch(() => {})
+      return
+    }
+
     if (msgType.startsWith('fs:')) {
       handleFsMessage(session, msgType, payload)
       return
@@ -1868,6 +2035,9 @@ function createLanWsServer(options = {}) {
         profileId: requestedContext.profileId || '',
         roleId: requestedContext.roleId || '',
         username: requestedContext.username || '',
+        cli: requestedContext.cli || '',
+        model: requestedContext.model || '',
+        effort: requestedContext.effort || '',
         source: requestedContext.source || 'none',
         raw: requestedContext.raw || {}
       }
@@ -1924,12 +2094,18 @@ function createLanWsServer(options = {}) {
       requestedRoleId: session.requestedContext?.roleId || null,
       requestedProfileId: session.requestedContext?.profileId || null,
       usernameProvided: !!session.requestedContext?.username,
+      requestedCli: session.requestedContext?.cli || null,
+      requestedModel: session.requestedContext?.model || null,
+      requestedEffort: session.requestedContext?.effort || null,
       requestSource: session.requestedContext?.source || 'none',
       mode: session.context?.mode || 'legacy',
       enterpriseEnabled: !!session.context?.enterpriseEnabled,
       appliedOperatorId: session.context?.operatorId || null,
       appliedRoleId: session.context?.roleId || null,
-      appliedProfileId: session.context?.profileId || null
+      appliedProfileId: session.context?.profileId || null,
+      appliedCli: session.cli || null,
+      appliedModel: session.context?.model || null,
+      appliedEffort: session.context?.effort || null
     })
 
     let ptyProcess = null
@@ -2006,6 +2182,9 @@ function createLanWsServer(options = {}) {
       operatorId: session.context?.operatorId || null,
       roleId: session.context?.roleId || null,
       profileId: session.context?.profileId || null,
+      cli: session.cli || null,
+      model: session.context?.model || null,
+      effort: session.context?.effort || null,
       mode: session.context?.mode || 'legacy',
       enterpriseEnabled: !!session.context?.enterpriseEnabled
     })
@@ -2047,6 +2226,9 @@ function createLanWsServer(options = {}) {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       ptyProcess: null,
+      chatBusy: false,
+      chatAbortController: null,
+      chatSessionId: '',
       audioQueue: Promise.resolve(),
       initialized: false,
       initInFlight: false,
@@ -2063,6 +2245,9 @@ function createLanWsServer(options = {}) {
         operatorId: null,
         roleId: null,
         profileId: null,
+        cli: null,
+        model: null,
+        effort: null,
         personaResolved: '',
         allowedRoots: [],
         readOnlyRoots: [],
@@ -2072,6 +2257,9 @@ function createLanWsServer(options = {}) {
           profileId: initialRequested.profileId || null,
           roleId: initialRequested.roleId || null,
           username: initialRequested.username || null,
+          cli: initialRequested.cli || null,
+          model: initialRequested.model || null,
+          effort: initialRequested.effort || null,
           source: initialRequested.source || 'query'
         }
       },
@@ -2090,7 +2278,10 @@ function createLanWsServer(options = {}) {
       session.requestedContext.operatorId ||
       session.requestedContext.profileId ||
       session.requestedContext.roleId ||
-      session.requestedContext.username
+      session.requestedContext.username ||
+      session.requestedContext.cli ||
+      session.requestedContext.model ||
+      session.requestedContext.effort
     ) {
       maybeStartSession()
     } else {
@@ -2129,6 +2320,9 @@ function createLanWsServer(options = {}) {
           if ((previous?.roleId || '') !== (session.requestedContext?.roleId || '')) changed.push('roleId')
           if ((previous?.profileId || '') !== (session.requestedContext?.profileId || '')) changed.push('profileId')
           if ((previous?.username || '') !== (session.requestedContext?.username || '')) changed.push('username')
+          if ((previous?.cli || '') !== (session.requestedContext?.cli || '')) changed.push('cli')
+          if ((previous?.model || '') !== (session.requestedContext?.model || '')) changed.push('model')
+          if ((previous?.effort || '') !== (session.requestedContext?.effort || '')) changed.push('effort')
           emitAudit('empresa_handshake_contexto_actualizado', {
             ...auditActor(session),
             source: contextSync.source,
@@ -2137,6 +2331,9 @@ function createLanWsServer(options = {}) {
             requestedRoleId: session.requestedContext?.roleId || null,
             requestedProfileId: session.requestedContext?.profileId || null,
             usernameProvided: !!session.requestedContext?.username,
+            requestedCli: session.requestedContext?.cli || null,
+            requestedModel: session.requestedContext?.model || null,
+            requestedEffort: session.requestedContext?.effort || null,
             late: false
           })
           maybeStartSession()
@@ -2180,6 +2377,7 @@ function createLanWsServer(options = {}) {
       }
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)
+      abortSessionChat(session, 'ws-close')
       closeAllFsWatchers(session, 'ws-close')
       killSessionPty(session)
       logger(`[lan] session disconnected ${session.id}`)
@@ -2192,6 +2390,7 @@ function createLanWsServer(options = {}) {
       }
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)
+      abortSessionChat(session, 'ws-error')
       closeAllFsWatchers(session, 'ws-error')
       killSessionPty(session)
     })

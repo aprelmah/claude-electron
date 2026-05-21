@@ -532,6 +532,18 @@
       flex-wrap: wrap;
     }
 
+    .view-switch {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .view-switch .btn[aria-pressed="true"] {
+      background: var(--accent-soft);
+      border-color: var(--accent-line);
+      color: var(--text-0);
+    }
+
     .chat-title {
       margin: 0;
       font-size: 1rem;
@@ -584,6 +596,135 @@
       min-height: 340px;
       display: grid;
       grid-template-rows: 1fr;
+    }
+
+    .chat-pane,
+    .terminal-pane {
+      min-height: 340px;
+      height: 100%;
+    }
+
+    body[data-chat-view="chat"] .chat-pane { display: grid; grid-template-rows: 1fr auto; gap: 10px; }
+    body[data-chat-view="chat"] .terminal-pane { display: none; }
+    body[data-chat-view="terminal"] .chat-pane { display: none; }
+    body[data-chat-view="terminal"] .terminal-pane { display: block; }
+
+    .chat-messages {
+      border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
+      border-radius: var(--r-sm);
+      background: rgba(10, 10, 16, 0.76);
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 220px;
+    }
+
+    .chat-bubble {
+      max-width: min(92%, 860px);
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-2);
+      color: var(--text-0);
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .chat-bubble.user {
+      margin-left: auto;
+      border-color: var(--accent-line);
+      background: color-mix(in srgb, var(--accent) 20%, var(--bg-2));
+    }
+
+    .chat-bubble.agent {
+      margin-right: auto;
+      border-color: var(--border);
+      background: rgba(16, 16, 24, 0.8);
+    }
+
+    .chat-meta {
+      display: block;
+      margin-top: 6px;
+      font-size: 0.74rem;
+      color: var(--text-2);
+      font-family: var(--font-mono);
+    }
+
+    .chat-composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .chat-input {
+      width: 100%;
+      min-height: 76px;
+      max-height: 180px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-0);
+      color: var(--text-0);
+      font: 500 0.92rem var(--font-sans);
+      padding: 10px 12px;
+      resize: vertical;
+    }
+    .chat-input:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .chat-jump {
+      right: 18px;
+      bottom: 14px;
+    }
+
+    .chat-empty {
+      color: var(--text-2);
+      font-size: 0.86rem;
+      border: 1px dashed var(--border);
+      border-radius: var(--r-sm);
+      padding: 12px;
+      text-align: center;
+    }
+
+    .chat-typing {
+      align-self: flex-start;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-2);
+      font-size: 0.82rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(16, 16, 24, 0.7);
+    }
+    .chat-typing[hidden] { display: none !important; }
+    .typing-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      min-width: 24px;
+    }
+    .typing-dots span {
+      width: 5px;
+      height: 5px;
+      border-radius: 999px;
+      background: var(--text-2);
+      opacity: 0.25;
+      animation: typing-pulse 900ms infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 120ms; }
+    .typing-dots span:nth-child(3) { animation-delay: 240ms; }
+
+    @keyframes typing-pulse {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40% { opacity: 0.95; transform: translateY(-1px); }
     }
 
     .terminal-wrap {
@@ -1135,13 +1276,14 @@
       .attach-actions .btn { min-width: 200px; }
       .files-tools { grid-template-columns: 1fr auto; align-items: end; }
       .action-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .chat-body, .terminal-wrap, #terminal { min-height: 400px; }
+      .chat-body, .chat-pane, .terminal-pane, .terminal-wrap, #terminal { min-height: 400px; }
     }
     @media (min-width: 1020px) {
-      .chat-body, .terminal-wrap, #terminal { min-height: 480px; }
+      .chat-body, .chat-pane, .terminal-pane, .terminal-wrap, #terminal { min-height: 480px; }
     }
     @media (max-width: 719px) {
-      .keybar { display: flex; }
+      body[data-chat-view="terminal"] .keybar { display: flex; }
+      body[data-chat-view="chat"] .keybar { display: none; }
       .mobile-fabs { display: flex; }
       .attach-actions { display: none; }
       .topbar { padding: 8px 12px; }
@@ -1151,8 +1293,11 @@
       .modal-body { padding: 12px; }
       .modal-image { max-height: 60vh; }
       .chat-card { min-height: calc(100dvh - 220px); }
-      .terminal-wrap, #terminal, .chat-body { min-height: calc(100dvh - 300px); }
+      .terminal-wrap, #terminal, .chat-pane, .terminal-pane, .chat-body { min-height: calc(100dvh - 300px); }
       .jump-bottom { right: 14px; bottom: 80px; }
+      .chat-composer {
+        grid-template-columns: 1fr;
+      }
     }
     @media (max-width: 480px) {
       :root { --tap: 42px; --tap-aux: 36px; }
@@ -1165,7 +1310,7 @@
     }
   </style>
 </head>
-<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed">
+<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed" data-chat-view="chat">
   <div class="app-shell">
     <header class="topbar" role="banner">
       <div class="brand">
@@ -1209,7 +1354,7 @@
         </div>
 
         <details id="advanced-options" class="advanced" style="margin-top:12px">
-          <summary>Opciones avanzadas (servidor, operador, perfil)</summary>
+          <summary>Opciones avanzadas (servidor, operador, perfil, proveedor)</summary>
           <div class="advanced-grid">
             <div class="field">
               <label for="ws-url">Servidor</label>
@@ -1223,8 +1368,23 @@
               <label for="profile-id">ID perfil</label>
               <input id="profile-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
+            <div class="field">
+              <label for="provider-id">Proveedor</label>
+              <select id="provider-id" class="control">
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="model-id">Modelo</label>
+              <select id="model-id" class="control"></select>
+            </div>
+            <div class="field">
+              <label for="effort-level">Esfuerzo</label>
+              <select id="effort-level" class="control"></select>
+            </div>
           </div>
-          <p class="hint" style="margin-top:8px">Si lo dejas en blanco, el cliente conecta en modo compatible con el servidor del navegador.</p>
+          <p class="hint" style="margin-top:8px">Elige proveedor, modelo y esfuerzo desde listas. Se aplican al conectar o reconectar, sin prompts ocultos extra.</p>
         </details>
 
         <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
@@ -1256,17 +1416,39 @@
             </button>
           </div>
         </div>
+        <div class="view-switch" role="group" aria-label="Modo de vista">
+          <button id="btn-view-chat" class="btn btn-ghost btn-sm" type="button" aria-pressed="true">Chat simple</button>
+          <button id="btn-view-terminal" class="btn btn-ghost btn-sm" type="button" aria-pressed="false">Terminal raw</button>
+        </div>
         <input id="input-attach-file" class="sr-only" type="file" />
         <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
         <div id="attach-status" class="attach-status" role="status" aria-live="polite">Cuando hables o adjuntes algo, llegará al equipo central.</div>
       </header>
 
       <div class="chat-body">
-        <div class="terminal-wrap"><div id="terminal"></div></div>
-        <button id="btn-jump-bottom" class="jump-bottom" type="button" hidden>
+        <div class="chat-pane">
+          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+          <div id="chat-typing" class="chat-typing" role="status" aria-live="polite" hidden>
+            <span>Agente escribiendo</span>
+            <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+          </div>
+          <form id="chat-composer" class="chat-composer" novalidate>
+            <textarea id="chat-input" class="chat-input" rows="2" placeholder="Escribe aquí para hablar con el agente..."></textarea>
+            <button id="btn-chat-send" class="btn btn-primary btn-sm" type="submit">Enviar</button>
+          </form>
+        </div>
+        <div class="terminal-pane">
+          <div class="terminal-wrap"><div id="terminal"></div></div>
+          <button id="btn-jump-bottom" class="jump-bottom" type="button" hidden>
+            <span aria-hidden="true">↓</span>
+            <span>Ir al final</span>
+            <span id="jump-count"></span>
+          </button>
+        </div>
+        <button id="btn-chat-scroll" class="jump-bottom chat-jump" type="button" hidden>
           <span aria-hidden="true">↓</span>
           <span>Ir al final</span>
-          <span id="jump-count"></span>
+          <span id="chat-jump-count"></span>
         </button>
         <div class="mobile-fabs">
           <button id="btn-fab-photo" class="fab fab-primary" type="button" aria-label="Enviar foto al chat" title="Foto al chat">
@@ -1361,6 +1543,7 @@
           <div class="action-grid">
             <button id="btn-mic" class="btn btn-ghost btn-sm" type="button">Micrófono</button>
             <button id="btn-send-handshake" class="btn btn-ghost btn-sm" type="button">Reenviar identidad</button>
+            <button id="btn-apply-runtime" class="btn btn-ghost btn-sm" type="button">Aplicar modelo/esfuerzo</button>
             <button id="btn-reconnect" class="btn btn-ghost btn-sm" type="button">Volver a conectar</button>
             <button id="btn-disconnect" class="btn btn-danger btn-sm" type="button">Cerrar sesión</button>
           </div>
@@ -1410,6 +1593,9 @@
       wsUrlInput: document.getElementById('ws-url'),
       operatorIdInput: document.getElementById('operator-id'),
       profileIdInput: document.getElementById('profile-id'),
+      providerSelect: document.getElementById('provider-id'),
+      modelSelect: document.getElementById('model-id'),
+      effortSelect: document.getElementById('effort-level'),
       usernameInput: document.getElementById('username'),
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
@@ -1441,6 +1627,7 @@
 
       btnMic: document.getElementById('btn-mic'),
       btnSendHandshake: document.getElementById('btn-send-handshake'),
+      btnApplyRuntime: document.getElementById('btn-apply-runtime'),
       btnReconnect: document.getElementById('btn-reconnect'),
       btnClearTerminal: document.getElementById('btn-clear-terminal'),
       btnDisconnect: document.getElementById('btn-disconnect'),
@@ -1453,6 +1640,16 @@
       attachPhotoInput: document.getElementById('input-attach-photo'),
       attachConfirmCheck: document.getElementById('attach-confirm-chat'),
       uploadLog: document.getElementById('upload-log'),
+      btnViewChat: document.getElementById('btn-view-chat'),
+      btnViewTerminal: document.getElementById('btn-view-terminal'),
+      terminalPane: document.querySelector('.terminal-pane'),
+      chatMessages: document.getElementById('chat-messages'),
+      chatTyping: document.getElementById('chat-typing'),
+      chatComposer: document.getElementById('chat-composer'),
+      chatInput: document.getElementById('chat-input'),
+      btnChatSend: document.getElementById('btn-chat-send'),
+      btnChatScroll: document.getElementById('btn-chat-scroll'),
+      chatJumpCount: document.getElementById('chat-jump-count'),
 
       btnJumpBottom: document.getElementById('btn-jump-bottom'),
       jumpCount: document.getElementById('jump-count'),
@@ -1502,7 +1699,50 @@
       }
     }
 
+    const MODEL_OPTIONS_BY_PROVIDER = Object.freeze({
+      codex: ['', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'o3', 'o3-mini'],
+      claude: ['', 'opus', 'sonnet', 'haiku']
+    })
+
+    const EFFORT_OPTIONS_BY_PROVIDER = Object.freeze({
+      codex: ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      claude: ['', 'low', 'medium', 'high', 'xhigh', 'max']
+    })
+
+    function sanitizeProvider(raw) {
+      const value = String(raw || '').trim().toLowerCase()
+      return value === 'claude' ? 'claude' : 'codex'
+    }
+
+    function renderProviderDependentOptions(provider, { keepModel = true, keepEffort = true } = {}) {
+      const selectedProvider = sanitizeProvider(provider || refs.providerSelect.value)
+      refs.providerSelect.value = selectedProvider
+
+      const previousModel = keepModel ? String(refs.modelSelect.value || '').trim() : ''
+      const modelList = MODEL_OPTIONS_BY_PROVIDER[selectedProvider] || ['']
+      refs.modelSelect.innerHTML = ''
+      for (const value of modelList) {
+        const opt = document.createElement('option')
+        opt.value = value
+        opt.textContent = value || 'por defecto'
+        refs.modelSelect.appendChild(opt)
+      }
+      refs.modelSelect.value = modelList.includes(previousModel) ? previousModel : ''
+
+      const previousEffort = keepEffort ? String(refs.effortSelect.value || '').trim().toLowerCase() : ''
+      const effortList = EFFORT_OPTIONS_BY_PROVIDER[selectedProvider] || ['']
+      refs.effortSelect.innerHTML = ''
+      for (const value of effortList) {
+        const opt = document.createElement('option')
+        opt.value = value
+        opt.textContent = value || 'por defecto'
+        refs.effortSelect.appendChild(opt)
+      }
+      refs.effortSelect.value = effortList.includes(previousEffort) ? previousEffort : ''
+    }
+
     initTheme()
+    renderProviderDependentOptions('codex', { keepModel: false, keepEffort: false })
 
     const term = new Terminal({
       convertEol: true,
@@ -1553,11 +1793,341 @@
       lastFocus: null,
       ctrlSticky: false,
       backlogCount: 0,
-      pendingToast: null
+      pendingToast: null,
+      chatView: 'chat',
+      chatBacklogCount: 0,
+      pendingAgentText: '',
+      pendingAgentFlushTimer: null,
+      chatCaptureEnabled: false,
+      awaitingAgentReply: false,
+      agentReplyIdleTimer: null,
+      chatSemanticAvailable: false,
+      chatRequestSeq: 0,
+      chatPendingRequestId: '',
+      recentUserEchoes: [],
+      pendingRefitTimers: [],
+      terminalResizeObserver: null
     }
+
+    const CHAT_ECHO_TTL_MS = 12000
+    const CHAT_MAX_ECHOES = 20
+    const CHAT_REPLY_IDLE_MS = 2000
+    const CHAT_NOISE_PATTERNS = [
+      /\b(?:claude\s*code|codex(?:\s*cli)?|sonnet|haiku|opus)\b/i,
+      /\b(?:bypass(?:permissions)?|permissions?|ctrl\+[a-z]|shift\+tab|alt\+[a-z]|esc|tab|enter)\b/i,
+      /\b(?:tip:|model:|directory:|session id|mcp server|raw terminal|chat simple|canal cerrado|reintentando)\b/i,
+      /\b(?:medium\/eff|low\/eff|high\/eff|xhigh|max|\/permissions)\b/i,
+      /\bgpt-\d+(?:\.\d+)?(?:-[a-z0-9._-]+)?\b.*(?:xhigh|high|medium|low|max|minimal).*(?:~\/|\/users\/)/i,
+      /\bcodex\b.*(?:xhigh|high|medium|low|max|minimal).*(?:~\/|\/users\/)/i,
+      /^\d+;\?$/i,
+      /^[^a-zA-Z]*\d+;rgb:[0-9a-f]{2,4}\/[0-9a-f]{2,4}\/[0-9a-f]{2,4}/i
+    ]
 
     function errorText(err) { return err && err.message ? err.message : String(err || 'Error') }
     function isSocketOpen() { return appState.socket && appState.socket.readyState === WebSocket.OPEN }
+    const DEFAULT_TERM_COLS = 120
+    const DEFAULT_TERM_ROWS = 35
+
+    function clearPendingRefitTimers() {
+      if (!Array.isArray(appState.pendingRefitTimers)) {
+        appState.pendingRefitTimers = []
+        return
+      }
+      for (const id of appState.pendingRefitTimers) {
+        try { clearTimeout(id) } catch {}
+      }
+      appState.pendingRefitTimers = []
+    }
+
+    function getSafeTerminalSize({ forceFit = false } = {}) {
+      const canFit = forceFit || appState.chatView === 'terminal'
+      if (canFit) {
+        try { fitAddon.fit() } catch {}
+      }
+      let cols = Number(term.cols || 0)
+      let rows = Number(term.rows || 0)
+      if (!Number.isFinite(cols) || cols < 40) cols = DEFAULT_TERM_COLS
+      if (!Number.isFinite(rows) || rows < 10) rows = DEFAULT_TERM_ROWS
+      cols = Math.max(40, Math.min(260, Math.floor(cols)))
+      rows = Math.max(10, Math.min(120, Math.floor(rows)))
+      return { cols, rows }
+    }
+
+    function sendResizeToServer(options = {}) {
+      const { cols, rows } = getSafeTerminalSize(options)
+      sendMessage({ type: 'resize', cols, rows })
+      return { cols, rows }
+    }
+
+    function scheduleTerminalRefit({ forceFit = false } = {}) {
+      clearPendingRefitTimers()
+      const delays = [0, 80, 180, 360, 720, 1200]
+      for (const delay of delays) {
+        const timerId = window.setTimeout(() => {
+          sendResizeToServer({ forceFit: forceFit || appState.chatView === 'terminal' })
+        }, delay)
+        appState.pendingRefitTimers.push(timerId)
+      }
+    }
+
+    function setChatView(nextView) {
+      const view = nextView === 'terminal' ? 'terminal' : 'chat'
+      appState.chatView = view
+      refs.body.dataset.chatView = view
+      refs.btnViewChat.setAttribute('aria-pressed', view === 'chat' ? 'true' : 'false')
+      refs.btnViewTerminal.setAttribute('aria-pressed', view === 'terminal' ? 'true' : 'false')
+      refs.btnClearTerminal.textContent = view === 'chat' ? 'Limpiar chat' : 'Limpiar terminal'
+      if (view === 'chat') {
+        scrollChatToBottom(true)
+      } else {
+        scheduleTerminalRefit({ forceFit: true })
+        updateJumpButton()
+      }
+    }
+
+    function ensureChatEmptyState() {
+      if (!refs.chatMessages.children.length) {
+        const empty = document.createElement('div')
+        empty.className = 'chat-empty'
+        empty.id = 'chat-empty'
+        empty.textContent = 'Cuando envíes un mensaje, verás aquí la conversación en formato chat.'
+        refs.chatMessages.appendChild(empty)
+      }
+    }
+
+    function clearChatEmptyState() {
+      const empty = document.getElementById('chat-empty')
+      if (empty) empty.remove()
+    }
+
+    function isChatAtBottom() {
+      const box = refs.chatMessages
+      return (box.scrollHeight - box.scrollTop - box.clientHeight) < 10
+    }
+
+    function updateChatScrollButton(forceHide = false) {
+      if (forceHide || isChatAtBottom()) {
+        refs.btnChatScroll.hidden = true
+        refs.chatJumpCount.textContent = ''
+        appState.chatBacklogCount = 0
+        return
+      }
+      refs.btnChatScroll.hidden = false
+      refs.chatJumpCount.textContent = appState.chatBacklogCount > 0 ? `· ${appState.chatBacklogCount}` : ''
+    }
+
+    function scrollChatToBottom(forceHide = false) {
+      refs.chatMessages.scrollTop = refs.chatMessages.scrollHeight
+      updateChatScrollButton(forceHide)
+    }
+
+    function setAgentTyping(active) {
+      const isActive = !!active
+      refs.chatTyping.hidden = !isActive
+      if (isActive && appState.chatView === 'chat') {
+        scrollChatToBottom(true)
+      }
+    }
+
+    function setSemanticChatPending(pending) {
+      const isPending = !!pending
+      refs.btnChatSend.disabled = isPending
+      refs.chatInput.disabled = isPending
+      setAgentTyping(isPending)
+      if (isPending) {
+        refs.chatInput.setAttribute('aria-busy', 'true')
+        refs.chatInput.placeholder = 'Esperando respuesta del agente...'
+      } else {
+        refs.chatInput.removeAttribute('aria-busy')
+        refs.chatInput.placeholder = 'Escribe aquí para hablar con el agente...'
+      }
+    }
+
+    function addChatMessage(role, text, meta = '') {
+      const content = String(text || '').trim()
+      if (!content) return
+      clearChatEmptyState()
+      const bubble = document.createElement('div')
+      bubble.className = `chat-bubble ${role === 'user' ? 'user' : 'agent'}`
+      bubble.textContent = content
+      if (meta) {
+        const metaEl = document.createElement('span')
+        metaEl.className = 'chat-meta'
+        metaEl.textContent = meta
+        bubble.appendChild(metaEl)
+      }
+      refs.chatMessages.appendChild(bubble)
+      if (isChatAtBottom()) {
+        scrollChatToBottom(true)
+      } else {
+        appState.chatBacklogCount = Math.min(999, appState.chatBacklogCount + 1)
+        updateChatScrollButton()
+      }
+      while (refs.chatMessages.children.length > 260) {
+        refs.chatMessages.removeChild(refs.chatMessages.firstChild)
+      }
+    }
+
+    function stripAnsi(text) {
+      return String(text || '').replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+    }
+
+    function stripOscSequences(text) {
+      return String(text || '')
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        .replace(/\x9d[^\x07\x1b]*(?:\x07|\x1b\\|\x9c)/g, '')
+    }
+
+    function normalizeComparableLine(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/^[^a-z0-9áéíóúüñ¿¡]+|[^a-z0-9áéíóúüñ¿¡]+$/gi, '')
+        .trim()
+    }
+
+    function pruneRecentUserEchoes(now = Date.now()) {
+      if (!Array.isArray(appState.recentUserEchoes) || !appState.recentUserEchoes.length) {
+        appState.recentUserEchoes = []
+        return
+      }
+      const next = []
+      for (const item of appState.recentUserEchoes) {
+        if (!item || typeof item.text !== 'string') continue
+        if (Number(item.until || 0) < now) continue
+        next.push(item)
+      }
+      appState.recentUserEchoes = next.slice(-CHAT_MAX_ECHOES)
+    }
+
+    function rememberRecentUserEcho(text) {
+      const now = Date.now()
+      const lines = String(text || '').split(/\n+/)
+      for (const raw of lines) {
+        const normalized = normalizeComparableLine(raw)
+        if (!normalized || normalized.length < 2) continue
+        appState.recentUserEchoes.push({ text: normalized, until: now + CHAT_ECHO_TTL_MS })
+      }
+      pruneRecentUserEchoes(now)
+    }
+
+    function isRecentUserEcho(line) {
+      const normalized = normalizeComparableLine(line)
+      if (!normalized) return false
+      pruneRecentUserEchoes(Date.now())
+      for (const item of appState.recentUserEchoes) {
+        if (item.text === normalized) return true
+      }
+      return false
+    }
+
+    function clearAgentReplyIdleTimer() {
+      if (!appState.agentReplyIdleTimer) return
+      try { clearTimeout(appState.agentReplyIdleTimer) } catch {}
+      appState.agentReplyIdleTimer = null
+    }
+
+    function finishAgentReplyCapture() {
+      clearAgentReplyIdleTimer()
+      appState.awaitingAgentReply = false
+      setAgentTyping(false)
+    }
+
+    function armAgentReplyCapture() {
+      appState.chatCaptureEnabled = true
+      appState.awaitingAgentReply = true
+      setAgentTyping(true)
+      clearAgentReplyIdleTimer()
+      if (appState.pendingAgentFlushTimer) {
+        clearTimeout(appState.pendingAgentFlushTimer)
+        appState.pendingAgentFlushTimer = null
+      }
+      appState.pendingAgentText = ''
+    }
+
+    function touchAgentReplyIdleDeadline() {
+      clearAgentReplyIdleTimer()
+      appState.agentReplyIdleTimer = window.setTimeout(() => {
+        flushPendingAgentMessage()
+        finishAgentReplyCapture()
+      }, CHAT_REPLY_IDLE_MS)
+    }
+
+    function normalizeOutputForChat(text) {
+      return stripAnsi(stripOscSequences(text))
+        .replace(/\r/g, '')
+        .replace(/\u0007/g, '')
+        .replace(/\uFFFD/g, '')
+        .replace(/[^\n\t\x20-\x7E\u00A0-\u024F¿¡€]/g, ' ')
+        .trim()
+    }
+
+    function shouldDropChatLine(line) {
+      const t = String(line || '').trim()
+      if (!t) return true
+      if (isRecentUserEcho(t)) return true
+      if (/^(power-agent remoto:|claude code|codex cli|tip:|model:|directory:|conectado|session id)/i.test(t)) return true
+      if (CHAT_NOISE_PATTERNS.some((re) => re.test(t))) return true
+      if (/^\d+\s+\d+$/.test(t)) return true
+      if (/^[>›$#]\s*$/.test(t)) return true
+      if (/^[\[\](){}<>=*+~`|\\/.,:;'"^_-]+$/.test(t)) return true
+      if (/^[0-9\s./:-]{1,12}$/.test(t)) return true
+      if (/^[\s\u2580-\u259f\u2500-\u257f]+$/.test(t)) return true
+      const letters = (t.match(/[A-Za-zÀ-ÖØ-öø-ÿ]/g) || []).length
+      const digits = (t.match(/[0-9]/g) || []).length
+      if (letters === 0 && digits <= 1) return true
+      return false
+    }
+
+    function normalizeAgentTextForChat(raw) {
+      const cleaned = normalizeOutputForChat(raw)
+      if (!cleaned) return ''
+      let lines = cleaned
+        .split('\n')
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter((line) => !shouldDropChatLine(line))
+      if (lines.length >= 6) {
+        const tinyCount = lines.filter((line) => line.length <= 4).length
+        const tinyRatio = tinyCount / lines.length
+        if (tinyRatio >= 0.55) {
+          lines = lines.filter((line) => line.length >= 8 || /[.?!,:;]/.test(line))
+        }
+      }
+      if (lines.length) return lines.join('\n').trim()
+
+      // Fallback: evita "chat mudo" si hubo texto visible no-eco.
+      const fallback = cleaned
+        .split('\n')
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+      if (!fallback.length) return ''
+      const hasLetters = fallback.some((line) => /[A-Za-zÀ-ÖØ-öø-ÿ]/.test(line))
+      if (!hasLetters) return ''
+      return fallback.slice(0, 24).join('\n').trim()
+    }
+
+    function flushPendingAgentMessage() {
+      if (appState.pendingAgentFlushTimer) {
+        clearTimeout(appState.pendingAgentFlushTimer)
+        appState.pendingAgentFlushTimer = null
+      }
+      const text = normalizeAgentTextForChat(appState.pendingAgentText)
+      appState.pendingAgentText = ''
+      if (!text) return
+      addChatMessage('agent', text, 'agente')
+    }
+
+    function queueAgentOutputForChat(chunk) {
+      if (!appState.chatCaptureEnabled || !appState.awaitingAgentReply) return
+      const cleaned = normalizeAgentTextForChat(chunk)
+      if (!cleaned) return
+      appState.pendingAgentText += (appState.pendingAgentText ? '\n' : '') + cleaned
+      if (appState.pendingAgentFlushTimer) clearTimeout(appState.pendingAgentFlushTimer)
+      appState.pendingAgentFlushTimer = setTimeout(() => {
+        flushPendingAgentMessage()
+      }, 900)
+      touchAgentReplyIdleDeadline()
+    }
 
     function setConnectedFlag(value) {
       refs.body.dataset.connected = value ? 'true' : 'false'
@@ -1622,12 +2192,20 @@
       refs.operatorIdInput.value = q.get('operatorId') || q.get('operator') || ''
       refs.profileIdInput.value = q.get('profileId') || q.get('profile') || ''
       refs.usernameInput.value = q.get('username') || q.get('user') || ''
+      const provider = q.get('cli') || q.get('provider') || q.get('engine') || 'codex'
+      renderProviderDependentOptions(provider, { keepModel: false, keepEffort: false })
+      refs.modelSelect.value = q.get('model') || q.get('modelId') || q.get('m') || ''
+      const effort = (q.get('effort') || q.get('reasoningEffort') || q.get('reasoning') || q.get('e') || '').toLowerCase()
+      if (effort) refs.effortSelect.value = effort
     }
     function buildRequestedContext() {
       return {
         operatorId: refs.operatorIdInput.value.trim(),
         profileId: refs.profileIdInput.value.trim(),
-        username: refs.usernameInput.value.trim()
+        username: refs.usernameInput.value.trim(),
+        cli: sanitizeProvider(refs.providerSelect.value),
+        model: refs.modelSelect.value.trim(),
+        effort: String(refs.effortSelect.value || '').trim().toLowerCase()
       }
     }
     function buildConnectUrl(rawUrl) {
@@ -1636,6 +2214,9 @@
       if (ctx.operatorId) base.searchParams.set('operatorId', ctx.operatorId)
       if (ctx.profileId) base.searchParams.set('profileId', ctx.profileId)
       if (ctx.username) base.searchParams.set('username', ctx.username)
+      if (ctx.cli) base.searchParams.set('cli', ctx.cli)
+      if (ctx.model) base.searchParams.set('model', ctx.model)
+      if (ctx.effort) base.searchParams.set('effort', ctx.effort)
       return base.toString()
     }
     function sendMessage(payload) {
@@ -1699,11 +2280,16 @@
 
     function setSessionChip() {
       const ctx = appState.sessionInfo?.context || {}
+      const cli = String(appState.sessionInfo?.cli || ctx.cli || '').trim()
       const name = ctx.username || ctx.operatorId || ''
       const mode = ctx.mode || 'legacy'
       const cwd = appState.sessionInfo?.cwd || ''
       const short = cwd ? cwd.split('/').slice(-2).join('/') : ''
-      refs.sessionChip.textContent = name ? `${name} · ${mode}${short ? ' · ' + short : ''}` : (short ? `${mode} · ${short}` : mode)
+      const runtime = [cli, ctx.model, ctx.effort].filter(Boolean).join(' · ')
+      const left = name ? `${name} · ${mode}` : mode
+      const middle = runtime ? ` · ${runtime}` : ''
+      const right = short ? ` · ${short}` : ''
+      refs.sessionChip.textContent = `${left}${middle}${right}`
     }
 
     function renderSessionContext() {
@@ -1718,11 +2304,17 @@
       const roots = Array.isArray(ctx.allowedRoots) ? ctx.allowedRoots : []
       const roRoots = Array.isArray(ctx.readOnlyRoots) ? ctx.readOnlyRoots : []
       const mcp = Array.isArray(ctx.allowedMcpServers) ? ctx.allowedMcpServers : []
+      const requestedModel = String(ctx.request?.model || '').trim()
+      const requestedEffort = String(ctx.request?.effort || '').trim()
+      const requestedCli = String(ctx.request?.cli || appState.sessionInfo?.cli || '').trim()
       const pillData = [
         `modo: ${ctx.mode || 'legacy'}`,
+        `proveedor: ${requestedCli || 'default'}`,
         `operador: ${ctx.operatorId || '—'}`,
         `rol: ${ctx.roleId || '—'}`,
         `perfil: ${ctx.profileId || '—'}`,
+        `modelo: ${ctx.model || requestedModel || 'default'}`,
+        `esfuerzo: ${ctx.effort || requestedEffort || 'default'}`,
         `carpetas: ${roots.length}`,
         `solo lectura: ${roRoots.length}`,
         `MCP: ${mcp.length ? mcp.join(' · ') : '—'}`
@@ -2036,9 +2628,38 @@
           setAttachStatus('Archivo subido. Envío al chat cancelado.', 'warn')
           addUploadLog('Envío al chat cancelado', 'warn'); return
         }
+        if (appState.chatSemanticAvailable) {
+          if (appState.chatPendingRequestId) {
+            setAttachStatus('Espera a que termine la respuesta actual para enviar otro adjunto.', 'warn')
+            addUploadLog('Adjunto preparado, pero chat ocupado', 'warn')
+            return
+          }
+          const requestId = `chat-${Date.now()}-${++appState.chatRequestSeq}`
+          const attachmentPrompt =
+            `He adjuntado ${file.name}.\n` +
+            `Ruta local autorizada: ${uploadedPath}\n` +
+            `Referencia: ${ptyRef}\n` +
+            'Revísalo y responde con lo que necesites.'
+          const sent = sendMessage({ type: 'chat:ask', requestId, text: attachmentPrompt })
+          if (!sent) {
+            setAttachStatus('No se pudo enviar el adjunto al chat simple.', 'err')
+            addUploadLog('Fallo al enviar adjunto por chat semántico', 'err')
+            return
+          }
+          appState.chatPendingRequestId = requestId
+          setSemanticChatPending(true)
+          addChatMessage('user', `[adjunto] ${file.name}`, `ruta · ${uploadedPath}`)
+          setAttachStatus(`Enviado al chat simple: ${file.name}`, 'ok')
+          addUploadLog('Adjunto enviado al chat semántico', 'ok')
+          return
+        }
+
         const injected = sendMessage({ type: 'input', data: `${ptyRef} ` })
         if (injected) {
+          armAgentReplyCapture()
+          rememberRecentUserEcho(ptyRef)
           term.write(`\r\n[adjunto enviado] ${file.name}\r\n`)
+          addChatMessage('user', `${ptyRef}`, `adjunto · ${file.name}`)
           setAttachStatus(`Enviado al chat: ${file.name}`, 'ok')
           addUploadLog('Adjunto enviado al chat remoto', 'ok')
           try { term.focus() } catch {}
@@ -2073,6 +2694,22 @@
       appState.sessionInfo = null
       appState.sessionCapabilities = null
       appState.uploadSupport = 'unknown'
+      appState.chatCaptureEnabled = false
+      appState.awaitingAgentReply = false
+      clearAgentReplyIdleTimer()
+      appState.chatSemanticAvailable = false
+      appState.chatPendingRequestId = ''
+      appState.recentUserEchoes = []
+      setSemanticChatPending(false)
+      clearPendingRefitTimers()
+      if (appState.pendingAgentFlushTimer) {
+        clearTimeout(appState.pendingAgentFlushTimer)
+        appState.pendingAgentFlushTimer = null
+      }
+      appState.pendingAgentText = ''
+      refs.chatMessages.innerHTML = ''
+      ensureChatEmptyState()
+      updateChatScrollButton(true)
       renderSessionContext()
       clearFsUi('Conecta primero para ver carpetas.')
       setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
@@ -2102,9 +2739,9 @@
         refs.btnConnect.textContent = 'Salir'
         setConnectionStatus('online', `Conectado a ${socketUrl}`)
         setHandshakeStatus('warn', 'Canal abierto. Enviando identidad…', 'pendiente')
-        fitAddon.fit()
         sendHandshake()
-        sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
+        sendResizeToServer({ forceFit: appState.chatView === 'terminal' })
+        scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
       })
 
       appState.socket.addEventListener('message', (event) => {
@@ -2113,12 +2750,56 @@
         if (!msg || typeof msg !== 'object') return
 
         if (msg.type === 'output') {
-          term.write(String(msg.data || ''))
+          const out = String(msg.data || '')
+          term.write(out)
+          if (!appState.chatSemanticAvailable) queueAgentOutputForChat(out)
           handleNewOutput()
           return
         }
+        if (msg.type === 'chat:status') {
+          const state = String(msg.state || '')
+          if (state === 'started') setConnectionStatus('connecting', 'Agente respondiendo…')
+          if (state === 'idle' && isSocketOpen()) setConnectionStatus('online', 'Conectado')
+          return
+        }
+        if (msg.type === 'chat:result') {
+          const reqId = String(msg.requestId || '')
+          if (appState.chatPendingRequestId && reqId && reqId !== appState.chatPendingRequestId) return
+          appState.chatPendingRequestId = ''
+          setSemanticChatPending(false)
+          if (msg.ok) {
+            const text = String(msg.text || '').trim()
+            if (text) addChatMessage('agent', text, 'agente')
+            else addChatMessage('agent', '(sin respuesta de texto)', 'agente')
+            if (isSocketOpen()) setConnectionStatus('online', 'Conectado')
+          } else {
+            const errText = String(msg?.error?.message || 'Error en chat semántico')
+            setConnectionStatus('error', errText)
+            addChatMessage('agent', `[error] ${errText}`, 'sistema')
+          }
+          return
+        }
         if (msg.type === 'transcript') {
-          term.write(`\r\n[voz] ${String(msg.text || '')}\r\n`)
+          const transcript = String(msg.text || '')
+          if (appState.chatSemanticAvailable) {
+            if (!isSocketOpen()) return
+            if (appState.chatPendingRequestId) {
+              setConnectionStatus('connecting', 'Espera a que termine la respuesta actual.')
+              return
+            }
+            const reqId = `chat-${Date.now()}-${++appState.chatRequestSeq}`
+            const sent = sendMessage({ type: 'chat:ask', requestId: reqId, text: transcript })
+            if (!sent) return
+            appState.chatPendingRequestId = reqId
+            setSemanticChatPending(true)
+            addChatMessage('user', transcript, 'voz')
+            setConnectionStatus('connecting', 'Audio transcrito. Enviando al agente…')
+            return
+          }
+          armAgentReplyCapture()
+          rememberRecentUserEcho(transcript)
+          term.write(`\r\n[voz] ${transcript}\r\n`)
+          addChatMessage('user', transcript, 'voz')
           setConnectionStatus('online', 'Audio transcrito y enviado')
           return
         }
@@ -2141,6 +2822,17 @@
         if (state === 'connected') {
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
+          clearAgentReplyIdleTimer()
+          appState.chatCaptureEnabled = false
+          appState.awaitingAgentReply = false
+          appState.pendingAgentText = ''
+          appState.chatSemanticAvailable = !!msg.capabilities?.chat?.ask
+          appState.chatPendingRequestId = ''
+          setSemanticChatPending(false)
+          renderProviderDependentOptions(msg?.cli || msg?.context?.request?.cli || refs.providerSelect.value)
+          if (msg?.context?.request?.cli) refs.providerSelect.value = sanitizeProvider(msg.context.request.cli)
+          if (msg?.context?.request?.model) refs.modelSelect.value = String(msg.context.request.model)
+          if (msg?.context?.request?.effort) refs.effortSelect.value = String(msg.context.request.effort).toLowerCase()
           renderSessionContext()
           updateFsControlState()
           setHandshakeStatus('ok', 'Identidad aceptada. Sesión lista.', 'ok')
@@ -2153,12 +2845,13 @@
           else if (canOpenFile() || canWriteFile()) setFsStatus('Sin listado de carpetas. Acceso parcial a archivos.', 'warn')
           else setFsStatus('Tu rol no permite navegar por archivos.', 'warn')
           startFsPolling()
-          try { fitAddon.fit() } catch {}
+          scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
           return
         }
         if (state === 'transcribing') { setConnectionStatus('connecting', 'Transcribiendo audio…'); return }
-        if (state === 'pty-exit')     { setConnectionStatus('connecting', 'PTY remoto finalizado'); return }
+        if (state === 'pty-exit')     { flushPendingAgentMessage(); finishAgentReplyCapture(); setConnectionStatus('connecting', 'PTY remoto finalizado'); return }
         if (state === 'error') {
+          finishAgentReplyCapture()
           const code = String(msg.code || '')
           const text = String(msg.message || 'Error remoto')
           const full = code ? `${code}: ${text}` : text
@@ -2175,6 +2868,7 @@
       })
 
       appState.socket.addEventListener('close', () => {
+        flushPendingAgentMessage()
         clearPendingFsRequests('Socket cerrado')
         stopMic(true)
         clearSessionState()
@@ -2223,6 +2917,49 @@
       refs.btnConnect.textContent = 'Entrar'
       setConnectionStatus('offline', 'Desconectado')
       setHandshakeStatus('warn', 'Identidad inactiva (desconectado).', 'en espera')
+    }
+
+    function applyRuntimeSettings() {
+      if (!refs.modelSelect.value.trim() && !refs.effortSelect.value) {
+        setAttachStatus('Modelo/esfuerzo en "por defecto". Se aplicará proveedor seleccionado.', 'warn')
+      }
+      if (isSocketOpen()) {
+        setAttachStatus('Aplicando proveedor/modelo/esfuerzo: reconectando sesión…', 'warn')
+        disconnect()
+        window.setTimeout(() => connect().catch(() => {}), 220)
+        return
+      }
+      connect().catch(() => {})
+    }
+
+    function sendChatText(rawText) {
+      const text = String(rawText || '').trim()
+      if (!text) return false
+      if (!isSocketOpen()) {
+        setConnectionStatus('error', 'Conecta primero para enviar mensajes')
+        return false
+      }
+      if (appState.chatSemanticAvailable) {
+        if (appState.chatPendingRequestId) {
+          setConnectionStatus('connecting', 'Espera a que termine la respuesta actual.')
+          return false
+        }
+        const requestId = `chat-${Date.now()}-${++appState.chatRequestSeq}`
+        const sentSemantic = sendMessage({ type: 'chat:ask', requestId, text })
+        if (!sentSemantic) return false
+        appState.chatPendingRequestId = requestId
+        setSemanticChatPending(true)
+        addChatMessage('user', text, 'usuario')
+        setConnectionStatus('connecting', 'Mensaje enviado. Esperando respuesta…')
+        return true
+      }
+      const payload = text.endsWith('\n') ? text : `${text}\n`
+      const sent = sendMessage({ type: 'input', data: payload })
+      if (!sent) return false
+      armAgentReplyCapture()
+      rememberRecentUserEcho(text)
+      addChatMessage('user', text, 'usuario')
+      return true
     }
 
     async function startMic() {
@@ -2331,6 +3068,38 @@
       }
     })
 
+    refs.providerSelect.addEventListener('change', () => {
+      renderProviderDependentOptions(refs.providerSelect.value)
+    })
+
+    refs.btnViewChat.addEventListener('click', () => setChatView('chat'))
+    refs.btnViewTerminal.addEventListener('click', () => setChatView('terminal'))
+
+    refs.chatComposer.addEventListener('submit', (ev) => {
+      ev.preventDefault()
+      const ok = sendChatText(refs.chatInput.value)
+      if (ok) {
+        refs.chatInput.value = ''
+        refs.chatInput.focus()
+      }
+    })
+
+    refs.chatInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault()
+        const ok = sendChatText(refs.chatInput.value)
+        if (ok) refs.chatInput.value = ''
+      }
+    })
+
+    refs.btnChatScroll.addEventListener('click', () => {
+      scrollChatToBottom(true)
+    })
+
+    refs.chatMessages.addEventListener('scroll', () => {
+      updateChatScrollButton()
+    })
+
     refs.btnFsRefresh.addEventListener('click', () => refreshFsTree({ source: 'manual' }).catch((err) => setFsStatus(errorText(err), 'err')))
     refs.btnFsOpenRoot.addEventListener('click', () => refreshFsTree({ source: 'open-root' }).catch((err) => setFsStatus(errorText(err), 'err')))
     refs.fsRootSelect.addEventListener('change', () => refreshFsTree({ source: 'root-change' }).catch((err) => setFsStatus(errorText(err), 'err')))
@@ -2373,11 +3142,22 @@
       if (!isSocketOpen()) { setHandshakeStatus('warn', 'No hay sesión activa.', 'en espera'); return }
       sendHandshake()
     })
+    refs.btnApplyRuntime.addEventListener('click', () => {
+      applyRuntimeSettings()
+    })
     refs.btnReconnect.addEventListener('click', () => {
       if (isSocketOpen()) disconnect()
       window.setTimeout(() => connect().catch(() => {}), 200)
     })
-    refs.btnClearTerminal.addEventListener('click', () => term.clear())
+    refs.btnClearTerminal.addEventListener('click', () => {
+      if (appState.chatView === 'chat') {
+        refs.chatMessages.innerHTML = ''
+        ensureChatEmptyState()
+        updateChatScrollButton(true)
+        return
+      }
+      term.clear()
+    })
     refs.btnDisconnect.addEventListener('click', () => disconnect())
     refs.btnTopbarDisconnect.addEventListener('click', () => disconnect())
 
@@ -2402,11 +3182,25 @@
     term.onData((data) => sendMessage({ type: 'input', data }))
 
     window.addEventListener('resize', () => {
-      try { fitAddon.fit(); sendMessage({ type: 'resize', cols: term.cols, rows: term.rows }) } catch {}
+      scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
     })
+    if (window.ResizeObserver && refs.terminalPane) {
+      try {
+        const observer = new ResizeObserver(() => {
+          scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
+        })
+        observer.observe(refs.terminalPane)
+        appState.terminalResizeObserver = observer
+      } catch {}
+    }
     window.addEventListener('beforeunload', () => {
       stopFsPolling(); stopMic(true)
       clearPendingFsRequests('Página cerrada')
+      clearPendingRefitTimers()
+      if (appState.terminalResizeObserver) {
+        try { appState.terminalResizeObserver.disconnect() } catch {}
+        appState.terminalResizeObserver = null
+      }
       if (appState.socket) { try { appState.socket.close() } catch {} }
     })
 
@@ -2417,6 +3211,8 @@
     setConnectionStatus('offline', 'Sin conectar')
     setHandshakeStatus('warn', 'Listo para conectar.', 'en espera')
     renderSessionContext()
+    ensureChatEmptyState()
+    setChatView('chat')
     setConnectedFlag(false)
     term.writeln('POWER-AGENT remoto: escribe tu usuario y pulsa Entrar para empezar.')
   </script>

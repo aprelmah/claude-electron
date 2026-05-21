@@ -91,6 +91,8 @@ const DEFAULT_LAN_ROLE_PERMISSIONS = Object.freeze({
   'viewer.open': true,
   'automations.manage': true
 })
+const LAN_CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+const LAN_CODEX_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -906,6 +908,43 @@ function normalizeLanPermissionMap(rawPermissions) {
   return out
 }
 
+function sanitizeLanRequestedModel(raw, maxLen = 120) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  const clipped = text.length > maxLen ? text.slice(0, maxLen) : text
+  if (!/^[a-zA-Z0-9._:/-]+$/.test(clipped)) return ''
+  return clipped
+}
+
+function sanitizeLanRequestedCli(raw) {
+  const text = String(raw || '').trim().toLowerCase()
+  if (!text) return ''
+  if (text === 'claude' || text === 'codex') return text
+  return ''
+}
+
+function sanitizeLanRequestedEffort(raw, cli = '') {
+  const text = String(raw || '').trim().toLowerCase()
+  if (!text) return ''
+  if (cli === 'codex') return LAN_CODEX_EFFORT_LEVELS.has(text) ? text : ''
+  if (cli === 'claude') return LAN_CLAUDE_EFFORT_LEVELS.has(text) ? text : ''
+  if (LAN_CLAUDE_EFFORT_LEVELS.has(text) || LAN_CODEX_EFFORT_LEVELS.has(text)) return text
+  return ''
+}
+
+function buildLanCliArgs(cli, { model = '', effort = '' } = {}) {
+  const args = []
+  if (cli === 'codex') {
+    args.push('--no-alt-screen')
+    if (model) args.push('-m', model)
+    if (effort) args.push('-c', `model_reasoning_effort=${effort}`)
+    return args
+  }
+  if (model) args.push('--model', model)
+  if (effort) args.push('--effort', effort)
+  return args
+}
+
 function resolveLanRemoteContextInput(remoteMeta = {}) {
   if (remoteMeta && typeof remoteMeta === 'object' && remoteMeta.requestedContext && typeof remoteMeta.requestedContext === 'object') {
     return remoteMeta.requestedContext
@@ -1031,6 +1070,9 @@ function logLanAuditSemantic(event = {}) {
       `requested_role=${safe(event?.requestedRoleId, 120)}`,
       `requested_profile=${safe(event?.requestedProfileId, 120)}`,
       `username_provided=${event?.usernameProvided ? '1' : '0'}`,
+      `requested_cli=${safe(event?.requestedCli, 80)}`,
+      `requested_model=${safe(event?.requestedModel, 120)}`,
+      `requested_effort=${safe(event?.requestedEffort, 80)}`,
       `late=${event?.late ? '1' : '0'}`
     ]
   } else if (action === 'empresa_contexto_resuelto') {
@@ -1041,11 +1083,17 @@ function logLanAuditSemantic(event = {}) {
       `requested_role=${safe(event?.requestedRoleId, 120)}`,
       `requested_profile=${safe(event?.requestedProfileId, 120)}`,
       `username_provided=${event?.usernameProvided ? '1' : '0'}`,
+      `requested_cli=${safe(event?.requestedCli, 80)}`,
+      `requested_model=${safe(event?.requestedModel, 120)}`,
+      `requested_effort=${safe(event?.requestedEffort, 80)}`,
       `mode=${safe(event?.mode, 40)}`,
       `enterprise=${event?.enterpriseEnabled ? '1' : '0'}`,
       `applied_operator=${safe(event?.appliedOperatorId, 120)}`,
       `applied_role=${safe(event?.appliedRoleId, 120)}`,
-      `applied_profile=${safe(event?.appliedProfileId, 120)}`
+      `applied_profile=${safe(event?.appliedProfileId, 120)}`,
+      `applied_cli=${safe(event?.appliedCli, 80)}`,
+      `applied_model=${safe(event?.appliedModel, 120)}`,
+      `applied_effort=${safe(event?.appliedEffort, 80)}`
     ]
   } else if (action === 'empresa_fs_watch_iniciado' || action === 'empresa_fs_watch_detenido' || action === 'empresa_fs_watch_error') {
     parts = [
@@ -1067,11 +1115,22 @@ function logLanAuditSemantic(event = {}) {
 }
 
 function resolveLanSessionConfig(remoteMeta = {}) {
-  const cli = getActiveCliSync() === 'codex' ? 'codex' : 'claude'
+  const rawRemoteContext = resolveLanRemoteContextInput(remoteMeta)
+  const requestedCli = sanitizeLanRequestedCli(
+    rawRemoteContext?.cli || rawRemoteContext?.provider || rawRemoteContext?.engine
+  )
+  const cli = requestedCli || (getActiveCliSync() === 'codex' ? 'codex' : 'claude')
   const cliCheck = ensureCliAvailable(cli)
   if (!cliCheck.ok) throw new Error(cliCheck.error)
   const activeProfile = getActiveProfile()
-  const remoteContext = normalizeRemoteContext(resolveLanRemoteContextInput(remoteMeta))
+  const remoteContext = normalizeRemoteContext(rawRemoteContext)
+  const requestedModel = sanitizeLanRequestedModel(
+    rawRemoteContext?.model || rawRemoteContext?.modelId || rawRemoteContext?.m
+  )
+  const requestedEffort = sanitizeLanRequestedEffort(
+    rawRemoteContext?.effort || rawRemoteContext?.reasoningEffort || rawRemoteContext?.reasoning || rawRemoteContext?.e,
+    cli
+  )
   const remoteIp = resolveLanRemoteIp(remoteMeta)
   const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, getCwdSync())
   const effectiveProfile = getProfileById(enterpriseContext.profileId) || activeProfile
@@ -1089,13 +1148,24 @@ function resolveLanSessionConfig(remoteMeta = {}) {
   const permissions = enterpriseContext.enterpriseApplied
     ? normalizeLanPermissionMap(enterpriseContext.permissions)
     : { ...DEFAULT_LAN_ROLE_PERMISSIONS }
+  const args = buildLanCliArgs(cli, {
+    model: requestedModel,
+    effort: requestedEffort
+  })
+  const lanEnv = { ...cliCheck.env }
+  if (cli === 'claude') {
+    lanEnv.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = '1'
+  }
   logEnterpriseSessionSemantic(enterpriseContext, { ip: remoteIp })
   return {
     cli,
     cwd,
     bin: cliCheck.bin,
-    env: cliCheck.env,
-    args: [],
+    env: lanEnv,
+    args,
+    requestedCli,
+    model: requestedModel,
+    effort: requestedEffort,
     mode: enterpriseContext.enterpriseApplied ? 'enterprise' : 'legacy',
     enterpriseEnabled: Boolean(appConfig?.enterprise?.enabled),
     operatorId: enterpriseContext.operatorId || '',
@@ -1111,12 +1181,59 @@ function resolveLanSessionConfig(remoteMeta = {}) {
   }
 }
 
+async function runLanSemanticChatTurn({ session, prompt, signal } = {}) {
+  const sessionRef = session && typeof session === 'object' ? session : {}
+  const text = String(prompt || '').trim()
+  if (!text) return { text: '', sessionId: null }
+
+  const cli = sessionRef.cli === 'codex' ? 'codex' : 'claude'
+  const cwd = resolveExistingDir(sessionRef.cwd) || getCwdSync() || os.homedir()
+  const model = sanitizeLanRequestedModel(sessionRef?.context?.model || sessionRef?.context?.request?.model || '')
+  const effort = sanitizeLanRequestedEffort(
+    sessionRef?.context?.effort || sessionRef?.context?.request?.effort || '',
+    cli
+  )
+  const currentChatSessionId = String(sessionRef.chatSessionId || '').trim()
+
+  if (cli === 'codex') {
+    const result = await runCodexHeadless({
+      prompt: text,
+      sessionId: currentChatSessionId || undefined,
+      signal,
+      cwd,
+      model,
+      effort,
+      timeoutMs: 240000
+    })
+    const nextSessionId = String(result?.sessionId || currentChatSessionId || '').trim()
+    return { text: String(result?.text || '').trim(), sessionId: nextSessionId || null }
+  }
+
+  const compacted = compactClaudeSessionIfNeeded({
+    sessionId: currentChatSessionId || undefined,
+    prompt: text,
+    cwd
+  })
+  const result = await runClaudeHeadless({
+    prompt: compacted.prompt,
+    sessionId: compacted.sessionId || undefined,
+    signal,
+    cwd,
+    model,
+    effort,
+    timeoutMs: 240000
+  })
+  const nextSessionId = String(result?.sessionId || currentChatSessionId || '').trim()
+  return { text: String(result?.text || '').trim(), sessionId: nextSessionId || null }
+}
+
 function ensureLanWsServer() {
   if (lanWsServer) return lanWsServer
   lanWsServer = createLanWsServer({
     clientHtmlPath: getLanClientHtmlPath(),
     getSessionConfig: (remoteMeta) => resolveLanSessionConfig(remoteMeta),
     transcribeAudio: (audioPath) => transcribeAudioFile(audioPath, buildRuntimeEnv()),
+    runSemanticChatTurn: (payload) => runLanSemanticChatTurn(payload),
     buildExecCommand: buildFdLimitCommand,
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event)
