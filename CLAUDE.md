@@ -1,6 +1,8 @@
 # POWER-AGENT Runbook
 
 ## Latest Handoff
+- `HANDOFF-CODEX-2026-05-21-CONTINUIDAD-POST-PRUEBAS.md` (continuidad exacta tras modo empresa: estado, commits, incidencias reales de Luis, backlog móvil/visor/upload y prompt para nuevo Codex).
+- `HANDOFF-CODEX-2026-05-21-ENTERPRISE-MULTIOPERADOR.md` (modo empresa multioperador: modelo, ACL FS, persona por sesión, MCP policy básica y auditoría).
 - `HANDOFF-CLAUDE-2026-05-18.md` (estado final Telegram relay PTY, sesiones, lupa y grafo cerebro).
 - `HANDOFF-CLAUDE-2026-05-18-FINAL-REACTOR.md` (estado final actual: root reactor x3, despliegue limpio de una sola app).
 
