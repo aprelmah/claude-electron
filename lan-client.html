@@ -544,6 +544,24 @@
       color: var(--text-0);
     }
 
+    body[data-focus-chat="true"] .topbar,
+    body[data-focus-chat="true"] .onboarding,
+    body[data-focus-chat="true"] .extras,
+    body[data-focus-chat="true"] .keybar,
+    body[data-focus-chat="true"] .chat-foot,
+    body[data-focus-chat="true"] #btn-view-terminal {
+      display: none !important;
+    }
+
+    body[data-focus-chat="true"] .app-shell {
+      width: min(980px, 100%);
+      gap: 10px;
+    }
+
+    body[data-connected="true"][data-focus-chat="true"] .chat-card {
+      min-height: calc(100dvh - 24px);
+    }
+
     .chat-title {
       margin: 0;
       font-size: 1rem;
@@ -1310,7 +1328,7 @@
     }
   </style>
 </head>
-<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed" data-chat-view="chat">
+<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed" data-chat-view="chat" data-focus-chat="false">
   <div class="app-shell">
     <header class="topbar" role="banner">
       <div class="brand">
@@ -1419,6 +1437,7 @@
         <div class="view-switch" role="group" aria-label="Modo de vista">
           <button id="btn-view-chat" class="btn btn-ghost btn-sm" type="button" aria-pressed="true">Chat simple</button>
           <button id="btn-view-terminal" class="btn btn-ghost btn-sm" type="button" aria-pressed="false">Terminal raw</button>
+          <button id="btn-focus-chat" class="btn btn-ghost btn-sm" type="button" aria-pressed="false">Modo móvil/tablet</button>
         </div>
         <input id="input-attach-file" class="sr-only" type="file" />
         <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
@@ -1642,6 +1661,7 @@
       uploadLog: document.getElementById('upload-log'),
       btnViewChat: document.getElementById('btn-view-chat'),
       btnViewTerminal: document.getElementById('btn-view-terminal'),
+      btnFocusChat: document.getElementById('btn-focus-chat'),
       terminalPane: document.querySelector('.terminal-pane'),
       chatMessages: document.getElementById('chat-messages'),
       chatTyping: document.getElementById('chat-typing'),
@@ -1806,7 +1826,8 @@
       chatPendingRequestId: '',
       recentUserEchoes: [],
       pendingRefitTimers: [],
-      terminalResizeObserver: null
+      terminalResizeObserver: null,
+      focusChatMode: false
     }
 
     const CHAT_ECHO_TTL_MS = 12000
@@ -1871,7 +1892,8 @@
     }
 
     function setChatView(nextView) {
-      const view = nextView === 'terminal' ? 'terminal' : 'chat'
+      const requestedView = nextView === 'terminal' ? 'terminal' : 'chat'
+      const view = appState.focusChatMode ? 'chat' : requestedView
       appState.chatView = view
       refs.body.dataset.chatView = view
       refs.btnViewChat.setAttribute('aria-pressed', view === 'chat' ? 'true' : 'false')
@@ -1882,6 +1904,19 @@
       } else {
         scheduleTerminalRefit({ forceFit: true })
         updateJumpButton()
+      }
+    }
+
+    function setFocusChatMode(enabled) {
+      const next = !!enabled
+      appState.focusChatMode = next
+      refs.body.dataset.focusChat = next ? 'true' : 'false'
+      refs.btnFocusChat.setAttribute('aria-pressed', next ? 'true' : 'false')
+      refs.btnFocusChat.textContent = next ? 'Salir modo móvil/tablet' : 'Modo móvil/tablet'
+      refs.btnViewTerminal.disabled = next
+      if (next) {
+        setChatView('chat')
+        scrollChatToBottom(true)
       }
     }
 
@@ -3074,6 +3109,7 @@
 
     refs.btnViewChat.addEventListener('click', () => setChatView('chat'))
     refs.btnViewTerminal.addEventListener('click', () => setChatView('terminal'))
+    refs.btnFocusChat.addEventListener('click', () => setFocusChatMode(!appState.focusChatMode))
 
     refs.chatComposer.addEventListener('submit', (ev) => {
       ev.preventDefault()
@@ -3213,6 +3249,7 @@
     renderSessionContext()
     ensureChatEmptyState()
     setChatView('chat')
+    setFocusChatMode(false)
     setConnectedFlag(false)
     term.writeln('POWER-AGENT remoto: escribe tu usuario y pulsa Entrar para empezar.')
   </script>
