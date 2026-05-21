@@ -1095,8 +1095,18 @@
 
     function formatFsError(errorObj) {
       if (!errorObj) return 'Error de filesystem'
-      const code = errorObj.code ? `${errorObj.code}: ` : ''
-      return `${code}${errorObj.message || 'Error remoto'}`
+      const errorCode = String(errorObj.code || '').toUpperCase()
+      if (errorCode === 'READ_ONLY_ROOT') {
+        return 'Tu sesión está en solo lectura: no puedes enviar fotos/archivos. Pide al administrador una carpeta con escritura.'
+      }
+      if (errorCode === 'PERMISSION_DENIED') {
+        return 'Tu rol no tiene permiso para esta acción.'
+      }
+      if (errorCode === 'PATH_OUTSIDE_ALLOWED_ROOTS') {
+        return 'Ruta fuera de las carpetas permitidas para tu sesión.'
+      }
+      const codeLabel = errorObj.code ? `${errorObj.code}: ` : ''
+      return `${codeLabel}${errorObj.message || 'Error remoto'}`
     }
 
     function hasFsCapability(name) {
