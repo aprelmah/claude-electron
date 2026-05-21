@@ -78,6 +78,9 @@ const cfgLanStatus = document.getElementById('cfg-lan-status')
 const cfgLanUrl = document.getElementById('cfg-lan-url')
 const cfgLanClientUrl = document.getElementById('cfg-lan-client-url')
 const cfgLanQr = document.getElementById('cfg-lan-qr')
+const cfgEnterpriseEnabled = document.getElementById('cfg-enterprise-enabled')
+const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
+const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
 const sessionStripCli = document.getElementById('session-strip-cli')
 const sessionStripTitle = document.getElementById('session-strip-title')
 const sessionStripId = document.getElementById('session-strip-id')
@@ -109,6 +112,7 @@ const profileNameInput = document.getElementById('profile-name')
 const profileClaudeMdInput = document.getElementById('profile-claude-md')
 const profileMcpsInput = document.getElementById('profile-mcps')
 const profileCwdInput = document.getElementById('profile-cwd')
+const profilePersonaPromptInput = document.getElementById('profile-persona-prompt')
 const profileFormNote = document.getElementById('profile-form-note')
 const btnPickProfileClaudeMd = document.getElementById('btn-pick-profile-claude-md')
 const btnPickProfileCwd = document.getElementById('btn-pick-profile-cwd')
@@ -116,6 +120,48 @@ const remoteSessionsPanel = document.getElementById('remote-sessions-panel')
 const remoteSessionsListEl = document.getElementById('remote-sessions-list')
 const remoteSessionsEmptyEl = document.getElementById('remote-sessions-empty')
 const remoteSessionsCountEl = document.getElementById('remote-sessions-count')
+const enterpriseModal = document.getElementById('enterprise-modal')
+const btnCloseEnterprise = document.getElementById('btn-close-enterprise')
+const enterpriseRolesListEl = document.getElementById('enterprise-roles-list')
+const enterpriseOperatorsListEl = document.getElementById('enterprise-operators-list')
+const enterpriseEditorEmpty = document.getElementById('enterprise-editor-empty')
+const enterpriseRoleForm = document.getElementById('enterprise-role-form')
+const enterpriseOperatorForm = document.getElementById('enterprise-operator-form')
+const enterpriseModalStatus = document.getElementById('enterprise-modal-status')
+const btnEnterpriseRoleNew = document.getElementById('btn-enterprise-role-new')
+const btnEnterpriseOperatorNew = document.getElementById('btn-enterprise-operator-new')
+const btnEnterpriseDelete = document.getElementById('btn-enterprise-delete')
+const btnEnterpriseSave = document.getElementById('btn-enterprise-save')
+const enterpriseRoleIdInput = document.getElementById('enterprise-role-id')
+const enterpriseRoleNameInput = document.getElementById('enterprise-role-name')
+const enterpriseRolePermPtyExecute = document.getElementById('enterprise-role-perm-pty-execute')
+const enterpriseRolePermFsRead = document.getElementById('enterprise-role-perm-fs-read')
+const enterpriseRolePermFsWrite = document.getElementById('enterprise-role-perm-fs-write')
+const enterpriseRolePermFsList = document.getElementById('enterprise-role-perm-fs-list')
+const enterpriseRolePermFsDelete = document.getElementById('enterprise-role-perm-fs-delete')
+const enterpriseRolePermFsRename = document.getElementById('enterprise-role-perm-fs-rename')
+const enterpriseRolePermViewerOpen = document.getElementById('enterprise-role-perm-viewer-open')
+const enterpriseRolePermAutomationsManage = document.getElementById('enterprise-role-perm-automations-manage')
+const enterpriseRoleAllowedRootsInput = document.getElementById('enterprise-role-allowed-roots')
+const enterpriseRoleReadOnlyRootsInput = document.getElementById('enterprise-role-readonly-roots')
+const enterpriseRoleAllowedMcpsInput = document.getElementById('enterprise-role-allowed-mcps')
+const enterpriseOperatorIdInput = document.getElementById('enterprise-operator-id')
+const enterpriseOperatorNameInput = document.getElementById('enterprise-operator-name')
+const enterpriseOperatorUsernameInput = document.getElementById('enterprise-operator-username')
+const enterpriseOperatorRoleIdInput = document.getElementById('enterprise-operator-role-id')
+const enterpriseOperatorProfileIdInput = document.getElementById('enterprise-operator-profile-id')
+const enterpriseOperatorEnabledInput = document.getElementById('enterprise-operator-enabled')
+const enterpriseOperatorPersonaInput = document.getElementById('enterprise-operator-persona')
+const ENTERPRISE_PERMISSION_INPUTS = {
+  'pty.execute': enterpriseRolePermPtyExecute,
+  'fs.read': enterpriseRolePermFsRead,
+  'fs.write': enterpriseRolePermFsWrite,
+  'fs.list': enterpriseRolePermFsList,
+  'fs.delete': enterpriseRolePermFsDelete,
+  'fs.rename': enterpriseRolePermFsRename,
+  'viewer.open': enterpriseRolePermViewerOpen,
+  'automations.manage': enterpriseRolePermAutomationsManage
+}
 
 // ── Themes ──
 const THEMES = {
@@ -263,6 +309,25 @@ let updateState = 'idle'
 let updateInstallInFlight = false
 let lanServerSnapshot = null
 let lanStatusRefreshInFlight = false
+const ENTERPRISE_PERMISSION_KEYS = [
+  'pty.execute',
+  'fs.read',
+  'fs.write',
+  'fs.list',
+  'fs.delete',
+  'fs.rename',
+  'viewer.open',
+  'automations.manage'
+]
+const ENTERPRISE_DEFAULTS = Object.freeze({
+  enabled: false,
+  roles: [],
+  operators: []
+})
+let enterpriseState = { enabled: false, roles: [], operators: [] }
+let enterpriseApiAvailable = false
+let enterpriseApiLastError = ''
+let enterpriseSelection = { type: '', id: '' }
 
 function renderUpdateBanner() {
   if (!updateBanner || !updateBannerText || !btnInstallUpdate) return
@@ -628,6 +693,7 @@ function copyProfilesState(payload) {
       name: String(p?.name || '').trim(),
       claudeMdPath: String(p?.claudeMdPath || '').trim(),
       cwd: String(p?.cwd || '').trim(),
+      personaPrompt: typeof p?.personaPrompt === 'string' ? p.personaPrompt : '',
       mcpServers: Array.isArray(p?.mcpServers) ? p.mcpServers.map((m) => String(m || '').trim()).filter(Boolean) : []
     }))
     : []
@@ -759,7 +825,7 @@ async function refreshProfilesState() {
   }
   if (!profilesState.profiles.length) {
     profilesState = {
-      profiles: [{ id: DEFAULT_PROFILE_ID, name: 'Personal', claudeMdPath: '', mcpServers: [], cwd: '' }],
+      profiles: [{ id: DEFAULT_PROFILE_ID, name: 'Personal', claudeMdPath: '', mcpServers: [], cwd: '', personaPrompt: '' }],
       activeProfile: DEFAULT_PROFILE_ID
     }
   }
@@ -775,7 +841,8 @@ function readProfileForm() {
       .split(',')
       .map((v) => v.trim())
       .filter(Boolean),
-    cwd: profileCwdInput?.value?.trim() || ''
+    cwd: profileCwdInput?.value?.trim() || '',
+    personaPrompt: profilePersonaPromptInput?.value || ''
   }
 }
 
@@ -785,6 +852,7 @@ function fillProfileForm(profile) {
   profileClaudeMdInput.value = profile.claudeMdPath || ''
   profileMcpsInput.value = Array.isArray(profile.mcpServers) ? profile.mcpServers.join(', ') : ''
   profileCwdInput.value = profile.cwd || ''
+  if (profilePersonaPromptInput) profilePersonaPromptInput.value = profile.personaPrompt || ''
   const locked = profile.id === DEFAULT_PROFILE_ID
   btnProfileDelete.disabled = locked
   if (profileFormNote) {
@@ -873,6 +941,567 @@ if (profileReminder) {
 }
 function errorMessage(err) {
   return err?.message || String(err)
+}
+
+function normalizeEntityId(rawId, fallback = '') {
+  const clean = String(rawId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+  if (clean) return clean
+  return String(fallback || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+}
+
+function makeEnterpriseId(prefix, existingIds = new Set()) {
+  const base = normalizeEntityId(prefix, 'item') || 'item'
+  if (!existingIds.has(base)) return base
+  let n = 2
+  while (existingIds.has(`${base}-${n}`)) n += 1
+  return `${base}-${n}`
+}
+
+function normalizeStringListFromComma(raw) {
+  if (Array.isArray(raw)) return Array.from(new Set(raw.map((v) => String(v || '').trim()).filter(Boolean)))
+  return Array.from(new Set(String(raw || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)))
+}
+
+function normalizeStringListFromLines(raw) {
+  if (Array.isArray(raw)) return Array.from(new Set(raw.map((v) => String(v || '').trim()).filter(Boolean)))
+  return Array.from(new Set(String(raw || '')
+    .split(/\r?\n/g)
+    .map((v) => v.trim())
+    .filter(Boolean)))
+}
+
+function normalizeRolePermissions(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const out = {}
+  for (const key of ENTERPRISE_PERMISSION_KEYS) {
+    out[key] = Boolean(src[key])
+  }
+  return out
+}
+
+function normalizeEnterpriseRole(raw, fallbackId = '') {
+  const role = raw && typeof raw === 'object' ? raw : {}
+  const policy = role.policy && typeof role.policy === 'object' ? role.policy : {}
+  return {
+    id: normalizeEntityId(role.id, fallbackId),
+    name: String(role.name || '').trim() || 'Rol',
+    permissions: normalizeRolePermissions(role.permissions),
+    allowedRoots: normalizeStringListFromLines(role.allowedRoots ?? policy.allowedRoots),
+    readOnlyRoots: normalizeStringListFromLines(role.readOnlyRoots ?? policy.readOnlyRoots),
+    allowedMcpServers: normalizeStringListFromComma(role.allowedMcpServers ?? role.mcpServers ?? policy.allowedMcpServers)
+  }
+}
+
+function normalizeEnterpriseOperator(raw, fallbackId = '') {
+  const op = raw && typeof raw === 'object' ? raw : {}
+  return {
+    id: normalizeEntityId(op.id, fallbackId),
+    name: String(op.name || '').trim() || 'Operador',
+    username: String(op.username || '').trim(),
+    enabled: op.enabled !== false,
+    roleId: normalizeEntityId(op.roleId, ''),
+    defaultProfileId: normalizeEntityId(op.defaultProfileId, ''),
+    personaPrompt: typeof op.personaPrompt === 'string' ? op.personaPrompt : ''
+  }
+}
+
+function extractEnterprisePayload(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  if (raw.enterprise && typeof raw.enterprise === 'object') return raw.enterprise
+  if (
+    Object.prototype.hasOwnProperty.call(raw, 'enabled') ||
+    Array.isArray(raw.roles) ||
+    Array.isArray(raw.operators)
+  ) {
+    return raw
+  }
+  return null
+}
+
+function copyEnterpriseState(payload) {
+  const src = extractEnterprisePayload(payload) || ENTERPRISE_DEFAULTS
+  const roles = []
+  const roleIds = new Set()
+  for (const item of Array.isArray(src.roles) ? src.roles : []) {
+    const next = normalizeEnterpriseRole(item)
+    if (!next.id || roleIds.has(next.id)) continue
+    roleIds.add(next.id)
+    roles.push(next)
+  }
+  const operators = []
+  const operatorIds = new Set()
+  for (const item of Array.isArray(src.operators) ? src.operators : []) {
+    const next = normalizeEnterpriseOperator(item)
+    if (!next.id || operatorIds.has(next.id)) continue
+    operatorIds.add(next.id)
+    operators.push(next)
+  }
+  return {
+    enabled: Boolean(src.enabled),
+    roles,
+    operators
+  }
+}
+
+function getEnterpriseRoleById(id) {
+  const wanted = normalizeEntityId(id, '')
+  return enterpriseState.roles.find((r) => r.id === wanted) || null
+}
+
+function getEnterpriseOperatorById(id) {
+  const wanted = normalizeEntityId(id, '')
+  return enterpriseState.operators.find((o) => o.id === wanted) || null
+}
+
+function canUseEnterpriseApi() {
+  return typeof window.api.enterpriseGetConfig === 'function' &&
+    typeof window.api.enterpriseSaveConfig === 'function'
+}
+
+function setEnterpriseModalStatus(text, kind = 'info') {
+  if (!enterpriseModalStatus) return
+  enterpriseModalStatus.textContent = text || ''
+  enterpriseModalStatus.dataset.kind = kind
+}
+
+function renderEnterpriseStatus() {
+  if (!cfgEnterpriseStatus) return
+  const modeText = enterpriseState.enabled
+    ? 'Estado: modo empresa activo'
+    : 'Estado: modo legacy (sesiones remotas heredan perfil global)'
+  const roleCount = enterpriseState.roles.length
+  const opCount = enterpriseState.operators.length
+  const lines = [modeText, `Roles: ${roleCount} · Operadores: ${opCount}`]
+  if (!enterpriseApiAvailable) lines.push('Backend enterprise:* no disponible todavía (UI preparada, guardado pendiente de backend).')
+  if (enterpriseApiLastError) lines.push(`Error enterprise API: ${enterpriseApiLastError}`)
+  cfgEnterpriseStatus.textContent = lines.join('\n')
+}
+
+async function refreshEnterpriseState(config = null) {
+  enterpriseApiAvailable = canUseEnterpriseApi()
+  enterpriseApiLastError = ''
+  const fromConfig = copyEnterpriseState(config?.enterprise || ENTERPRISE_DEFAULTS)
+  enterpriseState = fromConfig
+  if (enterpriseApiAvailable) {
+    try {
+      const res = await window.api.enterpriseGetConfig()
+      if (res?.ok === false) {
+        enterpriseApiLastError = String(res.error || 'enterprise:get-config devolvió error')
+      } else {
+        const fromApi = extractEnterprisePayload(res)
+        if (fromApi) enterpriseState = copyEnterpriseState(fromApi)
+      }
+    } catch (err) {
+      enterpriseApiLastError = errorMessage(err)
+    }
+  }
+  if (cfgEnterpriseEnabled) cfgEnterpriseEnabled.checked = enterpriseState.enabled
+  renderEnterpriseStatus()
+}
+
+function renderEnterpriseRoleOptions(selectedId = '') {
+  if (!enterpriseOperatorRoleIdInput) return
+  const rows = enterpriseState.roles.map((role) => ({
+    value: role.id,
+    label: role.name ? `${role.name} (${role.id})` : role.id
+  }))
+  enterpriseOperatorRoleIdInput.innerHTML = ''
+  if (!rows.length) {
+    const empty = document.createElement('option')
+    empty.value = ''
+    empty.textContent = 'Sin roles'
+    enterpriseOperatorRoleIdInput.appendChild(empty)
+    enterpriseOperatorRoleIdInput.value = ''
+    return
+  }
+  for (const row of rows) {
+    const opt = document.createElement('option')
+    opt.value = row.value
+    opt.textContent = row.label
+    enterpriseOperatorRoleIdInput.appendChild(opt)
+  }
+  enterpriseOperatorRoleIdInput.value = rows.some((r) => r.value === selectedId)
+    ? selectedId
+    : rows[0].value
+}
+
+function renderEnterpriseProfileOptions(selectedId = '') {
+  if (!enterpriseOperatorProfileIdInput) return
+  const rows = profilesState.profiles.map((profile) => ({
+    value: profile.id,
+    label: profile.name ? `${profile.name} (${profile.id})` : profile.id
+  }))
+  enterpriseOperatorProfileIdInput.innerHTML = ''
+  if (!rows.length) {
+    const empty = document.createElement('option')
+    empty.value = ''
+    empty.textContent = 'Sin perfiles'
+    enterpriseOperatorProfileIdInput.appendChild(empty)
+    enterpriseOperatorProfileIdInput.value = ''
+    return
+  }
+  for (const row of rows) {
+    const opt = document.createElement('option')
+    opt.value = row.value
+    opt.textContent = row.label
+    enterpriseOperatorProfileIdInput.appendChild(opt)
+  }
+  enterpriseOperatorProfileIdInput.value = rows.some((r) => r.value === selectedId)
+    ? selectedId
+    : rows[0].value
+}
+
+function fillEnterpriseRoleForm(role) {
+  if (!role) return
+  enterpriseRoleIdInput.value = role.id || ''
+  enterpriseRoleNameInput.value = role.name || ''
+  for (const key of ENTERPRISE_PERMISSION_KEYS) {
+    const input = ENTERPRISE_PERMISSION_INPUTS[key]
+    if (!input) continue
+    input.checked = Boolean(role.permissions?.[key])
+  }
+  enterpriseRoleAllowedRootsInput.value = (role.allowedRoots || []).join('\n')
+  enterpriseRoleReadOnlyRootsInput.value = (role.readOnlyRoots || []).join('\n')
+  enterpriseRoleAllowedMcpsInput.value = (role.allowedMcpServers || []).join(', ')
+}
+
+function fillEnterpriseOperatorForm(operator) {
+  if (!operator) return
+  enterpriseOperatorIdInput.value = operator.id || ''
+  enterpriseOperatorNameInput.value = operator.name || ''
+  enterpriseOperatorUsernameInput.value = operator.username || ''
+  enterpriseOperatorEnabledInput.checked = operator.enabled !== false
+  renderEnterpriseRoleOptions(operator.roleId || '')
+  renderEnterpriseProfileOptions(operator.defaultProfileId || '')
+  enterpriseOperatorPersonaInput.value = operator.personaPrompt || ''
+}
+
+function readEnterpriseRoleForm() {
+  const permissions = {}
+  for (const key of ENTERPRISE_PERMISSION_KEYS) {
+    permissions[key] = Boolean(ENTERPRISE_PERMISSION_INPUTS[key]?.checked)
+  }
+  return {
+    id: normalizeEntityId(enterpriseRoleIdInput?.value, ''),
+    name: String(enterpriseRoleNameInput?.value || '').trim(),
+    permissions,
+    allowedRoots: normalizeStringListFromLines(enterpriseRoleAllowedRootsInput?.value || ''),
+    readOnlyRoots: normalizeStringListFromLines(enterpriseRoleReadOnlyRootsInput?.value || ''),
+    allowedMcpServers: normalizeStringListFromComma(enterpriseRoleAllowedMcpsInput?.value || '')
+  }
+}
+
+function readEnterpriseOperatorForm() {
+  return {
+    id: normalizeEntityId(enterpriseOperatorIdInput?.value, ''),
+    name: String(enterpriseOperatorNameInput?.value || '').trim(),
+    username: String(enterpriseOperatorUsernameInput?.value || '').trim(),
+    enabled: Boolean(enterpriseOperatorEnabledInput?.checked),
+    roleId: normalizeEntityId(enterpriseOperatorRoleIdInput?.value, ''),
+    defaultProfileId: normalizeEntityId(enterpriseOperatorProfileIdInput?.value, ''),
+    personaPrompt: enterpriseOperatorPersonaInput?.value || ''
+  }
+}
+
+function renderEnterpriseLists() {
+  if (enterpriseRolesListEl) {
+    enterpriseRolesListEl.innerHTML = ''
+    for (const role of enterpriseState.roles) {
+      const item = document.createElement('div')
+      item.className = 'enterprise-item' + ((enterpriseSelection.type === 'role' && enterpriseSelection.id === role.id) ? ' active' : '')
+      const enabledPermCount = ENTERPRISE_PERMISSION_KEYS.filter((key) => role.permissions?.[key]).length
+      item.innerHTML = `
+        <div class="enterprise-item-title">${role.name || role.id}</div>
+        <div class="enterprise-item-meta">${role.id} · ${enabledPermCount} permisos · roots ${role.allowedRoots.length}</div>
+      `
+      item.addEventListener('click', () => {
+        enterpriseSelection = { type: 'role', id: role.id }
+        renderEnterpriseLists()
+        renderEnterpriseEditor()
+      })
+      enterpriseRolesListEl.appendChild(item)
+    }
+  }
+
+  if (enterpriseOperatorsListEl) {
+    enterpriseOperatorsListEl.innerHTML = ''
+    for (const operator of enterpriseState.operators) {
+      const item = document.createElement('div')
+      item.className = 'enterprise-item' + ((enterpriseSelection.type === 'operator' && enterpriseSelection.id === operator.id) ? ' active' : '')
+      const roleLabel = operator.roleId || 'sin-rol'
+      const profileLabel = operator.defaultProfileId || 'sin-perfil'
+      const modeLabel = operator.enabled ? 'ON' : 'OFF'
+      item.innerHTML = `
+        <div class="enterprise-item-title">${operator.name || operator.id}</div>
+        <div class="enterprise-item-meta">${operator.id} · ${operator.username || '-'} · ${roleLabel} · ${profileLabel} · ${modeLabel}</div>
+      `
+      item.addEventListener('click', () => {
+        enterpriseSelection = { type: 'operator', id: operator.id }
+        renderEnterpriseLists()
+        renderEnterpriseEditor()
+      })
+      enterpriseOperatorsListEl.appendChild(item)
+    }
+  }
+}
+
+function renderEnterpriseEditor() {
+  const selectedRole = enterpriseSelection.type === 'role'
+    ? getEnterpriseRoleById(enterpriseSelection.id)
+    : null
+  const selectedOperator = enterpriseSelection.type === 'operator'
+    ? getEnterpriseOperatorById(enterpriseSelection.id)
+    : null
+
+  if (enterpriseEditorEmpty) enterpriseEditorEmpty.classList.add('hidden')
+  if (enterpriseRoleForm) enterpriseRoleForm.classList.add('hidden')
+  if (enterpriseOperatorForm) enterpriseOperatorForm.classList.add('hidden')
+
+  if (selectedRole) {
+    enterpriseRoleForm?.classList.remove('hidden')
+    fillEnterpriseRoleForm(selectedRole)
+  } else if (selectedOperator) {
+    enterpriseOperatorForm?.classList.remove('hidden')
+    fillEnterpriseOperatorForm(selectedOperator)
+  } else if (enterpriseEditorEmpty) {
+    enterpriseEditorEmpty.classList.remove('hidden')
+  }
+
+  if (btnEnterpriseDelete) {
+    btnEnterpriseDelete.disabled = !(selectedRole || selectedOperator)
+  }
+}
+
+function applyEnterpriseEditorToState() {
+  if (enterpriseSelection.type === 'role') {
+    const idx = enterpriseState.roles.findIndex((r) => r.id === enterpriseSelection.id)
+    if (idx < 0) return
+    const prev = enterpriseState.roles[idx]
+    const nextRaw = readEnterpriseRoleForm()
+    const next = normalizeEnterpriseRole({
+      ...prev,
+      ...nextRaw,
+      id: nextRaw.id || prev.id
+    }, prev.id)
+    if (!next.id) next.id = prev.id
+    enterpriseState.roles[idx] = next
+    if (prev.id !== next.id) {
+      enterpriseSelection.id = next.id
+      for (const operator of enterpriseState.operators) {
+        if (operator.roleId === prev.id) operator.roleId = next.id
+      }
+    }
+    return
+  }
+
+  if (enterpriseSelection.type === 'operator') {
+    const idx = enterpriseState.operators.findIndex((o) => o.id === enterpriseSelection.id)
+    if (idx < 0) return
+    const prev = enterpriseState.operators[idx]
+    const nextRaw = readEnterpriseOperatorForm()
+    const next = normalizeEnterpriseOperator({
+      ...prev,
+      ...nextRaw,
+      id: nextRaw.id || prev.id
+    }, prev.id)
+    if (!next.id) next.id = prev.id
+    enterpriseState.operators[idx] = next
+    if (prev.id !== next.id) enterpriseSelection.id = next.id
+  }
+}
+
+function validateEnterpriseStateDraft(draft) {
+  const roleIds = new Set()
+  for (const role of draft.roles) {
+    if (!role.id) return 'Todos los roles necesitan ID.'
+    if (roleIds.has(role.id)) return `ID de rol duplicado: ${role.id}`
+    roleIds.add(role.id)
+  }
+
+  const profileIds = new Set(profilesState.profiles.map((p) => p.id))
+  const operatorIds = new Set()
+  for (const operator of draft.operators) {
+    if (!operator.id) return 'Todos los operadores necesitan ID.'
+    if (operatorIds.has(operator.id)) return `ID de operador duplicado: ${operator.id}`
+    operatorIds.add(operator.id)
+    if (operator.roleId && !roleIds.has(operator.roleId)) {
+      return `Operador ${operator.id}: rol no encontrado (${operator.roleId}).`
+    }
+    if (operator.defaultProfileId && !profileIds.has(operator.defaultProfileId)) {
+      return `Operador ${operator.id}: perfil no encontrado (${operator.defaultProfileId}).`
+    }
+  }
+  return ''
+}
+
+function buildEnterprisePayloadFromState() {
+  return copyEnterpriseState({
+    enabled: Boolean(cfgEnterpriseEnabled?.checked),
+    roles: enterpriseState.roles,
+    operators: enterpriseState.operators
+  })
+}
+
+async function saveEnterpriseConfigFromUi() {
+  if (enterpriseModal && !enterpriseModal.classList.contains('hidden')) {
+    applyEnterpriseEditorToState()
+  }
+  const draft = buildEnterprisePayloadFromState()
+  const validationError = validateEnterpriseStateDraft(draft)
+  if (validationError) {
+    setEnterpriseModalStatus(validationError, 'err')
+    return { ok: false, error: validationError }
+  }
+
+  enterpriseState = draft
+  enterpriseState.enabled = Boolean(cfgEnterpriseEnabled?.checked)
+  renderEnterpriseStatus()
+  if (!canUseEnterpriseApi()) {
+    enterpriseApiAvailable = false
+    const msg = 'No se pudo guardar empresa: backend enterprise:* no disponible.'
+    enterpriseApiLastError = msg
+    renderEnterpriseStatus()
+    setEnterpriseModalStatus(msg, 'warn')
+    return { ok: false, error: msg, code: 'api-unavailable' }
+  }
+
+  try {
+    const res = await window.api.enterpriseSaveConfig(draft)
+    if (res?.ok === false) {
+      const msg = String(res.error || 'enterprise:save-config devolvió error')
+      enterpriseApiLastError = msg
+      renderEnterpriseStatus()
+      setEnterpriseModalStatus(msg, 'err')
+      return { ok: false, error: msg }
+    }
+    const payload = extractEnterprisePayload(res)
+    if (payload) enterpriseState = copyEnterpriseState(payload)
+    enterpriseApiAvailable = true
+    enterpriseApiLastError = ''
+    if (cfgEnterpriseEnabled) cfgEnterpriseEnabled.checked = enterpriseState.enabled
+    renderEnterpriseStatus()
+    renderEnterpriseLists()
+    renderEnterpriseEditor()
+    setEnterpriseModalStatus('Configuración enterprise guardada.', 'ok')
+    return { ok: true }
+  } catch (err) {
+    const msg = errorMessage(err)
+    enterpriseApiAvailable = true
+    enterpriseApiLastError = msg
+    renderEnterpriseStatus()
+    setEnterpriseModalStatus(msg, 'err')
+    return { ok: false, error: msg }
+  }
+}
+
+function newEnterpriseRole() {
+  applyEnterpriseEditorToState()
+  const existing = new Set(enterpriseState.roles.map((r) => r.id))
+  const id = makeEnterpriseId('rol', existing)
+  const role = normalizeEnterpriseRole({
+    id,
+    name: `Rol ${enterpriseState.roles.length + 1}`,
+    permissions: {
+      'pty.execute': true,
+      'fs.read': true,
+      'fs.write': false,
+      'fs.list': true,
+      'fs.delete': false,
+      'fs.rename': false,
+      'viewer.open': true,
+      'automations.manage': false
+    },
+    allowedRoots: [],
+    readOnlyRoots: [],
+    allowedMcpServers: []
+  }, id)
+  enterpriseState.roles.push(role)
+  enterpriseSelection = { type: 'role', id: role.id }
+  renderEnterpriseLists()
+  renderEnterpriseEditor()
+  setEnterpriseModalStatus('Rol creado localmente. Guarda para persistir.', 'warn')
+}
+
+function newEnterpriseOperator() {
+  applyEnterpriseEditorToState()
+  const existing = new Set(enterpriseState.operators.map((o) => o.id))
+  const id = makeEnterpriseId('operador', existing)
+  const fallbackRoleId = enterpriseState.roles[0]?.id || ''
+  const fallbackProfileId = profilesState.activeProfile || profilesState.profiles[0]?.id || ''
+  const operator = normalizeEnterpriseOperator({
+    id,
+    name: `Operador ${enterpriseState.operators.length + 1}`,
+    username: '',
+    enabled: true,
+    roleId: fallbackRoleId,
+    defaultProfileId: fallbackProfileId,
+    personaPrompt: ''
+  }, id)
+  enterpriseState.operators.push(operator)
+  enterpriseSelection = { type: 'operator', id: operator.id }
+  renderEnterpriseLists()
+  renderEnterpriseEditor()
+  setEnterpriseModalStatus('Operador creado localmente. Guarda para persistir.', 'warn')
+}
+
+function deleteEnterpriseSelected() {
+  if (enterpriseSelection.type === 'role') {
+    const role = getEnterpriseRoleById(enterpriseSelection.id)
+    if (!role) return
+    if (!confirm(`¿Borrar rol "${role.name}"?`)) return
+    enterpriseState.roles = enterpriseState.roles.filter((r) => r.id !== role.id)
+    for (const op of enterpriseState.operators) {
+      if (op.roleId === role.id) op.roleId = ''
+    }
+    enterpriseSelection = { type: '', id: '' }
+    renderEnterpriseLists()
+    renderEnterpriseEditor()
+    setEnterpriseModalStatus('Rol eliminado localmente. Guarda para persistir.', 'warn')
+    return
+  }
+
+  if (enterpriseSelection.type === 'operator') {
+    const operator = getEnterpriseOperatorById(enterpriseSelection.id)
+    if (!operator) return
+    if (!confirm(`¿Borrar operador "${operator.name}"?`)) return
+    enterpriseState.operators = enterpriseState.operators.filter((o) => o.id !== operator.id)
+    enterpriseSelection = { type: '', id: '' }
+    renderEnterpriseLists()
+    renderEnterpriseEditor()
+    setEnterpriseModalStatus('Operador eliminado localmente. Guarda para persistir.', 'warn')
+  }
+}
+
+async function openEnterpriseModal() {
+  await refreshProfilesState()
+  renderEnterpriseProfileOptions()
+  renderEnterpriseRoleOptions()
+  enterpriseSelection = { type: '', id: '' }
+  renderEnterpriseLists()
+  renderEnterpriseEditor()
+  if (!canUseEnterpriseApi()) {
+    setEnterpriseModalStatus('Backend enterprise:* no disponible. Puedes preparar la estructura y guardar cuando backend esté listo.', 'warn')
+  } else {
+    setEnterpriseModalStatus('Edita roles y operadores. Luego pulsa "Guardar empresa".', 'info')
+  }
+  enterpriseModal?.classList.remove('hidden')
+}
+
+function closeEnterpriseModal() {
+  enterpriseModal?.classList.add('hidden')
 }
 
 let sessionMetaRefreshInFlight = false
@@ -993,6 +1622,65 @@ function renderRemoteSessions(list) {
     meta.className = 'remote-session-meta'
     meta.textContent = `${row.cwd || '-'} · ${formatConnectedAge(row.connectedAt)}`
 
+    const context = row && typeof row === 'object' ? (row.context || {}) : {}
+    const caps = row && typeof row === 'object' ? (row.capabilities || {}) : {}
+    const contextWrap = document.createElement('div')
+    contextWrap.className = 'remote-session-context'
+
+    const modePill = document.createElement('span')
+    modePill.className = 'remote-session-pill'
+    modePill.textContent = context.mode === 'enterprise' ? 'enterprise' : 'legacy'
+    contextWrap.appendChild(modePill)
+
+    if (context.operatorId) {
+      const opPill = document.createElement('span')
+      opPill.className = 'remote-session-pill'
+      opPill.textContent = `op:${context.operatorId}`
+      contextWrap.appendChild(opPill)
+    }
+    if (context.roleId) {
+      const rolePill = document.createElement('span')
+      rolePill.className = 'remote-session-pill'
+      rolePill.textContent = `rol:${context.roleId}`
+      contextWrap.appendChild(rolePill)
+    }
+    if (context.profileId) {
+      const profilePill = document.createElement('span')
+      profilePill.className = 'remote-session-pill'
+      profilePill.textContent = `perfil:${context.profileId}`
+      contextWrap.appendChild(profilePill)
+    }
+    const mcpCount = Array.isArray(context.allowedMcpServers) ? context.allowedMcpServers.length : 0
+    const mcpPill = document.createElement('span')
+    mcpPill.className = 'remote-session-pill'
+    mcpPill.textContent = `MCP:${mcpCount}`
+    contextWrap.appendChild(mcpPill)
+
+    const rootsCount = Array.isArray(context.allowedRoots) ? context.allowedRoots.length : 0
+    const rootPill = document.createElement('span')
+    rootPill.className = 'remote-session-pill'
+    rootPill.textContent = `roots:${rootsCount}`
+    contextWrap.appendChild(rootPill)
+
+    const deniedPerms = []
+    if (caps?.pty?.execute === false) deniedPerms.push('pty.execute')
+    if (caps?.fs?.read === false) deniedPerms.push('fs.read')
+    if (caps?.fs?.write === false) deniedPerms.push('fs.write')
+    if (caps?.fs?.list === false) deniedPerms.push('fs.list')
+
+    let deniedEl = null
+    if (deniedPerms.length) {
+      const denyPill = document.createElement('span')
+      denyPill.className = 'remote-session-pill warn'
+      denyPill.textContent = `deny:${deniedPerms.join('|')}`
+      contextWrap.appendChild(denyPill)
+
+      deniedEl = document.createElement('div')
+      deniedEl.className = 'remote-session-denied'
+      deniedEl.textContent = 'Permisos limitados activos en esta sesión.'
+      deniedEl.title = `Bloqueado: ${deniedPerms.join(', ')}`
+    }
+
     const closeBtn = document.createElement('button')
     closeBtn.className = 'remote-session-close'
     closeBtn.textContent = 'Cerrar'
@@ -1001,6 +1689,8 @@ function renderRemoteSessions(list) {
 
     main.appendChild(title)
     main.appendChild(meta)
+    main.appendChild(contextWrap)
+    if (deniedEl) main.appendChild(deniedEl)
     item.appendChild(main)
     item.appendChild(closeBtn)
     remoteSessionsListEl.appendChild(item)
@@ -1062,6 +1752,7 @@ async function refreshSettings() {
   cfgTelegramCodexEffort.value = config?.telegram?.codexEffort || ''
   if (cfgLanEnabled) cfgLanEnabled.checked = Boolean(config?.lanServer?.enabled)
   if (cfgLanPort) cfgLanPort.value = String(clampLanPort(config?.lanServer?.port ?? 9999))
+  await refreshEnterpriseState(config)
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshLanServerStatus(true)
 }
@@ -1287,6 +1978,19 @@ btnSettings.addEventListener('click', async () => {
   settingsModal.classList.remove('hidden')
 })
 
+if (cfgEnterpriseEnabled) {
+  cfgEnterpriseEnabled.addEventListener('change', () => {
+    enterpriseState.enabled = Boolean(cfgEnterpriseEnabled.checked)
+    renderEnterpriseStatus()
+  })
+}
+
+if (btnOpenEnterpriseModal) {
+  btnOpenEnterpriseModal.addEventListener('click', async () => {
+    await openEnterpriseModal()
+  })
+}
+
 function closeProfilesModal() {
   profilesModal?.classList.add('hidden')
 }
@@ -1296,7 +2000,7 @@ profilesModal?.querySelector('.modal-backdrop')?.addEventListener('click', close
 
 if (btnProfileNew) {
   btnProfileNew.addEventListener('click', async () => {
-    const result = await window.api.createProfile({ name: 'Nuevo perfil', claudeMdPath: '', mcpServers: [], cwd: '' })
+    const result = await window.api.createProfile({ name: 'Nuevo perfil', claudeMdPath: '', mcpServers: [], cwd: '', personaPrompt: '' })
     if (!result?.ok) {
       showStatus(result?.error || 'No pude crear el perfil', 'error', 5000)
       return
@@ -1371,6 +2075,24 @@ if (btnPickProfileCwd) {
     if (picked) profileCwdInput.value = picked
   })
 }
+
+if (btnCloseEnterprise) btnCloseEnterprise.addEventListener('click', closeEnterpriseModal)
+enterpriseModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeEnterpriseModal)
+if (btnEnterpriseRoleNew) btnEnterpriseRoleNew.addEventListener('click', newEnterpriseRole)
+if (btnEnterpriseOperatorNew) btnEnterpriseOperatorNew.addEventListener('click', newEnterpriseOperator)
+if (btnEnterpriseDelete) btnEnterpriseDelete.addEventListener('click', deleteEnterpriseSelected)
+if (btnEnterpriseSave) {
+  btnEnterpriseSave.addEventListener('click', async () => {
+    await saveEnterpriseConfigFromUi()
+    renderEnterpriseLists()
+    renderEnterpriseEditor()
+  })
+}
+
+enterpriseModal?.addEventListener('input', () => {
+  if (enterpriseModal.classList.contains('hidden')) return
+  setEnterpriseModalStatus('Cambios locales sin guardar.', 'warn')
+})
 
 btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'))
 settingsModal.querySelector('.modal-backdrop').addEventListener('click', () => settingsModal.classList.add('hidden'))
@@ -1448,10 +2170,19 @@ btnSaveSettings.addEventListener('click', async () => {
     return
   }
 
+  let enterpriseWarning = ''
+  const enterpriseRes = await saveEnterpriseConfigFromUi()
+  if (!enterpriseRes?.ok) {
+    enterpriseWarning = enterpriseRes?.error || 'No se pudo guardar configuración enterprise'
+  }
+
   await refreshSettings()
   await refreshLanServerStatus(true)
-  if (result.warnings?.length) {
-    showStatus(result.warnings.join(' | '), 'warn', 6500)
+  const allWarnings = []
+  if (Array.isArray(result.warnings) && result.warnings.length) allWarnings.push(...result.warnings)
+  if (enterpriseWarning) allWarnings.push(`Enterprise: ${enterpriseWarning}`)
+  if (allWarnings.length) {
+    showStatus(allWarnings.join(' | '), 'warn', 7000)
   } else {
     showStatus('Configuracion guardada y aplicada', 'info', 2500)
   }

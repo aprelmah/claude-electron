@@ -781,6 +781,37 @@ body.layout-split #terminal-wrap { flex: 1; }
   text-overflow: ellipsis;
 }
 
+.remote-session-context {
+  margin-top: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.remote-session-pill {
+  font-size: 9.5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text2);
+  background: var(--bg3);
+}
+
+.remote-session-pill.warn {
+  border-color: rgba(250, 189, 47, 0.7);
+  color: #f5c96a;
+  background: rgba(130, 95, 17, 0.35);
+}
+
+.remote-session-denied {
+  margin-top: 2px;
+  font-size: 10px;
+  color: #ff8e8e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .remote-session-close {
   border: 1px solid var(--border);
   background: var(--bg3);
@@ -979,8 +1010,18 @@ body.layout-split #terminal-wrap { flex: 1; }
   justify-content: center;
 }
 
+#enterprise-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 116;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 #proposal-modal.hidden { display: none; }
 #profiles-modal.hidden { display: none; }
+#enterprise-modal.hidden { display: none; }
 
 .modal-backdrop {
   position: absolute;
@@ -1013,6 +1054,12 @@ body.layout-split #terminal-wrap { flex: 1; }
   width: 92%;
   max-width: 900px;
   max-height: 84vh;
+}
+
+.modal-panel.enterprise {
+  width: 96%;
+  max-width: 1180px;
+  max-height: 88vh;
 }
 
 .modal-header {
@@ -1461,6 +1508,15 @@ body.layout-split #terminal-wrap { flex: 1; }
   gap: 9px;
 }
 
+.profile-persona-input {
+  min-height: 110px;
+  max-height: 220px;
+  resize: vertical;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .profile-path-row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1469,6 +1525,127 @@ body.layout-split #terminal-wrap { flex: 1; }
 
 .profile-path-row .text-btn {
   white-space: nowrap;
+}
+
+.enterprise-body {
+  padding: 12px 16px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(220px, 280px) minmax(360px, 1fr);
+  gap: 12px;
+}
+
+.enterprise-list-panel,
+.enterprise-form-panel {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 320px;
+}
+
+.enterprise-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.enterprise-list-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.enterprise-list {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.enterprise-item {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.enterprise-item.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(124, 106, 247, 0.45);
+}
+
+.enterprise-item-title {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.enterprise-item-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text2);
+}
+
+.enterprise-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.enterprise-form.hidden {
+  display: none;
+}
+
+.enterprise-form-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.enterprise-perm-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 6px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--bg2);
+}
+
+.enterprise-textarea {
+  min-height: 76px;
+  max-height: 210px;
+  resize: vertical;
+  background: var(--bg2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 12px;
+  outline: none;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  line-height: 1.35;
+}
+
+.enterprise-textarea:focus {
+  border-color: var(--accent);
+}
+
+.enterprise-modal-status {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+  flex: 1;
+  align-self: center;
 }
 
 .text-btn {
@@ -1496,6 +1673,12 @@ body.layout-split #terminal-wrap { flex: 1; }
     grid-template-columns: 1fr;
   }
   .profiles-body {
+    grid-template-columns: 1fr;
+  }
+  .enterprise-body {
+    grid-template-columns: 1fr;
+  }
+  .enterprise-perm-grid {
     grid-template-columns: 1fr;
   }
 }

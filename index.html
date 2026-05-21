@@ -320,6 +320,16 @@
           <div id="cfg-lan-client-url" class="settings-note">Cliente: -</div>
           <div id="cfg-lan-qr" class="settings-note">QR no disponible</div>
         </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Modo empresa (opt-in)</div>
+          <label class="settings-check">
+            <input id="cfg-enterprise-enabled" type="checkbox" />
+            <span>Activar modo empresa multioperador</span>
+          </label>
+          <div id="cfg-enterprise-status" class="settings-note">Estado: modo legacy (sesiones remotas heredan perfil global)</div>
+          <button id="btn-open-enterprise-modal" class="icon-btn text-btn" type="button">Gestionar roles y operadores</button>
+        </div>
       </div>
       <div class="settings-actions">
         <button id="btn-refresh-telegram-status" class="icon-btn text-btn">Refrescar estado</button>
@@ -394,12 +404,121 @@
               <button id="btn-pick-profile-cwd" class="icon-btn text-btn" type="button">Elegir</button>
             </div>
           </label>
+          <label class="settings-field">
+            <span>Persona del perfil (opcional)</span>
+            <textarea id="profile-persona-prompt" class="profile-persona-input" placeholder="Instrucciones de personalidad para este perfil (fallback cuando el operador no tenga persona propia)."></textarea>
+          </label>
           <div id="profile-form-note" class="settings-note">El perfil Personal no se puede borrar.</div>
         </div>
       </div>
       <div class="settings-actions">
         <button id="btn-profile-delete" class="icon-btn text-btn danger">Borrar perfil</button>
         <button id="btn-profile-save" class="icon-btn text-btn primary">Guardar perfil</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="enterprise-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel enterprise">
+      <div class="modal-header">
+        <span class="modal-title">Gestión empresa</span>
+        <span class="modal-sub">Roles, operadores y persona por operador</span>
+        <button id="btn-close-enterprise" class="modal-close" aria-label="Cerrar gestión empresa">×</button>
+      </div>
+      <div class="enterprise-body">
+        <div class="enterprise-list-panel">
+          <div class="enterprise-list-head">
+            <span class="enterprise-list-title">Roles</span>
+            <button id="btn-enterprise-role-new" class="icon-btn text-btn" type="button">Nuevo rol</button>
+          </div>
+          <div id="enterprise-roles-list" class="enterprise-list"></div>
+        </div>
+
+        <div class="enterprise-list-panel">
+          <div class="enterprise-list-head">
+            <span class="enterprise-list-title">Operadores</span>
+            <button id="btn-enterprise-operator-new" class="icon-btn text-btn" type="button">Nuevo operador</button>
+          </div>
+          <div id="enterprise-operators-list" class="enterprise-list"></div>
+        </div>
+
+        <div class="enterprise-form-panel">
+          <div id="enterprise-editor-empty" class="settings-note">Selecciona un rol u operador para editar.</div>
+
+          <div id="enterprise-role-form" class="enterprise-form hidden">
+            <div class="enterprise-form-title">Editor de rol</div>
+            <label class="settings-field">
+              <span>ID rol</span>
+              <input id="enterprise-role-id" type="text" placeholder="secretaria" />
+            </label>
+            <label class="settings-field">
+              <span>Nombre</span>
+              <input id="enterprise-role-name" type="text" placeholder="Secretaria" />
+            </label>
+            <div class="enterprise-perm-grid">
+              <label class="settings-check"><input id="enterprise-role-perm-pty-execute" type="checkbox" /><span>pty.execute</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-read" type="checkbox" /><span>fs.read</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-write" type="checkbox" /><span>fs.write</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-list" type="checkbox" /><span>fs.list</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-delete" type="checkbox" /><span>fs.delete</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-rename" type="checkbox" /><span>fs.rename</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-viewer-open" type="checkbox" /><span>viewer.open</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-automations-manage" type="checkbox" /><span>automations.manage</span></label>
+            </div>
+            <label class="settings-field">
+              <span>Roots permitidas (1 por línea)</span>
+              <textarea id="enterprise-role-allowed-roots" class="enterprise-textarea" placeholder="/Users/isabel/Desktop/cliente-a"></textarea>
+            </label>
+            <label class="settings-field">
+              <span>Roots solo lectura (opcional, 1 por línea)</span>
+              <textarea id="enterprise-role-readonly-roots" class="enterprise-textarea" placeholder="/Users/isabel/Desktop/cliente-a/docs"></textarea>
+            </label>
+            <label class="settings-field">
+              <span>MCP allowlist (coma)</span>
+              <input id="enterprise-role-allowed-mcps" type="text" placeholder="filesystem, github, slack" />
+            </label>
+          </div>
+
+          <div id="enterprise-operator-form" class="enterprise-form hidden">
+            <div class="enterprise-form-title">Editor de operador</div>
+            <label class="settings-field">
+              <span>ID operador</span>
+              <input id="enterprise-operator-id" type="text" placeholder="operador-secretaria" />
+            </label>
+            <label class="settings-field">
+              <span>Nombre</span>
+              <input id="enterprise-operator-name" type="text" placeholder="María Pérez" />
+            </label>
+            <label class="settings-field">
+              <span>Username / identificador</span>
+              <input id="enterprise-operator-username" type="text" placeholder="maria.perez" />
+            </label>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>Rol</span>
+                <select id="enterprise-operator-role-id"></select>
+              </label>
+              <label class="settings-field">
+                <span>Perfil por defecto</span>
+                <select id="enterprise-operator-profile-id"></select>
+              </label>
+            </div>
+            <label class="settings-check">
+              <input id="enterprise-operator-enabled" type="checkbox" />
+              <span>Operador habilitado</span>
+            </label>
+            <label class="settings-field">
+              <span>Persona del operador</span>
+              <textarea id="enterprise-operator-persona" class="enterprise-textarea" placeholder="Define aquí el tono y estilo para este operador."></textarea>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="settings-actions">
+        <span id="enterprise-modal-status" class="settings-note enterprise-modal-status">Sin cambios</span>
+        <button id="btn-enterprise-delete" class="icon-btn text-btn danger" type="button">Borrar seleccionado</button>
+        <button id="btn-enterprise-save" class="icon-btn text-btn primary" type="button">Guardar empresa</button>
       </div>
     </div>
   </div>

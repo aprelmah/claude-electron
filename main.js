@@ -9,6 +9,13 @@ const { atomicWriteJsonSync, atomicWriteFileSync } = require('./main/atomic-writ
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
+const {
+  DEFAULT_ROLE_ID: DEFAULT_ENTERPRISE_ROLE_ID,
+  normalizeEnterpriseConfig,
+  normalizeRemoteContext,
+  resolveEffectiveSessionContext,
+  sanitizeId: sanitizeEnterpriseId
+} = require('./main/enterprise-policy')
 const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
 const TaskScheduler = require('./scheduler')
@@ -64,6 +71,26 @@ const FFMPEG_BIN = resolveCommand([
 ])
 const CONFIG_FILENAME = 'claude-novak.config.json'
 const DEFAULT_PROFILE_ID = 'default'
+const LAN_PERMISSION_KEYS = Object.freeze([
+  'pty.execute',
+  'fs.read',
+  'fs.write',
+  'fs.list',
+  'fs.delete',
+  'fs.rename',
+  'viewer.open',
+  'automations.manage'
+])
+const DEFAULT_LAN_ROLE_PERMISSIONS = Object.freeze({
+  'pty.execute': true,
+  'fs.read': true,
+  'fs.write': true,
+  'fs.list': true,
+  'fs.delete': true,
+  'fs.rename': true,
+  'viewer.open': true,
+  'automations.manage': true
+})
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -167,9 +194,32 @@ const DEFAULT_CONFIG = Object.freeze({
     name: 'Personal',
     claudeMdPath: '',
     mcpServers: [],
-    cwd: ''
+    cwd: '',
+    personaPrompt: ''
   }],
-  activeProfile: DEFAULT_PROFILE_ID
+  activeProfile: DEFAULT_PROFILE_ID,
+  enterprise: {
+    version: 1,
+    enabled: false,
+    roles: [{
+      id: DEFAULT_ENTERPRISE_ROLE_ID,
+      name: 'Operador estándar',
+      permissions: {
+        'pty.execute': true,
+        'fs.read': true,
+        'fs.write': true,
+        'fs.list': true,
+        'fs.delete': true,
+        'fs.rename': true,
+        'viewer.open': true,
+        'automations.manage': true
+      },
+      allowedRoots: [],
+      readOnlyRoots: [],
+      allowedMcpServers: []
+    }],
+    operators: []
+  }
 })
 
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
@@ -294,6 +344,10 @@ function normalizeAppConfig(raw) {
   const lanServer = normalizeLanServerConfig(raw?.lanServer)
   const profiles = normalizeProfiles(raw?.profiles)
   const activeProfile = resolveActiveProfileId(profiles, raw?.activeProfile)
+  const enterprise = normalizeEnterpriseConfig(raw?.enterprise, {
+    profileIds: profiles.map((p) => p.id),
+    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
+  })
 
   const normalized = {
     cli: {
@@ -313,7 +367,8 @@ function normalizeAppConfig(raw) {
     },
     lanServer,
     profiles,
-    activeProfile
+    activeProfile,
+    enterprise
   }
 
   if (Array.isArray(telegram.allowedUsers)) {
@@ -331,6 +386,12 @@ function normalizeMcpServerList(raw) {
     ? raw
     : (typeof raw === 'string' ? raw.split(',') : [])
   return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)))
+}
+
+function sanitizePersonaPrompt(raw, maxLen = 12000) {
+  if (typeof raw !== 'string') return ''
+  const clean = raw.replace(/\r\n/g, '\n').trim()
+  return clean.length > maxLen ? clean.slice(0, maxLen) : clean
 }
 
 function normalizeLanServerConfig(raw) {
@@ -358,7 +419,8 @@ function normalizeProfileEntry(raw, fallbackId = '') {
   const claudeMdPath = typeof raw?.claudeMdPath === 'string' ? raw.claudeMdPath.trim() : ''
   const cwd = typeof raw?.cwd === 'string' ? raw.cwd.trim() : ''
   const mcpServers = normalizeMcpServerList(raw?.mcpServers)
-  return { id, name, claudeMdPath, mcpServers, cwd }
+  const personaPrompt = sanitizePersonaPrompt(raw?.personaPrompt)
+  return { id, name, claudeMdPath, mcpServers, cwd, personaPrompt }
 }
 
 function normalizeProfiles(rawProfiles) {
@@ -377,7 +439,8 @@ function normalizeProfiles(rawProfiles) {
       name: 'Personal',
       claudeMdPath: '',
       mcpServers: [],
-      cwd: ''
+      cwd: '',
+      personaPrompt: ''
     })
   } else {
     for (let i = 0; i < result.length; i += 1) {
@@ -386,7 +449,8 @@ function normalizeProfiles(rawProfiles) {
         ...result[i],
         id: DEFAULT_PROFILE_ID,
         name: result[i].name || 'Personal',
-        mcpServers: normalizeMcpServerList(result[i].mcpServers)
+        mcpServers: normalizeMcpServerList(result[i].mcpServers),
+        personaPrompt: sanitizePersonaPrompt(result[i].personaPrompt)
       }
       break
     }
@@ -415,7 +479,8 @@ function getActiveProfile(config = appConfig) {
     name: 'Personal',
     claudeMdPath: '',
     mcpServers: [],
-    cwd: ''
+    cwd: '',
+    personaPrompt: ''
   }
 }
 
@@ -453,7 +518,11 @@ function saveAppConfig(nextConfig) {
 function listProfilesPayload(config = appConfig) {
   const normalized = normalizeAppConfig(config)
   return {
-    profiles: normalized.profiles.map((p) => ({ ...p, mcpServers: [...p.mcpServers] })),
+    profiles: normalized.profiles.map((p) => ({
+      ...p,
+      mcpServers: [...p.mcpServers],
+      personaPrompt: sanitizePersonaPrompt(p.personaPrompt)
+    })),
     activeProfile: normalized.activeProfile
   }
 }
@@ -522,6 +591,149 @@ function setActiveProfile(profileId) {
   })
   saveAppConfig(merged)
   return listProfilesPayload()
+}
+
+function makeEnterpriseEntityIdFromName(name, existingIds = new Set(), fallbackPrefix = 'entity') {
+  const baseSeed = sanitizeEnterpriseId(name, fallbackPrefix) || fallbackPrefix
+  const base = sanitizeEnterpriseId(baseSeed, fallbackPrefix) || fallbackPrefix
+  if (!existingIds.has(base)) return base
+  let n = 2
+  while (existingIds.has(`${base}-${n}`)) n += 1
+  return `${base}-${n}`
+}
+
+function listEnterprisePayload(config = appConfig) {
+  const normalized = normalizeAppConfig(config)
+  const enterprise = normalized.enterprise || normalizeEnterpriseConfig({}, {
+    profileIds: normalized.profiles.map((p) => p.id),
+    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
+  })
+  return {
+    enterprise: {
+      version: Number(enterprise.version || 1),
+      enabled: Boolean(enterprise.enabled),
+      roles: (enterprise.roles || []).map((role) => ({
+        ...role,
+        permissions: { ...(role.permissions || {}) },
+        allowedRoots: Array.isArray(role.allowedRoots) ? [...role.allowedRoots] : [],
+        readOnlyRoots: Array.isArray(role.readOnlyRoots) ? [...role.readOnlyRoots] : [],
+        allowedMcpServers: Array.isArray(role.allowedMcpServers) ? [...role.allowedMcpServers] : []
+      })),
+      operators: (enterprise.operators || []).map((operator) => ({
+        ...operator,
+        enabled: operator?.enabled !== false
+      }))
+    },
+    profiles: normalized.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      mcpServers: Array.isArray(profile.mcpServers) ? [...profile.mcpServers] : [],
+      personaPrompt: sanitizePersonaPrompt(profile.personaPrompt)
+    })),
+    activeProfile: normalized.activeProfile
+  }
+}
+
+function saveEnterpriseConfig(enterpriseInput) {
+  const merged = normalizeAppConfig({
+    ...appConfig,
+    enterprise: enterpriseInput
+  })
+  saveAppConfig(merged)
+  return listEnterprisePayload()
+}
+
+function createEnterpriseRole(roleInput = {}) {
+  const current = listEnterprisePayload()
+  const roles = Array.isArray(current.enterprise.roles) ? [...current.enterprise.roles] : []
+  const existingIds = new Set(roles.map((role) => role.id))
+  const requestedId = sanitizeEnterpriseId(roleInput?.id, '')
+  const roleId = requestedId && !existingIds.has(requestedId)
+    ? requestedId
+    : makeEnterpriseEntityIdFromName(roleInput?.name || requestedId || 'rol', existingIds, 'role')
+  const draft = { ...roleInput, id: roleId }
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    roles: [...roles, draft]
+  })
+}
+
+function updateEnterpriseRole(roleId, patch = {}) {
+  const id = sanitizeEnterpriseId(roleId, '')
+  if (!id) throw new Error('Rol inválido')
+  const current = listEnterprisePayload()
+  const roles = Array.isArray(current.enterprise.roles) ? [...current.enterprise.roles] : []
+  const idx = roles.findIndex((role) => role.id === id)
+  if (idx < 0) throw new Error('Rol no encontrado')
+  roles[idx] = { ...roles[idx], ...patch, id }
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    roles
+  })
+}
+
+function deleteEnterpriseRole(roleId) {
+  const id = sanitizeEnterpriseId(roleId, '')
+  if (!id) throw new Error('Rol inválido')
+  if (id === DEFAULT_ENTERPRISE_ROLE_ID) throw new Error('No se puede borrar el rol por defecto')
+  const current = listEnterprisePayload()
+  const roles = Array.isArray(current.enterprise.roles) ? current.enterprise.roles.filter((role) => role.id !== id) : []
+  if (roles.length === current.enterprise.roles.length) throw new Error('Rol no encontrado')
+  const operators = Array.isArray(current.enterprise.operators)
+    ? current.enterprise.operators.map((operator) => (
+      operator.roleId === id
+        ? { ...operator, roleId: DEFAULT_ENTERPRISE_ROLE_ID }
+        : operator
+    ))
+    : []
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    roles,
+    operators
+  })
+}
+
+function createEnterpriseOperator(operatorInput = {}) {
+  const current = listEnterprisePayload()
+  const operators = Array.isArray(current.enterprise.operators) ? [...current.enterprise.operators] : []
+  const existingIds = new Set(operators.map((operator) => operator.id))
+  const requestedId = sanitizeEnterpriseId(operatorInput?.id, '')
+  const operatorId = requestedId && !existingIds.has(requestedId)
+    ? requestedId
+    : makeEnterpriseEntityIdFromName(operatorInput?.name || operatorInput?.username || 'operador', existingIds, 'operator')
+  const draft = { ...operatorInput, id: operatorId }
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    operators: [...operators, draft]
+  })
+}
+
+function updateEnterpriseOperator(operatorId, patch = {}) {
+  const id = sanitizeEnterpriseId(operatorId, '')
+  if (!id) throw new Error('Operador inválido')
+  const current = listEnterprisePayload()
+  const operators = Array.isArray(current.enterprise.operators) ? [...current.enterprise.operators] : []
+  const idx = operators.findIndex((operator) => operator.id === id)
+  if (idx < 0) throw new Error('Operador no encontrado')
+  operators[idx] = { ...operators[idx], ...patch, id }
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    operators
+  })
+}
+
+function deleteEnterpriseOperator(operatorId) {
+  const id = sanitizeEnterpriseId(operatorId, '')
+  if (!id) throw new Error('Operador inválido')
+  const current = listEnterprisePayload()
+  const operators = Array.isArray(current.enterprise.operators)
+    ? current.enterprise.operators.filter((operator) => operator.id !== id)
+    : []
+  if (operators.length === current.enterprise.operators.length) throw new Error('Operador no encontrado')
+  return saveEnterpriseConfig({
+    ...current.enterprise,
+    operators
+  })
 }
 
 function getConfiguredBin(cli) {
@@ -677,20 +889,154 @@ function getLanClientHtmlPath() {
   return path.join(__dirname, 'lan-client.html')
 }
 
-function resolveLanSessionConfig() {
+function buildLanSessionLegacyRoots(baseCwd) {
+  const roots = new Set()
+  if (baseCwd) roots.add(baseCwd)
+  roots.add(os.homedir())
+  return Array.from(roots).map((item) => path.resolve(item))
+}
+
+function normalizeLanPermissionMap(rawPermissions) {
+  const src = rawPermissions && typeof rawPermissions === 'object' ? rawPermissions : {}
+  const out = {}
+  for (const key of LAN_PERMISSION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(src, key)) out[key] = Boolean(src[key])
+    else out[key] = Boolean(DEFAULT_LAN_ROLE_PERMISSIONS[key])
+  }
+  return out
+}
+
+function resolveLanRemoteContextInput(remoteMeta = {}) {
+  if (remoteMeta && typeof remoteMeta === 'object' && remoteMeta.requestedContext && typeof remoteMeta.requestedContext === 'object') {
+    return remoteMeta.requestedContext
+  }
+  return remoteMeta
+}
+
+function resolveLanRemoteIp(remoteMeta = {}) {
+  if (remoteMeta && typeof remoteMeta === 'object') {
+    if (typeof remoteMeta.ip === 'string' && remoteMeta.ip.trim()) return remoteMeta.ip.trim()
+    const reqIp = remoteMeta.req?.socket?.remoteAddress
+    if (typeof reqIp === 'string' && reqIp.trim()) return reqIp.trim()
+  }
+  return ''
+}
+
+function resolveLanEnterpriseContext(remoteContext, activeProfile, fallbackCwd) {
+  const legacyRoots = buildLanSessionLegacyRoots(fallbackCwd)
+  const resolved = resolveEffectiveSessionContext({
+    enterprise: appConfig?.enterprise,
+    profiles: appConfig?.profiles,
+    activeProfileId: activeProfile?.id || appConfig?.activeProfile || DEFAULT_PROFILE_ID,
+    remoteContext,
+    legacyAllowedRoots: legacyRoots,
+    preferLegacyWhenNoRemoteContext: true,
+    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
+  })
+  const activeProfileId = sanitizeProfileId(activeProfile?.id || appConfig?.activeProfile, DEFAULT_PROFILE_ID)
+  if (!resolved.enterpriseApplied) {
+    return {
+      ...resolved,
+      profileId: resolved.profileId || activeProfileId || DEFAULT_PROFILE_ID,
+      allowedRoots: Array.isArray(resolved.allowedRoots) && resolved.allowedRoots.length
+        ? resolved.allowedRoots
+        : legacyRoots
+    }
+  }
+  return {
+    ...resolved,
+    profileId: sanitizeProfileId(resolved.profileId, activeProfileId || DEFAULT_PROFILE_ID),
+    allowedRoots: Array.isArray(resolved.allowedRoots) && resolved.allowedRoots.length
+      ? resolved.allowedRoots
+      : legacyRoots
+  }
+}
+
+function logEnterpriseSessionSemantic(ctx, meta = {}) {
+  if (!ctx || !ctx.enterpriseApplied) return
+  const remoteIp = typeof meta?.ip === 'string' ? meta.ip.trim() : ''
+  const fallbackLabel = Array.isArray(ctx.fallbackReasons) && ctx.fallbackReasons.length
+    ? ` fallback=${ctx.fallbackReasons.join('|')}`
+    : ''
+  if (ctx.operatorId) {
+    logSemantic('empresa_login_operador', {
+      detail: `operator=${ctx.operatorId} role=${ctx.roleId || '-'} ip=${remoteIp || '-'}`
+    })
+  }
+  logSemantic('empresa_sesion_iniciada', {
+    detail: `operator=${ctx.operatorId || '-'} role=${ctx.roleId || '-'} profile=${ctx.profileId || '-'} ip=${remoteIp || '-'}${fallbackLabel}`
+  })
+  logSemantic('empresa_perfil_aplicado', {
+    detail: `profile=${ctx.profileId || '-'} operator=${ctx.operatorId || '-'}`
+  })
+  if (ctx.personaResolved) {
+    logSemantic('empresa_persona_aplicada', {
+      detail: `source=${ctx.personaSource || 'unknown'} operator=${ctx.operatorId || '-'} profile=${ctx.profileId || '-'}`
+    })
+  }
+  logSemantic('empresa_mcp_policy_aplicada', {
+    detail: `operator=${ctx.operatorId || '-'} role=${ctx.roleId || '-'} mcp_count=${Array.isArray(ctx.allowedMcpServers) ? ctx.allowedMcpServers.length : 0}`
+  })
+}
+
+function logLanAuditSemantic(event = {}) {
+  const action = String(event?.action || '').trim()
+  if (action !== 'empresa_permiso_denegado_fs') return
+  const parts = [
+    `session=${event?.sessionId || '-'}`,
+    `operator=${event?.operatorId || '-'}`,
+    `role=${event?.roleId || '-'}`,
+    `profile=${event?.profileId || '-'}`,
+    `op=${event?.op || '-'}`,
+    `path=${event?.path || '-'}`,
+    `code=${event?.code || '-'}`,
+    `msg=${event?.message || '-'}`
+  ]
+  logSemantic(action, { detail: parts.join(' ') })
+}
+
+function resolveLanSessionConfig(remoteMeta = {}) {
   const cli = getActiveCliSync() === 'codex' ? 'codex' : 'claude'
   const cliCheck = ensureCliAvailable(cli)
   if (!cliCheck.ok) throw new Error(cliCheck.error)
   const activeProfile = getActiveProfile()
-  const profileCwd = resolveExistingDir(activeProfile?.cwd)
+  const remoteContext = normalizeRemoteContext(resolveLanRemoteContextInput(remoteMeta))
+  const remoteIp = resolveLanRemoteIp(remoteMeta)
+  const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, getCwdSync())
+  const effectiveProfile = getProfileById(enterpriseContext.profileId) || activeProfile
+  const profileCwd = resolveExistingDir(effectiveProfile?.cwd)
   const currentCwd = resolveExistingDir(getCwdSync())
   const cwd = profileCwd || currentCwd || os.homedir()
+  const legacyBootstrap = getProfileStartupMessage(effectiveProfile)
+  const personaResolved = sanitizePersonaPrompt(enterpriseContext.personaResolved || '')
+  const bootstrapMessage = personaResolved
+    ? `${personaResolved}\n`
+    : legacyBootstrap
+  const allowedMcpServers = Array.isArray(enterpriseContext.allowedMcpServers) && enterpriseContext.allowedMcpServers.length
+    ? [...enterpriseContext.allowedMcpServers]
+    : [...normalizeMcpServerList(effectiveProfile?.mcpServers || [])]
+  const permissions = enterpriseContext.enterpriseApplied
+    ? normalizeLanPermissionMap(enterpriseContext.permissions)
+    : { ...DEFAULT_LAN_ROLE_PERMISSIONS }
+  logEnterpriseSessionSemantic(enterpriseContext, { ip: remoteIp })
   return {
     cli,
     cwd,
     bin: cliCheck.bin,
     env: cliCheck.env,
-    args: []
+    args: [],
+    mode: enterpriseContext.enterpriseApplied ? 'enterprise' : 'legacy',
+    enterpriseEnabled: Boolean(appConfig?.enterprise?.enabled),
+    operatorId: enterpriseContext.operatorId || '',
+    roleId: enterpriseContext.roleId || '',
+    profileId: effectiveProfile?.id || activeProfile?.id || DEFAULT_PROFILE_ID,
+    personaResolved,
+    personaSource: enterpriseContext.personaSource || (personaResolved ? 'operator-or-profile' : 'none'),
+    allowedRoots: Array.isArray(enterpriseContext.allowedRoots) ? [...enterpriseContext.allowedRoots] : buildLanSessionLegacyRoots(cwd),
+    readOnlyRoots: Array.isArray(enterpriseContext.readOnlyRoots) ? [...enterpriseContext.readOnlyRoots] : [],
+    allowedMcpServers,
+    permissions,
+    bootstrapMessage
   }
 }
 
@@ -698,10 +1044,11 @@ function ensureLanWsServer() {
   if (lanWsServer) return lanWsServer
   lanWsServer = createLanWsServer({
     clientHtmlPath: getLanClientHtmlPath(),
-    getSessionConfig: () => resolveLanSessionConfig(),
+    getSessionConfig: (remoteMeta) => resolveLanSessionConfig(remoteMeta),
     transcribeAudio: (audioPath) => transcribeAudioFile(audioPath, buildRuntimeEnv()),
     buildExecCommand: buildFdLimitCommand,
-    logger: (message) => console.log(message)
+    logger: (message) => console.log(message),
+    onAuditEvent: (event) => logLanAuditSemantic(event)
   })
   return lanWsServer
 }
@@ -1758,6 +2105,8 @@ function resolveExistingDir(inputPath) {
 }
 
 function getProfileStartupMessage(profile) {
+  const personaPrompt = sanitizePersonaPrompt(profile?.personaPrompt || '')
+  if (personaPrompt) return `${personaPrompt}\n`
   const claudeMdPath = typeof profile?.claudeMdPath === 'string' ? profile.claudeMdPath.trim() : ''
   if (!claudeMdPath) return ''
   try {
@@ -4428,6 +4777,79 @@ ipcMain.handle('profiles:set-active', (_event, id) => {
   }
 })
 
+ipcMain.handle('enterprise:get-config', () => {
+  const payload = listEnterprisePayload()
+  return { ok: true, ...payload }
+})
+
+ipcMain.handle('enterprise:list', () => {
+  const payload = listEnterprisePayload()
+  return { ok: true, ...payload }
+})
+
+ipcMain.handle('enterprise:save-config', (_event, enterpriseInput = {}) => {
+  try {
+    const payload = saveEnterpriseConfig(enterpriseInput || {})
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:roles:create', (_event, roleInput = {}) => {
+  try {
+    const payload = createEnterpriseRole(roleInput || {})
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:roles:update', (_event, { id, patch } = {}) => {
+  try {
+    const payload = updateEnterpriseRole(id, patch || {})
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:roles:delete', (_event, id) => {
+  try {
+    const payload = deleteEnterpriseRole(id)
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:operators:create', (_event, operatorInput = {}) => {
+  try {
+    const payload = createEnterpriseOperator(operatorInput || {})
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:operators:update', (_event, { id, patch } = {}) => {
+  try {
+    const payload = updateEnterpriseOperator(id, patch || {})
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('enterprise:operators:delete', (_event, id) => {
+  try {
+    const payload = deleteEnterpriseOperator(id)
+    return { ok: true, ...payload }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
 ipcMain.handle('profiles:pick-claude-md', async (event) => {
   const result = await dialog.showOpenDialog(winFromEvent(event), {
     properties: ['openFile'],
@@ -4450,6 +4872,15 @@ ipcMain.handle('profiles:pick-cwd', async (event) => {
 
 ipcMain.handle('save-app-config', async (event, partialConfig) => {
   const previousDefault = appConfig.cli.defaultCli
+  const enterprisePatch = partialConfig?.enterprise
+  const mergedEnterprise = enterprisePatch
+    ? {
+      ...appConfig.enterprise,
+      ...enterprisePatch,
+      roles: enterprisePatch?.roles ?? appConfig?.enterprise?.roles,
+      operators: enterprisePatch?.operators ?? appConfig?.enterprise?.operators
+    }
+    : appConfig.enterprise
   const merged = normalizeAppConfig({
     ...appConfig,
     ...partialConfig,
@@ -4457,7 +4888,8 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
     telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) },
     lanServer: { ...appConfig.lanServer, ...(partialConfig?.lanServer || {}) },
     profiles: partialConfig?.profiles ?? appConfig.profiles,
-    activeProfile: partialConfig?.activeProfile ?? appConfig.activeProfile
+    activeProfile: partialConfig?.activeProfile ?? appConfig.activeProfile,
+    enterprise: mergedEnterprise
   })
   saveAppConfig(merged)
   const warnings = []
