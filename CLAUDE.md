@@ -12,6 +12,15 @@
 - App type: Electron desktop app with `node-pty` terminal + Whisper dictation.
 - Client install checklist: `INSTALACION_CLIENTE.md`
 
+## Regla critica WhatsApp (OBLIGATORIA)
+- Nunca enviar mensajes a numeros locales ambiguos (ej. `653765305`) sin prefijo internacional confirmado.
+- Si el usuario no indica pais/codigo, preguntar siempre antes de enviar: `¿Que pais/codigo uso para este numero?`.
+- Solo se permite enviar cuando:
+  - el numero llega en formato internacional (`+...` o `00...`), o
+  - el usuario confirma explicitamente el codigo de pais (ej. `--cc 34`).
+- Queda prohibido asumir `+34` (o cualquier otro pais) por defecto.
+- Ante duda de formato/destino: bloquear envio y pedir confirmacion.
+
 ## Incident history
 - Date: **2026-05-14**
 - Symptom 1: app crash on startup (`SIGABRT`, stack in `_RegisterApplication` / `NSApplication`).
