@@ -17,6 +17,7 @@ node --test --test-reporter=spec tests/whatsapp-pure.test.js
 node --test --test-reporter=spec tests/scheduler-cron.test.js
 node --test --test-reporter=spec tests/path-sandbox.test.js
 node --test --test-reporter=spec tests/ws-server-pure.test.js
+node --test --test-reporter=spec tests/ws-server-session-acl.test.js
 node --test --test-reporter=spec tests/semantic-logger.test.js
 node --test --test-reporter=spec tests/enterprise-policy.test.js
 
@@ -25,6 +26,7 @@ node --check tests/whatsapp-pure.test.js
 node --check tests/scheduler-cron.test.js
 node --check tests/path-sandbox.test.js
 node --check tests/ws-server-pure.test.js
+node --check tests/ws-server-session-acl.test.js
 node --check tests/semantic-logger.test.js
 node --check tests/enterprise-policy.test.js
 ```
@@ -86,6 +88,17 @@ Tests directos:
   - Fallback a pública si no hay privada.
   - Ignora IPv6/internal.
   - Fallback final `127.0.0.1`.
+
+### `ws-server-session-acl.test.js`
+
+- Levanta `createLanWsServer` real con policy enterprise mock por sesión.
+- Verifica handshake + contexto efectivo (`operatorId/roleId/profileId/MCP`).
+- Verifica enforcement ACL:
+  - `fs:list` dentro de root permitido => OK.
+  - `fs:read` dentro de root permitido => OK.
+  - `fs:read` fuera de roots => `PATH_OUTSIDE_ALLOWED_ROOTS`.
+  - `fs:write` fuera de roots => `PATH_OUTSIDE_ALLOWED_ROOTS`.
+- Si el entorno no permite abrir sockets locales (sandbox), se marca `skip`.
 
 ### `semantic-logger.test.js`
 
@@ -215,9 +228,9 @@ describe('funcUnderTest', () => {
 ## Estado actual (2026-05-19)
 
 ```
-Tests: 65 totales
+Tests: 66 totales
   Pass:    60
-  Skip:     5  (funciones pendientes de export + TODO symlink hardening)
+  Skip:     6  (funciones pendientes de export + TODO symlink hardening + sandbox socket)
   Fail:     0
 ```
 
