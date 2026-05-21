@@ -1913,12 +1913,12 @@ function renderRemoteSessionsToggle() {
   btnRemoteSessionsToggle.classList.toggle('active', visible)
   btnRemoteSessionsToggle.setAttribute('aria-pressed', visible ? 'true' : 'false')
   if (visible) {
-    btnRemoteSessionsToggle.textContent = 'LAN · ON'
+    btnRemoteSessionsToggle.setAttribute('aria-label', 'Ocultar sesiones remotas LAN')
     btnRemoteSessionsToggle.title = running
       ? 'Ocultar sesiones remotas LAN'
       : 'Sesiones LAN marcadas para mostrarse cuando el servidor esté activo'
   } else {
-    btnRemoteSessionsToggle.textContent = 'LAN · OFF'
+    btnRemoteSessionsToggle.setAttribute('aria-label', 'Mostrar sesiones remotas LAN')
     btnRemoteSessionsToggle.title = 'Mostrar sesiones remotas LAN'
   }
 }

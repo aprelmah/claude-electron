@@ -447,10 +447,24 @@ button.icon-btn.small:active { transform: scale(0.95); }
 .lan-toggle-btn {
   width: auto !important;
   min-width: 34px;
-  padding: 0 6px !important;
+  height: 24px !important;
+  padding: 0 7px !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.2px;
+}
+
+.lan-toggle-eye {
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.68;
+}
+
+.lan-toggle-btn.active .lan-toggle-eye {
+  opacity: 1;
 }
 
 button:hover { background: var(--bg3); color: var(--text); }
