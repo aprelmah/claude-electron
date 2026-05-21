@@ -268,23 +268,86 @@ async function initTheme() {
   applyTermTheme(saved)
 }
 
-function fitAndSync() {
-  try {
-    fitAddon.fit()
-    window.api.resizePty(term.cols, term.rows)
-  } catch {}
+const DEFAULT_TERM_COLS = 120
+const DEFAULT_TERM_ROWS = 35
+const pendingTermRefitTimers = []
+let resizeDebounceId = null
+let terminalResizeObserver = null
+
+function clearPendingTermRefitTimers() {
+  while (pendingTermRefitTimers.length) {
+    const timerId = pendingTermRefitTimers.pop()
+    try { clearTimeout(timerId) } catch {}
+  }
 }
 
-let resizeDebounceId = null
+function getSafeTerminalSize({ forceFit = true } = {}) {
+  if (forceFit) {
+    try { fitAddon.fit() } catch {}
+  }
+  let cols = Number(term.cols || 0)
+  let rows = Number(term.rows || 0)
+  if (!Number.isFinite(cols) || cols < 40) cols = DEFAULT_TERM_COLS
+  if (!Number.isFinite(rows) || rows < 10) rows = DEFAULT_TERM_ROWS
+  cols = Math.max(40, Math.min(260, Math.floor(cols)))
+  rows = Math.max(10, Math.min(120, Math.floor(rows)))
+  return { cols, rows }
+}
+
+function fitAndSync(options = {}) {
+  const { cols, rows } = getSafeTerminalSize(options)
+  try { window.api.resizePty(cols, rows) } catch {}
+  return { cols, rows }
+}
+
 function fitAndSyncDebounced() {
   if (resizeDebounceId) clearTimeout(resizeDebounceId)
   resizeDebounceId = setTimeout(() => {
-    fitAndSync()
+    fitAndSync({ forceFit: true })
     resizeDebounceId = null
   }, 140)
 }
 
+function scheduleTerminalRefit(options = {}) {
+  clearPendingTermRefitTimers()
+  const delays = [0, 80, 180, 360, 720, 1200]
+  for (const delay of delays) {
+    const timerId = setTimeout(() => {
+      fitAndSync({ forceFit: options.forceFit !== false })
+    }, delay)
+    pendingTermRefitTimers.push(timerId)
+  }
+}
+
 window.addEventListener('resize', fitAndSyncDebounced)
+if (window.ResizeObserver && termWrap) {
+  try {
+    terminalResizeObserver = new ResizeObserver(() => {
+      scheduleTerminalRefit({ forceFit: true })
+    })
+    terminalResizeObserver.observe(termWrap)
+  } catch {}
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    scheduleTerminalRefit({ forceFit: true })
+  })
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return
+  scheduleTerminalRefit({ forceFit: true })
+})
+window.addEventListener('beforeunload', () => {
+  if (resizeDebounceId) {
+    clearTimeout(resizeDebounceId)
+    resizeDebounceId = null
+  }
+  clearPendingTermRefitTimers()
+  if (terminalResizeObserver) {
+    try { terminalResizeObserver.disconnect() } catch {}
+    terminalResizeObserver = null
+  }
+})
 
 // ── Status bar ──
 let statusTimer = null
@@ -3386,7 +3449,17 @@ async function renderTreeInto(container, dir, depth) {
 
 btnOpenFolder.addEventListener('click', async () => {
   const picked = await window.api.pickFolder()
-  if (picked) await setRoot(picked)
+  if (!picked) return
+  showStatus('Cargando carpeta y reiniciando Claude…', 'busy')
+  try {
+    await setRoot(picked)
+    await fullRestart(picked)
+    await updateCwdLabel()
+    hideStatus()
+    term.focus()
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6000)
+  }
 })
 
 btnRefreshTree.addEventListener('click', async () => {
