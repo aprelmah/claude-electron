@@ -4,118 +4,201 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
+  <meta name="theme-color" content="#0e0e12" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f8f8fb" media="(prefers-color-scheme: light)" />
   <title>POWER-AGENT · Sesión remota</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
   <style>
     :root {
-      --radius: 12px;
-      --radius-sm: 8px;
-      --radius-lg: 16px;
-      --font-sys: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+      --r-xs: 6px;
+      --r-sm: 10px;
+      --r-md: 14px;
+      --r-lg: 18px;
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
       --tap: 44px;
+      --tap-aux: 38px;
+      --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
     }
 
     body.theme-dark {
-      --bg: #1a1a1f;
-      --bg2: #24242b;
-      --bg3: #2e2e38;
-      --bg4: #38384a;
-      --border: #3a3a48;
-      --border-strong: #4a4a5a;
-      --text: #e8e8f0;
-      --text2: #9090a8;
-      --text3: #6a6a85;
-      --accent: #7c6af7;
-      --accent2: #a690ff;
-      --accent-ink: #ffffff;
-      --warn: #f0c060;
-      --error: #ff6b7a;
-      --ok: #7cd99c;
-      --rec: #ff5070;
-      --term-bg: #101018;
+      --bg-0: #0e0e12;
+      --bg-1: #16161c;
+      --bg-2: #1d1d25;
+      --bg-3: #25252f;
+      --bg-elev: #1a1a22;
+      --border: #2a2a36;
+      --border-strong: #3a3a48;
+      --text-0: #f5f5fa;
+      --text-1: #b8b8c8;
+      --text-2: #7a7a92;
+      --text-3: #5a5a70;
+      --accent: #8470ff;
+      --accent-hover: #9786ff;
+      --accent-soft: rgba(132, 112, 255, 0.16);
+      --accent-line: rgba(132, 112, 255, 0.35);
+      --ok: #4ed18e;
+      --ok-soft: rgba(78, 209, 142, 0.14);
+      --warn: #f5b15c;
+      --warn-soft: rgba(245, 177, 92, 0.14);
+      --err: #ff6b7a;
+      --err-soft: rgba(255, 107, 122, 0.14);
+      --term-bg: #0a0a10;
       --term-fg: #e6e6f5;
-      --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-      --overlay: rgba(8, 8, 14, 0.7);
+      --term-cursor: #b8a8ff;
+      --term-sel: rgba(132, 112, 255, 0.32);
+      --shadow-lift: 0 18px 50px rgba(0, 0, 0, 0.55), 0 2px 0 rgba(255, 255, 255, 0.02) inset;
+      --overlay: rgba(6, 6, 12, 0.78);
+      --noise-opacity: 0.04;
     }
 
     body.theme-light {
-      --bg: #fafafd;
-      --bg2: #ffffff;
-      --bg3: #ebebf2;
-      --bg4: #dadae8;
-      --border: #d8d8e8;
-      --border-strong: #c5c5d8;
-      --text: #1a1a2e;
-      --text2: #606080;
-      --text3: #8888a0;
-      --accent: #5b4fe8;
-      --accent2: #7c6af7;
-      --accent-ink: #ffffff;
-      --warn: #a8730a;
-      --error: #d83040;
-      --ok: #3a9050;
-      --rec: #e03050;
-      --term-bg: #1a1a24;
+      --bg-0: #f6f6fa;
+      --bg-1: #ffffff;
+      --bg-2: #ededf3;
+      --bg-3: #e3e3ec;
+      --bg-elev: #ffffff;
+      --border: #dcdce5;
+      --border-strong: #c4c4d2;
+      --text-0: #14141e;
+      --text-1: #41415a;
+      --text-2: #6a6a85;
+      --text-3: #9595aa;
+      --accent: #5d4cf0;
+      --accent-hover: #6a5bff;
+      --accent-soft: rgba(93, 76, 240, 0.12);
+      --accent-line: rgba(93, 76, 240, 0.32);
+      --ok: #2e9a5e;
+      --ok-soft: rgba(46, 154, 94, 0.12);
+      --warn: #aa6a0d;
+      --warn-soft: rgba(170, 106, 13, 0.12);
+      --err: #d83040;
+      --err-soft: rgba(216, 48, 64, 0.1);
+      --term-bg: #14141c;
       --term-fg: #e6e6f5;
-      --shadow: 0 10px 30px rgba(20, 20, 50, 0.12);
-      --overlay: rgba(20, 20, 40, 0.5);
+      --term-cursor: #5d4cf0;
+      --term-sel: rgba(93, 76, 240, 0.32);
+      --shadow-lift: 0 18px 50px rgba(20, 20, 50, 0.12), 0 2px 0 rgba(255, 255, 255, 0.5) inset;
+      --overlay: rgba(20, 20, 40, 0.45);
+      --noise-opacity: 0.025;
     }
 
     * { box-sizing: border-box; }
 
     html, body { margin: 0; padding: 0; min-height: 100%; }
 
+    html { background: var(--bg-0); }
+
     body {
-      font-family: var(--font-sys);
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.45;
-      padding: 12px;
-      padding-bottom: max(12px, env(safe-area-inset-bottom));
+      font-family: var(--font-sans);
+      background:
+        radial-gradient(1200px 600px at 90% -10%, var(--accent-soft), transparent 60%),
+        radial-gradient(900px 400px at -10% 110%, rgba(78, 209, 142, 0.06), transparent 55%),
+        var(--bg-0);
+      color: var(--text-0);
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: -0.005em;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+      min-height: 100vh;
+      transition: background-color 240ms var(--ease), color 240ms var(--ease);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: var(--noise-opacity);
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.7'/></svg>");
+      z-index: 0;
     }
 
     .app-shell {
-      width: min(1100px, 100%);
+      position: relative;
+      z-index: 1;
+      width: min(1140px, 100%);
       margin: 0 auto;
       display: grid;
-      gap: 12px;
+      gap: 14px;
+      animation: shell-in 480ms var(--ease) both;
     }
 
-    /* ── TOPBAR ── */
+    @keyframes shell-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-strong);
+      border: 3px solid transparent;
+      background-clip: padding-box;
+      border-radius: 999px;
+      transition: background-color 200ms var(--ease);
+    }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: padding-box; }
+
     .topbar {
-      background: var(--bg2);
+      position: sticky;
+      top: 8px;
+      z-index: 30;
+      background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+      backdrop-filter: saturate(160%) blur(14px);
+      -webkit-backdrop-filter: saturate(160%) blur(14px);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: var(--r-md);
       padding: 10px 14px;
       display: flex;
       align-items: center;
       gap: 12px;
       flex-wrap: wrap;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      backdrop-filter: saturate(140%) blur(6px);
     }
 
     .brand {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 9px;
       font-weight: 700;
-      font-size: 0.95rem;
-      letter-spacing: 0.01em;
+      font-size: 0.92rem;
+      letter-spacing: -0.01em;
+      color: var(--text-0);
     }
 
-    .brand-bolt {
-      width: 14px;
-      height: 14px;
+    .brand-mark {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 60%, #000 0%) 100%);
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 0.78rem;
+      box-shadow: 0 4px 14px var(--accent-soft), 0 0 0 1px var(--accent-line) inset;
       flex-shrink: 0;
-      fill: #facc15;
-      filter: drop-shadow(0 0 2px rgba(250, 204, 21, 0.55));
+    }
+
+    .brand-meta {
+      display: inline-flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .brand-meta small {
+      color: var(--text-2);
+      font-size: 0.7rem;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
     .topbar-spacer { flex: 1 1 auto; }
@@ -123,31 +206,50 @@
     .conn-state {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      font-size: 0.84rem;
-      color: var(--text2);
-      max-width: 100%;
+      gap: 9px;
+      font-size: 0.82rem;
+      color: var(--text-1);
+      max-width: 320px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
     .dot {
-      width: 9px;
-      height: 9px;
+      width: 8px;
+      height: 8px;
       border-radius: 999px;
-      background: var(--text3);
-      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08) inset;
+      background: var(--text-3);
       flex-shrink: 0;
+      position: relative;
     }
-    .dot.offline { background: #7a7a90; }
-    .dot.connecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
-    .dot.online { background: var(--ok); box-shadow: 0 0 0 3px rgba(124, 217, 156, 0.18); }
-    .dot.error { background: var(--error); }
+    .dot.offline { background: var(--text-3); }
+    .dot.connecting { background: var(--warn); }
+    .dot.connecting::after {
+      content: "";
+      position: absolute;
+      inset: -4px;
+      border-radius: 999px;
+      border: 1.5px solid var(--warn);
+      opacity: 0.55;
+      animation: pulse-ring 1.4s ease-out infinite;
+    }
+    .dot.online { background: var(--ok); }
+    .dot.online::after {
+      content: "";
+      position: absolute;
+      inset: -4px;
+      border-radius: 999px;
+      border: 1.5px solid var(--ok);
+      opacity: 0.4;
+      animation: pulse-ring 1.6s ease-out infinite;
+    }
+    .dot.error { background: var(--err); }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.45; }
+    @keyframes pulse-ring {
+      0%   { transform: scale(1); opacity: 0.6; }
+      80%  { transform: scale(2); opacity: 0; }
+      100% { transform: scale(2); opacity: 0; }
     }
 
     .session-chip {
@@ -156,45 +258,122 @@
       gap: 6px;
       padding: 4px 10px;
       border-radius: 999px;
-      background: var(--bg3);
-      color: var(--text2);
-      font-size: 0.78rem;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      font-size: 0.76rem;
       font-family: var(--font-mono);
-      max-width: 280px;
+      max-width: 260px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
     body[data-connected="true"] .session-chip { display: inline-flex; }
 
-    /* ── CARD ── */
-    .card {
-      background: var(--bg2);
+    .topbar-actions {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .btn,
+    button.btn {
+      cursor: pointer;
+      border-radius: var(--r-sm);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      background: var(--bg-2);
+      color: var(--text-0);
+      font: 500 0.92rem var(--font-sans);
+      padding: 0 14px;
+      min-height: var(--tap);
+      letter-spacing: -0.005em;
+      transition: background-color 160ms var(--ease), border-color 160ms var(--ease), transform 80ms var(--ease), color 160ms var(--ease);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn:hover { background: var(--bg-3); border-color: var(--border-strong); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 0 rgba(0, 0, 0, 0.12), 0 6px 18px var(--accent-soft);
+    }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--text-1);
+    }
+    .btn-ghost:hover { background: var(--bg-2); color: var(--text-0); }
+
+    .btn-danger {
+      background: transparent;
+      border-color: var(--err);
+      color: var(--err);
+    }
+    .btn-danger:hover { background: var(--err); color: #fff; border-color: var(--err); }
+
+    .btn-sm {
+      min-height: 34px;
+      padding: 0 11px;
+      font-size: 0.82rem;
+      border-radius: 8px;
     }
 
-    .card-pad { padding: 14px; }
-
-    /* ── ONBOARDING ── */
-    .onboarding {
-      display: grid;
-      gap: 12px;
+    .btn-icon {
+      width: var(--tap);
+      height: var(--tap);
+      padding: 0;
+      border-radius: 10px;
     }
 
+    .btn-icon.btn-sm { width: 34px; height: 34px; }
+
+    .btn :where(.btn-leading, .btn-trailing) {
+      display: inline-grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .btn:focus-visible,
+    .control:focus-visible,
+    summary:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .card {
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+    }
+
+    .card-pad { padding: 16px; }
+
+    .onboarding { display: grid; gap: 14px; }
     body[data-connected="true"] .onboarding { display: none; }
+
+    .onboarding-head { display: grid; gap: 6px; }
 
     .onboarding h1 {
       margin: 0;
-      font-size: 1.1rem;
+      font-size: 1.35rem;
       font-weight: 700;
+      letter-spacing: -0.02em;
     }
 
     .onboarding-lead {
       margin: 0;
-      color: var(--text2);
-      font-size: 0.88rem;
+      color: var(--text-1);
+      font-size: 0.92rem;
     }
 
     .field {
@@ -204,87 +383,41 @@
     }
 
     .field label {
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       font-weight: 600;
-      color: var(--text2);
+      color: var(--text-2);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
     }
 
     .control,
     select.control,
     textarea.control,
-    button.btn {
+    input.control {
       width: 100%;
       min-height: var(--tap);
-      border-radius: var(--radius);
+      border-radius: var(--r-sm);
       border: 1px solid var(--border);
-      background: var(--bg);
-      color: var(--text);
-      font: 500 0.96rem var(--font-sys);
-      padding: 10px 12px;
-      transition: border-color 120ms ease, background-color 120ms ease, transform 80ms ease;
+      background: var(--bg-0);
+      color: var(--text-0);
+      font: 500 0.96rem var(--font-sans);
+      padding: 10px 13px;
+      transition: border-color 160ms var(--ease), background-color 160ms var(--ease), box-shadow 160ms var(--ease);
     }
+
+    .control::placeholder { color: var(--text-3); }
 
     select.control {
       padding-right: 36px;
       appearance: none;
+      -webkit-appearance: none;
       background-image:
-        linear-gradient(45deg, transparent 50%, var(--text2) 50%),
-        linear-gradient(135deg, var(--text2) 50%, transparent 50%);
+        linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+        linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
       background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
       background-size: 5px 5px, 5px 5px;
       background-repeat: no-repeat;
     }
-
-    textarea.control {
-      min-height: 180px;
-      font-family: var(--font-mono);
-      font-size: 0.86rem;
-      resize: vertical;
-      line-height: 1.5;
-    }
-
-    .control:hover { border-color: var(--border-strong); }
-    .control:focus-visible,
-    .btn:focus-visible,
-    summary:focus-visible,
-    .icon-btn:focus-visible {
-      outline: 3px solid var(--accent);
-      outline-offset: 2px;
-      border-color: var(--accent);
-    }
-
-    .btn {
-      cursor: pointer;
-      background: var(--bg3);
-      text-align: center;
-      font-weight: 600;
-    }
-    .btn:hover { background: var(--bg4); }
-    .btn:active { transform: translateY(1px); }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--accent-ink);
-    }
-    .btn-primary:hover { background: var(--accent2); border-color: var(--accent2); }
-
-    .btn-danger {
-      background: transparent;
-      border-color: var(--error);
-      color: var(--error);
-    }
-    .btn-danger:hover { background: var(--error); color: #fff; }
-
-    .btn-icon-left {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-
-    .row-stack { display: grid; gap: 10px; }
 
     .row-primary {
       display: grid;
@@ -293,59 +426,64 @@
       align-items: end;
     }
 
-    .primary-actions {
-      display: grid;
-      gap: 8px;
-    }
+    .primary-actions { display: grid; gap: 8px; }
 
     .advanced {
       border: 1px dashed var(--border-strong);
-      border-radius: var(--radius);
-      background: var(--bg);
-      padding: 8px 12px 12px;
+      border-radius: var(--r-sm);
+      background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+      padding: 4px 14px 12px;
     }
+    .advanced[open] { background: var(--bg-2); }
 
     .advanced > summary {
       cursor: pointer;
       list-style: none;
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       font-weight: 600;
-      color: var(--text2);
-      padding: 6px 0;
+      color: var(--text-1);
+      padding: 10px 0;
+      letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .advanced > summary::-webkit-details-marker { display: none; }
     .advanced > summary::after {
-      content: "▾";
-      float: right;
-      transition: transform 160ms ease;
-      color: var(--text3);
+      content: "";
+      margin-left: auto;
+      width: 8px; height: 8px;
+      border-right: 1.5px solid var(--text-2);
+      border-bottom: 1.5px solid var(--text-2);
+      transform: rotate(45deg);
+      transition: transform 200ms var(--ease);
     }
-    .advanced[open] > summary::after { transform: rotate(180deg); }
+    .advanced[open] > summary::after { transform: rotate(-135deg); }
 
     .advanced-grid {
       display: grid;
-      gap: 8px;
+      gap: 10px;
       margin-top: 6px;
     }
 
     .hint {
       margin: 0;
-      font-size: 0.78rem;
-      color: var(--text3);
+      font-size: 0.8rem;
+      color: var(--text-2);
     }
 
     .handshake {
       border: 1px solid var(--border);
-      background: var(--bg);
-      border-radius: var(--radius);
-      min-height: 38px;
+      background: var(--bg-2);
+      border-radius: var(--r-sm);
+      min-height: 40px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
       padding: 8px 12px;
       font-size: 0.82rem;
-      color: var(--text2);
+      color: var(--text-1);
     }
 
     .handshake-tone {
@@ -354,40 +492,43 @@
       gap: 6px;
       padding: 3px 10px;
       border-radius: 999px;
-      background: var(--bg3);
-      color: var(--text2);
+      background: var(--bg-3);
+      color: var(--text-2);
       font-weight: 600;
-      font-size: 0.74rem;
-      letter-spacing: 0.02em;
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       white-space: nowrap;
     }
-    .handshake-tone.warn { background: rgba(240, 192, 96, 0.15); color: var(--warn); }
-    .handshake-tone.err  { background: rgba(255, 107, 122, 0.18); color: var(--error); }
-    .handshake-tone.ok   { background: rgba(124, 217, 156, 0.18); color: var(--ok); }
+    .handshake-tone.warn { background: var(--warn-soft); color: var(--warn); }
+    .handshake-tone.err  { background: var(--err-soft); color: var(--err); }
+    .handshake-tone.ok   { background: var(--ok-soft); color: var(--ok); }
 
-    /* ── CHAT (terminal) ── */
     .chat-card {
       display: none;
-      grid-template-rows: auto auto 1fr auto;
       overflow: hidden;
-      min-height: 480px;
+      border-radius: var(--r-md);
+      background: var(--bg-1);
+      border: 1px solid var(--border);
     }
-
-    body[data-connected="true"] .chat-card { display: grid; }
+    body[data-connected="true"] .chat-card {
+      display: grid;
+      grid-template-rows: auto 1fr auto auto;
+      min-height: 520px;
+    }
 
     .chat-head {
       padding: 12px 14px;
       border-bottom: 1px solid var(--border);
       display: grid;
-      gap: 8px;
-      background: linear-gradient(180deg, var(--bg2), var(--bg));
+      gap: 10px;
+      background: var(--bg-elev);
     }
 
-    .chat-head-row {
+    .chat-head-top {
       display: flex;
+      gap: 12px;
       align-items: center;
-      gap: 10px;
       flex-wrap: wrap;
     }
 
@@ -395,11 +536,12 @@
       margin: 0;
       font-size: 1rem;
       font-weight: 700;
+      letter-spacing: -0.01em;
     }
-
     .chat-subtitle {
       font-size: 0.78rem;
-      color: var(--text2);
+      color: var(--text-2);
+      margin-top: 1px;
     }
 
     .attach-actions {
@@ -408,51 +550,134 @@
       gap: 8px;
     }
 
-    .attach-actions .btn {
-      padding: 10px 12px;
-      font-size: 0.92rem;
-    }
-
     .attach-status {
       min-height: 36px;
-      border-radius: var(--radius-sm);
-      padding: 6px 10px;
+      border-radius: var(--r-sm);
+      padding: 8px 12px;
       font-size: 0.82rem;
-      color: var(--text2);
-      background: var(--bg3);
+      color: var(--text-1);
+      background: var(--bg-2);
       border: 1px solid var(--border);
       display: flex;
       align-items: center;
+      gap: 8px;
+      transition: background-color 200ms var(--ease), color 200ms var(--ease), border-color 200ms var(--ease);
     }
-    .attach-status.ok   { background: rgba(124, 217, 156, 0.12); border-color: rgba(124, 217, 156, 0.35); color: var(--ok); }
-    .attach-status.warn { background: rgba(240, 192, 96, 0.12); border-color: rgba(240, 192, 96, 0.35); color: var(--warn); }
-    .attach-status.err  { background: rgba(255, 107, 122, 0.12); border-color: rgba(255, 107, 122, 0.35); color: var(--error); }
+    .attach-status::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 999px;
+      background: var(--text-3);
+      flex-shrink: 0;
+    }
+    .attach-status.ok   { background: var(--ok-soft);   border-color: color-mix(in srgb, var(--ok) 35%, transparent);  color: var(--ok); }
+    .attach-status.ok::before   { background: var(--ok); }
+    .attach-status.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); }
+    .attach-status.warn::before { background: var(--warn); }
+    .attach-status.err  { background: var(--err-soft);  border-color: color-mix(in srgb, var(--err) 35%, transparent);  color: var(--err); }
+    .attach-status.err::before  { background: var(--err); }
 
     .chat-body {
+      position: relative;
       background: var(--term-bg);
-      padding: 8px;
-      min-height: 320px;
+      padding: 10px;
+      min-height: 340px;
       display: grid;
       grid-template-rows: 1fr;
     }
 
     .terminal-wrap {
-      border-radius: var(--radius-sm);
+      border-radius: var(--r-sm);
       overflow: hidden;
-      min-height: 320px;
+      min-height: 340px;
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent) inset,
+        0 30px 80px rgba(0, 0, 0, 0.4);
     }
 
-    #terminal { width: 100%; height: 100%; min-height: 320px; }
+    #terminal {
+      width: 100%;
+      height: 100%;
+      min-height: 340px;
+    }
+
+    .xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
+    .xterm .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+      background: rgba(132, 112, 255, 0.22);
+      border-radius: 999px;
+      transition: background-color 160ms var(--ease);
+    }
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover { background: rgba(132, 112, 255, 0.45); }
+    .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: rgba(132, 112, 255, 0.25) transparent; }
+
+    .jump-bottom {
+      position: absolute;
+      right: 18px;
+      bottom: 16px;
+      z-index: 5;
+      min-height: 36px;
+      padding: 0 14px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      border: 1px solid color-mix(in srgb, var(--accent) 70%, #000);
+      font: 600 0.8rem var(--font-sans);
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+      transition: transform 200ms var(--ease), opacity 200ms var(--ease);
+      animation: jump-pop 260ms var(--ease);
+    }
+    .jump-bottom[hidden] { display: none !important; }
+    .jump-bottom:not([hidden]) { display: inline-flex; }
+    .jump-bottom:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    @keyframes jump-pop {
+      from { transform: translateY(8px); opacity: 0; }
+      to   { transform: translateY(0); opacity: 1; }
+    }
+
+    .mobile-fabs {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      z-index: 4;
+      display: none;
+      gap: 10px;
+    }
+
+    .fab {
+      width: 52px;
+      height: 52px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-2);
+      color: var(--text-0);
+      font-size: 1.3rem;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+      transition: transform 200ms var(--ease), background-color 160ms var(--ease);
+    }
+    .fab:hover { transform: translateY(-2px); }
+    .fab.fab-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: color-mix(in srgb, var(--accent) 70%, #000);
+    }
 
     .chat-foot {
       padding: 10px 14px;
       border-top: 1px solid var(--border);
       display: flex;
-      gap: 10px;
+      gap: 12px;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      background: var(--bg2);
+      background: var(--bg-elev);
     }
 
     .check-line {
@@ -460,7 +685,8 @@
       align-items: center;
       gap: 8px;
       font-size: 0.84rem;
-      color: var(--text2);
+      color: var(--text-1);
+      cursor: pointer;
     }
 
     .check-line input[type="checkbox"] {
@@ -469,7 +695,37 @@
       accent-color: var(--accent);
     }
 
-    /* ── EXTRAS (acordeón) ── */
+    .keybar {
+      display: none;
+      gap: 6px;
+      padding: 8px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elev);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .keybar::-webkit-scrollbar { display: none; }
+
+    .keybar button {
+      flex-shrink: 0;
+      min-height: var(--tap-aux);
+      padding: 0 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-2);
+      color: var(--text-1);
+      font: 600 0.78rem var(--font-mono);
+      cursor: pointer;
+      transition: background-color 120ms var(--ease), color 120ms var(--ease), transform 80ms var(--ease);
+    }
+    .keybar button:hover { background: var(--bg-3); color: var(--text-0); }
+    .keybar button:active { transform: scale(0.96); }
+    .keybar button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
     .extras {
       display: none;
       gap: 10px;
@@ -478,47 +734,84 @@
 
     .extras > details {
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg2);
+      border-radius: var(--r-md);
+      background: var(--bg-1);
       overflow: hidden;
+      transition: border-color 200ms var(--ease);
     }
+    .extras > details[open] { border-color: var(--border-strong); }
 
     .extras > details > summary {
       cursor: pointer;
       list-style: none;
-      padding: 12px 14px;
-      font-weight: 700;
+      padding: 14px 16px;
+      font-weight: 600;
       font-size: 0.94rem;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       min-height: var(--tap);
+      color: var(--text-0);
     }
     .extras > details > summary::-webkit-details-marker { display: none; }
 
-    .extras > details > summary .chev {
-      margin-left: auto;
-      color: var(--text3);
-      transition: transform 180ms ease;
+    .extras > details > summary > .sum-icon {
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      background: var(--bg-2);
+      display: inline-grid;
+      place-items: center;
+      flex-shrink: 0;
+      color: var(--text-1);
     }
-    .extras > details[open] > summary .chev { transform: rotate(180deg); }
 
-    .extras > details > summary .badge {
-      font-size: 0.74rem;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: var(--bg3);
-      color: var(--text2);
+    .extras > details > summary > .sum-label {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+    .extras > details > summary > .sum-label small {
+      color: var(--text-2);
+      font-size: 0.72rem;
       font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .extras > details > summary > .sum-chev {
+      margin-left: auto;
+      width: 9px; height: 9px;
+      border-right: 1.6px solid var(--text-2);
+      border-bottom: 1.6px solid var(--text-2);
+      transform: rotate(45deg);
+      transition: transform 220ms var(--ease);
+      flex-shrink: 0;
+    }
+    .extras > details[open] > summary > .sum-chev { transform: rotate(-135deg); }
+
+    .extras > details > summary > .badge {
+      font-size: 0.72rem;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      color: var(--text-2);
+      font-weight: 500;
+      font-family: var(--font-mono);
     }
 
     .extras-body {
-      padding: 0 14px 14px;
+      padding: 0 16px 16px;
       display: grid;
-      gap: 10px;
+      gap: 12px;
+      animation: extra-in 220ms var(--ease);
     }
 
-    /* ── FILES EXPLORER ── */
+    @keyframes extra-in {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
     .files-tools {
       display: grid;
       grid-template-columns: 1fr;
@@ -533,25 +826,37 @@
 
     .status-line {
       min-height: 38px;
-      border-radius: var(--radius-sm);
-      padding: 8px 10px;
-      font-size: 0.82rem;
-      color: var(--text2);
-      background: var(--bg);
+      border-radius: var(--r-sm);
+      padding: 8px 12px;
+      font-size: 0.84rem;
+      color: var(--text-1);
+      background: var(--bg-2);
       border: 1px solid var(--border);
       display: flex;
       align-items: center;
+      gap: 8px;
+      transition: background-color 200ms var(--ease), color 200ms var(--ease), border-color 200ms var(--ease);
     }
-    .status-line.ok   { background: rgba(124, 217, 156, 0.1); border-color: rgba(124, 217, 156, 0.32); color: var(--ok); }
-    .status-line.warn { background: rgba(240, 192, 96, 0.1); border-color: rgba(240, 192, 96, 0.32); color: var(--warn); }
-    .status-line.err  { background: rgba(255, 107, 122, 0.1); border-color: rgba(255, 107, 122, 0.32); color: var(--error); }
+    .status-line::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 999px;
+      background: var(--text-3);
+      flex-shrink: 0;
+    }
+    .status-line.ok   { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 35%, transparent); color: var(--ok); }
+    .status-line.ok::before { background: var(--ok); }
+    .status-line.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); }
+    .status-line.warn::before { background: var(--warn); }
+    .status-line.err  { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 35%, transparent); color: var(--err); }
+    .status-line.err::before { background: var(--err); }
 
     .fs-tree {
       border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: var(--bg);
-      min-height: 220px;
-      max-height: 48vh;
+      border-radius: var(--r-sm);
+      background: var(--bg-0);
+      min-height: 240px;
+      max-height: 52vh;
       overflow: auto;
       padding: 6px;
     }
@@ -561,45 +866,43 @@
       grid-template-columns: 1fr auto;
       gap: 8px;
       border: 1px solid transparent;
-      border-radius: var(--radius-sm);
-      padding: 8px 6px;
+      border-radius: 8px;
+      padding: 8px 8px;
       align-items: center;
+      transition: background-color 120ms var(--ease), border-color 120ms var(--ease);
     }
-    .fs-row:hover { border-color: var(--border-strong); background: var(--bg3); }
+    .fs-row:hover { background: var(--bg-2); border-color: var(--border); }
 
     .fs-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       min-width: 0;
     }
-
     .fs-icon { font-size: 1rem; flex-shrink: 0; line-height: 1; }
-
     .fs-name {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 0.84rem;
+      font-size: 0.86rem;
       font-family: var(--font-mono);
-      color: var(--text);
+      color: var(--text-0);
     }
-
     .fs-mini {
-      min-height: 36px;
-      border-radius: var(--radius-sm);
+      min-height: 32px;
+      border-radius: 7px;
       border: 1px solid var(--border);
-      background: var(--bg3);
-      color: var(--text);
-      padding: 6px 12px;
-      font: 600 0.82rem var(--font-sys);
+      background: var(--bg-2);
+      color: var(--text-0);
+      padding: 4px 12px;
+      font: 600 0.78rem var(--font-sans);
       cursor: pointer;
+      transition: background-color 120ms var(--ease);
     }
-    .fs-mini:hover { background: var(--bg4); }
+    .fs-mini:hover { background: var(--bg-3); }
     .fs-mini:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* ── SESSION DETAILS ── */
     .context-pills {
       display: flex;
       flex-wrap: wrap;
@@ -609,38 +912,36 @@
     .pill {
       border: 1px solid var(--border);
       border-radius: 999px;
-      padding: 4px 10px;
-      background: var(--bg);
-      color: var(--text2);
-      font-size: 0.78rem;
+      padding: 4px 11px;
+      background: var(--bg-2);
+      color: var(--text-1);
+      font-size: 0.76rem;
       font-family: var(--font-mono);
     }
-    .pill.warn { border-color: rgba(240, 192, 96, 0.5); color: var(--warn); background: rgba(240, 192, 96, 0.08); }
-    .pill.ok   { border-color: rgba(124, 217, 156, 0.5); color: var(--ok);   background: rgba(124, 217, 156, 0.08); }
+    .pill.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); background: var(--warn-soft); }
+    .pill.ok   { border-color: color-mix(in srgb, var(--ok) 35%, transparent);   color: var(--ok);   background: var(--ok-soft); }
 
     .context-json {
       margin: 0;
       border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: var(--bg);
-      padding: 10px;
+      border-radius: var(--r-sm);
+      background: var(--bg-0);
+      padding: 12px;
       min-height: 160px;
-      max-height: 40vh;
+      max-height: 42vh;
       overflow: auto;
-      font: 0.76rem/1.5 var(--font-mono);
-      color: var(--text2);
+      font: 0.78rem/1.55 var(--font-mono);
+      color: var(--text-1);
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    /* ── ACTIONS GROUP ── */
     .action-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
-    /* ── VIEWER MODAL ── */
     .modal-overlay {
       position: fixed;
       inset: 0;
@@ -651,203 +952,228 @@
       padding: 16px;
       padding-bottom: max(16px, env(safe-area-inset-bottom));
       z-index: 100;
-      backdrop-filter: blur(6px);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
-
-    body[data-viewer="open"] .modal-overlay { display: flex; }
+    body[data-viewer="open"] .modal-overlay {
+      display: flex;
+      animation: overlay-in 220ms var(--ease);
+    }
+    @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
 
     .modal-card {
       width: min(900px, 100%);
       max-height: 92vh;
-      background: var(--bg2);
+      background: var(--bg-1);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow-lift);
       display: grid;
       grid-template-rows: auto 1fr auto;
       overflow: hidden;
+      animation: modal-pop 280ms var(--ease);
+    }
+    @keyframes modal-pop {
+      from { transform: scale(0.96) translateY(8px); opacity: 0; }
+      to   { transform: scale(1) translateY(0); opacity: 1; }
     }
 
     .modal-head {
-      padding: 12px 14px;
+      padding: 14px 16px;
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      gap: 10px;
-      background: var(--bg2);
+      gap: 12px;
+      background: var(--bg-elev);
     }
-
     .modal-head h3 {
       margin: 0;
       font-size: 1rem;
       font-weight: 700;
       min-width: 0;
+      letter-spacing: -0.01em;
     }
-
     .modal-path {
       flex: 1 1 auto;
       min-width: 0;
       font-family: var(--font-mono);
-      font-size: 0.78rem;
-      color: var(--text2);
+      font-size: 0.76rem;
+      color: var(--text-2);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .icon-btn {
-      width: var(--tap);
-      height: var(--tap);
-      border-radius: 50%;
-      border: 1px solid var(--border);
-      background: var(--bg3);
-      color: var(--text);
-      font-size: 1.1rem;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .icon-btn:hover { background: var(--bg4); }
-
     .modal-body {
-      padding: 14px;
+      padding: 16px;
       overflow: auto;
-      min-height: 220px;
-      background: var(--bg);
+      min-height: 240px;
+      background: var(--bg-0);
       display: grid;
       gap: 10px;
     }
 
     .modal-image {
       width: 100%;
-      max-height: 70vh;
+      max-height: 72vh;
       object-fit: contain;
-      border-radius: var(--radius-sm);
-      background: var(--bg3);
+      border-radius: var(--r-sm);
+      background: var(--bg-2);
       border: 1px solid var(--border);
     }
 
     .modal-textarea {
       width: 100%;
       min-height: 50vh;
-      border-radius: var(--radius-sm);
+      border-radius: var(--r-sm);
       border: 1px solid var(--border);
-      background: var(--bg);
-      color: var(--text);
+      background: var(--bg-0);
+      color: var(--text-0);
       font: 500 0.86rem var(--font-mono);
-      padding: 10px;
-      line-height: 1.55;
+      padding: 12px;
+      line-height: 1.6;
       resize: vertical;
     }
     .modal-textarea:focus-visible {
-      outline: 3px solid var(--accent);
-      outline-offset: 2px;
+      outline: none;
       border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
     }
 
     .modal-msg {
       margin: 0;
-      padding: 14px;
-      border-radius: var(--radius-sm);
+      padding: 16px;
+      border-radius: var(--r-sm);
       border: 1px solid var(--border);
-      background: var(--bg3);
-      color: var(--text2);
-      font-size: 0.88rem;
+      background: var(--bg-2);
+      color: var(--text-1);
+      font-size: 0.9rem;
     }
 
     .modal-foot {
-      padding: 10px 14px;
+      padding: 12px 16px;
       border-top: 1px solid var(--border);
       display: flex;
       gap: 8px;
       align-items: center;
       flex-wrap: wrap;
       justify-content: flex-end;
-      background: var(--bg2);
+      background: var(--bg-elev);
     }
-
-    .modal-foot .modal-status {
+    .modal-status {
       flex: 1 1 auto;
       font-size: 0.82rem;
-      color: var(--text2);
+      color: var(--text-2);
       min-width: 0;
     }
 
-    /* ── UPLOAD LOG (en chat-foot, opcional) ── */
     .upload-log {
       margin: 0;
       padding: 0;
       list-style: none;
       display: grid;
       gap: 4px;
-      max-height: 120px;
+      max-height: 140px;
       overflow: auto;
-      width: 100%;
     }
-
     .upload-log li {
       font-size: 0.76rem;
-      padding: 5px 8px;
-      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      border-radius: 7px;
       border: 1px solid var(--border);
-      background: var(--bg);
-      color: var(--text2);
+      background: var(--bg-2);
+      color: var(--text-1);
       font-family: var(--font-mono);
     }
-    .upload-log li.ok { border-color: rgba(124, 217, 156, 0.45); color: var(--ok); }
-    .upload-log li.err { border-color: rgba(255, 107, 122, 0.45); color: var(--error); }
-    .upload-log li.warn { border-color: rgba(240, 192, 96, 0.45); color: var(--warn); }
+    .upload-log li.ok   { border-color: color-mix(in srgb, var(--ok) 35%, transparent); color: var(--ok); }
+    .upload-log li.err  { border-color: color-mix(in srgb, var(--err) 35%, transparent); color: var(--err); }
+    .upload-log li.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); }
+
+    .toast-overlay {
+      position: fixed;
+      left: 50%;
+      bottom: max(20px, env(safe-area-inset-bottom));
+      transform: translateX(-50%) translateY(20px);
+      z-index: 120;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      box-shadow: var(--shadow-lift);
+      padding: 12px 14px;
+      display: none;
+      gap: 12px;
+      align-items: center;
+      max-width: min(560px, calc(100% - 24px));
+      animation: toast-in 240ms var(--ease) forwards;
+    }
+    body[data-toast="open"] .toast-overlay { display: flex; }
+    @keyframes toast-in {
+      from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+      to   { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+    .toast-msg {
+      flex: 1 1 auto;
+      font-size: 0.86rem;
+      color: var(--text-0);
+      min-width: 0;
+    }
+    .toast-actions { display: inline-flex; gap: 6px; }
+    .toast-overlay .btn { min-height: 34px; padding: 0 12px; font-size: 0.82rem; }
 
     .sr-only {
       position: absolute;
-      width: 1px;
-      height: 1px;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
-      border: 0;
-      padding: 0;
-      white-space: nowrap;
+      width: 1px; height: 1px; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); border: 0; padding: 0; white-space: nowrap;
     }
 
-    /* ── RESPONSIVE ── */
     @media (min-width: 720px) {
-      body { padding: 16px; }
+      body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
       .row-primary { grid-template-columns: 1fr auto; align-items: end; }
       .primary-actions { grid-template-columns: auto auto; }
       .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .attach-actions { grid-template-columns: auto auto; justify-content: start; }
-      .attach-actions .btn { padding: 10px 18px; min-width: 180px; }
-      .files-tools { grid-template-columns: 1fr auto; }
+      .attach-actions .btn { min-width: 200px; }
+      .files-tools { grid-template-columns: 1fr auto; align-items: end; }
       .action-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .chat-body { min-height: 380px; }
-      .terminal-wrap, #terminal { min-height: 380px; }
+      .chat-body, .terminal-wrap, #terminal { min-height: 400px; }
     }
-
     @media (min-width: 1020px) {
-      .chat-body { min-height: 460px; }
-      .terminal-wrap, #terminal { min-height: 460px; }
-      .extras { grid-template-columns: 1fr; }
+      .chat-body, .terminal-wrap, #terminal { min-height: 480px; }
     }
-
-    @media (max-width: 480px) {
-      .topbar { padding: 8px 10px; }
-      .conn-state { font-size: 0.78rem; }
+    @media (max-width: 719px) {
+      .keybar { display: flex; }
+      .mobile-fabs { display: flex; }
+      .attach-actions { display: none; }
+      .topbar { padding: 8px 12px; }
+      .brand-meta small { display: none; }
       .session-chip { max-width: 100%; }
       .modal-card { max-height: 100vh; border-radius: 0; }
-      .modal-body { padding: 10px; }
+      .modal-body { padding: 12px; }
       .modal-image { max-height: 60vh; }
+      .chat-card { min-height: calc(100dvh - 220px); }
+      .terminal-wrap, #terminal, .chat-body { min-height: calc(100dvh - 300px); }
+      .jump-bottom { right: 14px; bottom: 80px; }
+    }
+    @media (max-width: 480px) {
+      :root { --tap: 42px; --tap-aux: 36px; }
+      body { font-size: 14px; }
+      .onboarding h1 { font-size: 1.2rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
 </head>
-<body class="theme-dark" data-connected="false" data-viewer="closed">
+<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed">
   <div class="app-shell">
     <header class="topbar" role="banner">
       <div class="brand">
-        <svg class="brand-bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
-        <span>POWER-AGENT remoto</span>
+        <span class="brand-mark" aria-hidden="true">PA</span>
+        <span class="brand-meta">
+          <span>POWER-AGENT</span>
+          <small>Sesión remota</small>
+        </span>
       </div>
       <span id="session-chip" class="session-chip" aria-live="polite"></span>
       <div class="topbar-spacer"></div>
@@ -855,94 +1181,136 @@
         <span id="connection-dot" class="dot offline" aria-hidden="true"></span>
         <span id="connection-text">Sin conectar</span>
       </div>
-      <button id="btn-topbar-disconnect" class="btn btn-danger" type="button" hidden style="width:auto;padding:6px 14px;min-height:36px;font-size:0.84rem">Cerrar sesión</button>
+      <div class="topbar-actions">
+        <button id="btn-theme-toggle" class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Cambiar tema" title="Cambiar tema">
+          <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button id="btn-topbar-disconnect" class="btn btn-danger btn-sm" type="button" hidden>Cerrar sesión</button>
+      </div>
     </header>
 
     <section class="card card-pad onboarding" aria-labelledby="onboarding-title">
-      <h1 id="onboarding-title">Conectar al equipo central</h1>
-      <p class="onboarding-lead">Escribe tu nombre de operador y pulsa <strong>Entrar</strong>. Las opciones técnicas están abajo, normalmente no hace falta tocarlas.</p>
+      <div class="onboarding-head">
+        <h1 id="onboarding-title">Conectar al equipo central</h1>
+        <p class="onboarding-lead">Escribe tu nombre de operador y pulsa <strong>Entrar</strong>. El resto suele ir automático.</p>
+      </div>
 
       <form id="connect-form" novalidate>
         <div class="row-primary">
           <div class="field">
-            <label for="username">Tu nombre de usuario</label>
+            <label for="username">Usuario</label>
             <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
           </div>
           <div class="primary-actions">
             <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
-            <button id="btn-autoreconnect" class="btn" type="button" aria-pressed="true">Reconexión automática: ON</button>
+            <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
           </div>
         </div>
 
-        <details id="advanced-options" class="advanced" style="margin-top:10px">
+        <details id="advanced-options" class="advanced" style="margin-top:12px">
           <summary>Opciones avanzadas (servidor, operador, perfil)</summary>
           <div class="advanced-grid">
             <div class="field">
-              <label for="ws-url">Servidor (WebSocket)</label>
+              <label for="ws-url">Servidor</label>
               <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://192.168.1.10:9999" />
             </div>
             <div class="field">
-              <label for="operator-id">ID de operador</label>
+              <label for="operator-id">ID operador</label>
               <input id="operator-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
             <div class="field">
-              <label for="profile-id">ID de perfil</label>
+              <label for="profile-id">ID perfil</label>
               <input id="profile-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
           </div>
-          <p class="hint" style="margin-top:8px">Si dejas todo en blanco, el cliente usa la dirección del navegador y conecta en modo compatible.</p>
+          <p class="hint" style="margin-top:8px">Si lo dejas en blanco, el cliente conecta en modo compatible con el servidor del navegador.</p>
         </details>
 
-        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:10px">
+        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
           <span id="handshake-text">Listo para conectar.</span>
           <span id="handshake-tone" class="handshake-tone">en espera</span>
         </div>
       </form>
     </section>
 
-    <section class="card chat-card" aria-labelledby="chat-title">
+    <section class="chat-card" aria-labelledby="chat-title">
       <header class="chat-head">
-        <div class="chat-head-row">
+        <div class="chat-head-top">
           <div style="min-width:0">
             <h2 id="chat-title" class="chat-title">Chat con el agente</h2>
-            <div class="chat-subtitle">Habla con el equipo central. Adjunta foto o archivo directos al chat.</div>
+            <div class="chat-subtitle">Hablas con el equipo central. Adjuntos directos al chat.</div>
           </div>
-        </div>
-        <div class="attach-actions">
-          <button id="btn-attach-photo" class="btn btn-primary btn-icon-left" type="button" aria-label="Enviar foto al chat">
-            <span aria-hidden="true">📷</span>
-            <span>Enviar foto al chat</span>
-          </button>
-          <button id="btn-attach-file" class="btn btn-icon-left" type="button" aria-label="Enviar archivo al chat">
-            <span aria-hidden="true">📎</span>
-            <span>Enviar archivo al chat</span>
-          </button>
+          <div class="attach-actions" role="group" aria-label="Adjuntar al chat">
+            <button id="btn-attach-photo" class="btn btn-primary" type="button" aria-label="Enviar foto al chat">
+              <span class="btn-leading" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/></svg>
+              </span>
+              Foto al chat
+            </button>
+            <button id="btn-attach-file" class="btn btn-ghost" type="button" aria-label="Enviar archivo al chat">
+              <span class="btn-leading" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-8.49 8.49a2 2 0 0 1-2.83-2.83l7.07-7.07"/></svg>
+              </span>
+              Archivo al chat
+            </button>
+          </div>
         </div>
         <input id="input-attach-file" class="sr-only" type="file" />
         <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
-        <div id="attach-status" class="attach-status" role="status" aria-live="polite">Listo. Cuando hables o adjuntes algo, llegará al equipo central.</div>
+        <div id="attach-status" class="attach-status" role="status" aria-live="polite">Cuando hables o adjuntes algo, llegará al equipo central.</div>
       </header>
 
       <div class="chat-body">
         <div class="terminal-wrap"><div id="terminal"></div></div>
+        <button id="btn-jump-bottom" class="jump-bottom" type="button" hidden>
+          <span aria-hidden="true">↓</span>
+          <span>Ir al final</span>
+          <span id="jump-count"></span>
+        </button>
+        <div class="mobile-fabs">
+          <button id="btn-fab-photo" class="fab fab-primary" type="button" aria-label="Enviar foto al chat" title="Foto al chat">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          </button>
+          <button id="btn-fab-file" class="fab" type="button" aria-label="Enviar archivo al chat" title="Archivo al chat">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-8.49 8.49a2 2 0 0 1-2.83-2.83l7.07-7.07"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="keybar" role="toolbar" aria-label="Teclas auxiliares">
+        <button type="button" data-key="esc">Esc</button>
+        <button type="button" data-key="tab">Tab</button>
+        <button type="button" data-key="ctrl" aria-pressed="false">Ctrl</button>
+        <button type="button" data-key="ctrl-c">Ctrl+C</button>
+        <button type="button" data-key="up">↑</button>
+        <button type="button" data-key="down">↓</button>
+        <button type="button" data-key="left">←</button>
+        <button type="button" data-key="right">→</button>
+        <button type="button" data-key="enter">↵</button>
       </div>
 
       <footer class="chat-foot">
         <label class="check-line" for="attach-confirm-chat">
           <input id="attach-confirm-chat" type="checkbox" checked />
-          Confirmar antes de enviar adjuntos al chat
+          Pedir confirmación antes de enviar adjuntos
         </label>
-        <button id="btn-clear-terminal" class="btn" type="button" style="width:auto;padding:6px 12px;min-height:36px;font-size:0.82rem">Limpiar pantalla</button>
+        <button id="btn-clear-terminal" class="btn btn-ghost btn-sm" type="button">Limpiar pantalla</button>
       </footer>
     </section>
 
     <section class="extras" aria-label="Más opciones">
       <details id="details-files">
         <summary>
-          <span aria-hidden="true">📁</span>
-          <span>Archivos remotos</span>
+          <span class="sum-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+          </span>
+          <span class="sum-label">
+            <span>Archivos remotos</span>
+            <small>Navegar y editar dentro de tus carpetas autorizadas</small>
+          </span>
           <span id="files-badge" class="badge" hidden></span>
-          <span class="chev" aria-hidden="true">▾</span>
+          <span class="sum-chev" aria-hidden="true"></span>
         </summary>
         <div class="extras-body">
           <div id="fs-status" class="status-line" role="status" aria-live="polite">Conecta primero para ver carpetas.</div>
@@ -952,8 +1320,8 @@
               <select id="fs-root" class="control"></select>
             </div>
             <div class="files-tools-buttons">
-              <button id="btn-fs-refresh" class="btn" type="button">Recargar</button>
-              <button id="btn-fs-open-root" class="btn" type="button">Ir a la raíz</button>
+              <button id="btn-fs-refresh" class="btn btn-ghost btn-sm" type="button">Recargar</button>
+              <button id="btn-fs-open-root" class="btn btn-ghost btn-sm" type="button">Ir a la raíz</button>
             </div>
           </div>
           <div id="fs-tree" class="fs-tree" aria-label="Listado de archivos remotos"></div>
@@ -962,10 +1330,15 @@
 
       <details id="details-session">
         <summary>
-          <span aria-hidden="true">🪪</span>
-          <span>Detalles de tu sesión</span>
+          <span class="sum-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          </span>
+          <span class="sum-label">
+            <span>Detalles de tu sesión</span>
+            <small>Identidad, permisos, MCP y JSON de contexto</small>
+          </span>
           <span id="session-badge" class="badge" hidden></span>
-          <span class="chev" aria-hidden="true">▾</span>
+          <span class="sum-chev" aria-hidden="true"></span>
         </summary>
         <div class="extras-body">
           <div id="context-pills" class="context-pills"></div>
@@ -975,18 +1348,23 @@
 
       <details id="details-actions">
         <summary>
-          <span aria-hidden="true">⚙︎</span>
-          <span>Acciones avanzadas</span>
-          <span class="chev" aria-hidden="true">▾</span>
+          <span class="sum-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+          <span class="sum-label">
+            <span>Acciones avanzadas</span>
+            <small>Micrófono, reconexión, identidad y diagnóstico</small>
+          </span>
+          <span class="sum-chev" aria-hidden="true"></span>
         </summary>
         <div class="extras-body">
           <div class="action-grid">
-            <button id="btn-mic" class="btn" type="button">Micrófono</button>
-            <button id="btn-send-handshake" class="btn" type="button">Reenviar identidad</button>
-            <button id="btn-reconnect" class="btn" type="button">Volver a conectar</button>
-            <button id="btn-disconnect" class="btn btn-danger" type="button">Cerrar sesión</button>
+            <button id="btn-mic" class="btn btn-ghost btn-sm" type="button">Micrófono</button>
+            <button id="btn-send-handshake" class="btn btn-ghost btn-sm" type="button">Reenviar identidad</button>
+            <button id="btn-reconnect" class="btn btn-ghost btn-sm" type="button">Volver a conectar</button>
+            <button id="btn-disconnect" class="btn btn-danger btn-sm" type="button">Cerrar sesión</button>
           </div>
-          <p class="hint">Si una acción no está disponible en este servidor, el cliente avisa pero no se rompe nada.</p>
+          <p class="hint">Si una acción no está soportada en este servidor, el cliente avisa pero no se rompe nada.</p>
           <ul id="upload-log" class="upload-log" aria-label="Últimos envíos al chat"></ul>
         </div>
       </details>
@@ -998,7 +1376,9 @@
       <header class="modal-head">
         <h3 id="viewer-title">Visor</h3>
         <span id="viewer-path" class="modal-path"></span>
-        <button id="btn-viewer-close" class="icon-btn" type="button" aria-label="Cerrar visor">×</button>
+        <button id="btn-viewer-close" class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Cerrar visor">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
       </header>
       <div class="modal-body">
         <img id="viewer-image" class="modal-image" alt="Vista previa de imagen remota" hidden />
@@ -1007,11 +1387,19 @@
       </div>
       <footer class="modal-foot">
         <span id="viewer-status" class="modal-status"></span>
-        <button id="btn-viewer-save" class="btn btn-primary" type="button" style="width:auto;min-height:38px;padding:6px 16px" hidden>Guardar cambios</button>
-        <button id="btn-viewer-close-foot" class="btn" type="button" style="width:auto;min-height:38px;padding:6px 16px">Cerrar</button>
+        <button id="btn-viewer-save" class="btn btn-primary btn-sm" type="button" hidden>Guardar cambios</button>
+        <button id="btn-viewer-close-foot" class="btn btn-ghost btn-sm" type="button">Cerrar</button>
       </footer>
     </article>
   </div>
+
+  <aside class="toast-overlay" role="alertdialog" aria-labelledby="toast-msg" aria-modal="false">
+    <div id="toast-msg" class="toast-msg"></div>
+    <div class="toast-actions">
+      <button id="toast-cancel" class="btn btn-ghost btn-sm" type="button">Cancelar</button>
+      <button id="toast-ok" class="btn btn-primary btn-sm" type="button">Enviar</button>
+    </div>
+  </aside>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
@@ -1026,6 +1414,9 @@
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
       btnTopbarDisconnect: document.getElementById('btn-topbar-disconnect'),
+      btnThemeToggle: document.getElementById('btn-theme-toggle'),
+      themeIconSun: document.getElementById('theme-icon-sun'),
+      themeIconMoon: document.getElementById('theme-icon-moon'),
       connectionText: document.getElementById('connection-text'),
       connectionDot: document.getElementById('connection-dot'),
       sessionChip: document.getElementById('session-chip'),
@@ -1056,10 +1447,16 @@
 
       btnAttachFile: document.getElementById('btn-attach-file'),
       btnAttachPhoto: document.getElementById('btn-attach-photo'),
+      btnFabFile: document.getElementById('btn-fab-file'),
+      btnFabPhoto: document.getElementById('btn-fab-photo'),
       attachFileInput: document.getElementById('input-attach-file'),
       attachPhotoInput: document.getElementById('input-attach-photo'),
       attachConfirmCheck: document.getElementById('attach-confirm-chat'),
       uploadLog: document.getElementById('upload-log'),
+
+      btnJumpBottom: document.getElementById('btn-jump-bottom'),
+      jumpCount: document.getElementById('jump-count'),
+      keybar: document.querySelector('.keybar'),
 
       viewerOverlay: document.getElementById('viewer-modal'),
       viewerTitle: document.getElementById('viewer-title'),
@@ -1070,28 +1467,60 @@
       viewerStatus: document.getElementById('viewer-status'),
       btnViewerSave: document.getElementById('btn-viewer-save'),
       btnViewerClose: document.getElementById('btn-viewer-close'),
-      btnViewerCloseFoot: document.getElementById('btn-viewer-close-foot')
+      btnViewerCloseFoot: document.getElementById('btn-viewer-close-foot'),
+
+      toastMsg: document.getElementById('toast-msg'),
+      toastOk: document.getElementById('toast-ok'),
+      toastCancel: document.getElementById('toast-cancel')
     }
 
-    /* Tema: respetar prefers-color-scheme; fallback dark */
-    try {
-      const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
-      refs.body.classList.toggle('theme-light', prefersLight)
-      refs.body.classList.toggle('theme-dark', !prefersLight)
-    } catch {}
+    function applyTheme(themeName) {
+      const t = themeName === 'light' ? 'light' : 'dark'
+      refs.body.classList.toggle('theme-light', t === 'light')
+      refs.body.classList.toggle('theme-dark', t === 'dark')
+      refs.themeIconSun.hidden = t !== 'dark'
+      refs.themeIconMoon.hidden = t === 'dark'
+      try { localStorage.setItem('powerAgentLanTheme', t) } catch {}
+      applyTerminalTheme()
+    }
+
+    function initTheme() {
+      let stored = null
+      try { stored = localStorage.getItem('powerAgentLanTheme') } catch {}
+      if (stored === 'dark' || stored === 'light') { applyTheme(stored); return }
+      applyTheme('dark')
+    }
+
+    function applyTerminalTheme() {
+      if (!window._termInstance) return
+      const cs = getComputedStyle(refs.body)
+      window._termInstance.options.theme = {
+        background: cs.getPropertyValue('--term-bg').trim() || '#0a0a10',
+        foreground: cs.getPropertyValue('--term-fg').trim() || '#e6e6f5',
+        cursor: cs.getPropertyValue('--term-cursor').trim() || '#b8a8ff',
+        selectionBackground: cs.getPropertyValue('--term-sel').trim() || 'rgba(132,112,255,0.32)'
+      }
+    }
+
+    initTheme()
 
     const term = new Terminal({
       convertEol: true,
       cursorBlink: true,
+      scrollback: 4000,
       fontFamily: '"IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace',
-      fontSize: 13,
+      fontSize: 13.5,
+      lineHeight: 1.25,
+      letterSpacing: 0,
+      smoothScrollDuration: 80,
       theme: {
-        background: getComputedStyle(refs.body).getPropertyValue('--term-bg').trim() || '#101018',
+        background: getComputedStyle(refs.body).getPropertyValue('--term-bg').trim() || '#0a0a10',
         foreground: getComputedStyle(refs.body).getPropertyValue('--term-fg').trim() || '#e6e6f5',
-        cursor: '#a690ff',
-        selectionBackground: '#3a3a5a'
+        cursor: getComputedStyle(refs.body).getPropertyValue('--term-cursor').trim() || '#b8a8ff',
+        selectionBackground: getComputedStyle(refs.body).getPropertyValue('--term-sel').trim() || 'rgba(132,112,255,0.32)'
       }
     })
+    window._termInstance = term
     const fitAddon = new FitAddon.FitAddon()
     term.loadAddon(fitAddon)
     term.open(document.getElementById('terminal'))
@@ -1121,52 +1550,64 @@
       viewerPreviewType: '',
       viewerDirty: false,
       viewerMime: '',
-      lastKnownActiveElement: null
+      lastFocus: null,
+      ctrlSticky: false,
+      backlogCount: 0,
+      pendingToast: null
     }
 
-    function errorText(err) {
-      return err && err.message ? err.message : String(err || 'Error')
-    }
-
-    function isSocketOpen() {
-      return appState.socket && appState.socket.readyState === WebSocket.OPEN
-    }
+    function errorText(err) { return err && err.message ? err.message : String(err || 'Error') }
+    function isSocketOpen() { return appState.socket && appState.socket.readyState === WebSocket.OPEN }
 
     function setConnectedFlag(value) {
       refs.body.dataset.connected = value ? 'true' : 'false'
       refs.btnTopbarDisconnect.hidden = !value
     }
-
     function setConnectionStatus(kind, text) {
       refs.connectionDot.className = `dot ${kind}`
       refs.connectionText.textContent = String(text || '')
     }
-
     function setHandshakeStatus(kind, text, badgeText) {
       refs.handshakeTone.className = `handshake-tone ${kind}`
       refs.handshakeTone.textContent = badgeText || kind || 'en espera'
       refs.handshakeText.textContent = String(text || '')
     }
-
     function setStatusLine(el, text, tone = '') {
       el.className = 'status-line'
       if (tone === 'ok' || tone === 'warn' || tone === 'err') el.classList.add(tone)
       el.textContent = String(text || '')
     }
-
     function setAttachStatus(text, tone = '') {
       refs.attachStatus.className = 'attach-status'
       if (tone === 'ok' || tone === 'warn' || tone === 'err') refs.attachStatus.classList.add(tone)
       refs.attachStatus.textContent = String(text || '')
     }
-
-    function setFsStatus(text, tone = '') {
-      setStatusLine(refs.fsStatus, text, tone)
-    }
-
+    function setFsStatus(text, tone = '') { setStatusLine(refs.fsStatus, text, tone) }
     function setViewerStatus(text, tone = '') {
       refs.viewerStatus.textContent = String(text || '')
-      refs.viewerStatus.style.color = tone === 'err' ? 'var(--error)' : (tone === 'ok' ? 'var(--ok)' : (tone === 'warn' ? 'var(--warn)' : ''))
+      refs.viewerStatus.style.color = tone === 'err' ? 'var(--err)' : (tone === 'ok' ? 'var(--ok)' : (tone === 'warn' ? 'var(--warn)' : ''))
+    }
+
+    function showToast(message, { okLabel = 'Enviar', cancelLabel = 'Cancelar' } = {}) {
+      return new Promise((resolve) => {
+        if (appState.pendingToast) { appState.pendingToast.resolve(false) }
+        refs.toastMsg.textContent = message
+        refs.toastOk.textContent = okLabel
+        refs.toastCancel.textContent = cancelLabel
+        refs.body.dataset.toast = 'open'
+        const finish = (value) => {
+          refs.body.dataset.toast = 'closed'
+          appState.pendingToast = null
+          refs.toastOk.removeEventListener('click', onOk)
+          refs.toastCancel.removeEventListener('click', onCancel)
+          resolve(value)
+        }
+        const onOk = () => finish(true)
+        const onCancel = () => finish(false)
+        appState.pendingToast = { resolve: finish }
+        refs.toastOk.addEventListener('click', onOk)
+        refs.toastCancel.addEventListener('click', onCancel)
+      })
     }
 
     function inferDefaultWsUrl() {
@@ -1176,14 +1617,12 @@
       if (!host) return 'ws://127.0.0.1:9999'
       return `ws://${host}:${port}`
     }
-
     function inferDefaultRemoteIdentity() {
       const q = new URLSearchParams(window.location.search)
       refs.operatorIdInput.value = q.get('operatorId') || q.get('operator') || ''
       refs.profileIdInput.value = q.get('profileId') || q.get('profile') || ''
       refs.usernameInput.value = q.get('username') || q.get('user') || ''
     }
-
     function buildRequestedContext() {
       return {
         operatorId: refs.operatorIdInput.value.trim(),
@@ -1191,7 +1630,6 @@
         username: refs.usernameInput.value.trim()
       }
     }
-
     function buildConnectUrl(rawUrl) {
       const base = new URL(rawUrl)
       const ctx = buildRequestedContext()
@@ -1200,7 +1638,6 @@
       if (ctx.username) base.searchParams.set('username', ctx.username)
       return base.toString()
     }
-
     function sendMessage(payload) {
       if (!isSocketOpen()) return false
       appState.socket.send(JSON.stringify(payload))
@@ -1210,66 +1647,44 @@
     function formatFsError(errorObj) {
       if (!errorObj) return 'Error de filesystem'
       const errorCode = String(errorObj.code || '').toUpperCase()
-      if (errorCode === 'READ_ONLY_ROOT') {
-        return 'Tu sesión está en solo lectura: no puedes enviar fotos/archivos. Pide al administrador una carpeta con escritura.'
-      }
-      if (errorCode === 'PERMISSION_DENIED') {
-        return 'Tu rol no tiene permiso para esta acción.'
-      }
-      if (errorCode === 'PATH_OUTSIDE_ALLOWED_ROOTS') {
-        return 'Ruta fuera de las carpetas permitidas para tu sesión.'
-      }
-      if (errorCode === 'FILE_TOO_LARGE') {
-        return 'El archivo supera el límite de tamaño de tu sesión.'
-      }
+      if (errorCode === 'READ_ONLY_ROOT') return 'Tu sesión está en solo lectura: no puedes enviar fotos/archivos. Pide al administrador una carpeta con escritura.'
+      if (errorCode === 'PERMISSION_DENIED') return 'Tu rol no tiene permiso para esta acción.'
+      if (errorCode === 'PATH_OUTSIDE_ALLOWED_ROOTS') return 'Ruta fuera de las carpetas permitidas para tu sesión.'
+      if (errorCode === 'FILE_TOO_LARGE') return 'El archivo supera el límite de tamaño de tu sesión.'
       const codeLabel = errorObj.code ? `${errorObj.code}: ` : ''
       return `${codeLabel}${errorObj.message || 'Error remoto'}`
     }
 
-    function hasFsCapability(name) {
-      return appState.sessionCapabilities?.fs?.[name] === true
-    }
-    function hasViewerCapability() {
-      return appState.sessionCapabilities?.viewer?.open === true
-    }
-    function canOpenFile() {
-      return hasFsCapability('read') || hasViewerCapability()
-    }
-    function canWriteFile() {
-      return hasFsCapability('write')
-    }
-    function canUpload() {
-      return hasFsCapability('upload') || hasFsCapability('write')
-    }
+    function hasFsCapability(name) { return appState.sessionCapabilities?.fs?.[name] === true }
+    function hasViewerCapability() { return appState.sessionCapabilities?.viewer?.open === true }
+    function canOpenFile() { return hasFsCapability('read') || hasViewerCapability() }
+    function canWriteFile() { return hasFsCapability('write') }
+    function canUpload() { return hasFsCapability('upload') || hasFsCapability('write') }
 
     function renderRootSelector(roots = []) {
       refs.fsRootSelect.innerHTML = ''
       const list = Array.isArray(roots) ? roots : []
       if (!list.length) {
         const opt = document.createElement('option')
-        opt.value = ''
-        opt.textContent = '(sin carpetas)'
+        opt.value = ''; opt.textContent = '(sin carpetas)'
         refs.fsRootSelect.appendChild(opt)
         refs.fsRootSelect.disabled = true
         return
       }
       for (const root of list) {
         const opt = document.createElement('option')
-        opt.value = root
-        opt.textContent = root
+        opt.value = root; opt.textContent = root
         refs.fsRootSelect.appendChild(opt)
       }
       refs.fsRootSelect.disabled = false
       if (!list.includes(refs.fsRootSelect.value)) refs.fsRootSelect.value = list[0]
     }
-
     function updateFsControlState() {
       const canList = hasFsCapability('list')
       refs.btnFsRefresh.disabled = !canList
       refs.btnFsOpenRoot.disabled = !canList
       appState.fsApiAvailable = canList || canOpenFile() || canWriteFile()
     }
-
     function clearFsUi(reason = 'Conecta primero para ver carpetas.') {
       appState.fsApiAvailable = false
       appState.fsLegacyReason = ''
@@ -1298,13 +1713,11 @@
         refs.sessionBadge.hidden = true
         return
       }
-
       const ctx = appState.sessionInfo.context || {}
       const caps = appState.sessionCapabilities || {}
       const roots = Array.isArray(ctx.allowedRoots) ? ctx.allowedRoots : []
       const roRoots = Array.isArray(ctx.readOnlyRoots) ? ctx.readOnlyRoots : []
       const mcp = Array.isArray(ctx.allowedMcpServers) ? ctx.allowedMcpServers : []
-
       const pillData = [
         `modo: ${ctx.mode || 'legacy'}`,
         `operador: ${ctx.operatorId || '—'}`,
@@ -1316,38 +1729,31 @@
       ]
       for (const item of pillData) {
         const chip = document.createElement('span')
-        chip.className = 'pill'
-        chip.textContent = item
+        chip.className = 'pill'; chip.textContent = item
         refs.contextPills.appendChild(chip)
       }
-
       const denied = []
       if (caps?.pty?.execute === false) denied.push('terminal')
       if (caps?.fs?.list === false) denied.push('listar')
       if (caps?.fs?.read === false) denied.push('leer')
       if (caps?.fs?.write === false) denied.push('editar')
       if (denied.length) {
-        const denyChip = document.createElement('span')
-        denyChip.className = 'pill warn'
-        denyChip.textContent = `sin permiso: ${denied.join(' · ')}`
-        refs.contextPills.appendChild(denyChip)
+        const c = document.createElement('span')
+        c.className = 'pill warn'; c.textContent = `sin permiso: ${denied.join(' · ')}`
+        refs.contextPills.appendChild(c)
       } else {
-        const okChip = document.createElement('span')
-        okChip.className = 'pill ok'
-        okChip.textContent = 'permisos: OK'
-        refs.contextPills.appendChild(okChip)
+        const c = document.createElement('span')
+        c.className = 'pill ok'; c.textContent = 'permisos: OK'
+        refs.contextPills.appendChild(c)
       }
-
-      const json = {
+      refs.contextJson.textContent = JSON.stringify({
         sessionId: appState.sessionInfo.sessionId || null,
         cwd: appState.sessionInfo.cwd || null,
         cli: appState.sessionInfo.cli || null,
         connectedAt: appState.sessionInfo.connectedAt || null,
         context: ctx,
         capabilities: caps
-      }
-      refs.contextJson.textContent = JSON.stringify(json, null, 2)
-
+      }, null, 2)
       refs.sessionBadge.hidden = false
       refs.sessionBadge.textContent = `${ctx.mode || 'legacy'} · ${ctx.username || ctx.operatorId || 'sin id'}`
     }
@@ -1356,7 +1762,6 @@
       appState.fsReqSeq += 1
       return `fs-${Date.now()}-${appState.fsReqSeq}`
     }
-
     function sendFsRequest(type, payload = {}, timeoutMs = 10000) {
       return new Promise((resolve, reject) => {
         if (!isSocketOpen()) { reject(new Error('Socket desconectado')); return }
@@ -1368,36 +1773,27 @@
         appState.fsPending.set(requestId, { resolve, reject, timer, type })
         const sent = sendMessage({ type, requestId, ...payload })
         if (!sent) {
-          clearTimeout(timer)
-          appState.fsPending.delete(requestId)
+          clearTimeout(timer); appState.fsPending.delete(requestId)
           reject(new Error('No se pudo enviar la petición remota'))
         }
       })
     }
-
     function clearPendingFsRequests(reason = 'Socket cerrado') {
-      for (const pending of appState.fsPending.values()) {
-        clearTimeout(pending.timer)
-        pending.reject(new Error(reason))
-      }
+      for (const p of appState.fsPending.values()) { clearTimeout(p.timer); p.reject(new Error(reason)) }
       appState.fsPending.clear()
     }
-
     function rejectPendingFsByType(type, reason) {
-      for (const [requestId, pending] of appState.fsPending.entries()) {
-        if (pending.type !== type) continue
-        clearTimeout(pending.timer)
-        pending.reject(new Error(reason || `Operación no soportada: ${type}`))
-        appState.fsPending.delete(requestId)
+      for (const [id, p] of appState.fsPending.entries()) {
+        if (p.type !== type) continue
+        clearTimeout(p.timer); p.reject(new Error(reason || `Operación no soportada: ${type}`))
+        appState.fsPending.delete(id)
       }
     }
-
     function isUnsupportedFsOp(errorObj, opType) {
       const code = String(errorObj?.code || '').toUpperCase()
       const message = String(errorObj?.message || '').toLowerCase()
       return code === 'INVALID_REQUEST' && message.includes('operación fs no soportada') && message.includes(String(opType || '').toLowerCase())
     }
-
     function resolveFsResponse(msg) {
       const requestId = String(msg.requestId || '')
       if (!requestId) return false
@@ -1405,7 +1801,6 @@
       if (!pending) return false
       appState.fsPending.delete(requestId)
       clearTimeout(pending.timer)
-
       if (msg?.ok === false && pending.type === 'fs:upload' && isUnsupportedFsOp(msg.error, 'fs:upload')) {
         appState.uploadSupport = 'unsupported'
         setAttachStatus('Este servidor no admite envío de adjuntos remotos.', 'warn')
@@ -1418,37 +1813,28 @@
       for (const entry of Array.isArray(entries) ? entries : []) {
         const row = document.createElement('div')
         row.className = 'fs-row'
-
         const left = document.createElement('div')
         left.className = 'fs-left'
         left.style.paddingLeft = `${Math.min(depth, 8) * 14}px`
-
         const icon = document.createElement('span')
         icon.className = 'fs-icon'
         icon.textContent = entry.kind === 'dir' ? '🗂️' : (entry.kind === 'symlink' ? '🔗' : '📄')
         icon.setAttribute('aria-hidden', 'true')
-
         const name = document.createElement('span')
         name.className = 'fs-name'
         name.textContent = entry.name || entry.path || '(sin nombre)'
         name.title = entry.path || ''
         left.append(icon, name)
-
         const actions = document.createElement('div')
-        actions.className = 'fs-actions'
         if (entry.kind === 'file' || entry.kind === 'symlink') {
           const openBtn = document.createElement('button')
-          openBtn.type = 'button'
-          openBtn.className = 'fs-mini'
-          openBtn.textContent = 'Abrir'
-          const allowOpen = canOpenFile() && entry.canRead !== false
-          openBtn.disabled = !allowOpen
+          openBtn.type = 'button'; openBtn.className = 'fs-mini'; openBtn.textContent = 'Abrir'
+          openBtn.disabled = !(canOpenFile() && entry.canRead !== false)
           openBtn.addEventListener('click', () => {
             openRemoteFile(entry.path).catch((err) => setFsStatus(errorText(err), 'err'))
           })
           actions.appendChild(openBtn)
         }
-
         row.append(left, actions)
         refs.fsTree.appendChild(row)
         if (Array.isArray(entry.children) && entry.children.length) renderTreeEntries(entry.children, depth + 1)
@@ -1459,7 +1845,6 @@
       if (appState.fsRefreshing) { appState.fsRefreshQueued = true; return }
       appState.fsRefreshing = true
       const silent = !!options.silent
-
       try {
         if (!isSocketOpen()) { clearFsUi('Conecta primero para ver carpetas.'); return }
         if (!hasFsCapability('list')) {
@@ -1467,20 +1852,15 @@
           refs.fsTree.innerHTML = ''
           return
         }
-
         const selectedRoot = refs.fsRootSelect.value || appState.sessionInfo?.context?.allowedRoots?.[0] || appState.sessionInfo?.cwd || ''
         if (!selectedRoot) { setFsStatus('No hay carpeta raíz disponible.', 'warn'); return }
         if (!silent) setFsStatus('Cargando carpeta remota…')
-
         const res = await sendFsRequest('fs:list', { path: selectedRoot, depth: 3 }, 12000)
         if (res?.ok === false) {
           setFsStatus(formatFsError(res.error), 'err')
-          if (isUnsupportedFsOp(res.error, 'fs:list')) {
-            appState.fsLegacyReason = 'Servidor sin soporte de listado remoto.'
-          }
+          if (isUnsupportedFsOp(res.error, 'fs:list')) appState.fsLegacyReason = 'Servidor sin soporte de listado remoto.'
           return
         }
-
         refs.fsTree.innerHTML = ''
         renderTreeEntries(res.entries || [], 0)
         const rootLabel = res.path || selectedRoot
@@ -1499,13 +1879,11 @@
       }
     }
 
-    /* ── VIEWER MODAL ── */
     function openViewer() {
       appState.viewerOpen = true
       refs.body.dataset.viewer = 'open'
-      try { appState.lastKnownActiveElement = document.activeElement } catch {}
+      try { appState.lastFocus = document.activeElement } catch {}
     }
-
     function closeViewer() {
       if (appState.viewerDirty) {
         const proceed = window.confirm('Tienes cambios sin guardar. ¿Cerrar de todas formas?')
@@ -1517,112 +1895,76 @@
       appState.viewerDirty = false
       appState.viewerMime = ''
       refs.body.dataset.viewer = 'closed'
-      refs.viewerImage.hidden = true
-      refs.viewerImage.removeAttribute('src')
-      refs.viewerTextarea.hidden = true
-      refs.viewerTextarea.value = ''
-      refs.viewerMessage.hidden = true
-      refs.viewerMessage.textContent = ''
+      refs.viewerImage.hidden = true; refs.viewerImage.removeAttribute('src')
+      refs.viewerTextarea.hidden = true; refs.viewerTextarea.value = ''
+      refs.viewerMessage.hidden = true; refs.viewerMessage.textContent = ''
       refs.btnViewerSave.hidden = true
       refs.viewerPath.textContent = ''
       refs.viewerTitle.textContent = 'Visor'
       setViewerStatus('')
-      try { appState.lastKnownActiveElement?.focus?.() } catch {}
+      try { appState.lastFocus?.focus?.() } catch {}
     }
-
     function viewerSetupForText(content, truncated) {
-      refs.viewerImage.hidden = true
-      refs.viewerMessage.hidden = true
-      refs.viewerTextarea.hidden = false
-      refs.viewerTextarea.value = content || ''
+      refs.viewerImage.hidden = true; refs.viewerMessage.hidden = true
+      refs.viewerTextarea.hidden = false; refs.viewerTextarea.value = content || ''
       refs.viewerTextarea.disabled = !canWriteFile()
       refs.btnViewerSave.hidden = !canWriteFile()
       refs.btnViewerSave.disabled = true
       setViewerStatus(truncated ? 'Texto mostrado recortado por tamaño.' : 'Archivo de texto abierto.', truncated ? 'warn' : 'ok')
     }
-
     function viewerSetupForImage(mime, base64) {
       refs.viewerImage.hidden = false
       refs.viewerImage.src = `data:${mime || 'application/octet-stream'};base64,${base64}`
-      refs.viewerTextarea.hidden = true
-      refs.viewerMessage.hidden = true
+      refs.viewerTextarea.hidden = true; refs.viewerMessage.hidden = true
       refs.btnViewerSave.hidden = true
       setViewerStatus(`Imagen abierta · ${mime || 'image/*'}`, 'ok')
     }
-
     function viewerSetupForBinary(message, size) {
-      refs.viewerImage.hidden = true
-      refs.viewerTextarea.hidden = true
+      refs.viewerImage.hidden = true; refs.viewerTextarea.hidden = true
       refs.viewerMessage.hidden = false
       const sizeText = Number.isFinite(Number(size)) && Number(size) > 0 ? ` (${Number(size).toLocaleString('es-ES')} bytes)` : ''
       refs.viewerMessage.textContent = `${message || 'Vista previa no disponible para este tipo de archivo.'}${sizeText}`
       refs.btnViewerSave.hidden = true
       setViewerStatus('Archivo binario sin vista previa textual.', 'warn')
     }
-
     async function openRemoteFile(filePath) {
       if (!filePath) return
-      if (!canOpenFile()) {
-        setFsStatus('Tu rol no tiene permiso para abrir archivos.', 'warn')
-        return
-      }
+      if (!canOpenFile()) { setFsStatus('Tu rol no tiene permiso para abrir archivos.', 'warn'); return }
       setFsStatus('Abriendo archivo remoto…')
-
       let res = await sendFsRequest('fs:open', { path: filePath }, 18000)
       if (res?.ok === false && isUnsupportedFsOp(res.error, 'fs:open')) {
         res = await sendFsRequest('fs:read', { path: filePath, encoding: 'utf8' }, 12000)
       }
-      if (res?.ok === false) {
-        setFsStatus(formatFsError(res.error), 'err')
-        return
-      }
-
+      if (res?.ok === false) { setFsStatus(formatFsError(res.error), 'err'); return }
       const resolvedPath = res.path || filePath
       appState.viewerPath = resolvedPath
       appState.viewerPreviewType = String(res.previewType || (typeof res.content === 'string' ? 'text' : 'binary')).toLowerCase()
       appState.viewerMime = res.mime || ''
       appState.viewerDirty = false
-
       refs.viewerPath.textContent = resolvedPath
       refs.viewerPath.title = resolvedPath
       refs.viewerTitle.textContent = resolvedPath.split('/').pop() || 'Visor'
-
       openViewer()
-
       if (appState.viewerPreviewType === 'image' && typeof res.content === 'string') {
         viewerSetupForImage(res.mime || '', res.content)
-        setFsStatus(`Imagen abierta · ${res.size || 0} bytes`, 'ok')
-        return
+        setFsStatus(`Imagen abierta · ${res.size || 0} bytes`, 'ok'); return
       }
       if (appState.viewerPreviewType === 'text' && typeof res.content === 'string') {
         viewerSetupForText(res.content, !!res.truncated)
-        setFsStatus(`Texto abierto · ${res.size || 0} bytes`, 'ok')
-        return
+        setFsStatus(`Texto abierto · ${res.size || 0} bytes`, 'ok'); return
       }
       viewerSetupForBinary(res.message || 'Vista previa no disponible para este tipo de archivo.', res.size)
       setFsStatus(res.message || 'Archivo binario sin vista previa textual.', 'warn')
     }
-
     async function saveRemoteFile() {
       if (!appState.viewerPath) return
-      if (appState.viewerPreviewType !== 'text') {
-        setViewerStatus('Solo se pueden guardar archivos de texto.', 'warn')
-        return
-      }
-      if (!canWriteFile()) {
-        setViewerStatus('Tu rol no tiene permiso de escritura.', 'warn')
-        return
-      }
+      if (appState.viewerPreviewType !== 'text') { setViewerStatus('Solo se pueden guardar archivos de texto.', 'warn'); return }
+      if (!canWriteFile()) { setViewerStatus('Tu rol no tiene permiso de escritura.', 'warn'); return }
       setViewerStatus('Guardando…')
       const res = await sendFsRequest('fs:write', {
-        path: appState.viewerPath,
-        content: refs.viewerTextarea.value,
-        encoding: 'utf8'
+        path: appState.viewerPath, content: refs.viewerTextarea.value, encoding: 'utf8'
       }, 12000)
-      if (res?.ok === false) {
-        setViewerStatus(formatFsError(res.error), 'err')
-        return
-      }
+      if (res?.ok === false) { setViewerStatus(formatFsError(res.error), 'err'); return }
       appState.viewerDirty = false
       refs.btnViewerSave.disabled = true
       setViewerStatus(`Guardado · ${res.path || appState.viewerPath}`, 'ok')
@@ -1635,7 +1977,6 @@
       refs.uploadLog.prepend(item)
       while (refs.uploadLog.children.length > 8) refs.uploadLog.removeChild(refs.uploadLog.lastChild)
     }
-
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader()
@@ -1649,68 +1990,52 @@
         reader.readAsDataURL(file)
       })
     }
-
     function inferUploadedPath(res, fallbackName) {
       return res?.path || res?.savedPath || res?.targetPath || res?.file?.path || fallbackName || 'archivo-subido'
     }
-
     async function uploadAttachment(file, sourceKind) {
       if (!file) return
       if (!isSocketOpen()) { setAttachStatus('Conecta primero para enviar fotos o archivos al chat.', 'warn'); return }
       if (!canUpload()) {
         setAttachStatus('Tu rol no puede enviar adjuntos en esta sesión.', 'err')
-        addUploadLog(`Bloqueado: sin permiso para ${sourceKind}`, 'err')
-        return
+        addUploadLog(`Bloqueado: sin permiso para ${sourceKind}`, 'err'); return
       }
       const maxUploadBytes = Number(appState.sessionCapabilities?.limits?.maxUploadBytes || (12 * 1024 * 1024))
       if (file.size > maxUploadBytes) {
         const mb = Math.max(1, Math.round(maxUploadBytes / (1024 * 1024)))
         setAttachStatus(`Archivo demasiado grande (límite: ${mb} MB).`, 'warn')
-        addUploadLog(`${file.name} rechazado por tamaño (${file.size} bytes)`, 'warn')
-        return
+        addUploadLog(`${file.name} rechazado por tamaño (${file.size} bytes)`, 'warn'); return
       }
-
       setAttachStatus(`Preparando ${sourceKind}: ${file.name}…`)
       try {
         const base64 = await fileToBase64(file)
         setAttachStatus(`Subiendo ${file.name}…`)
         const res = await sendFsRequest('fs:upload', {
-          name: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          base64
+          name: file.name, mimeType: file.type || 'application/octet-stream', base64
         }, 60000)
-
         if (res?.ok === false) {
           if (isUnsupportedFsOp(res.error, 'fs:upload')) {
             appState.uploadSupport = 'unsupported'
             const message = 'Este servidor no admite envío de adjuntos.'
-            setAttachStatus(message, 'warn')
-            addUploadLog(`${file.name} no enviado: ${message}`, 'warn')
-            return
+            setAttachStatus(message, 'warn'); addUploadLog(`${file.name} no enviado: ${message}`, 'warn'); return
           }
-          setAttachStatus(formatFsError(res.error), 'err')
-          addUploadLog(`${file.name} error: ${formatFsError(res.error)}`, 'err')
-          return
+          setAttachStatus(formatFsError(res.error), 'err'); addUploadLog(`${file.name} error: ${formatFsError(res.error)}`, 'err'); return
         }
-
         appState.uploadSupport = 'supported'
         const uploadedPath = inferUploadedPath(res, file.name)
         const ptyRef = String(res?.ptyReference || '').trim() || `@${uploadedPath}`
-        setAttachStatus('Archivo recibido en el servidor. Preparando envío al chat…', 'ok')
+        setAttachStatus('Subido. Preparando envío al chat…', 'ok')
         addUploadLog(`${file.name} subido al servidor`, 'ok')
-
         if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'upload' }).catch(() => {})
 
         let proceed = true
         if (refs.attachConfirmCheck.checked) {
-          proceed = window.confirm(`¿Enviar ahora al chat?\n${file.name}`)
+          proceed = await showToast(`Enviar al chat: ${file.name}`)
         }
         if (!proceed) {
           setAttachStatus('Archivo subido. Envío al chat cancelado.', 'warn')
-          addUploadLog('Envío al chat cancelado', 'warn')
-          return
+          addUploadLog('Envío al chat cancelado', 'warn'); return
         }
-
         const injected = sendMessage({ type: 'input', data: `${ptyRef} ` })
         if (injected) {
           term.write(`\r\n[adjunto enviado] ${file.name}\r\n`)
@@ -1728,13 +2053,9 @@
     }
 
     function stopFsPolling() {
-      if (appState.fsPollingTimer) {
-        clearInterval(appState.fsPollingTimer)
-        appState.fsPollingTimer = null
-      }
+      if (appState.fsPollingTimer) { clearInterval(appState.fsPollingTimer); appState.fsPollingTimer = null }
       appState.fsPollingAnnounced = false
     }
-
     function startFsPolling() {
       stopFsPolling()
       appState.fsPushSeen = false
@@ -1743,10 +2064,7 @@
         if (appState.fsPushSeen) return
         if (!hasFsCapability('list')) return
         if (!refs.detailsFiles.open) return
-        if (!appState.fsPollingAnnounced) {
-          setFsStatus('Auto-refresco activo (modo respaldo).', 'warn')
-          appState.fsPollingAnnounced = true
-        }
+        if (!appState.fsPollingAnnounced) { setFsStatus('Auto-refresco activo (modo respaldo).', 'warn'); appState.fsPollingAnnounced = true }
         refreshFsTree({ silent: true, source: 'poll' }).catch(() => {})
       }, 16000)
     }
@@ -1757,15 +2075,16 @@
       appState.uploadSupport = 'unknown'
       renderSessionContext()
       clearFsUi('Conecta primero para ver carpetas.')
-      setAttachStatus('Listo. Cuando hables o adjuntes algo, llegará al equipo central.')
+      setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
       stopFsPolling()
       refs.sessionChip.textContent = ''
       setConnectedFlag(false)
+      updateJumpButton(true)
     }
 
     function sendHandshake() {
-      const context = buildRequestedContext()
-      const sent = sendMessage({ type: 'handshake', ...context })
+      const ctx = buildRequestedContext()
+      const sent = sendMessage({ type: 'handshake', ...ctx })
       if (sent) setHandshakeStatus('warn', 'Identidad enviada. Esperando confirmación…', 'enviando')
     }
 
@@ -1793,7 +2112,11 @@
         try { msg = JSON.parse(String(event.data || '')) } catch {}
         if (!msg || typeof msg !== 'object') return
 
-        if (msg.type === 'output') { term.write(String(msg.data || '')); return }
+        if (msg.type === 'output') {
+          term.write(String(msg.data || ''))
+          handleNewOutput()
+          return
+        }
         if (msg.type === 'transcript') {
           term.write(`\r\n[voz] ${String(msg.text || '')}\r\n`)
           setConnectionStatus('online', 'Audio transcrito y enviado')
@@ -1809,9 +2132,7 @@
             stopFsPolling()
             setFsStatus('Cambios remotos detectados al vuelo.', 'ok')
           }
-          if (hasFsCapability('list') && refs.detailsFiles.open) {
-            refreshFsTree({ silent: true, source: 'push' }).catch(() => {})
-          }
+          if (hasFsCapability('list') && refs.detailsFiles.open) refreshFsTree({ silent: true, source: 'push' }).catch(() => {})
           return
         }
         if (msg.type !== 'status') return
@@ -1823,42 +2144,27 @@
           renderSessionContext()
           updateFsControlState()
           setHandshakeStatus('ok', 'Identidad aceptada. Sesión lista.', 'ok')
-
           const roots = Array.isArray(msg?.context?.allowedRoots) ? msg.context.allowedRoots : []
           renderRootSelector(roots.length ? roots : [msg.cwd || ''])
           setConnectedFlag(true)
           setSessionChip()
           setConnectionStatus('online', `Conectado · ${msg.cwd || ''}`)
-
-          if (hasFsCapability('list')) {
-            refreshFsTree({ silent: true, source: 'connected' }).catch((err) => setFsStatus(errorText(err), 'err'))
-          } else if (canOpenFile() || canWriteFile()) {
-            setFsStatus('Sin listado de carpetas. Acceso parcial a archivos.', 'warn')
-          } else {
-            setFsStatus('Tu rol no permite navegar por archivos.', 'warn')
-          }
-
+          if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'connected' }).catch((err) => setFsStatus(errorText(err), 'err'))
+          else if (canOpenFile() || canWriteFile()) setFsStatus('Sin listado de carpetas. Acceso parcial a archivos.', 'warn')
+          else setFsStatus('Tu rol no permite navegar por archivos.', 'warn')
           startFsPolling()
+          try { fitAddon.fit() } catch {}
           return
         }
-
-        if (state === 'transcribing') {
-          setConnectionStatus('connecting', 'Transcribiendo audio…')
-          return
-        }
-        if (state === 'pty-exit') {
-          setConnectionStatus('connecting', 'PTY remoto finalizado')
-          return
-        }
+        if (state === 'transcribing') { setConnectionStatus('connecting', 'Transcribiendo audio…'); return }
+        if (state === 'pty-exit')     { setConnectionStatus('connecting', 'PTY remoto finalizado'); return }
         if (state === 'error') {
           const code = String(msg.code || '')
           const text = String(msg.message || 'Error remoto')
           const full = code ? `${code}: ${text}` : text
           setConnectionStatus('error', full)
           if (code === 'UNSUPPORTED_MESSAGE') {
-            if (text.includes('handshake')) {
-              setHandshakeStatus('warn', 'Servidor antiguo: continúa en modo compatible.', 'compat')
-            }
+            if (text.includes('handshake')) setHandshakeStatus('warn', 'Servidor antiguo: continúa en modo compatible.', 'compat')
             if (text.includes('fs:upload')) {
               appState.uploadSupport = 'unsupported'
               setAttachStatus('Servidor sin soporte de adjuntos remotos.', 'warn')
@@ -1874,7 +2180,7 @@
         clearSessionState()
         refs.btnConnect.textContent = 'Entrar'
         setConnectionStatus('offline', 'Desconectado')
-        setHandshakeStatus('warn', 'Canal cerrado. Reintentando según la política seleccionada.', 'en espera')
+        setHandshakeStatus('warn', 'Canal cerrado. Reintentando según política seleccionada.', 'en espera')
         appState.socket = null
         scheduleReconnect()
       })
@@ -1886,25 +2192,17 @@
 
     async function connect() {
       const rawUrl = refs.wsUrlInput.value.trim()
-      if (!rawUrl) {
-        setConnectionStatus('error', 'Falta dirección del servidor.')
-        return
-      }
+      if (!rawUrl) { setConnectionStatus('error', 'Falta dirección del servidor.'); return }
       let url = rawUrl
       try { url = buildConnectUrl(rawUrl) }
       catch (err) { setConnectionStatus('error', `URL no válida: ${errorText(err)}`); return }
-
       appState.manualClose = false
-      if (appState.socket) {
-        try { appState.socket.close() } catch {}
-        appState.socket = null
-      }
+      if (appState.socket) { try { appState.socket.close() } catch {} ; appState.socket = null }
       clearSessionState()
       clearPendingFsRequests('Nueva conexión')
       refs.btnConnect.textContent = 'Conectando…'
       setConnectionStatus('connecting', 'Conectando…')
       setHandshakeStatus('warn', 'Preparando identidad…', 'pendiente')
-
       try {
         appState.socket = new WebSocket(url)
         connectHandlers(url)
@@ -1947,12 +2245,11 @@
       refs.btnMic.textContent = 'Parar micrófono'
       setConnectionStatus('connecting', 'Grabando audio…')
     }
-
     function stopMic(silent = false) {
       if (appState.mediaRecorder) { try { appState.mediaRecorder.stop() } catch {} }
       appState.mediaRecorder = null
       if (appState.mediaStream) {
-        for (const track of appState.mediaStream.getTracks()) { try { track.stop() } catch {} }
+        for (const t of appState.mediaStream.getTracks()) { try { t.stop() } catch {} }
       }
       appState.mediaStream = null
       refs.btnMic.textContent = 'Micrófono'
@@ -1962,7 +2259,63 @@
       }
     }
 
-    /* ── EVENT WIRING ── */
+    function isAtBottom() {
+      try {
+        const viewport = term.element?.querySelector('.xterm-viewport')
+        if (!viewport) return true
+        return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 8
+      } catch { return true }
+    }
+    function updateJumpButton(forceHide = false) {
+      if (forceHide || isAtBottom()) {
+        refs.btnJumpBottom.hidden = true
+        refs.jumpCount.textContent = ''
+        appState.backlogCount = 0
+        return
+      }
+      refs.btnJumpBottom.hidden = false
+      refs.jumpCount.textContent = appState.backlogCount > 0 ? `· ${appState.backlogCount}` : ''
+    }
+    function handleNewOutput() {
+      if (!isAtBottom()) {
+        appState.backlogCount = Math.min(999, appState.backlogCount + 1)
+        updateJumpButton()
+      }
+    }
+    function scrollToBottom() {
+      try { term.scrollToBottom() } catch {}
+      appState.backlogCount = 0
+      updateJumpButton(true)
+    }
+
+    const KEY_SEQUENCES = {
+      'esc': '\x1b',
+      'tab': '\t',
+      'enter': '\r',
+      'up': '\x1b[A',
+      'down': '\x1b[B',
+      'left': '\x1b[D',
+      'right': '\x1b[C',
+      'ctrl-c': '\x03'
+    }
+    function sendKey(key) {
+      if (key === 'ctrl') {
+        appState.ctrlSticky = !appState.ctrlSticky
+        const btn = refs.keybar.querySelector('[data-key="ctrl"]')
+        if (btn) btn.setAttribute('aria-pressed', appState.ctrlSticky ? 'true' : 'false')
+        return
+      }
+      let data = KEY_SEQUENCES[key]
+      if (!data) return
+      sendMessage({ type: 'input', data })
+      try { term.focus() } catch {}
+    }
+
+    refs.btnThemeToggle.addEventListener('click', () => {
+      const next = refs.body.classList.contains('theme-dark') ? 'light' : 'dark'
+      applyTheme(next)
+    })
+
     refs.connectForm.addEventListener('submit', (event) => {
       event.preventDefault()
       if (isSocketOpen()) disconnect()
@@ -1971,22 +2324,16 @@
 
     refs.btnAutoReconnect.addEventListener('click', () => {
       appState.autoreconnect = !appState.autoreconnect
-      refs.btnAutoReconnect.textContent = `Reconexión automática: ${appState.autoreconnect ? 'ON' : 'OFF'}`
+      refs.btnAutoReconnect.textContent = `Reconexión: ${appState.autoreconnect ? 'ON' : 'OFF'}`
       refs.btnAutoReconnect.setAttribute('aria-pressed', appState.autoreconnect ? 'true' : 'false')
       if (!appState.autoreconnect && appState.reconnectTimer) {
         clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null
       }
     })
 
-    refs.btnFsRefresh.addEventListener('click', () => {
-      refreshFsTree({ source: 'manual' }).catch((err) => setFsStatus(errorText(err), 'err'))
-    })
-    refs.btnFsOpenRoot.addEventListener('click', () => {
-      refreshFsTree({ source: 'open-root' }).catch((err) => setFsStatus(errorText(err), 'err'))
-    })
-    refs.fsRootSelect.addEventListener('change', () => {
-      refreshFsTree({ source: 'root-change' }).catch((err) => setFsStatus(errorText(err), 'err'))
-    })
+    refs.btnFsRefresh.addEventListener('click', () => refreshFsTree({ source: 'manual' }).catch((err) => setFsStatus(errorText(err), 'err')))
+    refs.btnFsOpenRoot.addEventListener('click', () => refreshFsTree({ source: 'open-root' }).catch((err) => setFsStatus(errorText(err), 'err')))
+    refs.fsRootSelect.addEventListener('change', () => refreshFsTree({ source: 'root-change' }).catch((err) => setFsStatus(errorText(err), 'err')))
 
     refs.viewerTextarea.addEventListener('input', () => {
       if (appState.viewerPreviewType !== 'text') return
@@ -1994,7 +2341,7 @@
       refs.btnViewerSave.disabled = false
       setViewerStatus('Cambios sin guardar.', 'warn')
     })
-    refs.btnViewerSave.addEventListener('click', () => { saveRemoteFile().catch((err) => setViewerStatus(errorText(err), 'err')) })
+    refs.btnViewerSave.addEventListener('click', () => saveRemoteFile().catch((err) => setViewerStatus(errorText(err), 'err')))
     refs.btnViewerClose.addEventListener('click', closeViewer)
     refs.btnViewerCloseFoot.addEventListener('click', closeViewer)
     refs.viewerOverlay.addEventListener('click', (ev) => { if (ev.target === refs.viewerOverlay) closeViewer() })
@@ -2005,6 +2352,8 @@
 
     refs.btnAttachFile.addEventListener('click', () => refs.attachFileInput.click())
     refs.btnAttachPhoto.addEventListener('click', () => refs.attachPhotoInput.click())
+    refs.btnFabFile.addEventListener('click', () => refs.attachFileInput.click())
+    refs.btnFabPhoto.addEventListener('click', () => refs.attachPhotoInput.click())
     refs.attachFileInput.addEventListener('change', async () => {
       const file = refs.attachFileInput.files && refs.attachFileInput.files[0]
       refs.attachFileInput.value = ''
@@ -2020,7 +2369,6 @@
       if (appState.mediaRecorder) { stopMic(); return }
       try { await startMic() } catch (err) { setConnectionStatus('error', errorText(err)); stopMic(true) }
     })
-
     refs.btnSendHandshake.addEventListener('click', () => {
       if (!isSocketOpen()) { setHandshakeStatus('warn', 'No hay sesión activa.', 'en espera'); return }
       sendHandshake()
@@ -2033,34 +2381,39 @@
     refs.btnDisconnect.addEventListener('click', () => disconnect())
     refs.btnTopbarDisconnect.addEventListener('click', () => disconnect())
 
-    /* Detalles: cuando se abre Archivos, refrescamos */
     refs.detailsFiles.addEventListener('toggle', () => {
       if (refs.detailsFiles.open && isSocketOpen() && hasFsCapability('list')) {
         refreshFsTree({ silent: true, source: 'open-section' }).catch(() => {})
       }
     })
 
+    refs.keybar.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-key]')
+      if (!btn) return
+      sendKey(btn.dataset.key)
+    })
+
+    refs.btnJumpBottom.addEventListener('click', scrollToBottom)
+    queueMicrotask(() => {
+      const viewport = term.element?.querySelector('.xterm-viewport')
+      if (viewport) viewport.addEventListener('scroll', () => updateJumpButton())
+    })
+
     term.onData((data) => sendMessage({ type: 'input', data }))
 
     window.addEventListener('resize', () => {
-      try {
-        fitAddon.fit()
-        sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
-      } catch {}
+      try { fitAddon.fit(); sendMessage({ type: 'resize', cols: term.cols, rows: term.rows }) } catch {}
     })
-
     window.addEventListener('beforeunload', () => {
-      stopFsPolling()
-      stopMic(true)
+      stopFsPolling(); stopMic(true)
       clearPendingFsRequests('Página cerrada')
       if (appState.socket) { try { appState.socket.close() } catch {} }
     })
 
-    /* Bootstrap */
     refs.wsUrlInput.value = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
     clearFsUi('Conecta primero para ver carpetas.')
-    setAttachStatus('Listo. Cuando hables o adjuntes algo, llegará al equipo central.')
+    setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
     setConnectionStatus('offline', 'Sin conectar')
     setHandshakeStatus('warn', 'Listo para conectar.', 'en espera')
     renderSessionContext()
