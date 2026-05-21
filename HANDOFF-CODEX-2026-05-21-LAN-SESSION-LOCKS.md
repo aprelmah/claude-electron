@@ -101,3 +101,18 @@ Casos cubiertos:
 ## Notas de continuidad
 - Para soporte de sesiones reutilizables Codex, añadir proveedor equivalente en `listLanReusableSessions(...)`.
 - Si se quiere cambio de sesión “hot” sin reconectar socket, extender `session:start` cuando `initialized=true` para restart controlado de PTY en misma conexión.
+
+## Pendiente para mañana (reportado por usuario)
+- El sistema no está respetando correctamente la sesión seleccionada en el selector.
+- UX requerida del selector:
+  - Debe estar visible en la vista previa/antes de abrir conexión.
+  - Debe seguir visible dentro de la sesión una vez abierta.
+  - Debe mantenerse también en modo móvil.
+
+## Ajuste inmediato posterior (misma fecha)
+- Se movió el selector de sesiones a un bloque persistente (`session-dock`) fuera del onboarding para que se vea:
+  - antes de conectar,
+  - con sesión abierta,
+  - y en modo móvil/focus.
+- Se añadió botón dedicado `Abrir sesión` / `Cambiar sesión` en ese bloque persistente.
+- Se ajustó la persistencia de sesión elegida (`stickyResumeSessionId`) para no perder selección al reconectar/cambiar sesión.

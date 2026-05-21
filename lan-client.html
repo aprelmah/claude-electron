@@ -361,6 +361,11 @@
     .onboarding { display: grid; gap: 14px; }
     body[data-connected="true"] .onboarding { display: none; }
 
+    .session-dock {
+      display: grid;
+      gap: 8px;
+    }
+
     .onboarding-head { display: grid; gap: 6px; }
 
     .onboarding h1 {
@@ -1397,21 +1402,6 @@
           </div>
         </div>
 
-        <div class="session-picker" aria-label="Selector de sesión reutilizable">
-          <div class="session-picker-row">
-            <div class="field">
-              <label for="session-select">Sesión reutilizable</label>
-              <select id="session-select" class="control">
-                <option value="">Nueva sesión (sin reanudar)</option>
-              </select>
-            </div>
-            <div class="session-picker-actions">
-              <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar sesiones</button>
-            </div>
-          </div>
-          <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
-        </div>
-
         <details id="advanced-options" class="advanced" style="margin-top:12px">
           <summary>Opciones avanzadas (servidor, operador, perfil, proveedor)</summary>
           <div class="advanced-grid">
@@ -1451,6 +1441,24 @@
           <span id="handshake-tone" class="handshake-tone">en espera</span>
         </div>
       </form>
+    </section>
+
+    <section class="card card-pad session-dock" aria-label="Selector de sesión LAN">
+      <div class="session-picker">
+        <div class="session-picker-row">
+          <div class="field">
+            <label for="session-select">Sesión reutilizable</label>
+            <select id="session-select" class="control">
+              <option value="">Nueva sesión (sin reanudar)</option>
+            </select>
+          </div>
+          <div class="session-picker-actions">
+            <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
+            <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar sesiones</button>
+          </div>
+        </div>
+        <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
+      </div>
     </section>
 
     <section class="chat-card" aria-labelledby="chat-title">
@@ -1659,6 +1667,7 @@
       usernameInput: document.getElementById('username'),
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
+      btnSessionOpen: document.getElementById('btn-session-open'),
       sessionSelect: document.getElementById('session-select'),
       btnSessionRefresh: document.getElementById('btn-session-refresh'),
       sessionPickerMeta: document.getElementById('session-picker-meta'),
@@ -1845,6 +1854,7 @@
       sessionStartReqSeq: 0,
       pendingSessionStartRequestId: '',
       selectedResumeSessionId: '',
+      stickyResumeSessionId: '',
       sessionLockHeartbeatTimer: null,
       autoStartMode: 'off',
       fsReqSeq: 0,
@@ -2261,7 +2271,7 @@
 
     function renderSessionSelector() {
       const list = Array.isArray(appState.sessionList) ? appState.sessionList : []
-      const selectedBefore = String(appState.selectedResumeSessionId || refs.sessionSelect.value || '').trim()
+      const selectedBefore = String(appState.stickyResumeSessionId || appState.selectedResumeSessionId || refs.sessionSelect.value || '').trim()
       refs.sessionSelect.innerHTML = ''
 
       const baseOption = document.createElement('option')
@@ -2297,10 +2307,16 @@
       const canKeepSelection = selectedBefore && Array.from(refs.sessionSelect.options).some((opt) => opt.value === selectedBefore && !opt.disabled)
       refs.sessionSelect.value = canKeepSelection ? selectedBefore : ''
       appState.selectedResumeSessionId = refs.sessionSelect.value || ''
+      if (appState.selectedResumeSessionId) appState.stickyResumeSessionId = appState.selectedResumeSessionId
+      else if (list.length > 0 && !canKeepSelection) appState.stickyResumeSessionId = ''
 
       const selectorLocked = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
       refs.sessionSelect.disabled = selectorLocked
       refs.btnSessionRefresh.disabled = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
+      refs.btnSessionOpen.disabled = !!appState.pendingSessionStartRequestId
+      refs.btnSessionOpen.textContent = appState.sessionInfo
+        ? 'Cambiar sesión'
+        : (isSocketOpen() ? 'Abrir sesión' : 'Conectar y abrir')
 
       if (!isSocketOpen()) {
         setSessionPickerMeta('Conecta primero para cargar sesiones de esta carpeta.')
@@ -2375,8 +2391,9 @@
       }
       appState.sessionList = Array.isArray(msg.sessions) ? msg.sessions : []
       appState.sessionListCwd = String(msg.cwd || '').trim()
-      const selected = String(msg.selectedSessionId || appState.selectedResumeSessionId || '').trim()
+      const selected = String(msg.selectedSessionId || appState.stickyResumeSessionId || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
+      if (selected) appState.stickyResumeSessionId = selected
       renderSessionSelector()
       if (!appState.pendingSessionStartRequestId && !appState.sessionInfo) {
         if (appState.autoStartMode === 'always') {
@@ -2401,8 +2418,9 @@
         setConnectionStatus('connecting', 'Esperando confirmación de inicio de sesión…')
         return false
       }
-      const selected = String(refs.sessionSelect.value || '').trim()
+      const selected = String(refs.sessionSelect.value || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
+      if (selected) appState.stickyResumeSessionId = selected
       const requestId = `sess-start-${Date.now()}-${++appState.sessionStartReqSeq}`
       const sent = sendMessage({ type: 'session:start', requestId, sessionId: selected })
       if (!sent) {
@@ -3121,6 +3139,9 @@
         if (state === 'connected') {
           appState.pendingSessionStartRequestId = ''
           appState.autoStartMode = 'off'
+          const activeResumeSessionId = String(msg?.resumeSessionId || '').trim()
+          appState.selectedResumeSessionId = activeResumeSessionId
+          appState.stickyResumeSessionId = activeResumeSessionId
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
           clearAgentReplyIdleTimer()
@@ -3216,6 +3237,19 @@
       } catch (err) {
         setConnectionStatus('error', errorText(err))
       }
+    }
+
+    function openOrSwitchSelectedSession() {
+      if (appState.sessionInfo) {
+        disconnect()
+        window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 220)
+        return
+      }
+      if (isSocketOpen()) {
+        startSelectedSession()
+        return
+      }
+      connect({ autoStart: 'always' }).catch(() => {})
     }
 
     function disconnect() {
@@ -3395,9 +3429,11 @@
       }
       requestReusableSessions({ forceRefresh: true, silent: false })
     })
+    refs.btnSessionOpen.addEventListener('click', () => openOrSwitchSelectedSession())
 
     refs.sessionSelect.addEventListener('change', () => {
       appState.selectedResumeSessionId = String(refs.sessionSelect.value || '').trim()
+      appState.stickyResumeSessionId = appState.selectedResumeSessionId
       if (appState.selectedResumeSessionId) {
         setSessionPickerMeta(`Sesión ${appState.selectedResumeSessionId} seleccionada. Pulsa Entrar para reanudar.`, 'warn')
       } else {
