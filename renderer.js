@@ -3452,8 +3452,8 @@ btnOpenFolder.addEventListener('click', async () => {
   if (!picked) return
   showStatus('Cargando carpeta y reiniciando Claude…', 'busy')
   try {
-    await setRoot(picked)
     await fullRestart(picked)
+    await setRoot(picked)
     await updateCwdLabel()
     hideStatus()
     term.focus()
