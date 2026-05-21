@@ -19,7 +19,7 @@
       <select id="profile-selector" title="Seleccionar perfil de encargo" aria-label="Perfil activo"></select>
       <button id="profile-reminder" class="profile-reminder" title="Perfil activo" aria-label="Resumen del perfil activo" aria-haspopup="dialog" aria-expanded="false">
         <span id="profile-reminder-name">Perfil</span>
-        <span id="profile-reminder-mcp">MCP 0</span>
+        <span id="profile-reminder-mcp">MCP 0 · Emp —</span>
       </button>
       <button id="health-indicator" class="health-indicator" title="Estado del sistema" aria-label="Estado del sistema" aria-haspopup="dialog" aria-expanded="false">
         <span id="health-global-dot" class="health-global-dot state-off"></span>
@@ -119,8 +119,12 @@
         <span id="profile-popover-cwd" class="health-popover-detail">-</span>
       </div>
       <div class="profile-popover-row">
-        <span class="health-popover-service">MCPs</span>
+        <span class="health-popover-service">MCP del perfil</span>
         <span id="profile-popover-mcps" class="health-popover-detail">-</span>
+      </div>
+      <div class="profile-popover-row">
+        <span class="health-popover-service">MCP en sesión enterprise</span>
+        <span id="profile-popover-mcps-effective" class="health-popover-detail">-</span>
       </div>
     </div>
   </div>
@@ -394,7 +398,7 @@
             </div>
           </label>
           <label class="settings-field">
-            <span>MCP servers (separados por coma)</span>
+            <span>Servidores MCP del perfil (separados por comas)</span>
             <input id="profile-mcps" type="text" placeholder="filesystem, github, slack" />
           </label>
           <label class="settings-field">
@@ -457,25 +461,25 @@
               <input id="enterprise-role-name" type="text" placeholder="Secretaria" />
             </label>
             <div class="enterprise-perm-grid">
-              <label class="settings-check"><input id="enterprise-role-perm-pty-execute" type="checkbox" /><span>pty.execute</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-fs-read" type="checkbox" /><span>fs.read</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-fs-write" type="checkbox" /><span>fs.write</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-fs-list" type="checkbox" /><span>fs.list</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-fs-delete" type="checkbox" /><span>fs.delete</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-fs-rename" type="checkbox" /><span>fs.rename</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-viewer-open" type="checkbox" /><span>viewer.open</span></label>
-              <label class="settings-check"><input id="enterprise-role-perm-automations-manage" type="checkbox" /><span>automations.manage</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-pty-execute" type="checkbox" /><span>Usar terminal</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-read" type="checkbox" /><span>Leer archivos</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-write" type="checkbox" /><span>Editar y guardar archivos</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-list" type="checkbox" /><span>Ver carpetas y listado</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-delete" type="checkbox" /><span>Borrar archivos/carpetas</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-fs-rename" type="checkbox" /><span>Renombrar/mover archivos</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-viewer-open" type="checkbox" /><span>Abrir visor de archivos</span></label>
+              <label class="settings-check"><input id="enterprise-role-perm-automations-manage" type="checkbox" /><span>Gestionar automatizaciones</span></label>
             </div>
             <label class="settings-field">
-              <span>Roots permitidas (1 por línea)</span>
+              <span>Carpetas permitidas (1 por línea)</span>
               <textarea id="enterprise-role-allowed-roots" class="enterprise-textarea" placeholder="/Users/isabel/Desktop/cliente-a"></textarea>
             </label>
             <label class="settings-field">
-              <span>Roots solo lectura (opcional, 1 por línea)</span>
+              <span>Carpetas en solo lectura (opcional, 1 por línea)</span>
               <textarea id="enterprise-role-readonly-roots" class="enterprise-textarea" placeholder="/Users/isabel/Desktop/cliente-a/docs"></textarea>
             </label>
             <label class="settings-field">
-              <span>MCP allowlist (coma)</span>
+              <span>Servidores MCP permitidos para este rol (separados por comas)</span>
               <input id="enterprise-role-allowed-mcps" type="text" placeholder="filesystem, github, slack" />
             </label>
           </div>

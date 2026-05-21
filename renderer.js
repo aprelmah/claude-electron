@@ -102,6 +102,7 @@ const profilePopoverMain = document.getElementById('profile-popover-main')
 const profilePopoverClaudeMd = document.getElementById('profile-popover-claude-md')
 const profilePopoverCwd = document.getElementById('profile-popover-cwd')
 const profilePopoverMcps = document.getElementById('profile-popover-mcps')
+const profilePopoverMcpsEffective = document.getElementById('profile-popover-mcps-effective')
 const profilesModal = document.getElementById('profiles-modal')
 const btnCloseProfiles = document.getElementById('btn-close-profiles')
 const profilesListEl = document.getElementById('profiles-list')
@@ -710,9 +711,121 @@ function getActiveProfile() {
   return getProfileById(profilesState.activeProfile) || getProfileById(DEFAULT_PROFILE_ID) || null
 }
 
-function profileMcpLabel(profile) {
-  const count = Array.isArray(profile?.mcpServers) ? profile.mcpServers.length : 0
-  return `MCP ${count}`
+function normalizeMcpServerList(values) {
+  if (!Array.isArray(values)) return []
+  const unique = new Set()
+  for (const value of values) {
+    const mcp = String(value || '').trim()
+    if (mcp) unique.add(mcp)
+  }
+  return Array.from(unique).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }))
+}
+
+function summarizeMcpList(mcps, emptyText) {
+  return mcps.length ? mcps.join(', ') : emptyText
+}
+
+function getEnterpriseEffectiveMcpSummary(profileId = '') {
+  const sessions = Array.isArray(lanServerSnapshot?.sessions) ? lanServerSnapshot.sessions : []
+  const enterpriseSessions = sessions.filter((session) => String(session?.context?.mode || '').trim() === 'enterprise')
+  if (!enterpriseSessions.length) {
+    return {
+      applicable: false,
+      sessionCount: 0,
+      effectiveMcps: [],
+      variantsCount: 0,
+      shortText: '—',
+      lineText: 'No aplica: no hay sesiones enterprise activas',
+      detailText: 'No aplica: no hay sesiones enterprise activas'
+    }
+  }
+
+  const wantedProfileId = String(profileId || '').trim()
+  let scopedSessions = enterpriseSessions
+  if (wantedProfileId) {
+    const matched = enterpriseSessions.filter((session) => String(session?.context?.profileId || '').trim() === wantedProfileId)
+    if (matched.length > 0) {
+      scopedSessions = matched
+    } else {
+      return {
+        applicable: false,
+        sessionCount: 0,
+        effectiveMcps: [],
+        variantsCount: 0,
+        shortText: '—',
+        lineText: 'No aplica: no hay sesiones enterprise activas para este perfil',
+        detailText: `No aplica: hay ${enterpriseSessions.length} sesión(es) enterprise, pero ninguna para el perfil activo`
+      }
+    }
+  }
+
+  const effectiveSet = new Set()
+  const variants = new Set()
+  for (const session of scopedSessions) {
+    const allowed = normalizeMcpServerList(session?.context?.allowedMcpServers || [])
+    for (const mcp of allowed) effectiveSet.add(mcp)
+    variants.add(allowed.join('|'))
+  }
+
+  const effectiveMcps = Array.from(effectiveSet).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }))
+  const variantsCount = variants.size
+  const sessionCount = scopedSessions.length
+  const names = summarizeMcpList(effectiveMcps, 'ninguno')
+  let detailText = ''
+  if (variantsCount <= 1) {
+    detailText = `${effectiveMcps.length} MCP en ${sessionCount} sesión(es): ${names}`
+  } else {
+    detailText = `${effectiveMcps.length} MCP únicos en ${sessionCount} sesiones (${variantsCount} combinaciones): ${names}`
+  }
+
+  return {
+    applicable: true,
+    sessionCount,
+    effectiveMcps,
+    variantsCount,
+    shortText: `${effectiveMcps.length}`,
+    lineText: `${effectiveMcps.length} en ${sessionCount} sesión(es) enterprise`,
+    detailText
+  }
+}
+
+function getProfileMcpSummary(profile) {
+  const configuredMcps = normalizeMcpServerList(profile?.mcpServers || [])
+  const effective = getEnterpriseEffectiveMcpSummary(profile?.id || '')
+  const configuredNames = summarizeMcpList(configuredMcps, 'ninguno')
+  const effectiveNames = summarizeMcpList(effective.effectiveMcps, 'ninguno')
+  const badgeText = `MCP ${configuredMcps.length} · Emp ${effective.shortText}`
+  const badgeTitle = [
+    `MCP configurados del perfil activo: ${configuredNames}`,
+    effective.applicable
+      ? `MCP efectivos de sesión (modo empresa): ${effectiveNames}`
+      : 'MCP efectivos de sesión (modo empresa): no aplica, sin sesiones enterprise activas'
+  ].join('\n')
+
+  return {
+    badgeText,
+    badgeTitle,
+    configured: {
+      count: configuredMcps.length,
+      mcps: configuredMcps,
+      rowText: configuredMcps.length
+        ? `${configuredMcps.length} configurado(s): ${configuredNames}`
+        : 'Sin MCP configurados en el perfil activo',
+      tooltipText: `MCP configurados del perfil activo: ${configuredNames}`
+    },
+    effective: {
+      applicable: effective.applicable,
+      count: effective.effectiveMcps.length,
+      mcps: effective.effectiveMcps,
+      sessionCount: effective.sessionCount,
+      variantsCount: effective.variantsCount,
+      rowText: effective.lineText,
+      tooltipText: effective.applicable
+        ? `MCP efectivos de sesión (modo empresa): ${effective.detailText}`
+        : 'MCP efectivos de sesión (modo empresa): no aplica, sin sesiones enterprise activas',
+      detailText: effective.detailText
+    }
+  }
 }
 
 function renderProfileSelector(selectedId = '') {
@@ -736,17 +849,19 @@ function renderProfileSelector(selectedId = '') {
 function renderProfileReminder() {
   const active = getActiveProfile()
   if (!profileReminderName || !profileReminderMcp) return
+  const mcpSummary = getProfileMcpSummary(active)
   profileReminderName.textContent = active?.name || 'Perfil'
-  profileReminderMcp.textContent = profileMcpLabel(active)
+  profileReminderMcp.textContent = mcpSummary.badgeText
+  profileReminderMcp.title = mcpSummary.badgeTitle
   if (profileReminder) {
     profileReminder.title = active
-      ? `${active.name} · ${active.cwd || 'cwd actual'}`
+      ? `${active.name} · ${active.cwd || 'cwd actual'}\n${mcpSummary.badgeTitle}`
       : 'Perfil activo'
   }
-  renderProfilePopover()
+  renderProfilePopover(mcpSummary)
 }
 
-function renderProfilePopover() {
+function renderProfilePopover(mcpSummary = null) {
   const active = getActiveProfile()
   if (!profilePopoverMain) return
   if (!active) {
@@ -754,16 +869,21 @@ function renderProfilePopover() {
     profilePopoverClaudeMd.textContent = '-'
     profilePopoverCwd.textContent = '-'
     profilePopoverMcps.textContent = '-'
+    if (profilePopoverMcpsEffective) profilePopoverMcpsEffective.textContent = '-'
     return
   }
-  const mcpList = (active.mcpServers || []).join(', ')
+  const summary = mcpSummary || getProfileMcpSummary(active)
   profilePopoverMain.textContent = `${active.name} (${active.id})`
   profilePopoverClaudeMd.textContent = active.claudeMdPath || 'No configurado'
   profilePopoverClaudeMd.title = active.claudeMdPath || 'No configurado'
   profilePopoverCwd.textContent = active.cwd || 'Usar cwd actual'
   profilePopoverCwd.title = active.cwd || 'Usar cwd actual'
-  profilePopoverMcps.textContent = mcpList || 'Sin recordatorios MCP'
-  profilePopoverMcps.title = mcpList || 'Sin recordatorios MCP'
+  profilePopoverMcps.textContent = summary.configured.rowText
+  profilePopoverMcps.title = summary.configured.tooltipText
+  if (profilePopoverMcpsEffective) {
+    profilePopoverMcpsEffective.textContent = summary.effective.rowText
+    profilePopoverMcpsEffective.title = summary.effective.tooltipText
+  }
 }
 
 function positionProfilePopover() {
@@ -1721,6 +1841,7 @@ function renderLanStatus(snapshot, errorText = '') {
     }
   }
   renderRemoteSessions(snapshot?.sessions || [])
+  renderProfileReminder()
 }
 
 async function refreshLanServerStatus(force = false) {
