@@ -9,6 +9,7 @@
     :root {
       --bg: #0f1116;
       --bg2: #171b24;
+      --bg3: #111625;
       --fg: #dbe5ff;
       --muted: #8fa0c7;
       --ok: #27c281;
@@ -22,20 +23,21 @@
       margin: 0;
       background: radial-gradient(1200px 700px at 10% -20%, #1d2b4f, transparent), var(--bg);
       color: var(--fg);
-      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
     .toolbar {
       display: grid;
-      grid-template-columns: 1fr auto auto auto;
+      grid-template-columns: 1.7fr 1fr 1fr 1fr auto auto auto;
       gap: 8px;
       padding: 10px;
       border-bottom: 1px solid var(--line);
       background: var(--bg2);
     }
-    .toolbar input {
+    .toolbar input, .toolbar select {
       width: 100%;
       background: #0f1420;
       border: 1px solid var(--line);
@@ -43,6 +45,7 @@
       border-radius: 8px;
       padding: 8px 10px;
       outline: none;
+      min-width: 0;
     }
     .toolbar button {
       border: 1px solid var(--line);
@@ -51,6 +54,7 @@
       border-radius: 8px;
       padding: 8px 12px;
       cursor: pointer;
+      white-space: nowrap;
     }
     .toolbar button:hover { border-color: var(--accent); }
     #status {
@@ -59,15 +63,10 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       color: var(--muted);
-      background: #111625;
+      background: var(--bg3);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-    #terminal {
-      flex: 1;
-      min-height: 0;
-      padding: 8px;
     }
     .pill {
       display: inline-block;
@@ -75,42 +74,242 @@
       height: 10px;
       border-radius: 999px;
       margin-right: 7px;
-      background: #666;
+      background: #66708a;
       vertical-align: middle;
     }
     .ok { background: var(--ok); }
     .warn { background: var(--warn); }
     .err { background: var(--err); }
     .off { background: #66708a; }
-    @media (max-width: 900px) {
+
+    #session-context {
+      margin: 0 10px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg3);
+      padding: 8px 10px;
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #session-context.hidden { display: none; }
+    .ctx-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--fg);
+      background: #152038;
+    }
+    .ctx-pill.warn {
+      border-color: rgba(240, 177, 58, 0.75);
+      color: #ffd38a;
+      background: rgba(107, 79, 23, 0.45);
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 8px;
+      min-height: 0;
+      flex: 1;
+      padding: 0 10px 10px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(18, 24, 38, 0.85);
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #terminal-wrap { min-height: 0; flex: 1; padding: 8px; }
+    #terminal { min-height: 0; height: 100%; }
+
+    .files-head {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(17, 22, 37, 0.95);
+    }
+    .files-head button,
+    .editor-head button {
+      border: 1px solid var(--line);
+      background: #1b2435;
+      color: var(--fg);
+      border-radius: 7px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .files-head button:disabled,
+    .editor-head button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #fs-status {
+      font-size: 11px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      padding: 6px 8px;
+      min-height: 28px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #fs-tree {
+      flex: 1;
+      min-height: 120px;
+      overflow: auto;
+      padding: 6px;
+      border-bottom: 1px solid var(--line);
+    }
+    .fs-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 3px 6px;
+      margin-bottom: 2px;
+    }
+    .fs-row:hover { border-color: var(--line); background: rgba(24, 36, 56, 0.55); }
+    .fs-left {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+    }
+    .fs-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .fs-actions { display: flex; gap: 4px; }
+    .fs-actions button {
+      border: 1px solid var(--line);
+      background: #1b2435;
+      color: var(--fg);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .fs-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .editor {
+      display: flex;
+      flex-direction: column;
+      min-height: 180px;
+    }
+    .editor-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      align-items: center;
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    #fs-current-path {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #fs-editor {
+      flex: 1;
+      min-height: 140px;
+      border: 0;
+      border-radius: 0;
+      background: #0e1322;
+      color: var(--fg);
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      padding: 8px;
+      resize: vertical;
+      outline: none;
+    }
+
+    @media (max-width: 1200px) {
       .toolbar {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
       }
-      .toolbar input {
+      .toolbar input#ws-url {
         grid-column: 1 / -1;
       }
+      .main {
+        grid-template-columns: 1fr;
+      }
+      .panel.files { min-height: 360px; }
     }
   </style>
 </head>
 <body>
   <div class="toolbar">
     <input id="ws-url" type="text" placeholder="ws://192.168.1.10:9999" aria-label="URL WebSocket" />
+    <input id="operator-id" type="text" placeholder="operatorId (opcional)" aria-label="Operator ID" />
+    <input id="profile-id" type="text" placeholder="profileId (opcional)" aria-label="Profile ID" />
+    <input id="username" type="text" placeholder="username (opcional)" aria-label="Username" />
     <button id="btn-connect" type="button">Conectar</button>
     <button id="btn-autoreconnect" type="button">Auto: ON</button>
     <button id="btn-mic" type="button">Micrófono</button>
   </div>
+
   <div id="status"><span class="pill off" id="status-dot"></span><span id="status-text">Desconectado</span></div>
-  <div id="terminal"></div>
+  <div id="session-context" class="hidden"></div>
+
+  <div class="main">
+    <section class="panel terminal">
+      <div id="terminal-wrap">
+        <div id="terminal"></div>
+      </div>
+    </section>
+
+    <aside class="panel files">
+      <div class="files-head">
+        <select id="fs-root"></select>
+        <button id="btn-fs-refresh" type="button">Recargar</button>
+        <button id="btn-fs-open-root" type="button">Abrir raíz</button>
+      </div>
+      <div id="fs-status">Explorador remoto esperando conexión.</div>
+      <div id="fs-tree"></div>
+      <div class="editor">
+        <div class="editor-head">
+          <span id="fs-current-path">Sin archivo abierto</span>
+          <button id="btn-fs-save" type="button" disabled>Guardar</button>
+        </div>
+        <textarea id="fs-editor" placeholder="Selecciona un archivo de texto para editar." disabled></textarea>
+      </div>
+    </aside>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script>
     const wsUrlInput = document.getElementById('ws-url')
+    const operatorIdInput = document.getElementById('operator-id')
+    const profileIdInput = document.getElementById('profile-id')
+    const usernameInput = document.getElementById('username')
     const btnConnect = document.getElementById('btn-connect')
     const btnMic = document.getElementById('btn-mic')
     const btnAutoReconnect = document.getElementById('btn-autoreconnect')
     const statusText = document.getElementById('status-text')
     const statusDot = document.getElementById('status-dot')
+    const sessionContextEl = document.getElementById('session-context')
+
+    const fsRootSelect = document.getElementById('fs-root')
+    const btnFsRefresh = document.getElementById('btn-fs-refresh')
+    const btnFsOpenRoot = document.getElementById('btn-fs-open-root')
+    const fsStatusEl = document.getElementById('fs-status')
+    const fsTreeEl = document.getElementById('fs-tree')
+    const fsCurrentPathEl = document.getElementById('fs-current-path')
+    const fsEditor = document.getElementById('fs-editor')
+    const btnFsSave = document.getElementById('btn-fs-save')
 
     const term = new Terminal({
       convertEol: true,
@@ -134,9 +333,22 @@
     let mediaRecorder = null
     let mediaStream = null
 
+    let sessionInfo = null
+    let sessionCapabilities = null
+    let fsApiAvailable = false
+    let fsUnavailableReason = ''
+    let openFilePath = ''
+    let openFileDirty = false
+    let fsReqSeq = 0
+    const fsPending = new Map()
+
     function setStatus(kind, text) {
       statusDot.className = `pill ${kind}`
       statusText.textContent = text
+    }
+
+    function setFsStatus(text) {
+      fsStatusEl.textContent = String(text || '')
     }
 
     function inferDefaultWsUrl() {
@@ -147,9 +359,103 @@
       return `ws://${host}:${port}`
     }
 
+    function inferDefaultRemoteIdentity() {
+      const q = new URLSearchParams(window.location.search)
+      operatorIdInput.value = q.get('operatorId') || q.get('operator') || ''
+      profileIdInput.value = q.get('profileId') || q.get('profile') || ''
+      usernameInput.value = q.get('username') || q.get('user') || ''
+    }
+
+    function buildRequestedContext() {
+      const operatorId = operatorIdInput.value.trim()
+      const profileId = profileIdInput.value.trim()
+      const username = usernameInput.value.trim()
+      return {
+        operatorId,
+        profileId,
+        username
+      }
+    }
+
+    function buildConnectUrl(rawUrl) {
+      const base = new URL(rawUrl)
+      const ctx = buildRequestedContext()
+      if (ctx.operatorId) base.searchParams.set('operatorId', ctx.operatorId)
+      if (ctx.profileId) base.searchParams.set('profileId', ctx.profileId)
+      if (ctx.username) base.searchParams.set('username', ctx.username)
+      return base.toString()
+    }
+
+    function clearFsUi(reason = 'Explorador remoto esperando conexión.') {
+      fsApiAvailable = false
+      fsUnavailableReason = ''
+      fsTreeEl.innerHTML = ''
+      fsRootSelect.innerHTML = ''
+      fsRootSelect.disabled = true
+      btnFsRefresh.disabled = true
+      btnFsOpenRoot.disabled = true
+      btnFsSave.disabled = true
+      fsEditor.disabled = true
+      fsEditor.value = ''
+      openFilePath = ''
+      openFileDirty = false
+      fsCurrentPathEl.textContent = 'Sin archivo abierto'
+      setFsStatus(reason)
+    }
+
+    function renderSessionContext() {
+      sessionContextEl.innerHTML = ''
+      if (!sessionInfo) {
+        sessionContextEl.classList.add('hidden')
+        return
+      }
+      const context = sessionInfo.context || {}
+      const caps = sessionCapabilities || {}
+      const pills = [
+        `modo:${context.mode || 'legacy'}`,
+        context.operatorId ? `op:${context.operatorId}` : 'op:-',
+        context.roleId ? `rol:${context.roleId}` : 'rol:-',
+        context.profileId ? `perfil:${context.profileId}` : 'perfil:-',
+        `roots:${Array.isArray(context.allowedRoots) ? context.allowedRoots.length : 0}`,
+        `mcp:${Array.isArray(context.allowedMcpServers) ? context.allowedMcpServers.length : 0}`
+      ]
+      for (const text of pills) {
+        const span = document.createElement('span')
+        span.className = 'ctx-pill'
+        span.textContent = text
+        sessionContextEl.appendChild(span)
+      }
+      const denied = []
+      if (caps?.pty?.execute === false) denied.push('pty.execute')
+      if (caps?.fs?.list === false) denied.push('fs.list')
+      if (caps?.fs?.read === false) denied.push('fs.read')
+      if (caps?.fs?.write === false) denied.push('fs.write')
+      if (denied.length) {
+        const warn = document.createElement('span')
+        warn.className = 'ctx-pill warn'
+        warn.textContent = `deny:${denied.join('|')}`
+        sessionContextEl.appendChild(warn)
+      }
+      sessionContextEl.classList.remove('hidden')
+    }
+
+    function hasFsCapability(name) {
+      if (!sessionCapabilities || !sessionCapabilities.fs) return false
+      return sessionCapabilities.fs[name] === true
+    }
+
+    function hasViewerCapability() {
+      return Boolean(sessionCapabilities?.viewer?.open)
+    }
+
+    function canOpenFile() {
+      return hasFsCapability('read') || hasViewerCapability()
+    }
+
     function sendMessage(payload) {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false
       socket.send(JSON.stringify(payload))
+      return true
     }
 
     function scheduleReconnect() {
@@ -161,15 +467,261 @@
       }, 1500)
     }
 
+    function makeFsRequestId() {
+      fsReqSeq += 1
+      return `req-${Date.now()}-${fsReqSeq}`
+    }
+
+    function sendFsRequest(type, payload = {}, timeoutMs = 9000) {
+      return new Promise((resolve, reject) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          reject(new Error('Socket desconectado'))
+          return
+        }
+        const requestId = makeFsRequestId()
+        const timer = setTimeout(() => {
+          fsPending.delete(requestId)
+          reject(new Error('Timeout esperando respuesta FS'))
+        }, timeoutMs)
+        fsPending.set(requestId, {
+          resolve,
+          reject,
+          timer,
+          type
+        })
+        const ok = sendMessage({ type, requestId, ...payload })
+        if (!ok) {
+          clearTimeout(timer)
+          fsPending.delete(requestId)
+          reject(new Error('No se pudo enviar petición FS'))
+        }
+      })
+    }
+
+    function resolveFsResponse(msg) {
+      const requestId = String(msg.requestId || '')
+      if (!requestId) return false
+      const pending = fsPending.get(requestId)
+      if (!pending) return false
+      fsPending.delete(requestId)
+      clearTimeout(pending.timer)
+      pending.resolve(msg)
+      return true
+    }
+
+    function clearPendingFsRequests(reason = 'Socket cerrado') {
+      for (const pending of fsPending.values()) {
+        clearTimeout(pending.timer)
+        pending.reject(new Error(reason))
+      }
+      fsPending.clear()
+    }
+
+    function renderRootSelector(roots = []) {
+      fsRootSelect.innerHTML = ''
+      const list = Array.isArray(roots) ? roots : []
+      if (!list.length) {
+        const opt = document.createElement('option')
+        opt.value = ''
+        opt.textContent = '(sin roots)'
+        fsRootSelect.appendChild(opt)
+        fsRootSelect.disabled = true
+        return
+      }
+      for (const root of list) {
+        const opt = document.createElement('option')
+        opt.value = root
+        opt.textContent = root
+        fsRootSelect.appendChild(opt)
+      }
+      fsRootSelect.disabled = false
+      if (list.includes(fsRootSelect.value)) return
+      fsRootSelect.value = list[0]
+    }
+
+    function inferFsAvailableFromSession() {
+      const canList = hasFsCapability('list')
+      const canRead = canOpenFile()
+      const canWrite = hasFsCapability('write')
+      fsApiAvailable = canList || canRead || canWrite
+      btnFsRefresh.disabled = !canList
+      btnFsOpenRoot.disabled = !canList
+      btnFsSave.disabled = !canWrite || !openFilePath || !openFileDirty
+      fsEditor.disabled = !(canRead && hasFsCapability('write'))
+    }
+
+    function formatFsError(errorObj) {
+      if (!errorObj) return 'Error de filesystem'
+      const code = errorObj.code ? `${errorObj.code}: ` : ''
+      return `${code}${errorObj.message || 'Error'}`
+    }
+
+    function renderTreeEntries(entries, depth = 0) {
+      const list = Array.isArray(entries) ? entries : []
+      for (const entry of list) {
+        const row = document.createElement('div')
+        row.className = 'fs-row'
+
+        const left = document.createElement('div')
+        left.className = 'fs-left'
+        left.style.paddingLeft = `${Math.min(depth, 8) * 14}px`
+
+        const icon = document.createElement('span')
+        icon.textContent = entry.kind === 'dir' ? '📁' : (entry.kind === 'symlink' ? '🔗' : '📄')
+
+        const name = document.createElement('span')
+        name.className = 'fs-name'
+        name.textContent = entry.name || entry.path || '(sin nombre)'
+        name.title = entry.path || ''
+
+        left.append(icon, name)
+
+        const actions = document.createElement('div')
+        actions.className = 'fs-actions'
+
+        if (entry.kind === 'file' || entry.kind === 'symlink') {
+          const openBtn = document.createElement('button')
+          openBtn.type = 'button'
+          openBtn.textContent = 'Abrir'
+          const allowOpen = canOpenFile() && entry.canRead !== false
+          openBtn.disabled = !allowOpen
+          openBtn.addEventListener('click', async () => {
+            try {
+              await openRemoteFile(entry.path)
+            } catch (err) {
+              setFsStatus(errorText(err))
+            }
+          })
+          actions.appendChild(openBtn)
+        }
+
+        row.append(left, actions)
+        fsTreeEl.appendChild(row)
+
+        if (Array.isArray(entry.children) && entry.children.length) {
+          renderTreeEntries(entry.children, depth + 1)
+        }
+      }
+    }
+
+    async function refreshFsTree() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        clearFsUi('Conecta primero para usar el explorador remoto.')
+        return
+      }
+      if (!hasFsCapability('list')) {
+        setFsStatus('Permiso denegado: fs.list')
+        fsTreeEl.innerHTML = ''
+        return
+      }
+
+      const selectedRoot = fsRootSelect.value || sessionInfo?.context?.allowedRoots?.[0] || sessionInfo?.cwd || ''
+      if (!selectedRoot) {
+        setFsStatus('No hay root seleccionada.')
+        return
+      }
+
+      setFsStatus('Cargando árbol remoto...')
+      try {
+        const res = await sendFsRequest('fs:list', { path: selectedRoot, depth: 3 })
+        if (res?.ok === false) {
+          setFsStatus(formatFsError(res.error))
+          if (res.error?.code === 'INVALID_REQUEST') {
+            fsUnavailableReason = 'Servidor remoto legacy sin soporte FS API.'
+          }
+          return
+        }
+        fsTreeEl.innerHTML = ''
+        renderTreeEntries(res.entries || [], 0)
+        const count = Array.isArray(res.entries) ? res.entries.length : 0
+        setFsStatus(`Árbol cargado · root ${res.path || selectedRoot} · entradas ${count}${res.truncated ? ' (truncado)' : ''}`)
+      } catch (err) {
+        fsUnavailableReason = errorText(err)
+        setFsStatus(`No disponible: ${fsUnavailableReason}`)
+      }
+    }
+
+    async function openRemoteFile(filePath) {
+      if (!filePath) return
+      if (!canOpenFile()) {
+        setFsStatus('Permiso denegado: fs.read/viewer.open')
+        return
+      }
+      setFsStatus('Abriendo archivo remoto...')
+      const res = await sendFsRequest('fs:read', { path: filePath, encoding: 'utf8' })
+      if (res?.ok === false) {
+        setFsStatus(formatFsError(res.error))
+        return
+      }
+      if (typeof res.content !== 'string') {
+        setFsStatus('Archivo no textual o codificación no soportada.')
+        return
+      }
+      openFilePath = res.path || filePath
+      openFileDirty = false
+      fsEditor.value = res.content
+      fsEditor.disabled = !hasFsCapability('write')
+      btnFsSave.disabled = !hasFsCapability('write')
+      fsCurrentPathEl.textContent = openFilePath
+      fsCurrentPathEl.title = openFilePath
+      setFsStatus(`Archivo abierto (${res.size || 0} bytes)`)
+    }
+
+    async function saveRemoteFile() {
+      if (!openFilePath) {
+        setFsStatus('No hay archivo abierto.')
+        return
+      }
+      if (!hasFsCapability('write')) {
+        setFsStatus('Permiso denegado: fs.write')
+        return
+      }
+      setFsStatus('Guardando archivo remoto...')
+      const res = await sendFsRequest('fs:write', {
+        path: openFilePath,
+        content: fsEditor.value,
+        encoding: 'utf8'
+      })
+      if (res?.ok === false) {
+        setFsStatus(formatFsError(res.error))
+        return
+      }
+      openFileDirty = false
+      btnFsSave.disabled = true
+      setFsStatus(`Guardado OK · ${res.path || openFilePath}`)
+    }
+
+    function clearSessionContextState() {
+      sessionInfo = null
+      sessionCapabilities = null
+      renderSessionContext()
+      clearFsUi('Explorador remoto esperando conexión.')
+    }
+
+    function sendHandshake() {
+      const ctx = buildRequestedContext()
+      sendMessage({ type: 'handshake', ...ctx })
+    }
+
     function connect() {
-      const url = wsUrlInput.value.trim()
-      if (!url) return
+      const rawUrl = wsUrlInput.value.trim()
+      if (!rawUrl) return
+
+      let url = rawUrl
+      try {
+        url = buildConnectUrl(rawUrl)
+      } catch (err) {
+        setStatus('err', `URL inválida: ${errorText(err)}`)
+        return
+      }
+
       try {
         manualClose = false
         if (socket) {
           try { socket.close() } catch {}
           socket = null
         }
+        clearSessionContextState()
         setStatus('warn', 'Conectando...')
         socket = new WebSocket(url)
 
@@ -177,6 +729,7 @@
           setStatus('ok', `Conectado a ${url}`)
           btnConnect.textContent = 'Desconectar'
           fitAddon.fit()
+          sendHandshake()
           sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
         })
 
@@ -184,33 +737,79 @@
           let msg = null
           try { msg = JSON.parse(String(event.data || '')) } catch {}
           if (!msg || typeof msg !== 'object') return
+
           if (msg.type === 'output') {
             term.write(String(msg.data || ''))
             return
           }
+
           if (msg.type === 'transcript') {
             term.write(`\r\n[voz] ${String(msg.text || '')}\r\n`)
             return
           }
+
+          if (msg.type === 'fs:result') {
+            if (!resolveFsResponse(msg)) {
+              setFsStatus('Respuesta FS sin requestId reconocido.')
+            }
+            return
+          }
+
           if (msg.type === 'status') {
             const state = String(msg.state || '')
             if (state === 'connected') {
+              sessionInfo = msg
+              sessionCapabilities = msg.capabilities || null
+              renderSessionContext()
+              inferFsAvailableFromSession()
+
+              const roots = Array.isArray(msg?.context?.allowedRoots) ? msg.context.allowedRoots : []
+              renderRootSelector(roots.length ? roots : [msg.cwd || ''])
               setStatus('ok', `Sesión ${msg.sessionId || ''} · ${msg.cli || ''} · ${msg.cwd || ''}`)
-            } else if (state === 'transcribing') {
+
+              if (hasFsCapability('list')) {
+                fsApiAvailable = true
+                refreshFsTree().catch((err) => setFsStatus(errorText(err)))
+              } else {
+                if (canOpenFile() || hasFsCapability('write')) {
+                  fsApiAvailable = true
+                  setFsStatus('Sin fs.list, pero con capacidades parciales de lectura/escritura.')
+                } else {
+                  fsApiAvailable = false
+                  setFsStatus('Explorador remoto bloqueado por permisos.')
+                }
+              }
+              return
+            }
+            if (state === 'transcribing') {
               setStatus('warn', 'Transcribiendo audio...')
-            } else if (state === 'error') {
-              setStatus('err', String(msg.message || 'Error'))
-              term.write(`\r\n[error] ${String(msg.message || 'error')}\r\n`)
-            } else if (state === 'pty-exit') {
+              return
+            }
+            if (state === 'error') {
+              const code = String(msg.code || '')
+              const text = String(msg.message || 'Error')
+              setStatus('err', code ? `${code}: ${text}` : text)
+              term.write(`\r\n[error] ${code ? `${code}: ` : ''}${text}\r\n`)
+              if (code === 'UNSUPPORTED_MESSAGE' && text.includes('fs:')) {
+                fsApiAvailable = false
+                fsUnavailableReason = 'Servidor remoto legacy sin soporte FS API.'
+                setFsStatus(fsUnavailableReason)
+              }
+              return
+            }
+            if (state === 'pty-exit') {
               setStatus('warn', 'PTY remoto finalizado')
+              return
             }
           }
         })
 
         socket.addEventListener('close', () => {
+          clearPendingFsRequests('Socket cerrado')
           setStatus('off', 'Desconectado')
           btnConnect.textContent = 'Conectar'
           socket = null
+          clearSessionContextState()
           scheduleReconnect()
         })
 
@@ -218,7 +817,7 @@
           setStatus('err', 'Error de conexión WebSocket')
         })
       } catch (err) {
-        setStatus('err', err && err.message ? err.message : String(err))
+        setStatus('err', errorText(err))
       }
     }
 
@@ -231,9 +830,11 @@
       if (socket) {
         try { socket.close() } catch {}
       }
+      clearPendingFsRequests('Desconexión manual')
       socket = null
       btnConnect.textContent = 'Conectar'
       setStatus('off', 'Desconectado')
+      clearSessionContextState()
     }
 
     async function startMic() {
@@ -270,7 +871,12 @@
       }
       mediaStream = null
       btnMic.textContent = 'Micrófono'
-      setStatus(socket && socket.readyState === WebSocket.OPEN ? 'ok' : 'off', socket && socket.readyState === WebSocket.OPEN ? 'Conectado' : 'Desconectado')
+      const connected = socket && socket.readyState === WebSocket.OPEN
+      setStatus(connected ? 'ok' : 'off', connected ? 'Conectado' : 'Desconectado')
+    }
+
+    function errorText(err) {
+      return (err && err.message) ? err.message : String(err)
     }
 
     btnConnect.addEventListener('click', () => {
@@ -295,9 +901,36 @@
       try {
         await startMic()
       } catch (err) {
-        setStatus('err', err && err.message ? err.message : String(err))
+        setStatus('err', errorText(err))
         stopMic()
       }
+    })
+
+    fsRootSelect.addEventListener('change', () => {
+      refreshFsTree().catch((err) => setFsStatus(errorText(err)))
+    })
+
+    btnFsRefresh.addEventListener('click', () => {
+      refreshFsTree().catch((err) => setFsStatus(errorText(err)))
+    })
+
+    btnFsOpenRoot.addEventListener('click', async () => {
+      if (!fsRootSelect.value) return
+      try {
+        await refreshFsTree()
+      } catch (err) {
+        setFsStatus(errorText(err))
+      }
+    })
+
+    fsEditor.addEventListener('input', () => {
+      if (!openFilePath) return
+      openFileDirty = true
+      btnFsSave.disabled = !hasFsCapability('write')
+    })
+
+    btnFsSave.addEventListener('click', () => {
+      saveRemoteFile().catch((err) => setFsStatus(errorText(err)))
     })
 
     term.onData((data) => sendMessage({ type: 'input', data }))
@@ -308,6 +941,8 @@
     })
 
     wsUrlInput.value = inferDefaultWsUrl()
+    inferDefaultRemoteIdentity()
+    clearFsUi('Explorador remoto esperando conexión.')
     term.writeln('POWER-AGENT LAN Client listo. Pulsa "Conectar".')
   </script>
 </body>
