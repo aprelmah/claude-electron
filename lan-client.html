@@ -332,6 +332,21 @@
       font-size: 0.76rem;
     }
 
+    .terminal-head-actions {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .terminal-head-actions .btn {
+      min-height: 34px;
+      padding: 6px 10px;
+      font-size: 0.82rem;
+      border-radius: 9px;
+      width: auto;
+    }
+
     .panel-content {
       padding: 10px;
       min-height: 0;
@@ -717,6 +732,16 @@
         min-height: 460px;
       }
     }
+
+    @media (max-width: 759px) {
+      .terminal-head-actions {
+        width: 100%;
+      }
+      .terminal-head-actions .btn {
+        flex: 1 1 auto;
+        justify-content: center;
+      }
+    }
   </style>
 </head>
 <body>
@@ -785,18 +810,18 @@
       <section id="terminal-panel" class="panel" role="tabpanel" aria-labelledby="tab-terminal">
         <div class="panel-head">
           <h2>Terminal remoto</h2>
+          <div class="terminal-head-actions">
+            <button id="btn-attach-photo" class="btn btn-primary" type="button">📷 Enviar foto</button>
+            <button id="btn-attach-file" class="btn btn-quiet" type="button">📎 Enviar archivo</button>
+          </div>
           <small>Chat operativo en tiempo real con adjuntos</small>
         </div>
         <div class="panel-content">
           <div id="terminal-wrap"><div id="terminal"></div></div>
           <div class="upload-box" aria-labelledby="upload-title">
             <h3 id="upload-title" style="margin:0;font-size:0.95rem;">Enviar foto/archivo al chat</h3>
-            <div class="upload-actions">
-              <input id="input-attach-file" class="sr-only" type="file" />
-              <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
-              <button id="btn-attach-photo" class="btn btn-primary" type="button">📷 Enviar foto</button>
-              <button id="btn-attach-file" class="btn btn-quiet" type="button">📎 Enviar archivo</button>
-            </div>
+            <input id="input-attach-file" class="sr-only" type="file" />
+            <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
             <label class="option-line" for="attach-confirm-chat">
               <input id="attach-confirm-chat" type="checkbox" checked />
               Confirmar antes de enviar al chat
