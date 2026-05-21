@@ -428,6 +428,30 @@
 
     .primary-actions { display: grid; gap: 8px; }
 
+    .session-picker {
+      display: grid;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
+    .session-picker-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .session-picker-actions {
+      display: grid;
+      gap: 8px;
+    }
+
+    .session-picker-meta {
+      margin: 0;
+      font-size: 0.8rem;
+      color: var(--text-2);
+    }
+
     .advanced {
       border: 1px dashed var(--border-strong);
       border-radius: var(--r-sm);
@@ -1289,6 +1313,8 @@
       body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
       .row-primary { grid-template-columns: 1fr auto; align-items: end; }
       .primary-actions { grid-template-columns: auto auto; }
+      .session-picker-row { grid-template-columns: 1fr auto; align-items: end; }
+      .session-picker-actions { grid-template-columns: auto; }
       .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .attach-actions { grid-template-columns: auto auto; justify-content: start; }
       .attach-actions .btn { min-width: 200px; }
@@ -1356,7 +1382,7 @@
     <section class="card card-pad onboarding" aria-labelledby="onboarding-title">
       <div class="onboarding-head">
         <h1 id="onboarding-title">Conectar al equipo central</h1>
-        <p class="onboarding-lead">Escribe tu nombre de operador y pulsa <strong>Entrar</strong>. El resto suele ir automático.</p>
+        <p class="onboarding-lead">Escribe tu nombre, revisa sesiones reutilizables de esta carpeta y pulsa <strong>Entrar</strong>.</p>
       </div>
 
       <form id="connect-form" novalidate>
@@ -1369,6 +1395,21 @@
             <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
             <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
           </div>
+        </div>
+
+        <div class="session-picker" aria-label="Selector de sesión reutilizable">
+          <div class="session-picker-row">
+            <div class="field">
+              <label for="session-select">Sesión reutilizable</label>
+              <select id="session-select" class="control">
+                <option value="">Nueva sesión (sin reanudar)</option>
+              </select>
+            </div>
+            <div class="session-picker-actions">
+              <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar sesiones</button>
+            </div>
+          </div>
+          <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
         </div>
 
         <details id="advanced-options" class="advanced" style="margin-top:12px">
@@ -1618,6 +1659,9 @@
       usernameInput: document.getElementById('username'),
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
+      sessionSelect: document.getElementById('session-select'),
+      btnSessionRefresh: document.getElementById('btn-session-refresh'),
+      sessionPickerMeta: document.getElementById('session-picker-meta'),
       btnTopbarDisconnect: document.getElementById('btn-topbar-disconnect'),
       btnThemeToggle: document.getElementById('btn-theme-toggle'),
       themeIconSun: document.getElementById('theme-icon-sun'),
@@ -1795,6 +1839,14 @@
       mediaStream: null,
       sessionInfo: null,
       sessionCapabilities: null,
+      sessionList: [],
+      sessionListCwd: '',
+      sessionListReqSeq: 0,
+      sessionStartReqSeq: 0,
+      pendingSessionStartRequestId: '',
+      selectedResumeSessionId: '',
+      sessionLockHeartbeatTimer: null,
+      autoStartMode: 'off',
       fsReqSeq: 0,
       fsPending: new Map(),
       fsApiAvailable: false,
@@ -2192,6 +2244,198 @@
       refs.viewerStatus.textContent = String(text || '')
       refs.viewerStatus.style.color = tone === 'err' ? 'var(--err)' : (tone === 'ok' ? 'var(--ok)' : (tone === 'warn' ? 'var(--warn)' : ''))
     }
+    function setSessionPickerMeta(text, tone = '') {
+      refs.sessionPickerMeta.textContent = String(text || '')
+      refs.sessionPickerMeta.style.color = tone === 'err'
+        ? 'var(--err)'
+        : (tone === 'ok' ? 'var(--ok)' : (tone === 'warn' ? 'var(--warn)' : 'var(--text-2)'))
+    }
+
+    function shortPathForHint(rawPath) {
+      const text = String(rawPath || '').trim()
+      if (!text) return ''
+      const parts = text.split('/').filter(Boolean)
+      if (parts.length <= 3) return text
+      return `…/${parts.slice(-3).join('/')}`
+    }
+
+    function renderSessionSelector() {
+      const list = Array.isArray(appState.sessionList) ? appState.sessionList : []
+      const selectedBefore = String(appState.selectedResumeSessionId || refs.sessionSelect.value || '').trim()
+      refs.sessionSelect.innerHTML = ''
+
+      const baseOption = document.createElement('option')
+      baseOption.value = ''
+      baseOption.textContent = 'Nueva sesión (sin reanudar)'
+      refs.sessionSelect.appendChild(baseOption)
+
+      let freeCount = 0
+      let occupiedCount = 0
+
+      for (const row of list) {
+        const id = String(row?.id || '').trim()
+        if (!id) continue
+        const status = String(row?.status || '').toLowerCase()
+        const occupied = status === 'occupied'
+        if (occupied) occupiedCount += 1
+        else freeCount += 1
+        const owner = String(row?.lock?.owner || '').trim()
+        const option = document.createElement('option')
+        option.value = id
+        option.disabled = occupied
+        if (occupied) {
+          option.textContent = `${id} · ocupada por ${owner || 'otro cliente'}`
+        } else {
+          const preview = String(row?.preview || '').trim()
+          option.textContent = preview && preview !== '(sin contenido)'
+            ? `${id} · libre · ${preview.slice(0, 72)}`
+            : `${id} · libre`
+        }
+        refs.sessionSelect.appendChild(option)
+      }
+
+      const canKeepSelection = selectedBefore && Array.from(refs.sessionSelect.options).some((opt) => opt.value === selectedBefore && !opt.disabled)
+      refs.sessionSelect.value = canKeepSelection ? selectedBefore : ''
+      appState.selectedResumeSessionId = refs.sessionSelect.value || ''
+
+      const selectorLocked = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
+      refs.sessionSelect.disabled = selectorLocked
+      refs.btnSessionRefresh.disabled = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
+
+      if (!isSocketOpen()) {
+        setSessionPickerMeta('Conecta primero para cargar sesiones de esta carpeta.')
+        return
+      }
+      if (appState.sessionInfo) {
+        const resumed = String(appState.sessionInfo?.resumeSessionId || '').trim()
+        if (resumed) setSessionPickerMeta(`Sesión activa: reanudada (${resumed}).`, 'ok')
+        else setSessionPickerMeta('Sesión activa: nueva sesión (sin reanudar).', 'ok')
+        return
+      }
+      const cwdHint = shortPathForHint(appState.sessionListCwd)
+      const parts = []
+      if (cwdHint) parts.push(`Carpeta ${cwdHint}`)
+      parts.push(`${freeCount} libres`)
+      parts.push(`${occupiedCount} ocupadas`)
+      setSessionPickerMeta(parts.join(' · '), 'warn')
+    }
+
+    function formatSessionStartError(error = {}) {
+      const code = String(error?.code || '').toUpperCase()
+      const message = String(error?.message || '').trim()
+      if (code === 'SESSION_LOCKED') return message || 'Esa sesión ya está ocupada por otro cliente.'
+      if (code === 'SESSION_NOT_FOUND') return message || 'La sesión seleccionada ya no existe en esta carpeta.'
+      if (code === 'INVALID_SESSION_ID') return 'El ID de sesión no es válido para reanudar.'
+      if (code === 'ALREADY_CONNECTED') return 'Ya hay una sesión activa; usa reconectar para cambiar.'
+      return message || (code ? `${code}: error al iniciar sesión` : 'No se pudo iniciar la sesión seleccionada.')
+    }
+
+    function stopSessionLockHeartbeat() {
+      if (!appState.sessionLockHeartbeatTimer) return
+      try { clearInterval(appState.sessionLockHeartbeatTimer) } catch {}
+      appState.sessionLockHeartbeatTimer = null
+    }
+
+    function startSessionLockHeartbeat() {
+      stopSessionLockHeartbeat()
+      if (!isSocketOpen()) return
+      const resumeSessionId = String(appState.sessionInfo?.resumeSessionId || '').trim()
+      if (!resumeSessionId) return
+      appState.sessionLockHeartbeatTimer = window.setInterval(() => {
+        if (!isSocketOpen()) {
+          stopSessionLockHeartbeat()
+          return
+        }
+        sendMessage({ type: 'session:heartbeat', sessionId: resumeSessionId })
+      }, 2500)
+      sendMessage({ type: 'session:heartbeat', sessionId: resumeSessionId })
+    }
+
+    function requestReusableSessions({ forceRefresh = false, silent = false } = {}) {
+      if (!isSocketOpen()) {
+        if (!silent) setSessionPickerMeta('Conecta primero para listar sesiones.', 'warn')
+        renderSessionSelector()
+        return false
+      }
+      const requestId = `sess-list-${Date.now()}-${++appState.sessionListReqSeq}`
+      const sent = sendMessage({ type: 'session:list', requestId, forceRefresh })
+      if (!sent) {
+        if (!silent) setSessionPickerMeta('No se pudo pedir la lista de sesiones.', 'err')
+        return false
+      }
+      if (!silent) setSessionPickerMeta('Actualizando sesiones de esta carpeta…', 'warn')
+      return true
+    }
+
+    function applySessionListMessage(msg = {}) {
+      if (msg.ok === false) {
+        const errorTextMsg = formatSessionStartError(msg.error || {})
+        setSessionPickerMeta(errorTextMsg, 'err')
+        return
+      }
+      appState.sessionList = Array.isArray(msg.sessions) ? msg.sessions : []
+      appState.sessionListCwd = String(msg.cwd || '').trim()
+      const selected = String(msg.selectedSessionId || appState.selectedResumeSessionId || '').trim()
+      appState.selectedResumeSessionId = selected
+      renderSessionSelector()
+      if (!appState.pendingSessionStartRequestId && !appState.sessionInfo) {
+        if (appState.autoStartMode === 'always') {
+          appState.autoStartMode = 'off'
+          startSelectedSession({ autoFromList: true })
+          return
+        }
+        if (appState.autoStartMode === 'if-empty') {
+          appState.autoStartMode = 'off'
+          if (appState.sessionList.length === 0) startSelectedSession({ autoFromList: true })
+        }
+      }
+    }
+
+    function startSelectedSession(options = {}) {
+      if (!isSocketOpen()) {
+        setConnectionStatus('error', 'Conecta primero para iniciar sesión')
+        return false
+      }
+      if (appState.sessionInfo) return true
+      if (appState.pendingSessionStartRequestId) {
+        setConnectionStatus('connecting', 'Esperando confirmación de inicio de sesión…')
+        return false
+      }
+      const selected = String(refs.sessionSelect.value || '').trim()
+      appState.selectedResumeSessionId = selected
+      const requestId = `sess-start-${Date.now()}-${++appState.sessionStartReqSeq}`
+      const sent = sendMessage({ type: 'session:start', requestId, sessionId: selected })
+      if (!sent) {
+        setConnectionStatus('error', 'No se pudo solicitar inicio de sesión')
+        return false
+      }
+      appState.pendingSessionStartRequestId = requestId
+      refs.btnConnect.textContent = 'Entrando…'
+      renderSessionSelector()
+      if (selected) {
+        setHandshakeStatus('warn', `Reservando sesión ${selected}…`, 'iniciando')
+        setConnectionStatus('connecting', 'Reanudando sesión seleccionada…')
+      } else {
+        const label = options?.autoFromList ? 'No hay sesiones guardadas: creando una nueva.' : 'Iniciando nueva sesión…'
+        setHandshakeStatus('warn', label, 'iniciando')
+        setConnectionStatus('connecting', 'Iniciando sesión nueva…')
+      }
+      return true
+    }
+
+    function handleSessionStartMessage(msg = {}) {
+      const requestId = String(msg.requestId || '')
+      if (appState.pendingSessionStartRequestId && requestId && requestId !== appState.pendingSessionStartRequestId) return
+      if (msg.ok === true) return
+      appState.pendingSessionStartRequestId = ''
+      refs.btnConnect.textContent = isSocketOpen() ? 'Entrar' : 'Conectando…'
+      renderSessionSelector()
+      const errorMsg = formatSessionStartError(msg.error || {})
+      setConnectionStatus('error', errorMsg)
+      setHandshakeStatus('err', errorMsg, 'error')
+      setSessionPickerMeta(errorMsg, 'err')
+      requestReusableSessions({ forceRefresh: true, silent: true })
+    }
 
     function showToast(message, { okLabel = 'Enviar', cancelLabel = 'Cancelar' } = {}) {
       return new Promise((resolve) => {
@@ -2246,6 +2490,7 @@
     function buildConnectUrl(rawUrl) {
       const base = new URL(rawUrl)
       const ctx = buildRequestedContext()
+      base.searchParams.set('lanSessionMode', 'select')
       if (ctx.operatorId) base.searchParams.set('operatorId', ctx.operatorId)
       if (ctx.profileId) base.searchParams.set('profileId', ctx.profileId)
       if (ctx.username) base.searchParams.set('username', ctx.username)
@@ -2726,9 +2971,14 @@
     }
 
     function clearSessionState() {
+      stopSessionLockHeartbeat()
       appState.sessionInfo = null
       appState.sessionCapabilities = null
       appState.uploadSupport = 'unknown'
+      appState.pendingSessionStartRequestId = ''
+      appState.sessionList = []
+      appState.sessionListCwd = ''
+      appState.autoStartMode = 'off'
       appState.chatCaptureEnabled = false
       appState.awaitingAgentReply = false
       clearAgentReplyIdleTimer()
@@ -2749,6 +2999,7 @@
       clearFsUi('Conecta primero para ver carpetas.')
       setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
       stopFsPolling()
+      renderSessionSelector()
       refs.sessionChip.textContent = ''
       setConnectedFlag(false)
       updateJumpButton(true)
@@ -2771,12 +3022,14 @@
 
     function connectHandlers(socketUrl) {
       appState.socket.addEventListener('open', () => {
-        refs.btnConnect.textContent = 'Salir'
-        setConnectionStatus('online', `Conectado a ${socketUrl}`)
-        setHandshakeStatus('warn', 'Canal abierto. Enviando identidad…', 'pendiente')
+        refs.btnConnect.textContent = 'Entrar'
+        setConnectionStatus('connecting', `Canal abierto · ${socketUrl}`)
+        setHandshakeStatus('warn', 'Canal abierto. Enviando identidad y cargando sesiones…', 'pendiente')
         sendHandshake()
+        requestReusableSessions({ forceRefresh: true, silent: false })
         sendResizeToServer({ forceFit: appState.chatView === 'terminal' })
         scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
+        renderSessionSelector()
       })
 
       appState.socket.addEventListener('message', (event) => {
@@ -2842,6 +3095,17 @@
           if (!resolveFsResponse(msg)) setFsStatus('Respuesta de archivos sin id reconocible.', 'warn')
           return
         }
+        if (msg.type === 'session:list') {
+          applySessionListMessage(msg)
+          return
+        }
+        if (msg.type === 'session:start') {
+          handleSessionStartMessage(msg)
+          return
+        }
+        if (msg.type === 'session:heartbeat') {
+          return
+        }
         if (msg.type === 'fs:event') {
           if (!appState.fsPushSeen) {
             appState.fsPushSeen = true
@@ -2855,6 +3119,8 @@
 
         const state = String(msg.state || '')
         if (state === 'connected') {
+          appState.pendingSessionStartRequestId = ''
+          appState.autoStartMode = 'off'
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
           clearAgentReplyIdleTimer()
@@ -2871,11 +3137,14 @@
           renderSessionContext()
           updateFsControlState()
           setHandshakeStatus('ok', 'Identidad aceptada. Sesión lista.', 'ok')
+          refs.btnConnect.textContent = 'Salir'
           const roots = Array.isArray(msg?.context?.allowedRoots) ? msg.context.allowedRoots : []
           renderRootSelector(roots.length ? roots : [msg.cwd || ''])
           setConnectedFlag(true)
           setSessionChip()
           setConnectionStatus('online', `Conectado · ${msg.cwd || ''}`)
+          startSessionLockHeartbeat()
+          renderSessionSelector()
           if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'connected' }).catch((err) => setFsStatus(errorText(err), 'err'))
           else if (canOpenFile() || canWriteFile()) setFsStatus('Sin listado de carpetas. Acceso parcial a archivos.', 'warn')
           else setFsStatus('Tu rol no permite navegar por archivos.', 'warn')
@@ -2890,6 +3159,12 @@
           const code = String(msg.code || '')
           const text = String(msg.message || 'Error remoto')
           const full = code ? `${code}: ${text}` : text
+          if (code === 'SESSION_LOCKED' || code === 'SESSION_NOT_FOUND' || code === 'SESSION_NOT_STARTED') {
+            appState.pendingSessionStartRequestId = ''
+            refs.btnConnect.textContent = isSocketOpen() ? 'Entrar' : 'Conectando…'
+            renderSessionSelector()
+            setSessionPickerMeta(text, 'err')
+          }
           setConnectionStatus('error', full)
           if (code === 'UNSUPPORTED_MESSAGE') {
             if (text.includes('handshake')) setHandshakeStatus('warn', 'Servidor antiguo: continúa en modo compatible.', 'compat')
@@ -2906,6 +3181,7 @@
         flushPendingAgentMessage()
         clearPendingFsRequests('Socket cerrado')
         stopMic(true)
+        stopSessionLockHeartbeat()
         clearSessionState()
         refs.btnConnect.textContent = 'Entrar'
         setConnectionStatus('offline', 'Desconectado')
@@ -2919,7 +3195,7 @@
       })
     }
 
-    async function connect() {
+    async function connect(options = {}) {
       const rawUrl = refs.wsUrlInput.value.trim()
       if (!rawUrl) { setConnectionStatus('error', 'Falta dirección del servidor.'); return }
       let url = rawUrl
@@ -2929,6 +3205,8 @@
       if (appState.socket) { try { appState.socket.close() } catch {} ; appState.socket = null }
       clearSessionState()
       clearPendingFsRequests('Nueva conexión')
+      const autoStartRaw = String(options?.autoStart || 'if-empty').toLowerCase()
+      appState.autoStartMode = autoStartRaw === 'always' ? 'always' : (autoStartRaw === 'off' ? 'off' : 'if-empty')
       refs.btnConnect.textContent = 'Conectando…'
       setConnectionStatus('connecting', 'Conectando…')
       setHandshakeStatus('warn', 'Preparando identidad…', 'pendiente')
@@ -2961,10 +3239,10 @@
       if (isSocketOpen()) {
         setAttachStatus('Aplicando proveedor/modelo/esfuerzo: reconectando sesión…', 'warn')
         disconnect()
-        window.setTimeout(() => connect().catch(() => {}), 220)
+        window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 220)
         return
       }
-      connect().catch(() => {})
+      connect({ autoStart: 'always' }).catch(() => {})
     }
 
     function sendChatText(rawText) {
@@ -3090,8 +3368,15 @@
 
     refs.connectForm.addEventListener('submit', (event) => {
       event.preventDefault()
-      if (isSocketOpen()) disconnect()
-      else connect().catch(() => {})
+      if (appState.sessionInfo) {
+        disconnect()
+        return
+      }
+      if (isSocketOpen()) {
+        startSelectedSession()
+        return
+      }
+      connect().catch(() => {})
     })
 
     refs.btnAutoReconnect.addEventListener('click', () => {
@@ -3100,6 +3385,23 @@
       refs.btnAutoReconnect.setAttribute('aria-pressed', appState.autoreconnect ? 'true' : 'false')
       if (!appState.autoreconnect && appState.reconnectTimer) {
         clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null
+      }
+    })
+
+    refs.btnSessionRefresh.addEventListener('click', () => {
+      if (!isSocketOpen()) {
+        setSessionPickerMeta('Abre conexión primero para refrescar sesiones.', 'warn')
+        return
+      }
+      requestReusableSessions({ forceRefresh: true, silent: false })
+    })
+
+    refs.sessionSelect.addEventListener('change', () => {
+      appState.selectedResumeSessionId = String(refs.sessionSelect.value || '').trim()
+      if (appState.selectedResumeSessionId) {
+        setSessionPickerMeta(`Sesión ${appState.selectedResumeSessionId} seleccionada. Pulsa Entrar para reanudar.`, 'warn')
+      } else {
+        setSessionPickerMeta('Nueva sesión seleccionada. Pulsa Entrar para iniciar.', 'warn')
       }
     })
 
@@ -3183,7 +3485,7 @@
     })
     refs.btnReconnect.addEventListener('click', () => {
       if (isSocketOpen()) disconnect()
-      window.setTimeout(() => connect().catch(() => {}), 200)
+      window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 200)
     })
     refs.btnClearTerminal.addEventListener('click', () => {
       if (appState.chatView === 'chat') {
@@ -3230,7 +3532,7 @@
       } catch {}
     }
     window.addEventListener('beforeunload', () => {
-      stopFsPolling(); stopMic(true)
+      stopFsPolling(); stopMic(true); stopSessionLockHeartbeat()
       clearPendingFsRequests('Página cerrada')
       clearPendingRefitTimers()
       if (appState.terminalResizeObserver) {
@@ -3246,6 +3548,7 @@
     setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
     setConnectionStatus('offline', 'Sin conectar')
     setHandshakeStatus('warn', 'Listo para conectar.', 'en espera')
+    renderSessionSelector()
     renderSessionContext()
     ensureChatEmptyState()
     setChatView('chat')

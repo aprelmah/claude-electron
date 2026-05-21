@@ -14,6 +14,9 @@ const DEFAULT_ROWS = 35
 const SESSION_NEGOTIATION_TIMEOUT_MS = 180
 const MAX_PREINIT_QUEUE = 64
 const MAX_PREINIT_INPUT_BYTES = 128 * 1024
+const SESSION_LOCK_TIMEOUT_MS = 9 * 1000
+const SESSION_LOCK_SWEEP_MS = 1 * 1000
+const MAX_REUSABLE_SESSIONS = 300
 const MAX_FS_TREE_DEPTH = 4
 const MAX_FS_LIST_ENTRIES = 2000
 const MAX_FS_WATCH_SNAPSHOT_ENTRIES = 2500
@@ -333,6 +336,47 @@ function firstNonEmpty(params, names = []) {
     if (val) return val
   }
   return ''
+}
+
+function isTruthyText(raw) {
+  const text = String(raw || '').trim().toLowerCase()
+  if (!text) return false
+  return text === '1' || text === 'true' || text === 'yes' || text === 'on' || text === 'selector' || text === 'manual' || text === 'select'
+}
+
+function extractSessionSelectorModeFromQuery(req) {
+  const params = parseConnectionQuery(req)
+  const mode = firstNonEmpty(params, ['lanSessionMode', 'sessionMode', 'sessionSelector'])
+  return isTruthyText(mode)
+}
+
+function sanitizeResumeSessionId(raw) {
+  const text = trimToString(raw, 220)
+  if (!text) return ''
+  if (!/^[a-zA-Z0-9._:-]+$/.test(text)) return ''
+  return text
+}
+
+function normalizeSessionListRows(rows) {
+  if (!Array.isArray(rows)) return []
+  const out = []
+  const seen = new Set()
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const id = sanitizeResumeSessionId(row.id || row.sessionId)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      mtime: Number(row.mtime || row.mtimeMs || 0),
+      size: Number(row.size || 0),
+      msgCount: Number(row.msgCount || row.messages || 0),
+      preview: trimToString(row.preview, 320),
+      path: trimToString(row.path, 3000)
+    })
+    if (out.length >= MAX_REUSABLE_SESSIONS) break
+  }
+  return out
 }
 
 function extractRequestedContextFromQuery(req) {
@@ -889,6 +933,9 @@ function createLanWsServer(options = {}) {
   const getSessionConfig = typeof options.getSessionConfig === 'function'
     ? options.getSessionConfig
     : (() => ({ cli: 'claude', cwd: os.homedir(), bin: 'claude', env: { ...process.env }, args: [] }))
+  const listReusableSessions = typeof options.listReusableSessions === 'function'
+    ? options.listReusableSessions
+    : (() => [])
   const resolveSessionContext = typeof options.resolveSessionContext === 'function' ? options.resolveSessionContext : null
   const transcribeAudio = typeof options.transcribeAudio === 'function' ? options.transcribeAudio : null
   const runSemanticChatTurn = typeof options.runSemanticChatTurn === 'function' ? options.runSemanticChatTurn : null
@@ -901,6 +948,8 @@ function createLanWsServer(options = {}) {
   const fsWatchThrottleMs = Math.max(150, Math.min(Number.parseInt(fsWatchOptions.throttleMs, 10) || FS_WATCH_THROTTLE_MS, 10000))
   const fsWatchPollingIntervalMs = Math.max(600, Math.min(Number.parseInt(fsWatchOptions.pollMs, 10) || FS_WATCH_POLL_INTERVAL_MS, 15000))
   const fsWatchDepth = Math.max(1, Math.min(Number.parseInt(fsWatchOptions.depth, 10) || MAX_FS_TREE_DEPTH, MAX_FS_TREE_DEPTH))
+  const sessionLockTimeoutMs = Math.max(4000, Math.min(Number.parseInt(options.sessionLockTimeoutMs, 10) || SESSION_LOCK_TIMEOUT_MS, 60000))
+  const sessionLockSweepMs = Math.max(500, Math.min(Number.parseInt(options.sessionLockSweepMs, 10) || SESSION_LOCK_SWEEP_MS, sessionLockTimeoutMs))
 
   let wsServer = null
   let httpServer = null
@@ -911,12 +960,201 @@ function createLanWsServer(options = {}) {
   let clientHtmlPath = options.clientHtmlPath || ''
 
   const sessions = new Map()
+  const sessionLocks = new Map()
+  let lockSweepTimer = null
 
   function emitAudit(action, details = {}) {
     if (!onAuditEvent) return
     try {
       onAuditEvent({ action, ts: Date.now(), source: 'lan-ws-server', ...details })
     } catch {}
+  }
+
+  function sessionLockKey(cwd, sessionId) {
+    const normalizedCwd = normalizeAbsolutePath(cwd)
+    const safeSessionId = sanitizeResumeSessionId(sessionId)
+    if (!normalizedCwd || !safeSessionId) return ''
+    return `${normalizedCwd}::${safeSessionId}`
+  }
+
+  function sessionLockOwnerLabel(session) {
+    const context = session?.context || {}
+    const requested = context?.request || session?.requestedContext || {}
+    const label = trimToString(
+      context.username ||
+      requested.username ||
+      context.operatorId ||
+      requested.operatorId ||
+      context.profileId ||
+      session?.ip ||
+      session?.id,
+      120
+    )
+    if (label) return label
+    const shortId = trimToString(session?.id, 80)
+    return shortId ? `cliente-${shortId.slice(0, 8)}` : 'cliente'
+  }
+
+  function releaseSessionLockByKey(lockKey, reason = 'released') {
+    const key = trimToString(lockKey, 4000)
+    if (!key) return false
+    const current = sessionLocks.get(key)
+    if (!current) return false
+    sessionLocks.delete(key)
+    const owner = sessions.get(current.ownerSessionId)
+    if (owner && owner.sessionLockKey === key) {
+      owner.sessionLockKey = ''
+      owner.selectedResumeSessionId = ''
+    }
+    emitAudit('lan_session_lock_released', {
+      sessionId: current.ownerSessionId || '',
+      lockSessionId: current.sessionId || '',
+      cwd: current.cwd || '',
+      reason
+    })
+    return true
+  }
+
+  function releaseSessionLock(session, reason = 'released') {
+    const key = trimToString(session?.sessionLockKey, 4000)
+    if (!key) return false
+    const current = sessionLocks.get(key)
+    if (!current || current.ownerSessionId !== session.id) {
+      session.sessionLockKey = ''
+      session.selectedResumeSessionId = ''
+      return false
+    }
+    const released = releaseSessionLockByKey(key, reason)
+    if (released) {
+      session.sessionLockKey = ''
+      session.selectedResumeSessionId = ''
+    }
+    return released
+  }
+
+  function pruneStaleSessionLocks(now = Date.now()) {
+    for (const [key, lock] of sessionLocks.entries()) {
+      if (!lock || Number(lock.expiresAt || 0) > now) continue
+      releaseSessionLockByKey(key, 'stale-timeout')
+    }
+  }
+
+  function touchSessionLock(session, now = Date.now()) {
+    const key = trimToString(session?.sessionLockKey, 4000)
+    if (!key) return false
+    const lock = sessionLocks.get(key)
+    if (!lock || lock.ownerSessionId !== session.id) {
+      session.sessionLockKey = ''
+      session.selectedResumeSessionId = ''
+      return false
+    }
+    lock.lastHeartbeatAt = now
+    lock.expiresAt = now + sessionLockTimeoutMs
+    sessionLocks.set(key, lock)
+    return true
+  }
+
+  function acquireSessionLock(session, cwd, sessionId) {
+    const safeSessionId = sanitizeResumeSessionId(sessionId)
+    if (!safeSessionId) {
+      releaseSessionLock(session, 'switch-to-new-session')
+      return { ok: true, acquired: false, sessionId: '' }
+    }
+
+    const safeCwd = normalizeAbsolutePath(cwd)
+    const key = sessionLockKey(safeCwd, safeSessionId)
+    if (!key) {
+      return {
+        ok: false,
+        code: 'INVALID_SESSION_ID',
+        message: 'ID de sesión inválido para reanudar.'
+      }
+    }
+
+    pruneStaleSessionLocks(Date.now())
+
+    const existing = sessionLocks.get(key)
+    if (existing && existing.ownerSessionId !== session.id) {
+      return {
+        ok: false,
+        code: 'SESSION_LOCKED',
+        message: `La sesión está ocupada por ${existing.ownerLabel || 'otro cliente'}.`,
+        owner: existing.ownerLabel || '',
+        sessionId: safeSessionId
+      }
+    }
+
+    if (session.sessionLockKey && session.sessionLockKey !== key) {
+      releaseSessionLock(session, 'switch-session')
+    }
+
+    const now = Date.now()
+    const nextLock = {
+      key,
+      sessionId: safeSessionId,
+      cwd: safeCwd,
+      ownerSessionId: session.id,
+      ownerLabel: sessionLockOwnerLabel(session),
+      acquiredAt: existing ? Number(existing.acquiredAt || now) : now,
+      lastHeartbeatAt: now,
+      expiresAt: now + sessionLockTimeoutMs
+    }
+    sessionLocks.set(key, nextLock)
+    session.sessionLockKey = key
+    session.selectedResumeSessionId = safeSessionId
+    emitAudit('lan_session_lock_acquired', {
+      sessionId: session.id,
+      lockSessionId: safeSessionId,
+      cwd: safeCwd,
+      owner: nextLock.ownerLabel
+    })
+    return { ok: true, acquired: true, sessionId: safeSessionId }
+  }
+
+  async function listReusableSessionsForConnection(session, resolvedConfig) {
+    const resolved = resolvedConfig && typeof resolvedConfig === 'object' ? resolvedConfig : session.preparedResolvedConfig
+    const cwd = resolveExistingDir(resolved?.cwd || session.cwd) || ''
+    if (!cwd) {
+      return { cwd: '', sessions: [] }
+    }
+
+    let rows = []
+    try {
+      rows = await listReusableSessions({
+        cwd,
+        cli: resolved?.cli || session.cli || 'claude',
+        context: resolved?.context || session.context || {},
+        requestedContext: session.requestedContext || {},
+        connectionId: session.id,
+        remoteIp: session.ip || ''
+      })
+    } catch (err) {
+      logger(`[lan] reusable sessions error: ${err?.message || err}`)
+      throw err
+    }
+
+    const normalized = normalizeSessionListRows(rows)
+    pruneStaleSessionLocks(Date.now())
+    const merged = normalized.map((row) => {
+      const key = sessionLockKey(cwd, row.id)
+      const lock = key ? sessionLocks.get(key) : null
+      const lockActive = !!(lock && Number(lock.expiresAt || 0) > Date.now())
+      return {
+        ...row,
+        status: lockActive ? 'occupied' : 'free',
+        lock: lockActive
+          ? {
+              owner: lock.ownerLabel || '',
+              ownerSessionId: lock.ownerSessionId || '',
+              acquiredAt: Number(lock.acquiredAt || 0),
+              lastHeartbeatAt: Number(lock.lastHeartbeatAt || 0),
+              expiresAt: Number(lock.expiresAt || 0)
+            }
+          : null
+      }
+    })
+
+    return { cwd, sessions: merged }
   }
 
   function buildSessionCapabilities(session) {
@@ -1012,6 +1250,7 @@ function createLanWsServer(options = {}) {
   function closeSession(sessionId, reason = 'closed') {
     const session = sessions.get(String(sessionId || ''))
     if (!session) return false
+    releaseSessionLock(session, reason)
     sessions.delete(session.id)
     abortSessionChat(session, reason)
     closeAllFsWatchers(session, reason)
@@ -1026,6 +1265,20 @@ function createLanWsServer(options = {}) {
     for (const id of Array.from(sessions.keys())) {
       closeSession(id, reason)
     }
+  }
+
+  function ensureLockSweepTimer() {
+    if (lockSweepTimer) return
+    lockSweepTimer = setInterval(() => {
+      pruneStaleSessionLocks(Date.now())
+    }, sessionLockSweepMs)
+    if (typeof lockSweepTimer.unref === 'function') lockSweepTimer.unref()
+  }
+
+  function clearLockSweepTimer() {
+    if (!lockSweepTimer) return
+    try { clearInterval(lockSweepTimer) } catch {}
+    lockSweepTimer = null
   }
 
   async function handleAudioMessage(session, payload) {
@@ -1921,9 +2174,167 @@ function createLanWsServer(options = {}) {
     }
   }
 
+  function invalidatePreparedSession(session, reason = 'context-changed') {
+    if (!session || session.initialized) return
+    session.preparedResolvedConfig = null
+    if (session.preparePromise) session.preparePromise = null
+    if (session.sessionLockKey) {
+      releaseSessionLock(session, reason)
+    }
+  }
+
+  async function ensureSessionPrepared(session, req, options = {}) {
+    if (!session) throw new Error('session-required')
+    if (options.force === true) {
+      invalidatePreparedSession(session, 'forced-refresh')
+    }
+    if (session.preparedResolvedConfig) return session.preparedResolvedConfig
+    if (session.preparePromise) return session.preparePromise
+
+    session.preparePromise = (async () => {
+      const resolved = await resolveConfigForConnection({ req, requestedContext: session.requestedContext })
+      session.preparedResolvedConfig = resolved
+      return resolved
+    })()
+
+    try {
+      return await session.preparePromise
+    } finally {
+      session.preparePromise = null
+    }
+  }
+
+  async function sendReusableSessionList(session, payload = {}) {
+    const requestId = trimToString(payload?.requestId || payload?.id, 200)
+    try {
+      const resolved = await ensureSessionPrepared(session, session.req, { force: payload?.forceRefresh === true })
+      const listed = await listReusableSessionsForConnection(session, resolved)
+      safeSend(session.ws, {
+        type: 'session:list',
+        ok: true,
+        requestId: requestId || null,
+        cwd: listed.cwd,
+        sessions: listed.sessions,
+        selectedSessionId: session.selectedResumeSessionId || ''
+      })
+      return { ok: true, resolved, listed }
+    } catch (err) {
+      safeSend(session.ws, {
+        type: 'session:list',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: trimToString(err?.code, 120) || 'SESSION_LIST_FAILED',
+          message: err?.message || String(err || 'No se pudieron listar sesiones')
+        },
+        selectedSessionId: session.selectedResumeSessionId || ''
+      })
+      return { ok: false, error: err }
+    }
+  }
+
+  async function handleSessionStartRequest(session, payload = {}) {
+    const requestId = trimToString(payload?.requestId || payload?.id, 200)
+    if (session.initialized || session.initInFlight) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: 'ALREADY_CONNECTED',
+          message: 'Ya hay una sesión conectada. Usa reconectar para cambiar.'
+        }
+      })
+      return
+    }
+
+    const startSessionId = sanitizeResumeSessionId(payload?.sessionId || payload?.resumeSessionId || payload?.resume || '')
+    const prepared = await ensureSessionPrepared(session, session.req)
+    const listed = await listReusableSessionsForConnection(session, prepared)
+
+    if (startSessionId && !listed.sessions.some((row) => row.id === startSessionId)) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: `La sesión ${startSessionId} no existe en esta carpeta.`
+        }
+      })
+      await sendReusableSessionList(session, { requestId: requestId || null })
+      return
+    }
+
+    const lockResult = acquireSessionLock(session, listed.cwd || prepared.cwd, startSessionId)
+    if (!lockResult.ok) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: lockResult.code || 'SESSION_LOCK_FAILED',
+          message: lockResult.message || 'No se pudo bloquear la sesión seleccionada.'
+        },
+        sessionId: startSessionId || null
+      })
+      safeSend(session.ws, {
+        type: 'status',
+        state: 'error',
+        code: lockResult.code || 'SESSION_LOCK_FAILED',
+        message: lockResult.message || 'No se pudo bloquear la sesión seleccionada.',
+        sessionId: session.id
+      })
+      await sendReusableSessionList(session, { requestId: requestId || null })
+      return
+    }
+
+    safeSend(session.ws, {
+      type: 'session:start',
+      ok: true,
+      requestId: requestId || null,
+      sessionId: startSessionId || null
+    })
+    await initializeSession(session, session.req, {
+      resolved: prepared,
+      resumeSessionId: startSessionId || ''
+    })
+  }
+
   function onClientPayload(session, payload) {
     const msgType = trimToString(payload?.type, 100)
     const normalizedType = msgType.toLowerCase()
+
+    if (msgType === 'session:heartbeat') {
+      touchSessionLock(session, Date.now())
+      safeSend(session.ws, {
+        type: 'session:heartbeat',
+        ok: true,
+        sessionId: session.id,
+        lockActive: !!session.sessionLockKey
+      })
+      return
+    }
+
+    if (msgType === 'session:list') {
+      sendReusableSessionList(session, payload).catch(() => {})
+      return
+    }
+
+    if (msgType === 'session:start') {
+      handleSessionStartRequest(session, payload).catch((err) => {
+        safeSend(session.ws, {
+          type: 'session:start',
+          ok: false,
+          requestId: trimToString(payload?.requestId || payload?.id, 200) || null,
+          error: {
+            code: trimToString(err?.code, 120) || 'SESSION_START_FAILED',
+            message: err?.message || String(err || 'No se pudo iniciar la sesión')
+          }
+        })
+      })
+      return
+    }
 
     const contextSync = parseRequestedContextPayload(payload, {
       acceptTypeLess: true,
@@ -1940,6 +2351,7 @@ function createLanWsServer(options = {}) {
       if ((previous?.cli || '') !== (session.requestedContext?.cli || '')) changed.push('cli')
       if ((previous?.model || '') !== (session.requestedContext?.model || '')) changed.push('model')
       if ((previous?.effort || '') !== (session.requestedContext?.effort || '')) changed.push('effort')
+      if (changed.length > 0) invalidatePreparedSession(session, 'context-updated')
       emitAudit('empresa_handshake_contexto_actualizado', {
         ...auditActor(session),
         source: contextSync.source,
@@ -1953,6 +2365,9 @@ function createLanWsServer(options = {}) {
         requestedEffort: session.requestedContext?.effort || null,
         late: session.initialized === true
       })
+      if (!session.initialized && !session.manualSessionSelector && !session.initInFlight) {
+        initializeSession(session, session.req).catch(() => {})
+      }
       return
     }
     if (CONTEXT_SYNC_TYPES.has(normalizedType)) {
@@ -1960,6 +2375,7 @@ function createLanWsServer(options = {}) {
     }
 
     if (msgType === 'input') {
+      touchSessionLock(session, Date.now())
       if (!session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
         safeSend(session.ws, {
           type: 'status',
@@ -1977,6 +2393,7 @@ function createLanWsServer(options = {}) {
     }
 
     if (msgType === 'resize') {
+      touchSessionLock(session, Date.now())
       const cols = Math.max(20, Number.parseInt(payload.cols, 10) || DEFAULT_COLS)
       const rows = Math.max(10, Number.parseInt(payload.rows, 10) || DEFAULT_ROWS)
       session.cols = cols
@@ -1988,6 +2405,7 @@ function createLanWsServer(options = {}) {
     }
 
     if (msgType === 'audio') {
+      touchSessionLock(session, Date.now())
       session.audioQueue = (session.audioQueue || Promise.resolve())
         .then(() => handleAudioMessage(session, payload))
         .catch(() => {})
@@ -1995,11 +2413,13 @@ function createLanWsServer(options = {}) {
     }
 
     if (msgType === 'chat:ask') {
+      touchSessionLock(session, Date.now())
       handleSemanticChatAsk(session, payload).catch(() => {})
       return
     }
 
     if (msgType.startsWith('fs:')) {
+      touchSessionLock(session, Date.now())
       handleFsMessage(session, msgType, payload)
       return
     }
@@ -2013,10 +2433,19 @@ function createLanWsServer(options = {}) {
     })
   }
 
-  function createPtyForSession(session, config) {
+  function buildResumeArgsForCli(cli, resumeSessionId) {
+    const safeSessionId = sanitizeResumeSessionId(resumeSessionId)
+    if (!safeSessionId) return []
+    if (cli === 'codex') return ['resume', safeSessionId]
+    return ['--resume', safeSessionId]
+  }
+
+  function createPtyForSession(session, config, options = {}) {
     const bin = trimToString(config?.bin, 1000)
     if (!bin) throw new Error('No hay binario CLI configurado')
-    const args = Array.isArray(config?.args) ? config.args : []
+    const baseArgs = Array.isArray(config?.args) ? config.args : []
+    const resumeArgs = buildResumeArgsForCli(config?.cli || session?.cli, options?.resumeSessionId || session?.selectedResumeSessionId || '')
+    const args = [...resumeArgs, ...baseArgs]
     const execCommand = buildExecCommand(bin, args)
     return pty.spawn('/bin/bash', ['-c', execCommand], {
       name: 'xterm-256color',
@@ -2058,7 +2487,7 @@ function createLanWsServer(options = {}) {
     return normalizeResolvedSessionConfig(resolved || {}, requestedContext, defaultFsLimits)
   }
 
-  async function initializeSession(session, req) {
+  async function initializeSession(session, req, options = {}) {
     if (session.initialized || session.initInFlight) return
     session.initInFlight = true
     if (session.initTimer) {
@@ -2066,11 +2495,12 @@ function createLanWsServer(options = {}) {
       session.initTimer = null
     }
 
-    let resolved = null
+    let resolved = options?.resolved || null
     try {
-      resolved = await resolveConfigForConnection({ req, requestedContext: session.requestedContext })
+      if (!resolved) resolved = await ensureSessionPrepared(session, req)
     } catch (err) {
       session.initInFlight = false
+      releaseSessionLock(session, 'session-config-error')
       safeSend(session.ws, {
         type: 'status',
         state: 'error',
@@ -2109,11 +2539,13 @@ function createLanWsServer(options = {}) {
     })
 
     let ptyProcess = null
+    const resumeSessionId = sanitizeResumeSessionId(options?.resumeSessionId || session.selectedResumeSessionId || '')
     if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
       try {
-        ptyProcess = createPtyForSession(session, resolved)
+        ptyProcess = createPtyForSession(session, resolved, { resumeSessionId })
       } catch (err) {
         session.initInFlight = false
+        releaseSessionLock(session, 'pty-start-failed')
         safeSend(session.ws, {
           type: 'status',
           state: 'error',
@@ -2133,6 +2565,8 @@ function createLanWsServer(options = {}) {
     sessions.set(session.id, session)
     session.initialized = true
     session.initInFlight = false
+    session.resumeSessionId = resumeSessionId || ''
+    touchSessionLock(session, Date.now())
 
     const connectedPayload = {
       type: 'status',
@@ -2141,6 +2575,7 @@ function createLanWsServer(options = {}) {
       cli: session.cli,
       cwd: session.cwd,
       connectedAt: session.connectedAt,
+      resumeSessionId: session.resumeSessionId || null,
       context: buildPublicSessionContext(session),
       capabilities: buildSessionCapabilities(session)
     }
@@ -2216,9 +2651,11 @@ function createLanWsServer(options = {}) {
 
   function onWsConnection(ws, req) {
     const initialRequested = extractRequestedContextFromQuery(req)
+    const manualSessionSelector = extractSessionSelectorModeFromQuery(req)
     const session = {
       id: crypto.randomUUID(),
       ws,
+      req,
       ip: normalizeRemoteIp(req?.socket?.remoteAddress),
       cli: 'claude',
       cwd: os.homedir(),
@@ -2235,6 +2672,12 @@ function createLanWsServer(options = {}) {
       initTimer: null,
       pendingPayloads: [],
       pendingInputBytes: 0,
+      manualSessionSelector,
+      preparedResolvedConfig: null,
+      preparePromise: null,
+      selectedResumeSessionId: '',
+      resumeSessionId: '',
+      sessionLockKey: '',
       requestedContext: mergeRequestedContext({}, initialRequested),
       permissions: { ...DEFAULT_PERMISSIONS },
       fsLimits: { ...defaultFsLimits },
@@ -2269,26 +2712,29 @@ function createLanWsServer(options = {}) {
       }
     }
 
-    const maybeStartSession = () => {
+    const maybeStartSession = (source = 'auto') => {
+      if (session.manualSessionSelector && source === 'auto') return
       if (session.initialized || session.initInFlight) return
-      initializeSession(session, req)
+      initializeSession(session, req).catch(() => {})
     }
 
-    if (
-      session.requestedContext.operatorId ||
-      session.requestedContext.profileId ||
-      session.requestedContext.roleId ||
-      session.requestedContext.username ||
-      session.requestedContext.cli ||
-      session.requestedContext.model ||
-      session.requestedContext.effort
-    ) {
-      maybeStartSession()
-    } else {
-      session.initTimer = setTimeout(() => {
-        session.initTimer = null
-        maybeStartSession()
-      }, SESSION_NEGOTIATION_TIMEOUT_MS)
+    if (!session.manualSessionSelector) {
+      if (
+        session.requestedContext.operatorId ||
+        session.requestedContext.profileId ||
+        session.requestedContext.roleId ||
+        session.requestedContext.username ||
+        session.requestedContext.cli ||
+        session.requestedContext.model ||
+        session.requestedContext.effort
+      ) {
+        maybeStartSession('auto')
+      } else {
+        session.initTimer = setTimeout(() => {
+          session.initTimer = null
+          maybeStartSession('auto')
+        }, SESSION_NEGOTIATION_TIMEOUT_MS)
+      }
     }
 
     ws.on('message', (raw) => {
@@ -2308,6 +2754,11 @@ function createLanWsServer(options = {}) {
       const msgType = trimToString(payload.type, 100).toLowerCase()
 
       if (!session.initialized) {
+        if (msgType.startsWith('session:')) {
+          onClientPayload(session, payload)
+          return
+        }
+
         const contextSync = parseRequestedContextPayload(payload, {
           acceptTypeLess: true,
           typeSet: CONTEXT_SYNC_TYPES
@@ -2323,6 +2774,7 @@ function createLanWsServer(options = {}) {
           if ((previous?.cli || '') !== (session.requestedContext?.cli || '')) changed.push('cli')
           if ((previous?.model || '') !== (session.requestedContext?.model || '')) changed.push('model')
           if ((previous?.effort || '') !== (session.requestedContext?.effort || '')) changed.push('effort')
+          if (changed.length > 0) invalidatePreparedSession(session, 'context-updated')
           emitAudit('empresa_handshake_contexto_actualizado', {
             ...auditActor(session),
             source: contextSync.source,
@@ -2336,11 +2788,11 @@ function createLanWsServer(options = {}) {
             requestedEffort: session.requestedContext?.effort || null,
             late: false
           })
-          maybeStartSession()
+          maybeStartSession('auto')
           return
         }
         if (CONTEXT_SYNC_TYPES.has(msgType)) {
-          maybeStartSession()
+          maybeStartSession('auto')
           return
         }
 
@@ -2350,7 +2802,18 @@ function createLanWsServer(options = {}) {
           return
         }
 
-        if (!session.initInFlight) maybeStartSession()
+        if (session.manualSessionSelector) {
+          safeSend(ws, {
+            type: 'status',
+            state: 'error',
+            sessionId: session.id,
+            code: 'SESSION_NOT_STARTED',
+            message: 'Selecciona una sesión y pulsa Entrar para iniciar.'
+          })
+          return
+        }
+
+        if (!session.initInFlight) maybeStartSession('auto')
 
         try {
           queuePendingPayload(session, payload)
@@ -2375,6 +2838,7 @@ function createLanWsServer(options = {}) {
         try { clearTimeout(session.initTimer) } catch {}
         session.initTimer = null
       }
+      releaseSessionLock(session, 'ws-close')
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)
       abortSessionChat(session, 'ws-close')
@@ -2388,6 +2852,7 @@ function createLanWsServer(options = {}) {
         try { clearTimeout(session.initTimer) } catch {}
         session.initTimer = null
       }
+      releaseSessionLock(session, 'ws-error')
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)
       abortSessionChat(session, 'ws-error')
@@ -2471,6 +2936,7 @@ function createLanWsServer(options = {}) {
     }
 
     running = true
+    ensureLockSweepTimer()
     logger(`[lan] ws server started on ${lanIp}:${port}`)
     return {
       ok: true,
@@ -2484,6 +2950,7 @@ function createLanWsServer(options = {}) {
 
   async function stop() {
     closeAllSessions('server-stopped')
+    clearLockSweepTimer()
 
     const wsToClose = wsServer
     const httpToClose = httpServer
@@ -2502,6 +2969,7 @@ function createLanWsServer(options = {}) {
     ])
 
     running = false
+    sessionLocks.clear()
     logger('[lan] ws server stopped')
     return { ok: true, running: false }
   }

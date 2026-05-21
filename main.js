@@ -1232,6 +1232,7 @@ function ensureLanWsServer() {
   lanWsServer = createLanWsServer({
     clientHtmlPath: getLanClientHtmlPath(),
     getSessionConfig: (remoteMeta) => resolveLanSessionConfig(remoteMeta),
+    listReusableSessions: (meta) => listLanReusableSessions(meta),
     transcribeAudio: (audioPath) => transcribeAudioFile(audioPath, buildRuntimeEnv()),
     runSemanticChatTurn: (payload) => runLanSemanticChatTurn(payload),
     buildExecCommand: buildFdLimitCommand,
@@ -4756,21 +4757,35 @@ function projectDirFor(cwd) {
   return path.join(os.homedir(), '.claude', 'projects', encodeProjectPath(cwd))
 }
 
-ipcMain.handle('list-sessions', async (event, cwd) => {
-  const dir = resolveClaudeProjectDir(cwd)
-  if (!fs.existsSync(dir)) return []
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))
+function isReusableClaudeSessionId(raw) {
+  const id = String(raw || '').trim()
+  return !!id && /^[a-zA-Z0-9._:-]+$/.test(id)
+}
 
-  return files.map(f => {
+function listClaudeSessionsForCwd(cwd, options = {}) {
+  const dir = resolveClaudeProjectDir(cwd)
+  if (!dir || !fs.existsSync(dir)) return []
+  let files = []
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+  } catch {
+    return []
+  }
+
+  const rows = files.map((f) => {
     const id = f.replace(/\.jsonl$/, '')
+    if (!isReusableClaudeSessionId(id)) return null
     const fullPath = path.join(dir, f)
-    let mtime = 0, size = 0, preview = '', msgCount = 0
+    let mtime = 0
+    let size = 0
+    let preview = ''
+    let msgCount = 0
     try {
       const stat = fs.statSync(fullPath)
       mtime = stat.mtime.getTime()
       size = stat.size
       const content = fs.readFileSync(fullPath, 'utf-8')
-      const lines = content.split('\n').filter(l => l.trim())
+      const lines = content.split('\n').filter((l) => l.trim())
       msgCount = lines.length
       for (const line of lines) {
         try {
@@ -4785,8 +4800,32 @@ ipcMain.handle('list-sessions', async (event, cwd) => {
         } catch {}
       }
     } catch {}
-    return { id, mtime, size, preview: preview || '(sin contenido)', msgCount, path: fullPath }
-  }).sort((a, b) => b.mtime - a.mtime)
+    return {
+      id,
+      mtime,
+      size,
+      preview: preview || '(sin contenido)',
+      msgCount,
+      path: fullPath
+    }
+  })
+    .filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime)
+
+  const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
+  return rows.slice(0, limit)
+}
+
+function listLanReusableSessions(meta = {}) {
+  const cli = String(meta?.cli || '').trim().toLowerCase()
+  if (cli && cli !== 'claude') return []
+  const cwd = resolveExistingDir(meta?.cwd)
+  if (!cwd) return []
+  return listClaudeSessionsForCwd(cwd, { limit: 300 })
+}
+
+ipcMain.handle('list-sessions', async (event, cwd) => {
+  return listClaudeSessionsForCwd(cwd, { limit: 1000 })
 })
 
 ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
