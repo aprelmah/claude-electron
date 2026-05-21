@@ -2,118 +2,289 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>POWER-AGENT LAN Remote</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>POWER-AGENT · Sesión remota</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
   <style>
     :root {
-      --bg-page: #f2ece0;
-      --bg-wave: #ece3d4;
-      --ink-strong: #17242f;
-      --ink-soft: #3a4a59;
-      --card: #fff9ef;
-      --card-alt: #f7efdf;
-      --line: #cabda3;
-      --brand: #0d5d6f;
-      --brand-deep: #0a4552;
-      --accent: #be5c3b;
-      --ok: #1a8f58;
-      --warn: #9a6400;
-      --err: #b3123a;
-      --focus: #006ecf;
-      --terminal-bg: #101a24;
-      --terminal-fg: #d6ecff;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --radius-lg: 16px;
+      --font-sys: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+      --tap: 44px;
+    }
+
+    body.theme-dark {
+      --bg: #1a1a1f;
+      --bg2: #24242b;
+      --bg3: #2e2e38;
+      --bg4: #38384a;
+      --border: #3a3a48;
+      --border-strong: #4a4a5a;
+      --text: #e8e8f0;
+      --text2: #9090a8;
+      --text3: #6a6a85;
+      --accent: #7c6af7;
+      --accent2: #a690ff;
+      --accent-ink: #ffffff;
+      --warn: #f0c060;
+      --error: #ff6b7a;
+      --ok: #7cd99c;
+      --rec: #ff5070;
+      --term-bg: #101018;
+      --term-fg: #e6e6f5;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      --overlay: rgba(8, 8, 14, 0.7);
+    }
+
+    body.theme-light {
+      --bg: #fafafd;
+      --bg2: #ffffff;
+      --bg3: #ebebf2;
+      --bg4: #dadae8;
+      --border: #d8d8e8;
+      --border-strong: #c5c5d8;
+      --text: #1a1a2e;
+      --text2: #606080;
+      --text3: #8888a0;
+      --accent: #5b4fe8;
+      --accent2: #7c6af7;
+      --accent-ink: #ffffff;
+      --warn: #a8730a;
+      --error: #d83040;
+      --ok: #3a9050;
+      --rec: #e03050;
+      --term-bg: #1a1a24;
+      --term-fg: #e6e6f5;
+      --shadow: 0 10px 30px rgba(20, 20, 50, 0.12);
+      --overlay: rgba(20, 20, 40, 0.5);
     }
 
     * { box-sizing: border-box; }
 
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      min-height: 100%;
-    }
+    html, body { margin: 0; padding: 0; min-height: 100%; }
 
     body {
-      color: var(--ink-strong);
-      background:
-        radial-gradient(1400px 500px at -10% -10%, rgba(13, 93, 111, 0.15), transparent),
-        radial-gradient(700px 260px at 110% 10%, rgba(190, 92, 59, 0.14), transparent),
-        linear-gradient(145deg, var(--bg-wave), var(--bg-page));
-      font-family: "Archivo", "Avenir Next", "Segoe UI", sans-serif;
-      line-height: 1.4;
-      padding: 14px;
+      font-family: var(--font-sys);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      padding: 12px;
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
     }
 
     .app-shell {
-      width: min(1200px, 100%);
+      width: min(1100px, 100%);
       margin: 0 auto;
       display: grid;
       gap: 12px;
     }
 
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 249, 239, 0.98));
-      box-shadow: 0 8px 24px rgba(15, 34, 52, 0.08);
-    }
-
+    /* ── TOPBAR ── */
     .topbar {
-      display: grid;
-      gap: 6px;
-      padding: 14px 16px 12px;
-    }
-
-    .topbar-row {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
       gap: 12px;
       flex-wrap: wrap;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: saturate(140%) blur(6px);
     }
 
     .brand {
-      font-size: 1.02rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-weight: 700;
-      letter-spacing: 0.015em;
+      font-size: 0.95rem;
+      letter-spacing: 0.01em;
     }
 
-    .subtitle {
-      font-size: 0.86rem;
-      color: var(--ink-soft);
+    .brand-bolt {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      fill: #facc15;
+      filter: drop-shadow(0 0 2px rgba(250, 204, 21, 0.55));
     }
+
+    .topbar-spacer { flex: 1 1 auto; }
 
     .conn-state {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      font-size: 0.86rem;
-      color: var(--ink-soft);
+      font-size: 0.84rem;
+      color: var(--text2);
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .dot {
-      width: 11px;
-      height: 11px;
+      width: 9px;
+      height: 9px;
       border-radius: 999px;
-      background: #7a7a7a;
-      border: 1px solid rgba(0, 0, 0, 0.2);
+      background: var(--text3);
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08) inset;
       flex-shrink: 0;
     }
+    .dot.offline { background: #7a7a90; }
+    .dot.connecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+    .dot.online { background: var(--ok); box-shadow: 0 0 0 3px rgba(124, 217, 156, 0.18); }
+    .dot.error { background: var(--error); }
 
-    .dot.offline { background: #7a7a7a; }
-    .dot.connecting { background: #c78314; }
-    .dot.online { background: #1d995f; }
-    .dot.error { background: #c31745; }
-
-    .onboarding {
-      padding: 12px;
-      display: grid;
-      gap: 10px;
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
+
+    .session-chip {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--bg3);
+      color: var(--text2);
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    body[data-connected="true"] .session-chip { display: inline-flex; }
+
+    /* ── CARD ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .card-pad { padding: 14px; }
+
+    /* ── ONBOARDING ── */
+    .onboarding {
+      display: grid;
+      gap: 12px;
+    }
+
+    body[data-connected="true"] .onboarding { display: none; }
+
+    .onboarding h1 {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    .onboarding-lead {
+      margin: 0;
+      color: var(--text2);
+      font-size: 0.88rem;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .field label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text2);
+    }
+
+    .control,
+    select.control,
+    textarea.control,
+    button.btn {
+      width: 100%;
+      min-height: var(--tap);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: 500 0.96rem var(--font-sys);
+      padding: 10px 12px;
+      transition: border-color 120ms ease, background-color 120ms ease, transform 80ms ease;
+    }
+
+    select.control {
+      padding-right: 36px;
+      appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--text2) 50%),
+        linear-gradient(135deg, var(--text2) 50%, transparent 50%);
+      background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+    }
+
+    textarea.control {
+      min-height: 180px;
+      font-family: var(--font-mono);
+      font-size: 0.86rem;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    .control:hover { border-color: var(--border-strong); }
+    .control:focus-visible,
+    .btn:focus-visible,
+    summary:focus-visible,
+    .icon-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+      border-color: var(--accent);
+    }
+
+    .btn {
+      cursor: pointer;
+      background: var(--bg3);
+      text-align: center;
+      font-weight: 600;
+    }
+    .btn:hover { background: var(--bg4); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-ink);
+    }
+    .btn-primary:hover { background: var(--accent2); border-color: var(--accent2); }
+
+    .btn-danger {
+      background: transparent;
+      border-color: var(--error);
+      color: var(--error);
+    }
+    .btn-danger:hover { background: var(--error); color: #fff; }
+
+    .btn-icon-left {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .row-stack { display: grid; gap: 10px; }
 
     .row-primary {
       display: grid;
@@ -122,309 +293,265 @@
       align-items: end;
     }
 
-    .field {
-      display: grid;
-      gap: 5px;
-      min-width: 0;
-    }
-
-    .field label {
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--ink-soft);
-    }
-
-    .control,
-    select.control,
-    textarea.control,
-    button.btn {
-      width: 100%;
-      min-height: 44px;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: #fffdf8;
-      color: var(--ink-strong);
-      font: 500 0.96rem "Archivo", "Avenir Next", "Segoe UI", sans-serif;
-      padding: 10px 12px;
-      transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
-    }
-
-    textarea.control {
-      min-height: 180px;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-      font-size: 0.84rem;
-      resize: vertical;
-      line-height: 1.45;
-    }
-
-    .control:focus-visible,
-    .btn:focus-visible,
-    summary:focus-visible,
-    .tab-btn:focus-visible {
-      outline: 3px solid var(--focus);
-      outline-offset: 2px;
-    }
-
-    .control:hover,
-    .control:focus-visible {
-      border-color: #a99b81;
-    }
-
-    .btn {
-      cursor: pointer;
-      background: linear-gradient(180deg, #fff7eb, #f4e8d1);
-      text-align: center;
-      font-weight: 700;
-    }
-
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    .btn-primary {
-      background: linear-gradient(180deg, #1c7486, #0d5d6f);
-      border-color: #0a4552;
-      color: #f8ffff;
-    }
-
-    .btn-quiet {
-      background: linear-gradient(180deg, #fffef8, #f7f1e4);
-    }
-
-    .btn-danger {
-      background: linear-gradient(180deg, #d95e7e, #b31340);
-      border-color: #9d1239;
-      color: #fff8fb;
-    }
-
     .primary-actions {
       display: grid;
-      grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
-    details.advanced {
-      border: 1px dashed #baa985;
-      border-radius: 12px;
-      background: var(--card-alt);
-      padding: 8px 10px 10px;
+    .advanced {
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius);
+      background: var(--bg);
+      padding: 8px 12px 12px;
     }
 
-    details.advanced > summary {
+    .advanced > summary {
       cursor: pointer;
       list-style: none;
-      font-size: 0.83rem;
-      font-weight: 700;
-      color: var(--ink-soft);
-      margin: -2px 0 6px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--text2);
+      padding: 6px 0;
     }
-
-    details.advanced > summary::-webkit-details-marker { display: none; }
+    .advanced > summary::-webkit-details-marker { display: none; }
+    .advanced > summary::after {
+      content: "▾";
+      float: right;
+      transition: transform 160ms ease;
+      color: var(--text3);
+    }
+    .advanced[open] > summary::after { transform: rotate(180deg); }
 
     .advanced-grid {
       display: grid;
       gap: 8px;
+      margin-top: 6px;
     }
 
     .hint {
       margin: 0;
-      font-size: 0.76rem;
-      color: var(--ink-soft);
+      font-size: 0.78rem;
+      color: var(--text3);
     }
 
     .handshake {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fffdf8;
-      min-height: 40px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      border-radius: var(--radius);
+      min-height: 38px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      padding: 8px 10px;
-      font-size: 0.8rem;
-      color: var(--ink-soft);
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      color: var(--text2);
     }
 
     .handshake-tone {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 2px 8px;
+      padding: 3px 10px;
       border-radius: 999px;
-      background: rgba(13, 93, 111, 0.1);
-      color: var(--brand-deep);
-      font-weight: 700;
+      background: var(--bg3);
+      color: var(--text2);
+      font-weight: 600;
+      font-size: 0.74rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
       white-space: nowrap;
     }
+    .handshake-tone.warn { background: rgba(240, 192, 96, 0.15); color: var(--warn); }
+    .handshake-tone.err  { background: rgba(255, 107, 122, 0.18); color: var(--error); }
+    .handshake-tone.ok   { background: rgba(124, 217, 156, 0.18); color: var(--ok); }
 
-    .handshake-tone.warn {
-      background: rgba(154, 100, 0, 0.12);
-      color: var(--warn);
-    }
-
-    .handshake-tone.err {
-      background: rgba(179, 18, 58, 0.14);
-      color: var(--err);
-    }
-
-    .handshake-tone.ok {
-      background: rgba(26, 143, 88, 0.14);
-      color: var(--ok);
-    }
-
-    .tabs {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
-      padding: 6px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: rgba(255, 250, 240, 0.7);
-    }
-
-    .tab-btn {
-      min-height: 44px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fffaf2;
-      color: var(--ink-soft);
-      font: 700 0.88rem "Archivo", "Avenir Next", "Segoe UI", sans-serif;
-      cursor: pointer;
-    }
-
-    .tab-btn[aria-selected="true"] {
-      color: #f5ffff;
-      border-color: var(--brand-deep);
-      background: linear-gradient(180deg, #1b6c7d, #0d5d6f);
-    }
-
-    .panel {
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: var(--card);
-      min-height: 280px;
+    /* ── CHAT (terminal) ── */
+    .chat-card {
+      display: none;
+      grid-template-rows: auto auto 1fr auto;
       overflow: hidden;
-      display: flex;
-      flex-direction: column;
+      min-height: 480px;
     }
 
-    .panel-head {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(247, 239, 223, 0.78);
-      display: flex;
-      justify-content: space-between;
+    body[data-connected="true"] .chat-card { display: grid; }
+
+    .chat-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
       gap: 8px;
+      background: linear-gradient(180deg, var(--bg2), var(--bg));
+    }
+
+    .chat-head-row {
+      display: flex;
       align-items: center;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
-    .panel-head h2 {
+    .chat-title {
       margin: 0;
-      font-size: 0.98rem;
-      line-height: 1.2;
+      font-size: 1rem;
+      font-weight: 700;
     }
 
-    .panel-head small {
-      color: var(--ink-soft);
-      font-size: 0.76rem;
+    .chat-subtitle {
+      font-size: 0.78rem;
+      color: var(--text2);
     }
 
-    .terminal-head-actions {
-      display: inline-flex;
+    .attach-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
     }
 
-    .terminal-head-actions .btn {
-      min-height: 34px;
+    .attach-actions .btn {
+      padding: 10px 12px;
+      font-size: 0.92rem;
+    }
+
+    .attach-status {
+      min-height: 36px;
+      border-radius: var(--radius-sm);
       padding: 6px 10px;
       font-size: 0.82rem;
-      border-radius: 9px;
-      width: auto;
+      color: var(--text2);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
     }
+    .attach-status.ok   { background: rgba(124, 217, 156, 0.12); border-color: rgba(124, 217, 156, 0.35); color: var(--ok); }
+    .attach-status.warn { background: rgba(240, 192, 96, 0.12); border-color: rgba(240, 192, 96, 0.35); color: var(--warn); }
+    .attach-status.err  { background: rgba(255, 107, 122, 0.12); border-color: rgba(255, 107, 122, 0.35); color: var(--error); }
 
-    .panel-content {
-      padding: 10px;
-      min-height: 0;
-      flex: 1;
-      display: grid;
-      gap: 10px;
-    }
-
-    #terminal-panel .panel-content {
-      background: linear-gradient(180deg, rgba(19, 32, 46, 0.97), rgba(13, 24, 36, 0.98));
+    .chat-body {
+      background: var(--term-bg);
       padding: 8px;
-      grid-template-rows: minmax(260px, 1fr) auto;
-      align-content: start;
-      overflow: auto;
+      min-height: 320px;
+      display: grid;
+      grid-template-rows: 1fr;
     }
 
-    #terminal-wrap {
-      min-height: 300px;
-      border-radius: 10px;
+    .terminal-wrap {
+      border-radius: var(--radius-sm);
       overflow: hidden;
-      border: 1px solid rgba(216, 234, 255, 0.2);
+      min-height: 320px;
     }
 
-    #terminal {
-      width: 100%;
-      height: 100%;
-      min-height: 300px;
+    #terminal { width: 100%; height: 100%; min-height: 320px; }
+
+    .chat-foot {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg2);
     }
 
-    .files-layout {
+    .check-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.84rem;
+      color: var(--text2);
+    }
+
+    .check-line input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    /* ── EXTRAS (acordeón) ── */
+    .extras {
+      display: none;
+      gap: 10px;
+    }
+    body[data-connected="true"] .extras { display: grid; }
+
+    .extras > details {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg2);
+      overflow: hidden;
+    }
+
+    .extras > details > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      font-weight: 700;
+      font-size: 0.94rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: var(--tap);
+    }
+    .extras > details > summary::-webkit-details-marker { display: none; }
+
+    .extras > details > summary .chev {
+      margin-left: auto;
+      color: var(--text3);
+      transition: transform 180ms ease;
+    }
+    .extras > details[open] > summary .chev { transform: rotate(180deg); }
+
+    .extras > details > summary .badge {
+      font-size: 0.74rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--bg3);
+      color: var(--text2);
+      font-weight: 500;
+    }
+
+    .extras-body {
+      padding: 0 14px 14px;
       display: grid;
       gap: 10px;
-      min-height: 0;
     }
 
+    /* ── FILES EXPLORER ── */
     .files-tools {
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      grid-template-columns: 1fr;
       gap: 8px;
-      align-items: end;
+    }
+
+    .files-tools-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
     }
 
     .status-line {
-      min-height: 44px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fffef9;
+      min-height: 38px;
+      border-radius: var(--radius-sm);
       padding: 8px 10px;
       font-size: 0.82rem;
-      color: var(--ink-soft);
+      color: var(--text2);
+      background: var(--bg);
+      border: 1px solid var(--border);
       display: flex;
       align-items: center;
     }
+    .status-line.ok   { background: rgba(124, 217, 156, 0.1); border-color: rgba(124, 217, 156, 0.32); color: var(--ok); }
+    .status-line.warn { background: rgba(240, 192, 96, 0.1); border-color: rgba(240, 192, 96, 0.32); color: var(--warn); }
+    .status-line.err  { background: rgba(255, 107, 122, 0.1); border-color: rgba(255, 107, 122, 0.32); color: var(--error); }
 
-    .status-line.warn {
-      color: var(--warn);
-      border-color: rgba(154, 100, 0, 0.45);
-      background: rgba(255, 240, 205, 0.55);
-    }
-
-    .status-line.err {
-      color: var(--err);
-      border-color: rgba(179, 18, 58, 0.45);
-      background: rgba(253, 232, 237, 0.75);
-    }
-
-    .status-line.ok {
-      color: var(--ok);
-      border-color: rgba(26, 143, 88, 0.45);
-      background: rgba(226, 246, 236, 0.8);
-    }
-
-    #fs-tree {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fffdf8;
+    .fs-tree {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
       min-height: 220px;
-      max-height: 42vh;
+      max-height: 48vh;
       overflow: auto;
       padding: 6px;
     }
@@ -434,15 +561,11 @@
       grid-template-columns: 1fr auto;
       gap: 8px;
       border: 1px solid transparent;
-      border-radius: 10px;
-      padding: 6px;
+      border-radius: var(--radius-sm);
+      padding: 8px 6px;
       align-items: center;
     }
-
-    .fs-row:hover {
-      border-color: #b8a988;
-      background: #f8f1e3;
-    }
+    .fs-row:hover { border-color: var(--border-strong); background: var(--bg3); }
 
     .fs-left {
       display: flex;
@@ -451,230 +574,231 @@
       min-width: 0;
     }
 
-    .fs-icon {
-      font-size: 1rem;
-      flex-shrink: 0;
-    }
+    .fs-icon { font-size: 1rem; flex-shrink: 0; line-height: 1; }
 
     .fs-name {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 0.85rem;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-      color: var(--ink-strong);
-    }
-
-    .fs-actions {
-      display: inline-flex;
-      gap: 6px;
+      font-size: 0.84rem;
+      font-family: var(--font-mono);
+      color: var(--text);
     }
 
     .fs-mini {
-      min-height: 34px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #fff8ee;
-      color: var(--ink-strong);
-      padding: 6px 10px;
-      font: 700 0.78rem "Archivo", "Avenir Next", "Segoe UI", sans-serif;
+      min-height: 36px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text);
+      padding: 6px 12px;
+      font: 600 0.82rem var(--font-sys);
       cursor: pointer;
     }
+    .fs-mini:hover { background: var(--bg4); }
+    .fs-mini:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .fs-mini:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-
-    .editor-wrap {
-      display: grid;
-      gap: 8px;
-      min-height: 0;
-    }
-
-    .preview-box {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fffef8;
-      padding: 8px;
-      display: grid;
-      gap: 8px;
-    }
-
-    .preview-head {
-      font-size: 0.78rem;
-      color: var(--ink-soft);
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-      word-break: break-word;
-    }
-
-    .preview-image {
-      width: 100%;
-      max-height: 360px;
-      object-fit: contain;
-      border: 1px solid #d8ccb3;
-      border-radius: 10px;
-      background: #fffaf0;
-    }
-
-    .preview-message {
-      margin: 0;
-      border: 1px solid #d8ccb3;
-      border-radius: 10px;
-      background: #fffaf0;
-      padding: 10px;
-      color: var(--ink-soft);
-      font-size: 0.82rem;
-    }
-
-    .path-line {
-      min-height: 38px;
-      border-radius: 10px;
-      background: #f8f2e3;
-      border: 1px solid var(--line);
-      padding: 8px 10px;
-      font-size: 0.78rem;
-      color: var(--ink-soft);
-      display: flex;
-      align-items: center;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-    }
-
-    .upload-box {
-      border: 1px dashed #b8a988;
-      border-radius: 12px;
-      background: #fcf7ec;
-      padding: 10px;
-      display: grid;
-      gap: 8px;
-    }
-
-    .upload-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    .option-line {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 0.8rem;
-      color: var(--ink-soft);
-    }
-
-    .option-line input {
-      width: 18px;
-      height: 18px;
-      accent-color: var(--brand);
-    }
-
-    .upload-log {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 6px;
-      max-height: 170px;
-      overflow: auto;
-    }
-
-    .upload-log li {
-      font-size: 0.78rem;
-      padding: 6px 8px;
-      border-radius: 8px;
-      border: 1px solid #d8ccb3;
-      background: #fffdf7;
-      color: var(--ink-soft);
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-    }
-
-    .upload-log li.ok { border-color: rgba(26, 143, 88, 0.45); color: var(--ok); }
-    .upload-log li.err { border-color: rgba(179, 18, 58, 0.45); color: var(--err); }
-    .upload-log li.warn { border-color: rgba(154, 100, 0, 0.45); color: var(--warn); }
-
-    .context-grid {
-      display: grid;
-      gap: 10px;
-    }
-
+    /* ── SESSION DETAILS ── */
     .context-pills {
       display: flex;
       flex-wrap: wrap;
-      gap: 7px;
+      gap: 6px;
     }
 
     .pill {
-      border: 1px solid #c6b894;
+      border: 1px solid var(--border);
       border-radius: 999px;
-      padding: 4px 9px;
-      background: #fff7e8;
-      color: var(--ink-soft);
+      padding: 4px 10px;
+      background: var(--bg);
+      color: var(--text2);
       font-size: 0.78rem;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-family: var(--font-mono);
     }
-
-    .pill.warn {
-      border-color: rgba(154, 100, 0, 0.5);
-      color: var(--warn);
-      background: rgba(255, 240, 205, 0.65);
-    }
-
-    .pill.ok {
-      border-color: rgba(26, 143, 88, 0.5);
-      color: var(--ok);
-      background: rgba(226, 246, 236, 0.85);
-    }
+    .pill.warn { border-color: rgba(240, 192, 96, 0.5); color: var(--warn); background: rgba(240, 192, 96, 0.08); }
+    .pill.ok   { border-color: rgba(124, 217, 156, 0.5); color: var(--ok);   background: rgba(124, 217, 156, 0.08); }
 
     .context-json {
       margin: 0;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fffdf8;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
       padding: 10px;
-      min-height: 220px;
-      max-height: 45vh;
+      min-height: 160px;
+      max-height: 40vh;
       overflow: auto;
-      font: 0.77rem/1.45 "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-      color: var(--ink-soft);
+      font: 0.76rem/1.5 var(--font-mono);
+      color: var(--text2);
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    .actions-grid {
-      display: grid;
-      gap: 10px;
-    }
-
-    .action-group {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px;
-      background: #fffdf8;
-      display: grid;
-      gap: 8px;
-    }
-
-    .action-group h3 {
-      margin: 0;
-      font-size: 0.9rem;
-    }
-
+    /* ── ACTIONS GROUP ── */
     .action-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
-    .future-line {
-      margin: 0;
-      font-size: 0.78rem;
-      color: var(--ink-soft);
+    /* ── VIEWER MODAL ── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--overlay);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+      z-index: 100;
+      backdrop-filter: blur(6px);
     }
+
+    body[data-viewer="open"] .modal-overlay { display: flex; }
+
+    .modal-card {
+      width: min(900px, 100%);
+      max-height: 92vh;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+
+    .modal-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg2);
+    }
+
+    .modal-head h3 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+      min-width: 0;
+    }
+
+    .modal-path {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text2);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .icon-btn {
+      width: var(--tap);
+      height: var(--tap);
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text);
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .icon-btn:hover { background: var(--bg4); }
+
+    .modal-body {
+      padding: 14px;
+      overflow: auto;
+      min-height: 220px;
+      background: var(--bg);
+      display: grid;
+      gap: 10px;
+    }
+
+    .modal-image {
+      width: 100%;
+      max-height: 70vh;
+      object-fit: contain;
+      border-radius: var(--radius-sm);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+    }
+
+    .modal-textarea {
+      width: 100%;
+      min-height: 50vh;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: 500 0.86rem var(--font-mono);
+      padding: 10px;
+      line-height: 1.55;
+      resize: vertical;
+    }
+    .modal-textarea:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+      border-color: var(--accent);
+    }
+
+    .modal-msg {
+      margin: 0;
+      padding: 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text2);
+      font-size: 0.88rem;
+    }
+
+    .modal-foot {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      background: var(--bg2);
+    }
+
+    .modal-foot .modal-status {
+      flex: 1 1 auto;
+      font-size: 0.82rem;
+      color: var(--text2);
+      min-width: 0;
+    }
+
+    /* ── UPLOAD LOG (en chat-foot, opcional) ── */
+    .upload-log {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 4px;
+      max-height: 120px;
+      overflow: auto;
+      width: 100%;
+    }
+
+    .upload-log li {
+      font-size: 0.76rem;
+      padding: 5px 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text2);
+      font-family: var(--font-mono);
+    }
+    .upload-log li.ok { border-color: rgba(124, 217, 156, 0.45); color: var(--ok); }
+    .upload-log li.err { border-color: rgba(255, 107, 122, 0.45); color: var(--error); }
+    .upload-log li.warn { border-color: rgba(240, 192, 96, 0.45); color: var(--warn); }
 
     .sr-only {
       position: absolute;
@@ -688,227 +812,212 @@
       white-space: nowrap;
     }
 
-    @media (min-width: 760px) {
+    /* ── RESPONSIVE ── */
+    @media (min-width: 720px) {
       body { padding: 16px; }
-      .row-primary {
-        grid-template-columns: 1fr 240px;
-      }
-      .primary-actions {
-        grid-template-columns: 1fr;
-      }
-      .advanced-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-      .files-layout {
-        grid-template-columns: 1fr 1fr;
-      }
-      #fs-tree {
-        min-height: 360px;
-        max-height: 56vh;
-      }
-      .editor-wrap {
-        grid-template-rows: auto auto 1fr;
-      }
-      textarea.control#fs-editor {
-        min-height: 360px;
-      }
-      #terminal, #terminal-wrap {
-        min-height: 380px;
-      }
+      .row-primary { grid-template-columns: 1fr auto; align-items: end; }
+      .primary-actions { grid-template-columns: auto auto; }
+      .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .attach-actions { grid-template-columns: auto auto; justify-content: start; }
+      .attach-actions .btn { padding: 10px 18px; min-width: 180px; }
+      .files-tools { grid-template-columns: 1fr auto; }
+      .action-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .chat-body { min-height: 380px; }
+      .terminal-wrap, #terminal { min-height: 380px; }
     }
 
     @media (min-width: 1020px) {
-      .tabs {
-        width: fit-content;
-        grid-template-columns: repeat(4, 160px);
-      }
-      .actions-grid {
-        grid-template-columns: 1fr 1fr;
-      }
-      .action-grid {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-      }
-      #terminal, #terminal-wrap {
-        min-height: 460px;
-      }
+      .chat-body { min-height: 460px; }
+      .terminal-wrap, #terminal { min-height: 460px; }
+      .extras { grid-template-columns: 1fr; }
     }
 
-    @media (max-width: 759px) {
-      .terminal-head-actions {
-        width: 100%;
-      }
-      .terminal-head-actions .btn {
-        flex: 1 1 auto;
-        justify-content: center;
-      }
+    @media (max-width: 480px) {
+      .topbar { padding: 8px 10px; }
+      .conn-state { font-size: 0.78rem; }
+      .session-chip { max-width: 100%; }
+      .modal-card { max-height: 100vh; border-radius: 0; }
+      .modal-body { padding: 10px; }
+      .modal-image { max-height: 60vh; }
     }
   </style>
 </head>
-<body>
+<body class="theme-dark" data-connected="false" data-viewer="closed">
   <div class="app-shell">
-    <header class="topbar card">
-      <div class="topbar-row">
-        <div>
-          <div class="brand">POWER-AGENT · Cliente LAN remoto</div>
-          <div class="subtitle">Mobile-first, handshake limpio y operaciones remotas extensibles</div>
-        </div>
-        <div class="conn-state" role="status" aria-live="polite">
-          <span id="connection-dot" class="dot offline" aria-hidden="true"></span>
-          <span id="connection-text">Desconectado</span>
-        </div>
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <svg class="brand-bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+        <span>POWER-AGENT remoto</span>
       </div>
+      <span id="session-chip" class="session-chip" aria-live="polite"></span>
+      <div class="topbar-spacer"></div>
+      <div class="conn-state" role="status" aria-live="polite">
+        <span id="connection-dot" class="dot offline" aria-hidden="true"></span>
+        <span id="connection-text">Sin conectar</span>
+      </div>
+      <button id="btn-topbar-disconnect" class="btn btn-danger" type="button" hidden style="width:auto;padding:6px 14px;min-height:36px;font-size:0.84rem">Cerrar sesión</button>
     </header>
 
-    <section class="onboarding card" aria-labelledby="onboarding-title">
-      <h1 id="onboarding-title" class="sr-only">Onboarding de conexión</h1>
+    <section class="card card-pad onboarding" aria-labelledby="onboarding-title">
+      <h1 id="onboarding-title">Conectar al equipo central</h1>
+      <p class="onboarding-lead">Escribe tu nombre de operador y pulsa <strong>Entrar</strong>. Las opciones técnicas están abajo, normalmente no hace falta tocarlas.</p>
+
       <form id="connect-form" novalidate>
         <div class="row-primary">
           <div class="field">
-            <label for="username">Username principal</label>
-            <input id="username" class="control" name="username" autocomplete="username" placeholder="ej: operador.madrid" />
+            <label for="username">Tu nombre de usuario</label>
+            <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
           </div>
           <div class="primary-actions">
-            <button id="btn-connect" class="btn btn-primary" type="submit">Conectar</button>
-            <button id="btn-autoreconnect" class="btn btn-quiet" type="button" aria-pressed="true">Auto reconexión: ON</button>
+            <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
+            <button id="btn-autoreconnect" class="btn" type="button" aria-pressed="true">Reconexión automática: ON</button>
           </div>
         </div>
 
-        <details id="advanced-options" class="advanced">
-          <summary>Opciones avanzadas: endpoint y contexto enterprise</summary>
+        <details id="advanced-options" class="advanced" style="margin-top:10px">
+          <summary>Opciones avanzadas (servidor, operador, perfil)</summary>
           <div class="advanced-grid">
             <div class="field">
-              <label for="ws-url">Endpoint WebSocket</label>
+              <label for="ws-url">Servidor (WebSocket)</label>
               <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://192.168.1.10:9999" />
             </div>
             <div class="field">
-              <label for="operator-id">operatorId</label>
+              <label for="operator-id">ID de operador</label>
               <input id="operator-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
             <div class="field">
-              <label for="profile-id">profileId</label>
+              <label for="profile-id">ID de perfil</label>
               <input id="profile-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
           </div>
-          <p class="hint">Si no tocas estas opciones, el cliente usa host/puerto inferidos por URL y contexto legacy compatible.</p>
+          <p class="hint" style="margin-top:8px">Si dejas todo en blanco, el cliente usa la dirección del navegador y conecta en modo compatible.</p>
         </details>
-      </form>
 
-      <div id="handshake-strip" class="handshake" role="status" aria-live="polite">
-        <span id="handshake-text">Handshake listo. Se enviará al conectar.</span>
-        <span id="handshake-tone" class="handshake-tone">idle</span>
-      </div>
+        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:10px">
+          <span id="handshake-text">Listo para conectar.</span>
+          <span id="handshake-tone" class="handshake-tone">en espera</span>
+        </div>
+      </form>
     </section>
 
-    <nav class="tabs" role="tablist" aria-label="Secciones remotas">
-      <button id="tab-terminal" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="terminal-panel" data-tab="terminal">Terminal</button>
-      <button id="tab-files" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="files-panel" data-tab="files" tabindex="-1">Archivos</button>
-      <button id="tab-context" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="context-panel" data-tab="context" tabindex="-1">Contexto</button>
-      <button id="tab-actions" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="actions-panel" data-tab="actions" tabindex="-1">Acciones</button>
-    </nav>
-
-    <main>
-      <section id="terminal-panel" class="panel" role="tabpanel" aria-labelledby="tab-terminal">
-        <div class="panel-head">
-          <h2>Terminal remoto</h2>
-          <div class="terminal-head-actions">
-            <button id="btn-attach-photo" class="btn btn-primary" type="button">📷 Enviar foto</button>
-            <button id="btn-attach-file" class="btn btn-quiet" type="button">📎 Enviar archivo</button>
-          </div>
-          <small>Chat operativo en tiempo real con adjuntos</small>
-        </div>
-        <div class="panel-content">
-          <div id="terminal-wrap"><div id="terminal"></div></div>
-          <div class="upload-box" aria-labelledby="upload-title">
-            <h3 id="upload-title" style="margin:0;font-size:0.95rem;">Enviar foto/archivo al chat</h3>
-            <input id="input-attach-file" class="sr-only" type="file" />
-            <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
-            <label class="option-line" for="attach-confirm-chat">
-              <input id="attach-confirm-chat" type="checkbox" checked />
-              Confirmar antes de enviar al chat
-            </label>
-            <div id="upload-status" class="status-line" role="status" aria-live="polite">Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.</div>
-            <ul id="upload-log" class="upload-log" aria-label="Historial de envíos al chat"></ul>
+    <section class="card chat-card" aria-labelledby="chat-title">
+      <header class="chat-head">
+        <div class="chat-head-row">
+          <div style="min-width:0">
+            <h2 id="chat-title" class="chat-title">Chat con el agente</h2>
+            <div class="chat-subtitle">Habla con el equipo central. Adjunta foto o archivo directos al chat.</div>
           </div>
         </div>
-      </section>
-
-      <section id="files-panel" class="panel" role="tabpanel" aria-labelledby="tab-files" hidden>
-        <div class="panel-head">
-          <h2>Archivos remotos</h2>
-          <small>Exploración y edición (los adjuntos se envían desde Terminal)</small>
+        <div class="attach-actions">
+          <button id="btn-attach-photo" class="btn btn-primary btn-icon-left" type="button" aria-label="Enviar foto al chat">
+            <span aria-hidden="true">📷</span>
+            <span>Enviar foto al chat</span>
+          </button>
+          <button id="btn-attach-file" class="btn btn-icon-left" type="button" aria-label="Enviar archivo al chat">
+            <span aria-hidden="true">📎</span>
+            <span>Enviar archivo al chat</span>
+          </button>
         </div>
-        <div class="panel-content">
-          <div class="files-layout">
-            <div class="editor-wrap">
-              <div class="files-tools">
-                <div class="field">
-                  <label for="fs-root">Root remota</label>
-                  <select id="fs-root" class="control"></select>
-                </div>
-                <button id="btn-fs-refresh" class="btn btn-quiet" type="button">Recargar</button>
-                <button id="btn-fs-open-root" class="btn btn-quiet" type="button">Abrir raíz</button>
-              </div>
-              <div id="fs-status" class="status-line" role="status" aria-live="polite">Explorador remoto esperando conexión.</div>
-              <div id="fs-tree" aria-label="Listado de archivos remotos"></div>
+        <input id="input-attach-file" class="sr-only" type="file" />
+        <input id="input-attach-photo" class="sr-only" type="file" accept="image/*" capture="environment" />
+        <div id="attach-status" class="attach-status" role="status" aria-live="polite">Listo. Cuando hables o adjuntes algo, llegará al equipo central.</div>
+      </header>
+
+      <div class="chat-body">
+        <div class="terminal-wrap"><div id="terminal"></div></div>
+      </div>
+
+      <footer class="chat-foot">
+        <label class="check-line" for="attach-confirm-chat">
+          <input id="attach-confirm-chat" type="checkbox" checked />
+          Confirmar antes de enviar adjuntos al chat
+        </label>
+        <button id="btn-clear-terminal" class="btn" type="button" style="width:auto;padding:6px 12px;min-height:36px;font-size:0.82rem">Limpiar pantalla</button>
+      </footer>
+    </section>
+
+    <section class="extras" aria-label="Más opciones">
+      <details id="details-files">
+        <summary>
+          <span aria-hidden="true">📁</span>
+          <span>Archivos remotos</span>
+          <span id="files-badge" class="badge" hidden></span>
+          <span class="chev" aria-hidden="true">▾</span>
+        </summary>
+        <div class="extras-body">
+          <div id="fs-status" class="status-line" role="status" aria-live="polite">Conecta primero para ver carpetas.</div>
+          <div class="files-tools">
+            <div class="field">
+              <label for="fs-root">Carpeta raíz</label>
+              <select id="fs-root" class="control"></select>
             </div>
-
-            <div class="editor-wrap">
-              <div class="path-line" id="fs-current-path">Sin archivo abierto</div>
-              <button id="btn-fs-save" class="btn btn-primary" type="button" disabled>Guardar archivo remoto</button>
-              <textarea id="fs-editor" class="control" placeholder="Selecciona un archivo de texto para editar." disabled></textarea>
-              <div id="fs-preview" class="preview-box" hidden>
-                <div id="fs-preview-head" class="preview-head">Sin vista previa</div>
-                <img id="fs-preview-image" class="preview-image" alt="Vista previa de imagen remota" hidden />
-                <p id="fs-preview-message" class="preview-message" hidden></p>
-              </div>
+            <div class="files-tools-buttons">
+              <button id="btn-fs-refresh" class="btn" type="button">Recargar</button>
+              <button id="btn-fs-open-root" class="btn" type="button">Ir a la raíz</button>
             </div>
           </div>
-
+          <div id="fs-tree" class="fs-tree" aria-label="Listado de archivos remotos"></div>
         </div>
-      </section>
+      </details>
 
-      <section id="context-panel" class="panel" role="tabpanel" aria-labelledby="tab-context" hidden>
-        <div class="panel-head">
-          <h2>Contexto de sesión</h2>
-          <small>Capacidades, roots y estado enterprise/legacy</small>
-        </div>
-        <div class="panel-content context-grid">
+      <details id="details-session">
+        <summary>
+          <span aria-hidden="true">🪪</span>
+          <span>Detalles de tu sesión</span>
+          <span id="session-badge" class="badge" hidden></span>
+          <span class="chev" aria-hidden="true">▾</span>
+        </summary>
+        <div class="extras-body">
           <div id="context-pills" class="context-pills"></div>
           <pre id="context-json" class="context-json" aria-label="JSON de contexto">Sin sesión activa.</pre>
         </div>
-      </section>
+      </details>
 
-      <section id="actions-panel" class="panel" role="tabpanel" aria-labelledby="tab-actions" hidden>
-        <div class="panel-head">
-          <h2>Acciones rápidas</h2>
-          <small>Control de sesión y puntos de extensión futura</small>
-        </div>
-        <div class="panel-content actions-grid">
-          <div class="action-group">
-            <h3>Operación remota</h3>
-            <div class="action-grid">
-              <button id="btn-mic" class="btn btn-quiet" type="button">Micrófono</button>
-              <button id="btn-send-handshake" class="btn btn-quiet" type="button">Reenviar handshake</button>
-              <button id="btn-clear-terminal" class="btn btn-quiet" type="button">Limpiar terminal</button>
-              <button id="btn-disconnect" class="btn btn-danger" type="button">Cerrar sesión</button>
-            </div>
-            <p class="future-line">Si el servidor no soporta una acción, el cliente degrada con mensaje explícito sin romper UI.</p>
+      <details id="details-actions">
+        <summary>
+          <span aria-hidden="true">⚙︎</span>
+          <span>Acciones avanzadas</span>
+          <span class="chev" aria-hidden="true">▾</span>
+        </summary>
+        <div class="extras-body">
+          <div class="action-grid">
+            <button id="btn-mic" class="btn" type="button">Micrófono</button>
+            <button id="btn-send-handshake" class="btn" type="button">Reenviar identidad</button>
+            <button id="btn-reconnect" class="btn" type="button">Volver a conectar</button>
+            <button id="btn-disconnect" class="btn btn-danger" type="button">Cerrar sesión</button>
           </div>
+          <p class="hint">Si una acción no está disponible en este servidor, el cliente avisa pero no se rompe nada.</p>
+          <ul id="upload-log" class="upload-log" aria-label="Últimos envíos al chat"></ul>
+        </div>
+      </details>
+    </section>
+  </div>
 
-          <div class="action-group">
-            <h3>Próximas funciones</h3>
-            <p class="future-line">Esta sección queda preparada para más acciones WS/MCP sin cambiar la arquitectura por pestañas.</p>
-            <p class="future-line">La cámara y archivos ya se envían desde la pestaña Terminal con flujo directo al chat.</p>
-          </div>
-        </div>
-      </section>
-    </main>
+  <div id="viewer-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="viewer-title">
+    <article class="modal-card">
+      <header class="modal-head">
+        <h3 id="viewer-title">Visor</h3>
+        <span id="viewer-path" class="modal-path"></span>
+        <button id="btn-viewer-close" class="icon-btn" type="button" aria-label="Cerrar visor">×</button>
+      </header>
+      <div class="modal-body">
+        <img id="viewer-image" class="modal-image" alt="Vista previa de imagen remota" hidden />
+        <textarea id="viewer-textarea" class="modal-textarea" placeholder="Contenido del archivo" hidden></textarea>
+        <p id="viewer-message" class="modal-msg" hidden></p>
+      </div>
+      <footer class="modal-foot">
+        <span id="viewer-status" class="modal-status"></span>
+        <button id="btn-viewer-save" class="btn btn-primary" type="button" style="width:auto;min-height:38px;padding:6px 16px" hidden>Guardar cambios</button>
+        <button id="btn-viewer-close-foot" class="btn" type="button" style="width:auto;min-height:38px;padding:6px 16px">Cerrar</button>
+      </footer>
+    </article>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script>
     const refs = {
+      body: document.body,
       connectForm: document.getElementById('connect-form'),
       wsUrlInput: document.getElementById('ws-url'),
       operatorIdInput: document.getElementById('operator-id'),
@@ -916,37 +1025,32 @@
       usernameInput: document.getElementById('username'),
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
+      btnTopbarDisconnect: document.getElementById('btn-topbar-disconnect'),
       connectionText: document.getElementById('connection-text'),
       connectionDot: document.getElementById('connection-dot'),
+      sessionChip: document.getElementById('session-chip'),
       handshakeText: document.getElementById('handshake-text'),
       handshakeTone: document.getElementById('handshake-tone'),
+      attachStatus: document.getElementById('attach-status'),
 
-      tabs: Array.from(document.querySelectorAll('.tab-btn')),
-      panels: {
-        terminal: document.getElementById('terminal-panel'),
-        files: document.getElementById('files-panel'),
-        context: document.getElementById('context-panel'),
-        actions: document.getElementById('actions-panel')
-      },
+      detailsFiles: document.getElementById('details-files'),
+      detailsSession: document.getElementById('details-session'),
+      detailsActions: document.getElementById('details-actions'),
+      filesBadge: document.getElementById('files-badge'),
+      sessionBadge: document.getElementById('session-badge'),
 
       fsRootSelect: document.getElementById('fs-root'),
       btnFsRefresh: document.getElementById('btn-fs-refresh'),
       btnFsOpenRoot: document.getElementById('btn-fs-open-root'),
       fsStatus: document.getElementById('fs-status'),
       fsTree: document.getElementById('fs-tree'),
-      fsCurrentPath: document.getElementById('fs-current-path'),
-      fsEditor: document.getElementById('fs-editor'),
-      btnFsSave: document.getElementById('btn-fs-save'),
-      fsPreview: document.getElementById('fs-preview'),
-      fsPreviewHead: document.getElementById('fs-preview-head'),
-      fsPreviewImage: document.getElementById('fs-preview-image'),
-      fsPreviewMessage: document.getElementById('fs-preview-message'),
 
       contextPills: document.getElementById('context-pills'),
       contextJson: document.getElementById('context-json'),
 
       btnMic: document.getElementById('btn-mic'),
       btnSendHandshake: document.getElementById('btn-send-handshake'),
+      btnReconnect: document.getElementById('btn-reconnect'),
       btnClearTerminal: document.getElementById('btn-clear-terminal'),
       btnDisconnect: document.getElementById('btn-disconnect'),
 
@@ -955,9 +1059,26 @@
       attachFileInput: document.getElementById('input-attach-file'),
       attachPhotoInput: document.getElementById('input-attach-photo'),
       attachConfirmCheck: document.getElementById('attach-confirm-chat'),
-      uploadStatus: document.getElementById('upload-status'),
-      uploadLog: document.getElementById('upload-log')
+      uploadLog: document.getElementById('upload-log'),
+
+      viewerOverlay: document.getElementById('viewer-modal'),
+      viewerTitle: document.getElementById('viewer-title'),
+      viewerPath: document.getElementById('viewer-path'),
+      viewerImage: document.getElementById('viewer-image'),
+      viewerTextarea: document.getElementById('viewer-textarea'),
+      viewerMessage: document.getElementById('viewer-message'),
+      viewerStatus: document.getElementById('viewer-status'),
+      btnViewerSave: document.getElementById('btn-viewer-save'),
+      btnViewerClose: document.getElementById('btn-viewer-close'),
+      btnViewerCloseFoot: document.getElementById('btn-viewer-close-foot')
     }
+
+    /* Tema: respetar prefers-color-scheme; fallback dark */
+    try {
+      const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      refs.body.classList.toggle('theme-light', prefersLight)
+      refs.body.classList.toggle('theme-dark', !prefersLight)
+    } catch {}
 
     const term = new Terminal({
       convertEol: true,
@@ -965,10 +1086,10 @@
       fontFamily: '"IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: '#101a24',
-        foreground: '#d6ecff',
-        cursor: '#f28c4b',
-        selectionBackground: '#335e83'
+        background: getComputedStyle(refs.body).getPropertyValue('--term-bg').trim() || '#101018',
+        foreground: getComputedStyle(refs.body).getPropertyValue('--term-fg').trim() || '#e6e6f5',
+        cursor: '#a690ff',
+        selectionBackground: '#3a3a5a'
       }
     })
     const fitAddon = new FitAddon.FitAddon()
@@ -978,7 +1099,6 @@
 
     const appState = {
       socket: null,
-      activeTab: 'terminal',
       autoreconnect: true,
       reconnectTimer: null,
       manualClose: false,
@@ -990,15 +1110,18 @@
       fsPending: new Map(),
       fsApiAvailable: false,
       fsLegacyReason: '',
-      openFilePath: '',
-      openFileDirty: false,
-      openFilePreviewType: '',
       fsPushSeen: false,
       fsPollingTimer: null,
       fsPollingAnnounced: false,
       fsRefreshing: false,
       fsRefreshQueued: false,
-      uploadSupport: 'unknown'
+      uploadSupport: 'unknown',
+      viewerOpen: false,
+      viewerPath: '',
+      viewerPreviewType: '',
+      viewerDirty: false,
+      viewerMime: '',
+      lastKnownActiveElement: null
     }
 
     function errorText(err) {
@@ -1009,6 +1132,11 @@
       return appState.socket && appState.socket.readyState === WebSocket.OPEN
     }
 
+    function setConnectedFlag(value) {
+      refs.body.dataset.connected = value ? 'true' : 'false'
+      refs.btnTopbarDisconnect.hidden = !value
+    }
+
     function setConnectionStatus(kind, text) {
       refs.connectionDot.className = `dot ${kind}`
       refs.connectionText.textContent = String(text || '')
@@ -1016,7 +1144,7 @@
 
     function setHandshakeStatus(kind, text, badgeText) {
       refs.handshakeTone.className = `handshake-tone ${kind}`
-      refs.handshakeTone.textContent = badgeText || kind || 'idle'
+      refs.handshakeTone.textContent = badgeText || kind || 'en espera'
       refs.handshakeText.textContent = String(text || '')
     }
 
@@ -1026,12 +1154,19 @@
       el.textContent = String(text || '')
     }
 
+    function setAttachStatus(text, tone = '') {
+      refs.attachStatus.className = 'attach-status'
+      if (tone === 'ok' || tone === 'warn' || tone === 'err') refs.attachStatus.classList.add(tone)
+      refs.attachStatus.textContent = String(text || '')
+    }
+
     function setFsStatus(text, tone = '') {
       setStatusLine(refs.fsStatus, text, tone)
     }
 
-    function setUploadStatus(text, tone = '') {
-      setStatusLine(refs.uploadStatus, text, tone)
+    function setViewerStatus(text, tone = '') {
+      refs.viewerStatus.textContent = String(text || '')
+      refs.viewerStatus.style.color = tone === 'err' ? 'var(--error)' : (tone === 'ok' ? 'var(--ok)' : (tone === 'warn' ? 'var(--warn)' : ''))
     }
 
     function inferDefaultWsUrl() {
@@ -1072,27 +1207,6 @@
       return true
     }
 
-    function activateTab(tabName, focusButton = false) {
-      appState.activeTab = tabName
-      for (const tab of refs.tabs) {
-        const selected = tab.dataset.tab === tabName
-        tab.setAttribute('aria-selected', selected ? 'true' : 'false')
-        tab.tabIndex = selected ? 0 : -1
-        if (selected && focusButton) tab.focus()
-      }
-      for (const [name, panel] of Object.entries(refs.panels)) {
-        panel.hidden = name !== tabName
-      }
-      if (tabName === 'terminal') {
-        window.requestAnimationFrame(() => {
-          try { fitAddon.fit() } catch {}
-          sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
-        })
-      } else if (tabName === 'files' && isSocketOpen() && hasFsCapability('list')) {
-        refreshFsTree({ silent: true, source: 'tab' }).catch(() => {})
-      }
-    }
-
     function formatFsError(errorObj) {
       if (!errorObj) return 'Error de filesystem'
       const errorCode = String(errorObj.code || '').toUpperCase()
@@ -1105,6 +1219,9 @@
       if (errorCode === 'PATH_OUTSIDE_ALLOWED_ROOTS') {
         return 'Ruta fuera de las carpetas permitidas para tu sesión.'
       }
+      if (errorCode === 'FILE_TOO_LARGE') {
+        return 'El archivo supera el límite de tamaño de tu sesión.'
+      }
       const codeLabel = errorObj.code ? `${errorObj.code}: ` : ''
       return `${codeLabel}${errorObj.message || 'Error remoto'}`
     }
@@ -1112,13 +1229,17 @@
     function hasFsCapability(name) {
       return appState.sessionCapabilities?.fs?.[name] === true
     }
-
     function hasViewerCapability() {
       return appState.sessionCapabilities?.viewer?.open === true
     }
-
     function canOpenFile() {
       return hasFsCapability('read') || hasViewerCapability()
+    }
+    function canWriteFile() {
+      return hasFsCapability('write')
+    }
+    function canUpload() {
+      return hasFsCapability('upload') || hasFsCapability('write')
     }
 
     function renderRootSelector(roots = []) {
@@ -1127,7 +1248,7 @@
       if (!list.length) {
         const opt = document.createElement('option')
         opt.value = ''
-        opt.textContent = '(sin roots)'
+        opt.textContent = '(sin carpetas)'
         refs.fsRootSelect.appendChild(opt)
         refs.fsRootSelect.disabled = true
         return
@@ -1144,66 +1265,37 @@
 
     function updateFsControlState() {
       const canList = hasFsCapability('list')
-      const canRead = canOpenFile()
-      const canWrite = hasFsCapability('write')
-      appState.fsApiAvailable = canList || canRead || canWrite
       refs.btnFsRefresh.disabled = !canList
       refs.btnFsOpenRoot.disabled = !canList
-      const editableText = canRead && canWrite && appState.openFilePreviewType === 'text'
-      refs.fsEditor.disabled = !editableText
-      refs.btnFsSave.disabled = !(canWrite && appState.openFilePath && appState.openFileDirty && appState.openFilePreviewType === 'text')
+      appState.fsApiAvailable = canList || canOpenFile() || canWriteFile()
     }
 
-    function clearPreview() {
-      refs.fsPreview.hidden = true
-      refs.fsPreviewHead.textContent = 'Sin vista previa'
-      refs.fsPreviewImage.hidden = true
-      refs.fsPreviewImage.src = ''
-      refs.fsPreviewMessage.hidden = true
-      refs.fsPreviewMessage.textContent = ''
-    }
-
-    function showImagePreview(mime, base64) {
-      clearPreview()
-      refs.fsPreview.hidden = false
-      refs.fsPreviewHead.textContent = `Vista previa de imagen · ${mime || 'image/*'}`
-      refs.fsPreviewImage.src = `data:${mime || 'application/octet-stream'};base64,${base64}`
-      refs.fsPreviewImage.hidden = false
-    }
-
-    function showBinaryPreview(message, size) {
-      clearPreview()
-      refs.fsPreview.hidden = false
-      const sizeText = Number.isFinite(Number(size)) && Number(size) > 0 ? ` · ${Number(size)} bytes` : ''
-      refs.fsPreviewHead.textContent = `Archivo binario${sizeText}`
-      refs.fsPreviewMessage.hidden = false
-      refs.fsPreviewMessage.textContent = message || 'Vista previa no disponible para este tipo de archivo.'
-    }
-
-    function clearFsUi(reason = 'Explorador remoto esperando conexión.') {
+    function clearFsUi(reason = 'Conecta primero para ver carpetas.') {
       appState.fsApiAvailable = false
       appState.fsLegacyReason = ''
-      appState.openFilePath = ''
-      appState.openFileDirty = false
-      appState.openFilePreviewType = ''
       refs.fsTree.innerHTML = ''
       refs.fsRootSelect.innerHTML = ''
       refs.fsRootSelect.disabled = true
-      refs.fsEditor.disabled = true
-      refs.fsEditor.value = ''
-      refs.btnFsSave.disabled = true
       refs.btnFsRefresh.disabled = true
       refs.btnFsOpenRoot.disabled = true
-      refs.fsCurrentPath.textContent = 'Sin archivo abierto'
-      refs.fsCurrentPath.title = ''
-      clearPreview()
       setFsStatus(reason)
+      refs.filesBadge.hidden = true
+    }
+
+    function setSessionChip() {
+      const ctx = appState.sessionInfo?.context || {}
+      const name = ctx.username || ctx.operatorId || ''
+      const mode = ctx.mode || 'legacy'
+      const cwd = appState.sessionInfo?.cwd || ''
+      const short = cwd ? cwd.split('/').slice(-2).join('/') : ''
+      refs.sessionChip.textContent = name ? `${name} · ${mode}${short ? ' · ' + short : ''}` : (short ? `${mode} · ${short}` : mode)
     }
 
     function renderSessionContext() {
       refs.contextPills.innerHTML = ''
       if (!appState.sessionInfo) {
         refs.contextJson.textContent = 'Sin sesión activa.'
+        refs.sessionBadge.hidden = true
         return
       }
 
@@ -1214,13 +1306,13 @@
       const mcp = Array.isArray(ctx.allowedMcpServers) ? ctx.allowedMcpServers : []
 
       const pillData = [
-        `modo:${ctx.mode || 'legacy'}`,
-        `op:${ctx.operatorId || '-'}`,
-        `rol:${ctx.roleId || '-'}`,
-        `perfil:${ctx.profileId || '-'}`,
-        `roots:${roots.length}`,
-        `readonly:${roRoots.length}`,
-        `mcp:${mcp.length ? mcp.join('|') : '-'}`
+        `modo: ${ctx.mode || 'legacy'}`,
+        `operador: ${ctx.operatorId || '—'}`,
+        `rol: ${ctx.roleId || '—'}`,
+        `perfil: ${ctx.profileId || '—'}`,
+        `carpetas: ${roots.length}`,
+        `solo lectura: ${roRoots.length}`,
+        `MCP: ${mcp.length ? mcp.join(' · ') : '—'}`
       ]
       for (const item of pillData) {
         const chip = document.createElement('span')
@@ -1230,19 +1322,19 @@
       }
 
       const denied = []
-      if (caps?.pty?.execute === false) denied.push('pty.execute')
-      if (caps?.fs?.list === false) denied.push('fs.list')
-      if (caps?.fs?.read === false) denied.push('fs.read')
-      if (caps?.fs?.write === false) denied.push('fs.write')
+      if (caps?.pty?.execute === false) denied.push('terminal')
+      if (caps?.fs?.list === false) denied.push('listar')
+      if (caps?.fs?.read === false) denied.push('leer')
+      if (caps?.fs?.write === false) denied.push('editar')
       if (denied.length) {
         const denyChip = document.createElement('span')
         denyChip.className = 'pill warn'
-        denyChip.textContent = `deny:${denied.join('|')}`
+        denyChip.textContent = `sin permiso: ${denied.join(' · ')}`
         refs.contextPills.appendChild(denyChip)
       } else {
         const okChip = document.createElement('span')
         okChip.className = 'pill ok'
-        okChip.textContent = 'permisos:ok'
+        okChip.textContent = 'permisos: OK'
         refs.contextPills.appendChild(okChip)
       }
 
@@ -1255,6 +1347,9 @@
         capabilities: caps
       }
       refs.contextJson.textContent = JSON.stringify(json, null, 2)
+
+      refs.sessionBadge.hidden = false
+      refs.sessionBadge.textContent = `${ctx.mode || 'legacy'} · ${ctx.username || ctx.operatorId || 'sin id'}`
     }
 
     function makeFsRequestId() {
@@ -1264,21 +1359,18 @@
 
     function sendFsRequest(type, payload = {}, timeoutMs = 10000) {
       return new Promise((resolve, reject) => {
-        if (!isSocketOpen()) {
-          reject(new Error('Socket desconectado'))
-          return
-        }
+        if (!isSocketOpen()) { reject(new Error('Socket desconectado')); return }
         const requestId = makeFsRequestId()
         const timer = setTimeout(() => {
           appState.fsPending.delete(requestId)
-          reject(new Error(`Timeout esperando ${type}`))
+          reject(new Error(`Sin respuesta del servidor (${type})`))
         }, timeoutMs)
         appState.fsPending.set(requestId, { resolve, reject, timer, type })
         const sent = sendMessage({ type, requestId, ...payload })
         if (!sent) {
           clearTimeout(timer)
           appState.fsPending.delete(requestId)
-          reject(new Error('No se pudo enviar petición remota'))
+          reject(new Error('No se pudo enviar la petición remota'))
         }
       })
     }
@@ -1316,7 +1408,7 @@
 
       if (msg?.ok === false && pending.type === 'fs:upload' && isUnsupportedFsOp(msg.error, 'fs:upload')) {
         appState.uploadSupport = 'unsupported'
-        setUploadStatus('Servidor legacy sin envío de adjuntos remoto.', 'warn')
+        setAttachStatus('Este servidor no admite envío de adjuntos remotos.', 'warn')
       }
       pending.resolve(msg)
       return true
@@ -1364,37 +1456,27 @@
     }
 
     async function refreshFsTree(options = {}) {
-      if (appState.fsRefreshing) {
-        appState.fsRefreshQueued = true
-        return
-      }
+      if (appState.fsRefreshing) { appState.fsRefreshQueued = true; return }
       appState.fsRefreshing = true
       const silent = !!options.silent
 
       try {
-        if (!isSocketOpen()) {
-          clearFsUi('Conecta primero para usar el explorador remoto.')
-          return
-        }
+        if (!isSocketOpen()) { clearFsUi('Conecta primero para ver carpetas.'); return }
         if (!hasFsCapability('list')) {
-          appState.fsApiAvailable = canOpenFile() || hasFsCapability('write')
-          setFsStatus('Permiso o soporte ausente para `fs:list` (modo parcial).', 'warn')
+          setFsStatus('Tu sesión no permite listar carpetas (solo lectura puntual).', 'warn')
           refs.fsTree.innerHTML = ''
           return
         }
 
         const selectedRoot = refs.fsRootSelect.value || appState.sessionInfo?.context?.allowedRoots?.[0] || appState.sessionInfo?.cwd || ''
-        if (!selectedRoot) {
-          setFsStatus('No hay root remota disponible.', 'warn')
-          return
-        }
-        if (!silent) setFsStatus('Cargando árbol remoto...')
+        if (!selectedRoot) { setFsStatus('No hay carpeta raíz disponible.', 'warn'); return }
+        if (!silent) setFsStatus('Cargando carpeta remota…')
 
         const res = await sendFsRequest('fs:list', { path: selectedRoot, depth: 3 }, 12000)
         if (res?.ok === false) {
           setFsStatus(formatFsError(res.error), 'err')
           if (isUnsupportedFsOp(res.error, 'fs:list')) {
-            appState.fsLegacyReason = 'Servidor legacy sin soporte fs:list.'
+            appState.fsLegacyReason = 'Servidor sin soporte de listado remoto.'
           }
           return
         }
@@ -1403,7 +1485,9 @@
         renderTreeEntries(res.entries || [], 0)
         const rootLabel = res.path || selectedRoot
         const count = Array.isArray(res.entries) ? res.entries.length : 0
-        setFsStatus(`Árbol actualizado · ${rootLabel} · entradas ${count}${res.truncated ? ' (truncado)' : ''}`, 'ok')
+        setFsStatus(`Actualizado · ${rootLabel} · ${count} elementos${res.truncated ? ' (recortado)' : ''}`, 'ok')
+        refs.filesBadge.hidden = false
+        refs.filesBadge.textContent = `${count}`
       } catch (err) {
         setFsStatus(`No disponible: ${errorText(err)}`, 'err')
       } finally {
@@ -1415,17 +1499,74 @@
       }
     }
 
-    async function openRemoteFile(filePath) {
-      if (!filePath) return
-      if (appState.openFileDirty && appState.openFilePath && appState.openFilePath !== filePath) {
-        const proceed = window.confirm('Hay cambios sin guardar. ¿Abrir otro archivo y descartar cambios?')
+    /* ── VIEWER MODAL ── */
+    function openViewer() {
+      appState.viewerOpen = true
+      refs.body.dataset.viewer = 'open'
+      try { appState.lastKnownActiveElement = document.activeElement } catch {}
+    }
+
+    function closeViewer() {
+      if (appState.viewerDirty) {
+        const proceed = window.confirm('Tienes cambios sin guardar. ¿Cerrar de todas formas?')
         if (!proceed) return
       }
+      appState.viewerOpen = false
+      appState.viewerPath = ''
+      appState.viewerPreviewType = ''
+      appState.viewerDirty = false
+      appState.viewerMime = ''
+      refs.body.dataset.viewer = 'closed'
+      refs.viewerImage.hidden = true
+      refs.viewerImage.removeAttribute('src')
+      refs.viewerTextarea.hidden = true
+      refs.viewerTextarea.value = ''
+      refs.viewerMessage.hidden = true
+      refs.viewerMessage.textContent = ''
+      refs.btnViewerSave.hidden = true
+      refs.viewerPath.textContent = ''
+      refs.viewerTitle.textContent = 'Visor'
+      setViewerStatus('')
+      try { appState.lastKnownActiveElement?.focus?.() } catch {}
+    }
+
+    function viewerSetupForText(content, truncated) {
+      refs.viewerImage.hidden = true
+      refs.viewerMessage.hidden = true
+      refs.viewerTextarea.hidden = false
+      refs.viewerTextarea.value = content || ''
+      refs.viewerTextarea.disabled = !canWriteFile()
+      refs.btnViewerSave.hidden = !canWriteFile()
+      refs.btnViewerSave.disabled = true
+      setViewerStatus(truncated ? 'Texto mostrado recortado por tamaño.' : 'Archivo de texto abierto.', truncated ? 'warn' : 'ok')
+    }
+
+    function viewerSetupForImage(mime, base64) {
+      refs.viewerImage.hidden = false
+      refs.viewerImage.src = `data:${mime || 'application/octet-stream'};base64,${base64}`
+      refs.viewerTextarea.hidden = true
+      refs.viewerMessage.hidden = true
+      refs.btnViewerSave.hidden = true
+      setViewerStatus(`Imagen abierta · ${mime || 'image/*'}`, 'ok')
+    }
+
+    function viewerSetupForBinary(message, size) {
+      refs.viewerImage.hidden = true
+      refs.viewerTextarea.hidden = true
+      refs.viewerMessage.hidden = false
+      const sizeText = Number.isFinite(Number(size)) && Number(size) > 0 ? ` (${Number(size).toLocaleString('es-ES')} bytes)` : ''
+      refs.viewerMessage.textContent = `${message || 'Vista previa no disponible para este tipo de archivo.'}${sizeText}`
+      refs.btnViewerSave.hidden = true
+      setViewerStatus('Archivo binario sin vista previa textual.', 'warn')
+    }
+
+    async function openRemoteFile(filePath) {
+      if (!filePath) return
       if (!canOpenFile()) {
-        setFsStatus('Permiso denegado: fs.read/viewer.open', 'warn')
+        setFsStatus('Tu rol no tiene permiso para abrir archivos.', 'warn')
         return
       }
-      setFsStatus('Abriendo archivo remoto...')
+      setFsStatus('Abriendo archivo remoto…')
 
       let res = await sendFsRequest('fs:open', { path: filePath }, 18000)
       if (res?.ok === false && isUnsupportedFsOp(res.error, 'fs:open')) {
@@ -1437,64 +1578,54 @@
       }
 
       const resolvedPath = res.path || filePath
-      appState.openFilePath = resolvedPath
-      appState.openFileDirty = false
-      appState.openFilePreviewType = String(res.previewType || (typeof res.content === 'string' ? 'text' : 'binary')).toLowerCase()
-      refs.fsCurrentPath.textContent = resolvedPath
-      refs.fsCurrentPath.title = resolvedPath
+      appState.viewerPath = resolvedPath
+      appState.viewerPreviewType = String(res.previewType || (typeof res.content === 'string' ? 'text' : 'binary')).toLowerCase()
+      appState.viewerMime = res.mime || ''
+      appState.viewerDirty = false
 
-      if (appState.openFilePreviewType === 'image' && typeof res.content === 'string') {
-        refs.fsEditor.value = ''
-        showImagePreview(res.mime || '', res.content)
-        updateFsControlState()
-        setFsStatus(`Imagen abierta (${res.size || 0} bytes)`, 'ok')
+      refs.viewerPath.textContent = resolvedPath
+      refs.viewerPath.title = resolvedPath
+      refs.viewerTitle.textContent = resolvedPath.split('/').pop() || 'Visor'
+
+      openViewer()
+
+      if (appState.viewerPreviewType === 'image' && typeof res.content === 'string') {
+        viewerSetupForImage(res.mime || '', res.content)
+        setFsStatus(`Imagen abierta · ${res.size || 0} bytes`, 'ok')
         return
       }
-
-      if (appState.openFilePreviewType === 'text' && typeof res.content === 'string') {
-        clearPreview()
-        refs.fsEditor.value = res.content
-        updateFsControlState()
-        if (res.truncated) {
-          setFsStatus(`Texto abierto con recorte por límite (${res.size || 0} bytes).`, 'warn')
-        } else {
-          setFsStatus(`Archivo abierto (${res.size || 0} bytes)`, 'ok')
-        }
+      if (appState.viewerPreviewType === 'text' && typeof res.content === 'string') {
+        viewerSetupForText(res.content, !!res.truncated)
+        setFsStatus(`Texto abierto · ${res.size || 0} bytes`, 'ok')
         return
       }
-
-      refs.fsEditor.value = ''
-      showBinaryPreview(res.message || 'Vista previa no disponible para este tipo de archivo.', res.size)
-      updateFsControlState()
-      setFsStatus(res.message || 'Archivo binario sin vista previa textual editable.', 'warn')
+      viewerSetupForBinary(res.message || 'Vista previa no disponible para este tipo de archivo.', res.size)
+      setFsStatus(res.message || 'Archivo binario sin vista previa textual.', 'warn')
     }
 
     async function saveRemoteFile() {
-      if (!appState.openFilePath) {
-        setFsStatus('No hay archivo abierto.', 'warn')
+      if (!appState.viewerPath) return
+      if (appState.viewerPreviewType !== 'text') {
+        setViewerStatus('Solo se pueden guardar archivos de texto.', 'warn')
         return
       }
-      if (appState.openFilePreviewType && appState.openFilePreviewType !== 'text') {
-        setFsStatus('Solo se pueden guardar archivos de texto editables.', 'warn')
+      if (!canWriteFile()) {
+        setViewerStatus('Tu rol no tiene permiso de escritura.', 'warn')
         return
       }
-      if (!hasFsCapability('write')) {
-        setFsStatus('Permiso denegado: fs.write', 'warn')
-        return
-      }
-      setFsStatus('Guardando archivo remoto...')
+      setViewerStatus('Guardando…')
       const res = await sendFsRequest('fs:write', {
-        path: appState.openFilePath,
-        content: refs.fsEditor.value,
+        path: appState.viewerPath,
+        content: refs.viewerTextarea.value,
         encoding: 'utf8'
       }, 12000)
       if (res?.ok === false) {
-        setFsStatus(formatFsError(res.error), 'err')
+        setViewerStatus(formatFsError(res.error), 'err')
         return
       }
-      appState.openFileDirty = false
-      updateFsControlState()
-      setFsStatus(`Guardado OK · ${res.path || appState.openFilePath}`, 'ok')
+      appState.viewerDirty = false
+      refs.btnViewerSave.disabled = true
+      setViewerStatus(`Guardado · ${res.path || appState.viewerPath}`, 'ok')
     }
 
     function addUploadLog(text, tone = '') {
@@ -1508,14 +1639,11 @@
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader()
-        reader.onerror = () => reject(reader.error || new Error('No se pudo leer archivo local'))
+        reader.onerror = () => reject(reader.error || new Error('No se pudo leer el archivo local.'))
         reader.onload = () => {
           const result = String(reader.result || '')
           const comma = result.indexOf(',')
-          if (comma < 0) {
-            reject(new Error('Formato de archivo no válido'))
-            return
-          }
+          if (comma < 0) { reject(new Error('Formato de archivo no válido.')); return }
           resolve(result.slice(comma + 1))
         }
         reader.readAsDataURL(file)
@@ -1528,29 +1656,24 @@
 
     async function uploadAttachment(file, sourceKind) {
       if (!file) return
-      if (!isSocketOpen()) {
-        setUploadStatus('Conecta primero para enviar fotos o archivos al chat.', 'warn')
-        return
-      }
-      const canUpload = hasFsCapability('upload') || hasFsCapability('write')
-      if (!canUpload) {
-        setUploadStatus('Tu rol no tiene permiso para enviar adjuntos en esta sesión.', 'err')
-        addUploadLog(`Bloqueado: sin permiso para adjuntos (${sourceKind})`, 'err')
+      if (!isSocketOpen()) { setAttachStatus('Conecta primero para enviar fotos o archivos al chat.', 'warn'); return }
+      if (!canUpload()) {
+        setAttachStatus('Tu rol no puede enviar adjuntos en esta sesión.', 'err')
+        addUploadLog(`Bloqueado: sin permiso para ${sourceKind}`, 'err')
         return
       }
       const maxUploadBytes = Number(appState.sessionCapabilities?.limits?.maxUploadBytes || (12 * 1024 * 1024))
       if (file.size > maxUploadBytes) {
         const mb = Math.max(1, Math.round(maxUploadBytes / (1024 * 1024)))
-        setUploadStatus(`Archivo demasiado grande (límite de sesión: ${mb} MB).`, 'warn')
+        setAttachStatus(`Archivo demasiado grande (límite: ${mb} MB).`, 'warn')
         addUploadLog(`${file.name} rechazado por tamaño (${file.size} bytes)`, 'warn')
         return
       }
 
-      setUploadStatus(`Preparando ${sourceKind}: ${file.name}...`)
-
+      setAttachStatus(`Preparando ${sourceKind}: ${file.name}…`)
       try {
         const base64 = await fileToBase64(file)
-        setUploadStatus(`Subiendo ${file.name} al servidor seguro...`)
+        setAttachStatus(`Subiendo ${file.name}…`)
         const res = await sendFsRequest('fs:upload', {
           name: file.name,
           mimeType: file.type || 'application/octet-stream',
@@ -1560,12 +1683,12 @@
         if (res?.ok === false) {
           if (isUnsupportedFsOp(res.error, 'fs:upload')) {
             appState.uploadSupport = 'unsupported'
-            const message = 'Este servidor no soporta envío de adjuntos desde móvil.'
-            setUploadStatus(message, 'warn')
+            const message = 'Este servidor no admite envío de adjuntos.'
+            setAttachStatus(message, 'warn')
             addUploadLog(`${file.name} no enviado: ${message}`, 'warn')
             return
           }
-          setUploadStatus(formatFsError(res.error), 'err')
+          setAttachStatus(formatFsError(res.error), 'err')
           addUploadLog(`${file.name} error: ${formatFsError(res.error)}`, 'err')
           return
         }
@@ -1573,17 +1696,17 @@
         appState.uploadSupport = 'supported'
         const uploadedPath = inferUploadedPath(res, file.name)
         const ptyRef = String(res?.ptyReference || '').trim() || `@${uploadedPath}`
-        setUploadStatus('Archivo recibido. Preparando envío al chat...', 'ok')
-        addUploadLog(`${file.name} cargado en servidor`, 'ok')
+        setAttachStatus('Archivo recibido en el servidor. Preparando envío al chat…', 'ok')
+        addUploadLog(`${file.name} subido al servidor`, 'ok')
 
         if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'upload' }).catch(() => {})
 
         let proceed = true
         if (refs.attachConfirmCheck.checked) {
-          proceed = window.confirm(`¿Enviar ahora al chat este adjunto?\n${file.name}`)
+          proceed = window.confirm(`¿Enviar ahora al chat?\n${file.name}`)
         }
         if (!proceed) {
-          setUploadStatus('Adjunto subido, envío al chat cancelado por el usuario.', 'warn')
+          setAttachStatus('Archivo subido. Envío al chat cancelado.', 'warn')
           addUploadLog('Envío al chat cancelado', 'warn')
           return
         }
@@ -1591,16 +1714,16 @@
         const injected = sendMessage({ type: 'input', data: `${ptyRef} ` })
         if (injected) {
           term.write(`\r\n[adjunto enviado] ${file.name}\r\n`)
-          setUploadStatus(`Enviado al chat: ${file.name}`, 'ok')
+          setAttachStatus(`Enviado al chat: ${file.name}`, 'ok')
           addUploadLog('Adjunto enviado al chat remoto', 'ok')
-          activateTab('terminal')
+          try { term.focus() } catch {}
         } else {
-          setUploadStatus('No se pudo enviar la referencia al chat remoto.', 'err')
+          setAttachStatus('No se pudo enviar la referencia al chat remoto.', 'err')
           addUploadLog('Fallo al enviar al chat', 'err')
         }
       } catch (err) {
-        setUploadStatus(`Error en subida: ${errorText(err)}`, 'err')
-        addUploadLog(`${file.name} error de subida: ${errorText(err)}`, 'err')
+        setAttachStatus(`Error en la subida: ${errorText(err)}`, 'err')
+        addUploadLog(`${file.name} error: ${errorText(err)}`, 'err')
       }
     }
 
@@ -1619,8 +1742,9 @@
         if (!isSocketOpen()) return
         if (appState.fsPushSeen) return
         if (!hasFsCapability('list')) return
+        if (!refs.detailsFiles.open) return
         if (!appState.fsPollingAnnounced) {
-          setFsStatus('Auto-refresh activo por polling (sin push fs:event detectado).', 'warn')
+          setFsStatus('Auto-refresco activo (modo respaldo).', 'warn')
           appState.fsPollingAnnounced = true
         }
         refreshFsTree({ silent: true, source: 'poll' }).catch(() => {})
@@ -1632,15 +1756,17 @@
       appState.sessionCapabilities = null
       appState.uploadSupport = 'unknown'
       renderSessionContext()
-      clearFsUi('Explorador remoto esperando conexión.')
-      setUploadStatus('Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.')
+      clearFsUi('Conecta primero para ver carpetas.')
+      setAttachStatus('Listo. Cuando hables o adjuntes algo, llegará al equipo central.')
       stopFsPolling()
+      refs.sessionChip.textContent = ''
+      setConnectedFlag(false)
     }
 
     function sendHandshake() {
       const context = buildRequestedContext()
       const sent = sendMessage({ type: 'handshake', ...context })
-      if (sent) setHandshakeStatus('warn', 'Handshake enviado. Esperando confirmación de sesión.', 'pending')
+      if (sent) setHandshakeStatus('warn', 'Identidad enviada. Esperando confirmación…', 'enviando')
     }
 
     function scheduleReconnect() {
@@ -1654,9 +1780,9 @@
 
     function connectHandlers(socketUrl) {
       appState.socket.addEventListener('open', () => {
-        refs.btnConnect.textContent = 'Desconectar'
+        refs.btnConnect.textContent = 'Salir'
         setConnectionStatus('online', `Conectado a ${socketUrl}`)
-        setHandshakeStatus('warn', 'Canal abierto. Enviando handshake.', 'pending')
+        setHandshakeStatus('warn', 'Canal abierto. Enviando identidad…', 'pendiente')
         fitAddon.fit()
         sendHandshake()
         sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
@@ -1667,32 +1793,27 @@
         try { msg = JSON.parse(String(event.data || '')) } catch {}
         if (!msg || typeof msg !== 'object') return
 
-        if (msg.type === 'output') {
-          term.write(String(msg.data || ''))
-          return
-        }
-
+        if (msg.type === 'output') { term.write(String(msg.data || '')); return }
         if (msg.type === 'transcript') {
           term.write(`\r\n[voz] ${String(msg.text || '')}\r\n`)
           setConnectionStatus('online', 'Audio transcrito y enviado')
           return
         }
-
         if (msg.type === 'fs:result') {
-          if (!resolveFsResponse(msg)) setFsStatus('Respuesta FS sin requestId reconocido.', 'warn')
+          if (!resolveFsResponse(msg)) setFsStatus('Respuesta de archivos sin id reconocible.', 'warn')
           return
         }
-
         if (msg.type === 'fs:event') {
           if (!appState.fsPushSeen) {
             appState.fsPushSeen = true
             stopFsPolling()
-            setFsStatus('Push fs:event detectado. Polling de respaldo desactivado.', 'ok')
+            setFsStatus('Cambios remotos detectados al vuelo.', 'ok')
           }
-          if (hasFsCapability('list')) refreshFsTree({ silent: true, source: 'push' }).catch(() => {})
+          if (hasFsCapability('list') && refs.detailsFiles.open) {
+            refreshFsTree({ silent: true, source: 'push' }).catch(() => {})
+          }
           return
         }
-
         if (msg.type !== 'status') return
 
         const state = String(msg.state || '')
@@ -1701,18 +1822,20 @@
           appState.sessionCapabilities = msg.capabilities || {}
           renderSessionContext()
           updateFsControlState()
-          setHandshakeStatus('ok', 'Handshake completado y contexto aplicado.', 'ok')
+          setHandshakeStatus('ok', 'Identidad aceptada. Sesión lista.', 'ok')
 
           const roots = Array.isArray(msg?.context?.allowedRoots) ? msg.context.allowedRoots : []
           renderRootSelector(roots.length ? roots : [msg.cwd || ''])
-          setConnectionStatus('online', `Sesión ${msg.sessionId || ''} · ${msg.cwd || ''}`)
+          setConnectedFlag(true)
+          setSessionChip()
+          setConnectionStatus('online', `Conectado · ${msg.cwd || ''}`)
 
           if (hasFsCapability('list')) {
             refreshFsTree({ silent: true, source: 'connected' }).catch((err) => setFsStatus(errorText(err), 'err'))
-          } else if (canOpenFile() || hasFsCapability('write')) {
-            setFsStatus('Servidor sin fs.list. Se mantiene modo parcial de archivos.', 'warn')
+          } else if (canOpenFile() || canWriteFile()) {
+            setFsStatus('Sin listado de carpetas. Acceso parcial a archivos.', 'warn')
           } else {
-            setFsStatus('Explorador remoto bloqueado por permisos/capacidades.', 'warn')
+            setFsStatus('Tu rol no permite navegar por archivos.', 'warn')
           }
 
           startFsPolling()
@@ -1720,28 +1843,25 @@
         }
 
         if (state === 'transcribing') {
-          setConnectionStatus('connecting', 'Transcribiendo audio...')
+          setConnectionStatus('connecting', 'Transcribiendo audio…')
           return
         }
-
         if (state === 'pty-exit') {
           setConnectionStatus('connecting', 'PTY remoto finalizado')
           return
         }
-
         if (state === 'error') {
           const code = String(msg.code || '')
           const text = String(msg.message || 'Error remoto')
           const full = code ? `${code}: ${text}` : text
           setConnectionStatus('error', full)
-
           if (code === 'UNSUPPORTED_MESSAGE') {
             if (text.includes('handshake')) {
-              setHandshakeStatus('warn', 'Servidor legacy ignoró handshake; se mantiene conexión básica.', 'legacy')
+              setHandshakeStatus('warn', 'Servidor antiguo: continúa en modo compatible.', 'compat')
             }
             if (text.includes('fs:upload')) {
               appState.uploadSupport = 'unsupported'
-              setUploadStatus('Servidor sin soporte de adjuntos remotos.', 'warn')
+              setAttachStatus('Servidor sin soporte de adjuntos remotos.', 'warn')
               rejectPendingFsByType('fs:upload', 'Servidor no soporta fs:upload')
             }
           }
@@ -1752,32 +1872,27 @@
         clearPendingFsRequests('Socket cerrado')
         stopMic(true)
         clearSessionState()
-        refs.btnConnect.textContent = 'Conectar'
+        refs.btnConnect.textContent = 'Entrar'
         setConnectionStatus('offline', 'Desconectado')
-        setHandshakeStatus('warn', 'Canal cerrado. Reintento según política de auto reconexión.', 'idle')
+        setHandshakeStatus('warn', 'Canal cerrado. Reintentando según la política seleccionada.', 'en espera')
         appState.socket = null
         scheduleReconnect()
       })
 
       appState.socket.addEventListener('error', () => {
-        setConnectionStatus('error', 'Error de conexión WebSocket')
+        setConnectionStatus('error', 'Error de conexión')
       })
     }
 
     async function connect() {
       const rawUrl = refs.wsUrlInput.value.trim()
       if (!rawUrl) {
-        setConnectionStatus('error', 'Define un endpoint WebSocket válido')
+        setConnectionStatus('error', 'Falta dirección del servidor.')
         return
       }
-
       let url = rawUrl
-      try {
-        url = buildConnectUrl(rawUrl)
-      } catch (err) {
-        setConnectionStatus('error', `URL inválida: ${errorText(err)}`)
-        return
-      }
+      try { url = buildConnectUrl(rawUrl) }
+      catch (err) { setConnectionStatus('error', `URL no válida: ${errorText(err)}`); return }
 
       appState.manualClose = false
       if (appState.socket) {
@@ -1786,9 +1901,9 @@
       }
       clearSessionState()
       clearPendingFsRequests('Nueva conexión')
-      refs.btnConnect.textContent = 'Conectando...'
-      setConnectionStatus('connecting', 'Conectando...')
-      setHandshakeStatus('warn', 'Preparando handshake.', 'pending')
+      refs.btnConnect.textContent = 'Conectando…'
+      setConnectionStatus('connecting', 'Conectando…')
+      setHandshakeStatus('warn', 'Preparando identidad…', 'pendiente')
 
       try {
         appState.socket = new WebSocket(url)
@@ -1800,30 +1915,23 @@
 
     function disconnect() {
       appState.manualClose = true
-      if (appState.reconnectTimer) {
-        clearTimeout(appState.reconnectTimer)
-        appState.reconnectTimer = null
-      }
+      if (appState.reconnectTimer) { clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null }
       stopFsPolling()
       clearPendingFsRequests('Desconexión manual')
-      if (appState.socket) {
-        try { appState.socket.close() } catch {}
-      }
+      if (appState.socket) { try { appState.socket.close() } catch {} }
       appState.socket = null
       stopMic(true)
       clearSessionState()
-      refs.btnConnect.textContent = 'Conectar'
+      refs.btnConnect.textContent = 'Entrar'
       setConnectionStatus('offline', 'Desconectado')
-      setHandshakeStatus('warn', 'Handshake inactivo (desconectado).', 'idle')
+      setHandshakeStatus('warn', 'Identidad inactiva (desconectado).', 'en espera')
     }
 
     async function startMic() {
       if (appState.mediaRecorder) return
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       appState.mediaStream = stream
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
       const recorder = new MediaRecorder(stream, { mimeType })
       recorder.ondataavailable = async (ev) => {
         if (!ev.data || ev.data.size === 0) return
@@ -1837,18 +1945,14 @@
       recorder.start(1500)
       appState.mediaRecorder = recorder
       refs.btnMic.textContent = 'Parar micrófono'
-      setConnectionStatus('connecting', 'Grabando y enviando audio...')
+      setConnectionStatus('connecting', 'Grabando audio…')
     }
 
     function stopMic(silent = false) {
-      if (appState.mediaRecorder) {
-        try { appState.mediaRecorder.stop() } catch {}
-      }
+      if (appState.mediaRecorder) { try { appState.mediaRecorder.stop() } catch {} }
       appState.mediaRecorder = null
       if (appState.mediaStream) {
-        for (const track of appState.mediaStream.getTracks()) {
-          try { track.stop() } catch {}
-        }
+        for (const track of appState.mediaStream.getTracks()) { try { track.stop() } catch {} }
       }
       appState.mediaStream = null
       refs.btnMic.textContent = 'Micrófono'
@@ -1858,10 +1962,7 @@
       }
     }
 
-    refs.tabs.forEach((tab) => {
-      tab.addEventListener('click', () => activateTab(tab.dataset.tab, true))
-    })
-
+    /* ── EVENT WIRING ── */
     refs.connectForm.addEventListener('submit', (event) => {
       event.preventDefault()
       if (isSocketOpen()) disconnect()
@@ -1870,45 +1971,45 @@
 
     refs.btnAutoReconnect.addEventListener('click', () => {
       appState.autoreconnect = !appState.autoreconnect
-      refs.btnAutoReconnect.textContent = `Auto reconexión: ${appState.autoreconnect ? 'ON' : 'OFF'}`
+      refs.btnAutoReconnect.textContent = `Reconexión automática: ${appState.autoreconnect ? 'ON' : 'OFF'}`
       refs.btnAutoReconnect.setAttribute('aria-pressed', appState.autoreconnect ? 'true' : 'false')
       if (!appState.autoreconnect && appState.reconnectTimer) {
-        clearTimeout(appState.reconnectTimer)
-        appState.reconnectTimer = null
+        clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null
       }
     })
 
     refs.btnFsRefresh.addEventListener('click', () => {
       refreshFsTree({ source: 'manual' }).catch((err) => setFsStatus(errorText(err), 'err'))
     })
-
     refs.btnFsOpenRoot.addEventListener('click', () => {
       refreshFsTree({ source: 'open-root' }).catch((err) => setFsStatus(errorText(err), 'err'))
     })
-
     refs.fsRootSelect.addEventListener('change', () => {
       refreshFsTree({ source: 'root-change' }).catch((err) => setFsStatus(errorText(err), 'err'))
     })
 
-    refs.fsEditor.addEventListener('input', () => {
-      if (!appState.openFilePath || appState.openFilePreviewType !== 'text') return
-      appState.openFileDirty = true
-      updateFsControlState()
+    refs.viewerTextarea.addEventListener('input', () => {
+      if (appState.viewerPreviewType !== 'text') return
+      appState.viewerDirty = true
+      refs.btnViewerSave.disabled = false
+      setViewerStatus('Cambios sin guardar.', 'warn')
     })
+    refs.btnViewerSave.addEventListener('click', () => { saveRemoteFile().catch((err) => setViewerStatus(errorText(err), 'err')) })
+    refs.btnViewerClose.addEventListener('click', closeViewer)
+    refs.btnViewerCloseFoot.addEventListener('click', closeViewer)
+    refs.viewerOverlay.addEventListener('click', (ev) => { if (ev.target === refs.viewerOverlay) closeViewer() })
 
-    refs.btnFsSave.addEventListener('click', () => {
-      saveRemoteFile().catch((err) => setFsStatus(errorText(err), 'err'))
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && appState.viewerOpen) closeViewer()
     })
 
     refs.btnAttachFile.addEventListener('click', () => refs.attachFileInput.click())
     refs.btnAttachPhoto.addEventListener('click', () => refs.attachPhotoInput.click())
-
     refs.attachFileInput.addEventListener('change', async () => {
       const file = refs.attachFileInput.files && refs.attachFileInput.files[0]
       refs.attachFileInput.value = ''
       await uploadAttachment(file, 'archivo')
     })
-
     refs.attachPhotoInput.addEventListener('change', async () => {
       const file = refs.attachPhotoInput.files && refs.attachPhotoInput.files[0]
       refs.attachPhotoInput.value = ''
@@ -1916,56 +2017,55 @@
     })
 
     refs.btnMic.addEventListener('click', async () => {
-      if (appState.mediaRecorder) {
-        stopMic()
-        return
-      }
-      try {
-        await startMic()
-      } catch (err) {
-        setConnectionStatus('error', errorText(err))
-        stopMic(true)
-      }
+      if (appState.mediaRecorder) { stopMic(); return }
+      try { await startMic() } catch (err) { setConnectionStatus('error', errorText(err)); stopMic(true) }
     })
 
     refs.btnSendHandshake.addEventListener('click', () => {
-      if (!isSocketOpen()) {
-        setHandshakeStatus('warn', 'No hay sesión activa para reenviar handshake.', 'idle')
-        return
-      }
+      if (!isSocketOpen()) { setHandshakeStatus('warn', 'No hay sesión activa.', 'en espera'); return }
       sendHandshake()
     })
-
+    refs.btnReconnect.addEventListener('click', () => {
+      if (isSocketOpen()) disconnect()
+      window.setTimeout(() => connect().catch(() => {}), 200)
+    })
     refs.btnClearTerminal.addEventListener('click', () => term.clear())
-
     refs.btnDisconnect.addEventListener('click', () => disconnect())
+    refs.btnTopbarDisconnect.addEventListener('click', () => disconnect())
+
+    /* Detalles: cuando se abre Archivos, refrescamos */
+    refs.detailsFiles.addEventListener('toggle', () => {
+      if (refs.detailsFiles.open && isSocketOpen() && hasFsCapability('list')) {
+        refreshFsTree({ silent: true, source: 'open-section' }).catch(() => {})
+      }
+    })
 
     term.onData((data) => sendMessage({ type: 'input', data }))
 
     window.addEventListener('resize', () => {
-      if (appState.activeTab !== 'terminal') return
-      fitAddon.fit()
-      sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
+      try {
+        fitAddon.fit()
+        sendMessage({ type: 'resize', cols: term.cols, rows: term.rows })
+      } catch {}
     })
 
     window.addEventListener('beforeunload', () => {
       stopFsPolling()
       stopMic(true)
       clearPendingFsRequests('Página cerrada')
-      if (appState.socket) {
-        try { appState.socket.close() } catch {}
-      }
+      if (appState.socket) { try { appState.socket.close() } catch {} }
     })
 
+    /* Bootstrap */
     refs.wsUrlInput.value = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
-    clearFsUi('Explorador remoto esperando conexión.')
-    setUploadStatus('Pulsa “Enviar foto” o “Enviar archivo”. Se sube y se manda al chat automáticamente.')
-    setConnectionStatus('offline', 'Desconectado')
-    setHandshakeStatus('warn', 'Handshake listo. Se enviará al conectar.', 'idle')
+    clearFsUi('Conecta primero para ver carpetas.')
+    setAttachStatus('Listo. Cuando hables o adjuntes algo, llegará al equipo central.')
+    setConnectionStatus('offline', 'Sin conectar')
+    setHandshakeStatus('warn', 'Listo para conectar.', 'en espera')
     renderSessionContext()
-    activateTab('terminal')
-    term.writeln('POWER-AGENT LAN Remote listo. Completa username y conecta.')
+    setConnectedFlag(false)
+    term.writeln('POWER-AGENT remoto: escribe tu usuario y pulsa Entrar para empezar.')
   </script>
 </body>
 </html>
