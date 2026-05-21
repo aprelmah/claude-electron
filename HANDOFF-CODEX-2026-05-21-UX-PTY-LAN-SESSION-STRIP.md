@@ -26,6 +26,11 @@ Cerrar 3 bugs UX/PTY en app desktop principal (`index.html` + `renderer.js` + `s
   - nuevas funciones `setRemoteSessionsUserVisible`, `renderRemoteSessionsToggle`, `isRemoteSessionsPanelVisible`;
   - `renderRemoteSessions` ya no decide por `running` solamente, usa estado usuario + estado servidor;
   - cuando está oculto, `remote-sessions-panel.hidden { display:none }` mantiene cero espacio reservado.
+- Ajuste UX posterior (misma fecha):
+  - se simplificó el botón del toggle para evitar confusión visual:
+    - antes: `LAN · ON/OFF`
+    - ahora: `👁 LAN` fijo
+  - el estado sigue indicado por estilo activo + `tooltip` y `aria-label` dinámicos.
 
 ### 3) Renombrado inline de sesión en tira superior
 - UX nueva:
@@ -50,6 +55,9 @@ Cerrar 3 bugs UX/PTY en app desktop principal (`index.html` + `renderer.js` + `s
 - `npm test` ✅ (0 fallos)
 - `npm run deploy` ✅
   - salida final: `POWER-AGENT instalado y abierto desde: /Applications/POWER-AGENT.app`
+
+## Commit adicional posterior
+- `f37f5ef` · `fix(ui): simplify LAN panel toggle label to eye icon plus LAN`
 
 ## Cómo retomar
 1. Abrir app y verificar visualmente:
