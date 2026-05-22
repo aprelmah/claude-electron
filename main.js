@@ -25,6 +25,13 @@ const {
 const { createTranscriber } = require('./main/whisper-transcribe')
 const { computeProjectGraph, normalizeGraphRootPath } = require('./main/graph-builder')
 const {
+  stripAnsi,
+  flattenTerminal,
+  extractAgentBlocks,
+  blocksEqual,
+  createProposalFiles
+} = require('./main/agent-pty-proposal')
+const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
   normalizeMcpServerList,
@@ -2481,150 +2488,15 @@ function broadcastAutomationChat(channel, payload) {
 const agentPtySessions = new Map()         // wcId → AgentPtySession
 const agentPtyWindowByAutomation = new Map() // automationId → BrowserWindow
 
-const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B[@-Z\\-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
 const AGENT_BUFFER_MAX = 200_000
 const AGENT_BOOT_DELAY_MS = 3500
 
-function stripAnsi(s) {
-  if (!s) return ''
-  return s.replace(ANSI_RE, '')
-}
-
-// Quita line-wrapping del terminal: claude code repinta líneas con \r y a veces
-// inserta saltos suaves. También quita caracteres de "box drawing" del TUI para no
-// confundir los matches.
-function flattenTerminal(s) {
-  if (!s) return ''
-  return s
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    // Box drawing y separadores típicos del TUI
-    .replace(/[─-╿▀-▟■-◿]/g, ' ')
-}
-
-function extractAgentBlocks(buffer) {
-  const clean = flattenTerminal(stripAnsi(buffer))
-
-  // Variante 1: tags XML estilo Anthropic, tolerante a espacios internos.
-  const xmlGrab = (tag) => {
-    const re = new RegExp(`<\\s*${tag}\\s*>([\\s\\S]*?)<\\s*/\\s*${tag}\\s*>`, 'i')
-    const m = clean.match(re)
-    return m ? m[1].trim() : null
-  }
-
-  let script = xmlGrab('SCRIPT')
-  let plist = xmlGrab('PLIST')
-  let description = xmlGrab('DESCRIPCION') || xmlGrab('DESCRIPTION')
-
-  // Variante 2 (fallback): code fences markdown con lenguaje pista.
-  // ```bash / ```sh / ```shell → SCRIPT
-  // ```xml / ```plist → PLIST
-  if (!script || !plist) {
-    const fenceRe = /```([a-zA-Z0-9_+-]*)\s*\n([\s\S]*?)```/g
-    let m
-    while ((m = fenceRe.exec(clean)) !== null) {
-      const lang = (m[1] || '').toLowerCase()
-      const body = m[2] || ''
-      if (!script && /^(bash|sh|shell|zsh)$/i.test(lang) && body.includes('#!/')) {
-        script = body.trim()
-      } else if (!plist && /^(xml|plist)$/i.test(lang) && body.includes('<plist')) {
-        plist = body.trim()
-      }
-    }
-  }
-
-  // Validación: descarta solo lo claramente placeholder.
-  // SCRIPT real: tiene shebang + algo de contenido.
-  // PLIST real: tiene cabecera xml + cierre /plist.
-  const isRealScript = (text) => {
-    if (!text || text.length < 40) return false
-    if (!text.includes('#!')) return false
-    return true
-  }
-  const isRealPlist = (text) => {
-    if (!text || text.length < 80) return false
-    if (!/<\?xml|<plist/i.test(text)) return false
-    if (!/<\/plist>/i.test(text)) return false
-    return true
-  }
-  const isRealDescription = (text) => {
-    if (!text || text.length < 10) return false
-    return true
-  }
-
-  if (!isRealScript(script)) script = null
-  if (!isRealPlist(plist)) plist = null
-  if (!isRealDescription(description)) description = null
-
-  // El botón "Aplicar al borrador" solo debe aparecer cuando tenemos una propuesta
-  // sustancial — al menos SCRIPT y PLIST juntos. Solo descripción no dispara.
-  // Esto evita que un placeholder corto de descripción que pase por encima del filtro
-  // (ej. "descripción refinada y precisa" del propio bootstrap si reaparece en pantalla)
-  // accione el botón.
-  if (!script || !plist) return null
-  return { script, plist, description }
-}
-
-function blocksEqual(a, b) {
-  if (!a && !b) return true
-  if (!a || !b) return false
-  return a.script === b.script && a.plist === b.plist && a.description === b.description
-}
-
-// ── Propuesta vía filesystem (source of truth) ──
-// Claude Code v2 oculta los bloques largos en su TUI (los procesa como tool_use
-// internos) → el stream PTY nunca contiene el script/plist literales. Solución:
-// pedirle que escriba los archivos a disco con su Write tool. POWER-AGENT pollea
-// el directorio y, cuando aparece el "READY", lee y emite blocks-detected.
-function proposalPaths(automationId) {
-  const dir = path.join(AGENT_PROPOSAL_BASE, automationId)
-  return {
-    dir,
-    script: path.join(dir, 'script.sh'),
-    plist: path.join(dir, 'plist.plist'),
-    description: path.join(dir, 'description.txt'),
-    ready: path.join(dir, 'READY')
-  }
-}
-
-function ensureProposalDir(automationId) {
-  const p = proposalPaths(automationId)
-  try { fs.mkdirSync(p.dir, { recursive: true }) } catch {}
-  // Limpia residuos de iteraciones anteriores para que la próxima propuesta empiece limpia.
-  for (const f of [p.script, p.plist, p.description, p.ready]) {
-    try { fs.unlinkSync(f) } catch {}
-  }
-  return p
-}
-
-function clearProposalFromDisk(automationId) {
-  const p = proposalPaths(automationId)
-  for (const f of [p.script, p.plist, p.description, p.ready]) {
-    try { fs.unlinkSync(f) } catch {}
-  }
-}
-
-function readProposalFromDisk(automationId) {
-  const p = proposalPaths(automationId)
-  try {
-    if (!fs.existsSync(p.ready)) return null
-    if (!fs.existsSync(p.script) || !fs.existsSync(p.plist)) return null
-    const script = fs.readFileSync(p.script, 'utf8')
-    const plist = fs.readFileSync(p.plist, 'utf8')
-    let description = ''
-    try { description = fs.readFileSync(p.description, 'utf8') } catch {}
-    // Validación: shebang en script, cierre </plist> en plist.
-    if (!script || !script.includes('#!')) return null
-    if (!plist || !/<plist[\s>]/i.test(plist) || !/<\/plist>/i.test(plist)) return null
-    return {
-      script: script.trim(),
-      plist: plist.trim(),
-      description: description.trim() || null
-    }
-  } catch {
-    return null
-  }
-}
+const {
+  proposalPaths,
+  ensureProposalDir,
+  clearProposalFromDisk,
+  readProposalFromDisk
+} = createProposalFiles(AGENT_PROPOSAL_BASE)
 
 function buildAgentBootstrapPrompt(automation) {
   const hasDraft = !!(automation.generatedScript || automation.generatedPlist)
