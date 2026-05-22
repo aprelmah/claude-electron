@@ -44,6 +44,7 @@ const {
 const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
+const { createWindowFactory } = require('./main/window-factory')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -162,7 +163,6 @@ const GRAPH_REFRESH_MIN_MS_BUSY = 1800
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
 const telegramRelayByChat = new Map() // chatId(string) -> wcId(number)
-const viewerWindows = new Set()
 let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
@@ -2183,156 +2183,25 @@ function createWindow() {
   return win
 }
 
-function openViewerWindow(filePath, hint) {
-  const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-  let bounds = { width: 700, height: 600, x: undefined, y: undefined }
-  if (primary && !primary.isDestroyed()) {
-    const b = primary.getBounds()
-    const offset = viewerWindows.size * 24
-    if (hint && Number.isFinite(hint.x) && Number.isFinite(hint.y) && hint.width > 0 && hint.height > 0) {
-      const inset = 6
-      bounds = {
-        width: Math.max(380, Math.round(hint.width) - inset * 2),
-        height: Math.max(280, Math.round(hint.height) - inset * 2),
-        x: b.x + Math.round(hint.x) + inset + offset,
-        y: b.y + Math.round(hint.y) + inset + offset
-      }
-    } else {
-      const inset = 50
-      bounds = {
-        width: Math.max(420, b.width - inset * 2),
-        height: Math.max(320, b.height - inset * 2),
-        x: b.x + inset + offset,
-        y: b.y + inset + offset
-      }
-    }
-  }
-  const win = new BrowserWindow({
-    width: bounds.width,
-    height: bounds.height,
-    x: bounds.x,
-    y: bounds.y,
-    frame: false,
-    resizable: true,
-    minimizable: true,
-    alwaysOnTop: false,
-    title: path.basename(filePath),
-    webPreferences: {
-      preload: path.join(__dirname, 'viewer-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  viewerWindows.add(win)
-  win.on('closed', () => viewerWindows.delete(win))
-  win.loadFile('viewer.html')
-  win.webContents.once('did-finish-load', () => {
-    if (!win.isDestroyed()) win.webContents.send('viewer-init', { path: filePath })
-  })
-  return win
-}
-
 // ── Tasks Manager (singleton) ──
 let tasksScheduler = null
 let automationManager = null
 let automationChat = null
-let tasksManagerWin = null
-let bitacoraWin = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
 const chatWcToAutomation = new Map() // wcId → automationId
 
-async function openTasksManager() {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) {
-    if (tasksManagerWin.isMinimized()) tasksManagerWin.restore()
-    tasksManagerWin.show()
-    tasksManagerWin.focus()
-    return tasksManagerWin
-  }
-
-  // Hereda el tema actual de la ventana principal (localStorage 'claude-electron-theme').
-  let initialTheme = ''
-  try {
-    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-    if (primary && !primary.isDestroyed()) {
-      const t = await primary.webContents.executeJavaScript(
-        `localStorage.getItem('claude-electron-theme') || ''`, true
-      )
-      if (t === 'light' || t === 'dark') initialTheme = t
-    }
-  } catch {}
-  if (initialTheme !== 'light' && initialTheme !== 'dark') {
-    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-
-  tasksManagerWin = new BrowserWindow({
-    width: 1000,
-    height: 720,
-    minWidth: 760,
-    minHeight: 520,
-    title: 'POWER-AGENT — Tareas programadas',
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: initialTheme === 'light' ? '#fafafd' : '#111',
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'tasks-manager-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  tasksManagerWin.loadFile('tasks-manager.html', { query: { theme: initialTheme } })
-  tasksManagerWin.once('ready-to-show', () => {
-    if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.show()
-  })
-  tasksManagerWin.on('closed', () => { tasksManagerWin = null })
-  return tasksManagerWin
-}
-
-async function openBitacoraWindow() {
-  if (bitacoraWin && !bitacoraWin.isDestroyed()) {
-    if (bitacoraWin.isMinimized()) bitacoraWin.restore()
-    bitacoraWin.show()
-    bitacoraWin.focus()
-    return bitacoraWin
-  }
-
-  let initialTheme = ''
-  try {
-    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-    if (primary && !primary.isDestroyed()) {
-      const t = await primary.webContents.executeJavaScript(
-        `localStorage.getItem('claude-electron-theme') || ''`, true
-      )
-      if (t === 'light' || t === 'dark') initialTheme = t
-    }
-  } catch {}
-  if (initialTheme !== 'light' && initialTheme !== 'dark') {
-    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-
-  bitacoraWin = new BrowserWindow({
-    width: 1040,
-    height: 720,
-    minWidth: 780,
-    minHeight: 500,
-    title: 'POWER-AGENT — Bitácora',
-    show: false,
-    backgroundColor: initialTheme === 'light' ? '#f7f7fb' : '#13131a',
-    webPreferences: {
-      preload: path.join(__dirname, 'bitacora-window-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  bitacoraWin.loadFile('bitacora-window.html', { query: { theme: initialTheme } })
-  bitacoraWin.once('ready-to-show', () => {
-    if (bitacoraWin && !bitacoraWin.isDestroyed()) bitacoraWin.show()
-  })
-  bitacoraWin.on('closed', () => { bitacoraWin = null })
-  return bitacoraWin
-}
+const windowFactory = createWindowFactory({
+  BrowserWindow,
+  nativeTheme,
+  app,
+  getPrimaryWin: () => primaryWcId != null ? sessions.get(primaryWcId)?.win : null,
+  getRootDir: () => __dirname
+})
+const openViewerWindow = windowFactory.openViewerWindow
+const openTasksManager = windowFactory.openTasksManager
+const openBitacoraWindow = windowFactory.openBitacoraWindow
 
 function broadcastToAllWindows(channel, payload) {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -3276,8 +3145,9 @@ app.whenReady().then(async () => {
       try {
         const message = payload && (payload.message || payload)
         if (!message || message.fromMe === true) return
-        const mainFocused = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w !== whatsappWindow && w.isFocused())
-        const waFocused = !!(whatsappWindow && !whatsappWindow.isDestroyed() && whatsappWindow.isFocused())
+        const mainFocused = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w !== windowFactory.getWhatsappWindow() && w.isFocused())
+        const _waWin = windowFactory.getWhatsappWindow()
+        const waFocused = !!(_waWin && !_waWin.isDestroyed() && _waWin.isFocused())
         if (waFocused || mainFocused) return
         const jid = (payload && payload.jid) || message.from || ''
         let chat = payload && payload.chat
@@ -4519,7 +4389,7 @@ ipcMain.handle('bitacora:export-csv', async (event, payload = {}) => {
     const csv = semanticLogger.toCsv(entries)
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
     const suggested = payload?.name ? String(payload.name) : `power-agent-log-${stamp}.csv`
-    const parent = winFromEvent(event) || bitacoraWin || undefined
+    const parent = winFromEvent(event) || windowFactory.getBitacoraWin() || undefined
     const save = await dialog.showSaveDialog(parent, {
       title: 'Exportar Bitácora CSV',
       defaultPath: path.join(os.homedir(), suggested),
@@ -4604,106 +4474,11 @@ ipcMain.handle('graph-window:open', (event, payload = {}) => {
 
 ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
 
-// Ventana WhatsApp independiente. Si ya existe, la trae al frente.
-let whatsappWindow = null
-const WA_WIN_BOUNDS_FILE = path.join(app.getPath('userData'), 'whatsapp-window-bounds.json')
-
-function loadWhatsappBounds() {
-  try {
-    const raw = fs.readFileSync(WA_WIN_BOUNDS_FILE, 'utf-8')
-    const b = JSON.parse(raw)
-    if (b && Number.isFinite(b.width) && Number.isFinite(b.height)) return b
-  } catch {}
-  return null
-}
-
-function saveWhatsappBounds(win) {
-  if (!win || win.isDestroyed()) return
-  try {
-    const b = win.getBounds()
-    atomicWriteJsonSync(WA_WIN_BOUNDS_FILE, { x: b.x, y: b.y, width: b.width, height: b.height })
-  } catch {}
-}
-
-ipcMain.handle('whatsapp-window:open', () => {
-  if (whatsappWindow && !whatsappWindow.isDestroyed()) {
-    if (whatsappWindow.isMinimized()) whatsappWindow.restore()
-    whatsappWindow.show()
-    whatsappWindow.focus()
-    return { ok: true, reused: true }
-  }
-  const saved = loadWhatsappBounds()
-  const opts = {
-    width: (saved && saved.width) || 980,
-    height: (saved && saved.height) || 720,
-    minWidth: 640,
-    minHeight: 480,
-    resizable: true,
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 13 },
-    title: 'POWER-AGENT — WhatsApp',
-    backgroundColor: '#1a1a1f',
-    webPreferences: {
-      preload: path.join(__dirname, 'whatsapp-window-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  }
-  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-    opts.x = saved.x
-    opts.y = saved.y
-  }
-  whatsappWindow = new BrowserWindow(opts)
-  whatsappWindow.loadFile('whatsapp-window.html')
-  const flush = () => saveWhatsappBounds(whatsappWindow)
-  whatsappWindow.on('resize', flush)
-  whatsappWindow.on('move', flush)
-  whatsappWindow.on('close', flush)
-  whatsappWindow.on('closed', () => { whatsappWindow = null })
-  return { ok: true, reused: false }
-})
+ipcMain.handle('whatsapp-window:open', () => windowFactory.openWhatsappWindow())
 
 global.__openWhatsappWindow = () => {
-  try {
-    if (whatsappWindow && !whatsappWindow.isDestroyed()) {
-      if (whatsappWindow.isMinimized()) whatsappWindow.restore()
-      whatsappWindow.show()
-      whatsappWindow.focus()
-      return
-    }
-    const saved = loadWhatsappBounds()
-    const opts = {
-      width: (saved && saved.width) || 980,
-      height: (saved && saved.height) || 720,
-      minWidth: 640,
-      minHeight: 480,
-      resizable: true,
-      frame: false,
-      titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 12, y: 13 },
-      title: 'POWER-AGENT — WhatsApp',
-      backgroundColor: '#1a1a1f',
-      webPreferences: {
-        preload: path.join(__dirname, 'whatsapp-window-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    }
-    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-      opts.x = saved.x
-      opts.y = saved.y
-    }
-    whatsappWindow = new BrowserWindow(opts)
-    whatsappWindow.loadFile('whatsapp-window.html')
-    const flush = () => saveWhatsappBounds(whatsappWindow)
-    whatsappWindow.on('resize', flush)
-    whatsappWindow.on('move', flush)
-    whatsappWindow.on('close', flush)
-    whatsappWindow.on('closed', () => { whatsappWindow = null })
-  } catch (err) {
-    console.warn('[whatsapp] open from notification failed:', err?.message || err)
-  }
+  try { windowFactory.openWhatsappWindow() }
+  catch (err) { console.warn('[whatsapp] open from notification failed:', err?.message || err) }
 }
 
 ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
@@ -4833,7 +4608,7 @@ ipcMain.handle('tasks:list-cwds', async () => {
 ipcMain.handle('tasks:get-cron-presets', () => cronPresets)
 
 ipcMain.handle('tasks:pick-folder', async (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender) || tasksManagerWin
+  const win = BrowserWindow.fromWebContents(event.sender) || windowFactory.getTasksManagerWin()
   const result = await dialog.showOpenDialog(win, {
     properties: ['openDirectory']
   })
@@ -4857,12 +4632,14 @@ ipcMain.handle('tasks:get-default-model-effort', () => {
 })
 
 ipcMain.handle('tasks:window-close', () => {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.close()
+  const w = windowFactory.getTasksManagerWin()
+  if (w && !w.isDestroyed()) w.close()
   return { ok: true }
 })
 
 ipcMain.handle('tasks:window-minimize', () => {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.minimize()
+  const w = windowFactory.getTasksManagerWin()
+  if (w && !w.isDestroyed()) w.minimize()
   return { ok: true }
 })
 
