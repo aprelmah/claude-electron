@@ -24,6 +24,20 @@ const {
 } = require('./main/cli-resolver')
 const { createTranscriber } = require('./main/whisper-transcribe')
 const {
+  CONFIG_FILENAME,
+  DEFAULT_PROFILE_ID,
+  normalizeMcpServerList,
+  sanitizePersonaPrompt,
+  sanitizeProfileId,
+  normalizeProfileEntry,
+  normalizeProfiles,
+  resolveActiveProfileId,
+  makeProfileIdFromName,
+  createConfigNormalizers,
+  readConfigFromFile,
+  writeConfigToFile
+} = require('./main/config-store')
+const {
   DEFAULT_ROLE_ID: DEFAULT_ENTERPRISE_ROLE_ID,
   normalizeEnterpriseConfig,
   normalizeRemoteContext,
@@ -74,8 +88,6 @@ const CODEX_HISTORY_PATH = path.join(CODEX_HOME_DIR, 'history.jsonl')
 const CODEX_SESSION_INDEX_PATH = path.join(CODEX_HOME_DIR, 'session_index.jsonl')
 const CODEX_STATE_DB_PATH = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
-const CONFIG_FILENAME = 'claude-novak.config.json'
-const DEFAULT_PROFILE_ID = 'default'
 const LAN_PERMISSION_KEYS = Object.freeze([
   'pty.execute',
   'fs.read',
@@ -233,132 +245,11 @@ let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 const semanticLogger = createSemanticLogger()
 
 
-function normalizeAppConfig(raw) {
-  const cli = raw?.cli || {}
-  const telegram = raw?.telegram || {}
-  const lanServer = normalizeLanServerConfig(raw?.lanServer)
-  const profiles = normalizeProfiles(raw?.profiles)
-  const activeProfile = resolveActiveProfileId(profiles, raw?.activeProfile)
-  const enterprise = normalizeEnterpriseConfig(raw?.enterprise, {
-    profileIds: profiles.map((p) => p.id),
-    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
-  })
-
-  const normalized = {
-    cli: {
-      defaultCli: cli.defaultCli === 'codex' ? 'codex' : 'claude',
-      claudeBin: typeof cli.claudeBin === 'string' ? cli.claudeBin.trim() : '',
-      codexBin: typeof cli.codexBin === 'string' ? cli.codexBin.trim() : '',
-      whisperBin: typeof cli.whisperBin === 'string' ? cli.whisperBin.trim() : ''
-    },
-    telegram: {
-      enabled: Boolean(telegram.enabled),
-      botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
-      allowedUsers: [],
-      claudeModel: typeof telegram.claudeModel === 'string' ? telegram.claudeModel.trim() : '',
-      claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
-      codexModel: typeof telegram.codexModel === 'string' ? telegram.codexModel.trim() : '',
-      codexEffort: typeof telegram.codexEffort === 'string' ? telegram.codexEffort.trim() : ''
-    },
-    lanServer,
-    profiles,
-    activeProfile,
-    enterprise
-  }
-
-  if (Array.isArray(telegram.allowedUsers)) {
-    normalized.telegram.allowedUsers = telegram.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-  } else if (typeof telegram.allowedUsers === 'string') {
-    normalized.telegram.allowedUsers = telegram.allowedUsers.split(/[,\s]+/g).map((u) => u.trim()).filter(Boolean)
-  }
-  normalized.telegram.allowedUsers = Array.from(new Set(normalized.telegram.allowedUsers))
-
-  return normalized
-}
-
-function normalizeMcpServerList(raw) {
-  const values = Array.isArray(raw)
-    ? raw
-    : (typeof raw === 'string' ? raw.split(',') : [])
-  return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)))
-}
-
-function sanitizePersonaPrompt(raw, maxLen = 12000) {
-  if (typeof raw !== 'string') return ''
-  const clean = raw.replace(/\r\n/g, '\n').trim()
-  return clean.length > maxLen ? clean.slice(0, maxLen) : clean
-}
-
-function normalizeLanServerConfig(raw) {
-  const cfg = raw && typeof raw === 'object' ? raw : {}
-  return {
-    enabled: Boolean(cfg.enabled),
-    port: clampLanPort(cfg.port)
-  }
-}
-
-function sanitizeProfileId(rawId, fallback = '') {
-  const clean = String(rawId || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^[-_]+|[-_]+$/g, '')
-  if (clean) return clean
-  return String(fallback || '').trim() || DEFAULT_PROFILE_ID
-}
-
-function normalizeProfileEntry(raw, fallbackId = '') {
-  const id = sanitizeProfileId(raw?.id, fallbackId)
-  const name = String(raw?.name || '').trim() || 'Perfil'
-  const claudeMdPath = typeof raw?.claudeMdPath === 'string' ? raw.claudeMdPath.trim() : ''
-  const cwd = typeof raw?.cwd === 'string' ? raw.cwd.trim() : ''
-  const mcpServers = normalizeMcpServerList(raw?.mcpServers)
-  const personaPrompt = sanitizePersonaPrompt(raw?.personaPrompt)
-  return { id, name, claudeMdPath, mcpServers, cwd, personaPrompt }
-}
-
-function normalizeProfiles(rawProfiles) {
-  const list = Array.isArray(rawProfiles) ? rawProfiles : []
-  const seen = new Set()
-  const result = []
-  for (const item of list) {
-    const next = normalizeProfileEntry(item)
-    if (!next.id || seen.has(next.id)) continue
-    seen.add(next.id)
-    result.push(next)
-  }
-  if (!seen.has(DEFAULT_PROFILE_ID)) {
-    result.unshift({
-      id: DEFAULT_PROFILE_ID,
-      name: 'Personal',
-      claudeMdPath: '',
-      mcpServers: [],
-      cwd: '',
-      personaPrompt: ''
-    })
-  } else {
-    for (let i = 0; i < result.length; i += 1) {
-      if (result[i].id !== DEFAULT_PROFILE_ID) continue
-      result[i] = {
-        ...result[i],
-        id: DEFAULT_PROFILE_ID,
-        name: result[i].name || 'Personal',
-        mcpServers: normalizeMcpServerList(result[i].mcpServers),
-        personaPrompt: sanitizePersonaPrompt(result[i].personaPrompt)
-      }
-      break
-    }
-  }
-  return result
-}
-
-function resolveActiveProfileId(profiles, rawActiveProfile) {
-  const wanted = sanitizeProfileId(rawActiveProfile, '')
-  if (wanted && profiles.some((p) => p.id === wanted)) return wanted
-  if (profiles.some((p) => p.id === DEFAULT_PROFILE_ID)) return DEFAULT_PROFILE_ID
-  return profiles[0]?.id || DEFAULT_PROFILE_ID
-}
+const { normalizeAppConfig, normalizeLanServerConfig } = createConfigNormalizers({
+  clampLanPort,
+  normalizeEnterpriseConfig,
+  defaultEnterpriseRoleId: DEFAULT_ENTERPRISE_ROLE_ID
+})
 
 function getProfileById(profileId, config = appConfig) {
   const id = sanitizeProfileId(profileId, '')
@@ -379,33 +270,18 @@ function getActiveProfile(config = appConfig) {
   }
 }
 
-function makeProfileIdFromName(name, existingIds = new Set()) {
-  const base = sanitizeProfileId(name, 'profile')
-  if (!existingIds.has(base)) return base
-  let n = 2
-  while (existingIds.has(`${base}-${n}`)) n += 1
-  return `${base}-${n}`
-}
-
 function configFilePath() {
   return path.join(app.getPath('userData'), CONFIG_FILENAME)
 }
 
 function loadAppConfig() {
-  try {
-    const p = configFilePath()
-    if (!fs.existsSync(p)) return normalizeAppConfig(DEFAULT_CONFIG)
-    const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
-    return normalizeAppConfig(raw)
-  } catch {
-    return normalizeAppConfig(DEFAULT_CONFIG)
-  }
+  const raw = readConfigFromFile(configFilePath(), DEFAULT_CONFIG)
+  return normalizeAppConfig(raw)
 }
 
 function saveAppConfig(nextConfig) {
   const normalized = normalizeAppConfig(nextConfig)
-  const p = configFilePath()
-  atomicWriteJsonSync(p, normalized)
+  writeConfigToFile(configFilePath(), normalized)
   appConfig = normalized
   return normalized
 }
