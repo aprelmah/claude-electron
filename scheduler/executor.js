@@ -26,7 +26,7 @@ function createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig }) {
 
     const opts = {
       prompt: task.prompt,
-      cwd: task.cwd || undefined,
+      cwd: task.cwd || require('os').homedir(),
       model,
       effort,
       signal,
