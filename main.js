@@ -1078,9 +1078,9 @@ function inferWhatsappBridgeState(payload) {
   return 'disconnected'
 }
 
-function httpGetJson(url, timeoutMs = 2000) {
+function httpGetJson(url, timeoutMs = 2000, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+    const req = http.get(url, { timeout: timeoutMs, headers }, (res) => {
       const chunks = []
       res.on('data', (chunk) => chunks.push(chunk))
       res.on('end', () => {
@@ -1099,7 +1099,13 @@ function httpGetJson(url, timeoutMs = 2000) {
 
 async function collectWhatsappBridgeHealth() {
   try {
-    const { statusCode, json, raw } = await httpGetJson('http://127.0.0.1:3031/status', 2000)
+    const headers = {}
+    try {
+      const waAuth = require('./whatsapp/whatsapp-auth')
+      const token = waAuth.readToken(waAuth.defaultTokenPath())
+      if (token) headers[waAuth.HEADER_NAME] = token
+    } catch {}
+    const { statusCode, json, raw } = await httpGetJson('http://127.0.0.1:3031/status', 2000, headers)
     if (statusCode >= 400) {
       return {
         state: 'error',
@@ -3320,8 +3326,14 @@ app.whenReady().then(async () => {
 
     function pingBridge() {
       return new Promise((resolve, reject) => {
+        const headers = {}
+        try {
+          const waAuth = require('./whatsapp/whatsapp-auth')
+          const token = waAuth.readToken(waAuth.defaultTokenPath())
+          if (token) headers[waAuth.HEADER_NAME] = token
+        } catch {}
         const req = require('http').request({
-          host: '127.0.0.1', port: 3031, method: 'GET', path: '/status', timeout: 3000
+          host: '127.0.0.1', port: 3031, method: 'GET', path: '/status', timeout: 3000, headers
         }, (res) => {
           res.resume()
           if (res.statusCode >= 200 && res.statusCode < 300) resolve()
