@@ -51,7 +51,7 @@ const { registerProfilesEnterpriseIpc } = require('./main/profiles-enterprise-ip
 const { registerAutomationsIpc } = require('./main/automations-ipc')
 const { registerBitacoraIpc } = require('./main/bitacora-ipc')
 const { createHealthCollectors } = require('./main/health-collectors')
-const { createSessionListing } = require('./main/claude-session-listing')
+const { createSessionListing, projectDirFor } = require('./main/claude-session-listing')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -3103,7 +3103,7 @@ ipcMain.handle('automation-pty:check-proposal', (event) => {
 })
 
 ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blocks } = {}) => {
-  if (!automationManager) return automationsNotReady()
+  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado' }
   if (!automationId || !blocks) return { ok: false, error: 'payload requerido' }
   try {
     const patch = {}
