@@ -25,12 +25,13 @@ function createSinks({ telegramBridge, broadcastToAllWindows }) {
         const chatId = cfg.defaultChatId
           || (Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers[0] : null)
         if (!chatId) return
-        if (typeof bridge.sendMessage !== 'function') return
+        const send = bridge.sendMessageTo || bridge.sendMessage
+        if (typeof send !== 'function') return
         const head = `⏰ ${task.name} — ${run.status === 'ok' ? 'OK' : 'ERROR'}`
         const body = run.status === 'ok'
           ? ((run.output && run.output.slice(0, 3500)) || '(sin salida)')
           : (run.error || '(error desconocido)')
-        await bridge.sendMessage(chatId, `${head}\n\n${body}`)
+        await send.call(bridge, chatId, `${head}\n\n${body}`)
       } catch {}
     },
 
