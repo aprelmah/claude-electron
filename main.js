@@ -10,6 +10,54 @@ const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
 const {
+  createCliResolver,
+  resolveCommand,
+  commandExists,
+  USER_LOCAL_BIN,
+  PYTHON39_BIN,
+  HOMEBREW_BIN,
+  LATEST_NVM_NODE_BIN,
+  FALLBACK_CLAUDE_BIN,
+  FALLBACK_CODEX_BIN,
+  FALLBACK_WHISPER_BIN,
+  FFMPEG_BIN
+} = require('./main/cli-resolver')
+const { createTranscriber } = require('./main/whisper-transcribe')
+const { computeProjectGraph, normalizeGraphRootPath } = require('./main/graph-builder')
+const {
+  stripAnsi,
+  flattenTerminal,
+  extractAgentBlocks,
+  blocksEqual,
+  createProposalFiles
+} = require('./main/agent-pty-proposal')
+const {
+  extractTurnText,
+  statCacheKey,
+  safeStat,
+  clipText,
+  escapeSqlLiteral,
+  escapeForCompactedPrompt,
+  extractCodexResumeId,
+  extractClaudeResumeId
+} = require('./main/session-helpers')
+const { createCodexSessionReader } = require('./main/codex-session-reader')
+const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
+const {
+  CONFIG_FILENAME,
+  DEFAULT_PROFILE_ID,
+  normalizeMcpServerList,
+  sanitizePersonaPrompt,
+  sanitizeProfileId,
+  normalizeProfileEntry,
+  normalizeProfiles,
+  resolveActiveProfileId,
+  makeProfileIdFromName,
+  createConfigNormalizers,
+  readConfigFromFile,
+  writeConfigToFile
+} = require('./main/config-store')
+const {
   DEFAULT_ROLE_ID: DEFAULT_ENTERPRISE_ROLE_ID,
   normalizeEnterpriseConfig,
   normalizeRemoteContext,
@@ -49,9 +97,6 @@ const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi
 const oldUserData = path.join(app.getPath('appData'), 'CLAUDE-NOVAK')
 app.setPath('userData', oldUserData)
 
-const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
-const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
-const HOMEBREW_BIN = '/usr/local/bin'
 const TMP_DIR = '/tmp/claude-electron'
 const AGENT_PROPOSAL_BASE = '/tmp/poweragent-proposal'
 const AGENT_PROPOSAL_POLL_MS = 1500
@@ -63,14 +108,6 @@ const CODEX_HISTORY_PATH = path.join(CODEX_HOME_DIR, 'history.jsonl')
 const CODEX_SESSION_INDEX_PATH = path.join(CODEX_HOME_DIR, 'session_index.jsonl')
 const CODEX_STATE_DB_PATH = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
-const FFMPEG_BIN = resolveCommand([
-  process.env.FFMPEG_BIN,
-  path.join(PYTHON39_BIN, 'ffmpeg'),
-  path.join(HOMEBREW_BIN, 'ffmpeg'),
-  'ffmpeg'
-])
-const CONFIG_FILENAME = 'claude-novak.config.json'
-const DEFAULT_PROFILE_ID = 'default'
 const LAN_PERMISSION_KEYS = Object.freeze([
   'pty.execute',
   'fs.read',
@@ -132,8 +169,6 @@ let telegramBridge = null
 let whatsappClient = null
 let whatsappReachable = false
 let whatsappRetryTimer = null
-let agentProposalPollId = null
-let pendingAgentProposal = null
 let autoUpdater = null
 let lanWsServer = null
 const autoUpdateState = {
@@ -227,245 +262,12 @@ const DEFAULT_CONFIG = Object.freeze({
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 const semanticLogger = createSemanticLogger()
 
-function resolveCommand(candidates) {
-  for (const cmd of candidates) {
-    if (!cmd) continue
-    if (!cmd.includes('/')) return cmd
-    if (fs.existsSync(cmd)) return cmd
-  }
-  return candidates.find(Boolean) || ''
-}
 
-function resolveLatestNvmNodeBinDir() {
-  const root = path.join(os.homedir(), '.nvm', 'versions', 'node')
-  try {
-    const versions = fs.readdirSync(root, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^v\d+/.test(d.name))
-      .map((d) => d.name)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
-    if (!versions.length) return ''
-    const binDir = path.join(root, versions[versions.length - 1], 'bin')
-    return fs.existsSync(binDir) ? binDir : ''
-  } catch {
-    return ''
-  }
-}
-
-const LATEST_NVM_NODE_BIN = resolveLatestNvmNodeBinDir()
-const LATEST_NVM_CODEX_BIN = LATEST_NVM_NODE_BIN ? path.join(LATEST_NVM_NODE_BIN, 'codex') : ''
-
-const FALLBACK_CLAUDE_BIN = resolveCommand([
-  process.env.CLAUDE_BIN,
-  path.join(USER_LOCAL_BIN, 'claude'),
-  'claude'
-])
-
-const FALLBACK_CODEX_BIN = resolveCommand([
-  process.env.CODEX_BIN,
-  LATEST_NVM_CODEX_BIN,
-  path.join(USER_LOCAL_BIN, 'codex'),
-  path.join(os.homedir(), '.nvm/versions/node/v24.15.0/bin/codex'),
-  'codex'
-])
-
-const FALLBACK_WHISPER_BIN = resolveCommand([
-  process.env.WHISPER_BIN,
-  path.join(HOMEBREW_BIN, 'whisper-cli'),
-  'whisper-cli'
-])
-
-const WHISPER_HALLUCINATIONS = [
-  /iglesia de jesucristo/i,
-  /santos de los .*ltimos d.as/i,
-  /amara\.org/i,
-  /subt.tulos? (realizados|por la comunidad|creados)/i,
-  /subtitulado por/i,
-  /^\s*\[?(m.sica|aplausos|risas|silencio|ruido)\]?\s*$/i,
-  /gracias por ver/i,
-  /suscr.bete/i
-]
-
-function measureMeanVolume(filePath, env) {
-  return new Promise((resolve) => {
-    const ff = spawn(FFMPEG_BIN, ['-hide_banner', '-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'], { env })
-    let stderr = ''
-    ff.stderr.on('data', (d) => { stderr += d.toString() })
-    ff.on('error', () => resolve(null))
-    ff.on('close', () => {
-      const m = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/)
-      resolve(m ? parseFloat(m[1]) : null)
-    })
-  })
-}
-
-async function transcribeAudioFile(inputPath, env) {
-  const whisperBin = getConfiguredWhisperBin()
-  if (!commandExists(whisperBin, env)) throw new Error(`Whisper no disponible (${whisperBin}). Instala con: brew install whisper-cpp`)
-  if (!commandExists(FFMPEG_BIN, env)) throw new Error(`ffmpeg no disponible (${FFMPEG_BIN}).`)
-  if (!fs.existsSync(WHISPER_CPP_MODEL)) throw new Error(`Modelo no encontrado: ${WHISPER_CPP_MODEL}`)
-
-  const meanDb = await measureMeanVolume(inputPath, env)
-  if (meanDb !== null && meanDb < -50) {
-    throw new Error('Sin audio reconocible (silencio).')
-  }
-
-  const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8)
-  const wavPath = path.join(TMP_DIR, `whisper-${stamp}.wav`)
-  const txtBase = path.join(TMP_DIR, `whisper-${stamp}`)
-  const txtPath = `${txtBase}.txt`
-
-  return new Promise((resolve, reject) => {
-    const ff = spawn(FFMPEG_BIN, ['-y', '-loglevel', 'error', '-i', inputPath, '-ac', '1', '-ar', '16000', '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', wavPath], { env })
-    let ffErr = ''
-    ff.stderr.on('data', (d) => { ffErr += d.toString() })
-    ff.on('error', reject)
-    ff.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`ffmpeg exit ${code}: ${ffErr.slice(-300)}`))
-      const wp = spawn(whisperBin, ['-m', WHISPER_CPP_MODEL, '-l', 'es', '-nt', '-sns', '-nth', '0.3', '--prompt', 'Transcripción en castellano.', '-otxt', '-of', txtBase, '-f', wavPath], { env })
-      let wpErr = ''
-      wp.stderr.on('data', (d) => { wpErr += d.toString() })
-      wp.on('error', (err) => { try { fs.unlinkSync(wavPath) } catch {} ; reject(err) })
-      wp.on('close', (wcode) => {
-        try { fs.unlinkSync(wavPath) } catch {}
-        if (wcode !== 0) return reject(new Error(`whisper-cli exit ${wcode}: ${wpErr.slice(-300)}`))
-        try {
-          const text = fs.readFileSync(txtPath, 'utf-8').trim()
-          try { fs.unlinkSync(txtPath) } catch {}
-          if (!text) return reject(new Error('Sin voz reconocida.'))
-          if (WHISPER_HALLUCINATIONS.some((re) => re.test(text))) return reject(new Error('Sin voz reconocida.'))
-          resolve(text)
-        } catch (err) { reject(err) }
-      })
-    })
-  })
-}
-
-function normalizeAppConfig(raw) {
-  const cli = raw?.cli || {}
-  const telegram = raw?.telegram || {}
-  const lanServer = normalizeLanServerConfig(raw?.lanServer)
-  const profiles = normalizeProfiles(raw?.profiles)
-  const activeProfile = resolveActiveProfileId(profiles, raw?.activeProfile)
-  const enterprise = normalizeEnterpriseConfig(raw?.enterprise, {
-    profileIds: profiles.map((p) => p.id),
-    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
-  })
-
-  const normalized = {
-    cli: {
-      defaultCli: cli.defaultCli === 'codex' ? 'codex' : 'claude',
-      claudeBin: typeof cli.claudeBin === 'string' ? cli.claudeBin.trim() : '',
-      codexBin: typeof cli.codexBin === 'string' ? cli.codexBin.trim() : '',
-      whisperBin: typeof cli.whisperBin === 'string' ? cli.whisperBin.trim() : ''
-    },
-    telegram: {
-      enabled: Boolean(telegram.enabled),
-      botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
-      allowedUsers: [],
-      claudeModel: typeof telegram.claudeModel === 'string' ? telegram.claudeModel.trim() : '',
-      claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
-      codexModel: typeof telegram.codexModel === 'string' ? telegram.codexModel.trim() : '',
-      codexEffort: typeof telegram.codexEffort === 'string' ? telegram.codexEffort.trim() : ''
-    },
-    lanServer,
-    profiles,
-    activeProfile,
-    enterprise
-  }
-
-  if (Array.isArray(telegram.allowedUsers)) {
-    normalized.telegram.allowedUsers = telegram.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-  } else if (typeof telegram.allowedUsers === 'string') {
-    normalized.telegram.allowedUsers = telegram.allowedUsers.split(/[,\s]+/g).map((u) => u.trim()).filter(Boolean)
-  }
-  normalized.telegram.allowedUsers = Array.from(new Set(normalized.telegram.allowedUsers))
-
-  return normalized
-}
-
-function normalizeMcpServerList(raw) {
-  const values = Array.isArray(raw)
-    ? raw
-    : (typeof raw === 'string' ? raw.split(',') : [])
-  return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)))
-}
-
-function sanitizePersonaPrompt(raw, maxLen = 12000) {
-  if (typeof raw !== 'string') return ''
-  const clean = raw.replace(/\r\n/g, '\n').trim()
-  return clean.length > maxLen ? clean.slice(0, maxLen) : clean
-}
-
-function normalizeLanServerConfig(raw) {
-  const cfg = raw && typeof raw === 'object' ? raw : {}
-  return {
-    enabled: Boolean(cfg.enabled),
-    port: clampLanPort(cfg.port)
-  }
-}
-
-function sanitizeProfileId(rawId, fallback = '') {
-  const clean = String(rawId || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^[-_]+|[-_]+$/g, '')
-  if (clean) return clean
-  return String(fallback || '').trim() || DEFAULT_PROFILE_ID
-}
-
-function normalizeProfileEntry(raw, fallbackId = '') {
-  const id = sanitizeProfileId(raw?.id, fallbackId)
-  const name = String(raw?.name || '').trim() || 'Perfil'
-  const claudeMdPath = typeof raw?.claudeMdPath === 'string' ? raw.claudeMdPath.trim() : ''
-  const cwd = typeof raw?.cwd === 'string' ? raw.cwd.trim() : ''
-  const mcpServers = normalizeMcpServerList(raw?.mcpServers)
-  const personaPrompt = sanitizePersonaPrompt(raw?.personaPrompt)
-  return { id, name, claudeMdPath, mcpServers, cwd, personaPrompt }
-}
-
-function normalizeProfiles(rawProfiles) {
-  const list = Array.isArray(rawProfiles) ? rawProfiles : []
-  const seen = new Set()
-  const result = []
-  for (const item of list) {
-    const next = normalizeProfileEntry(item)
-    if (!next.id || seen.has(next.id)) continue
-    seen.add(next.id)
-    result.push(next)
-  }
-  if (!seen.has(DEFAULT_PROFILE_ID)) {
-    result.unshift({
-      id: DEFAULT_PROFILE_ID,
-      name: 'Personal',
-      claudeMdPath: '',
-      mcpServers: [],
-      cwd: '',
-      personaPrompt: ''
-    })
-  } else {
-    for (let i = 0; i < result.length; i += 1) {
-      if (result[i].id !== DEFAULT_PROFILE_ID) continue
-      result[i] = {
-        ...result[i],
-        id: DEFAULT_PROFILE_ID,
-        name: result[i].name || 'Personal',
-        mcpServers: normalizeMcpServerList(result[i].mcpServers),
-        personaPrompt: sanitizePersonaPrompt(result[i].personaPrompt)
-      }
-      break
-    }
-  }
-  return result
-}
-
-function resolveActiveProfileId(profiles, rawActiveProfile) {
-  const wanted = sanitizeProfileId(rawActiveProfile, '')
-  if (wanted && profiles.some((p) => p.id === wanted)) return wanted
-  if (profiles.some((p) => p.id === DEFAULT_PROFILE_ID)) return DEFAULT_PROFILE_ID
-  return profiles[0]?.id || DEFAULT_PROFILE_ID
-}
+const { normalizeAppConfig, normalizeLanServerConfig } = createConfigNormalizers({
+  clampLanPort,
+  normalizeEnterpriseConfig,
+  defaultEnterpriseRoleId: DEFAULT_ENTERPRISE_ROLE_ID
+})
 
 function getProfileById(profileId, config = appConfig) {
   const id = sanitizeProfileId(profileId, '')
@@ -486,33 +288,18 @@ function getActiveProfile(config = appConfig) {
   }
 }
 
-function makeProfileIdFromName(name, existingIds = new Set()) {
-  const base = sanitizeProfileId(name, 'profile')
-  if (!existingIds.has(base)) return base
-  let n = 2
-  while (existingIds.has(`${base}-${n}`)) n += 1
-  return `${base}-${n}`
-}
-
 function configFilePath() {
   return path.join(app.getPath('userData'), CONFIG_FILENAME)
 }
 
 function loadAppConfig() {
-  try {
-    const p = configFilePath()
-    if (!fs.existsSync(p)) return normalizeAppConfig(DEFAULT_CONFIG)
-    const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
-    return normalizeAppConfig(raw)
-  } catch {
-    return normalizeAppConfig(DEFAULT_CONFIG)
-  }
+  const raw = readConfigFromFile(configFilePath(), DEFAULT_CONFIG)
+  return normalizeAppConfig(raw)
 }
 
 function saveAppConfig(nextConfig) {
   const normalized = normalizeAppConfig(nextConfig)
-  const p = configFilePath()
-  atomicWriteJsonSync(p, normalized)
+  writeConfigToFile(configFilePath(), normalized)
   appConfig = normalized
   return normalized
 }
@@ -738,14 +525,14 @@ function deleteEnterpriseOperator(operatorId) {
   })
 }
 
-function getConfiguredBin(cli) {
-  if (cli === 'codex') return appConfig.cli.codexBin || FALLBACK_CODEX_BIN
-  return appConfig.cli.claudeBin || FALLBACK_CLAUDE_BIN
-}
+const cliResolver = createCliResolver(() => appConfig)
+const { getConfiguredBin, getConfiguredWhisperBin, buildRuntimeEnv, cliMeta, ensureCliAvailable } = cliResolver
 
-function getConfiguredWhisperBin() {
-  return appConfig.cli.whisperBin || FALLBACK_WHISPER_BIN
-}
+const { transcribeAudioFile } = createTranscriber({
+  getWhisperBin: () => getConfiguredWhisperBin(),
+  modelPath: WHISPER_CPP_MODEL,
+  tmpDir: TMP_DIR
+})
 
 function shellQuote(s) {
   return `'${String(s).replace(/'/g, "'\\''")}'`
@@ -755,56 +542,6 @@ function buildFdLimitCommand(bin, args = []) {
   const parts = [shellQuote(bin), ...args.map(shellQuote)]
   const log = '/tmp/claude-novak-fd.log'
   return `echo "[$(date +%H:%M:%S)] before ulimit=$(ulimit -n) hard=$(ulimit -Hn) bin=${shellQuote(bin)}" >> ${log} 2>/dev/null; ulimit -n 65536 2>/dev/null || true; echo "[$(date +%H:%M:%S)] after  ulimit=$(ulimit -n)" >> ${log} 2>/dev/null; exec ${parts.join(' ')}`
-}
-
-function buildRuntimeEnv() {
-  const baseEnv = { ...process.env }
-  // Forzamos color en los CLI embebidos aunque la app herede NO_COLOR del entorno.
-  delete baseEnv.NO_COLOR
-  if (baseEnv.CLICOLOR === '0') delete baseEnv.CLICOLOR
-  if (baseEnv.CLICOLOR_FORCE === '0') delete baseEnv.CLICOLOR_FORCE
-  if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
-
-  const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
-  if (LATEST_NVM_NODE_BIN) extraPaths.push(LATEST_NVM_NODE_BIN)
-  for (const candidate of [appConfig.cli.claudeBin, appConfig.cli.codexBin, appConfig.cli.whisperBin]) {
-    if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
-  }
-  const mergedPath = Array.from(new Set([...extraPaths, process.env.PATH || ''])).join(':')
-  return {
-    ...baseEnv,
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
-    CLICOLOR: '1',
-    CLICOLOR_FORCE: '1',
-    FORCE_COLOR: '1',
-    LANG: process.env.LANG || 'en_US.UTF-8',
-    PATH: mergedPath
-  }
-}
-
-function commandExists(command, env) {
-  if (!command) return false
-  if (command.includes('/')) return fs.existsSync(command)
-  const probe = spawnSync('/bin/bash', ['-lc', `command -v ${JSON.stringify(command)} >/dev/null 2>&1`], { env })
-  return probe.status === 0
-}
-
-function cliMeta(cli) {
-  if (cli === 'codex') return { name: 'Codex', bin: getConfiguredBin('codex'), envVar: 'CODEX_BIN' }
-  return { name: 'Claude', bin: getConfiguredBin('claude'), envVar: 'CLAUDE_BIN' }
-}
-
-function ensureCliAvailable(cli) {
-  const meta = cliMeta(cli)
-  const env = buildRuntimeEnv()
-  if (!commandExists(meta.bin, env)) {
-    return {
-      ok: false,
-      error: `${meta.name} no está disponible (${meta.bin}). Ajusta ${meta.envVar} o instala el comando en PATH.`
-    }
-  }
-  return { ok: true, ...meta, env }
 }
 
 // ── Session helpers ──
@@ -1551,169 +1288,46 @@ function logProposalRejectedStub(payload = {}) {
   logSemantic('propuesta_rechazada', payload)
 }
 
-function sanitizeProposalIdForFilename(id) {
-  const cleaned = String(id || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, '_')
-    .slice(0, 140)
-  if (cleaned) return cleaned
-  return `proposal-${Date.now()}`
-}
-
-function guessProposalIdFromFile(filePath) {
-  const name = path.basename(String(filePath || ''))
-  if (!name.startsWith(AGENT_PROPOSAL_FILE_PREFIX) || !name.endsWith(AGENT_PROPOSAL_FILE_SUFFIX)) return ''
-  return name
-    .slice(AGENT_PROPOSAL_FILE_PREFIX.length, name.length - AGENT_PROPOSAL_FILE_SUFFIX.length)
-    .trim()
-}
-
-function buildProposalMarkerPath(id, state) {
-  const suffix = state === 'approved' ? 'approved' : 'rejected'
-  return path.join(
-    AGENT_PROPOSAL_DIR,
-    `${AGENT_PROPOSAL_FILE_PREFIX}${sanitizeProposalIdForFilename(id)}-${suffix}`
-  )
-}
-
-function serializePendingProposalForRenderer(proposal) {
-  if (!proposal) return null
-  return {
-    id: String(proposal.id || '').trim(),
-    title: String(proposal.title || '').trim(),
-    description: String(proposal.description || '').trim(),
-    command: String(proposal.command || '').trim(),
-    script_path: String(proposal.script_path || '').trim(),
-    script_preview: typeof proposal.script_preview === 'string' ? proposal.script_preview : ''
-  }
-}
-
-function normalizeProposalPayload(raw, sourcePath = '') {
-  if (!raw || typeof raw !== 'object') return { ok: false, error: 'payload inválido' }
-  const id = String(raw.id || guessProposalIdFromFile(sourcePath) || '').trim()
-  const title = String(raw.title || '').trim()
-  const description = String(raw.description || '').trim()
-  const command = String(raw.command || '').trim()
-  const scriptPath = String(raw.script_path || '').trim()
-  const scriptPreview = typeof raw.script_preview === 'string' ? raw.script_preview : ''
-  if (!id) return { ok: false, error: 'id requerido' }
-  if (!command) return { ok: false, error: 'command requerido' }
-  return {
-    ok: true,
-    proposal: {
-      id,
-      title: title || 'Propuesta pendiente',
-      description,
-      command,
-      script_path: scriptPath,
-      script_preview: scriptPreview.slice(0, 200000)
-    }
-  }
-}
-
-function pickNextAgentProposalFile() {
-  let names = []
-  try { names = fs.readdirSync(AGENT_PROPOSAL_DIR) } catch { return null }
-  const files = []
-  for (const name of names) {
-    if (!name.startsWith(AGENT_PROPOSAL_FILE_PREFIX) || !name.endsWith(AGENT_PROPOSAL_FILE_SUFFIX)) continue
-    const full = path.join(AGENT_PROPOSAL_DIR, name)
-    let stat = null
-    try { stat = fs.statSync(full) } catch { continue }
-    if (!stat || !stat.isFile()) continue
-    files.push({ full, mtimeMs: Number(stat.mtimeMs || 0), name })
-  }
-  if (!files.length) return null
-  files.sort((a, b) => (a.mtimeMs - b.mtimeMs) || a.name.localeCompare(b.name))
-  return files[0].full
-}
-
 function getPrimaryWindowSession() {
   return primaryWcId != null ? sessions.get(primaryWcId) : null
 }
 
-function emitPendingProposalToRenderer(proposal) {
-  const payload = serializePendingProposalForRenderer(proposal)
-  if (!payload) return false
-  const first = getPrimaryWindowSession()
-  const candidates = []
-  if (first) candidates.push(first)
-  for (const s of sessions.values()) {
-    if (!s || s === first) continue
-    candidates.push(s)
-  }
-  for (const s of candidates) {
-    if (!s?.win || s.win.isDestroyed()) continue
-    try {
-      s.win.webContents.send('proposal:new', payload)
-      return true
-    } catch {}
-  }
-  return false
-}
-
-function syncPendingProposalToWindow(win) {
-  if (!pendingAgentProposal || !win || win.isDestroyed()) return
-  try {
-    win.webContents.send('proposal:new', serializePendingProposalForRenderer(pendingAgentProposal))
-  } catch {}
-}
-
-function pauseAgentProposalPolling() {
-  if (!agentProposalPollId) return
-  try { clearInterval(agentProposalPollId) } catch {}
-  agentProposalPollId = null
-}
-
-function detectPendingAgentProposal() {
-  if (pendingAgentProposal) return
-  const filePath = pickNextAgentProposalFile()
-  if (!filePath) return
-
-  let raw = null
-  try {
-    raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-  } catch (err) {
-    console.warn('[proposal] invalid JSON:', filePath, err?.message || err)
-    const markerPath = buildProposalMarkerPath(guessProposalIdFromFile(filePath), 'rejected')
-    try { fs.writeFileSync(markerPath, '') } catch {}
-    try { fs.unlinkSync(filePath) } catch {}
-    return
-  }
-
-  const normalized = normalizeProposalPayload(raw, filePath)
-  if (!normalized.ok) {
-    console.warn('[proposal] malformed payload:', filePath, normalized.error)
-    const markerPath = buildProposalMarkerPath(raw?.id || guessProposalIdFromFile(filePath), 'rejected')
-    try { fs.writeFileSync(markerPath, '') } catch {}
-    try { fs.unlinkSync(filePath) } catch {}
-    return
-  }
-
-  pendingAgentProposal = {
-    ...normalized.proposal,
-    filePath,
-    detectedAt: Date.now()
-  }
-  pauseAgentProposalPolling()
-  emitPendingProposalToRenderer(pendingAgentProposal)
-}
-
-function startAgentProposalPolling() {
-  if (agentProposalPollId || pendingAgentProposal) return
-  agentProposalPollId = setInterval(() => {
-    try { detectPendingAgentProposal() } catch (err) {
-      console.error('[proposal] poll failed:', err?.message || err)
+const agentProposalWatcher = createAgentProposalWatcher({
+  baseDir: AGENT_PROPOSAL_DIR,
+  filePrefix: AGENT_PROPOSAL_FILE_PREFIX,
+  fileSuffix: AGENT_PROPOSAL_FILE_SUFFIX,
+  pollMs: AGENT_PROPOSAL_POLL_MS,
+  emitToRenderers: (payload) => {
+    if (!payload) return false
+    const first = getPrimaryWindowSession()
+    const candidates = []
+    if (first) candidates.push(first)
+    for (const s of sessions.values()) {
+      if (!s || s === first) continue
+      candidates.push(s)
     }
-  }, AGENT_PROPOSAL_POLL_MS)
-  agentProposalPollId.unref?.()
-  detectPendingAgentProposal()
-}
+    for (const s of candidates) {
+      if (!s?.win || s.win.isDestroyed()) continue
+      try {
+        s.win.webContents.send('proposal:new', payload)
+        return true
+      } catch {}
+    }
+    return false
+  },
+  broadcastCleared: (payload) => broadcastToAllWindows('proposal:cleared', payload)
+})
 
-function resumeAgentProposalPolling() {
-  if (pendingAgentProposal) return
-  startAgentProposalPolling()
-}
+const sanitizeProposalIdForFilename = agentProposalWatcher.sanitizeProposalIdForFilename
+const guessProposalIdFromFile = agentProposalWatcher.guessProposalIdFromFile
+const buildProposalMarkerPath = agentProposalWatcher.buildProposalMarkerPath
+const serializePendingProposalForRenderer = agentProposalWatcher.serializeForRenderer
+const syncPendingProposalToWindow = agentProposalWatcher.syncToWindow
+const pauseAgentProposalPolling = agentProposalWatcher.pause
+const detectPendingAgentProposal = agentProposalWatcher.detect
+const startAgentProposalPolling = agentProposalWatcher.start
+const resumeAgentProposalPolling = agentProposalWatcher.resume
+const finalizePendingProposal = agentProposalWatcher.finalize
 
 function resolveProposalExecutionSession(event) {
   const fromEvent = event ? getSessionByEvent(event) : null
@@ -1724,22 +1338,6 @@ function resolveProposalExecutionSession(event) {
     if (s?.pty) return s
   }
   return fromEvent || primary || null
-}
-
-function finalizePendingProposal(state) {
-  if (!pendingAgentProposal) return { ok: false, error: 'No hay propuesta pendiente' }
-  const current = pendingAgentProposal
-  const markerPath = buildProposalMarkerPath(current.id, state)
-  try { fs.writeFileSync(markerPath, '') } catch (err) {
-    console.error('[proposal] marker write failed:', err?.message || err)
-  }
-  if (current.filePath) {
-    try { fs.unlinkSync(current.filePath) } catch {}
-  }
-  pendingAgentProposal = null
-  try { broadcastToAllWindows('proposal:cleared', { id: current.id, state }) } catch {}
-  resumeAgentProposalPolling()
-  return { ok: true, markerPath }
 }
 
 // ── Tree watcher per-session ──
@@ -2762,150 +2360,15 @@ function broadcastAutomationChat(channel, payload) {
 const agentPtySessions = new Map()         // wcId → AgentPtySession
 const agentPtyWindowByAutomation = new Map() // automationId → BrowserWindow
 
-const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B[@-Z\\-_]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
 const AGENT_BUFFER_MAX = 200_000
 const AGENT_BOOT_DELAY_MS = 3500
 
-function stripAnsi(s) {
-  if (!s) return ''
-  return s.replace(ANSI_RE, '')
-}
-
-// Quita line-wrapping del terminal: claude code repinta líneas con \r y a veces
-// inserta saltos suaves. También quita caracteres de "box drawing" del TUI para no
-// confundir los matches.
-function flattenTerminal(s) {
-  if (!s) return ''
-  return s
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    // Box drawing y separadores típicos del TUI
-    .replace(/[─-╿▀-▟■-◿]/g, ' ')
-}
-
-function extractAgentBlocks(buffer) {
-  const clean = flattenTerminal(stripAnsi(buffer))
-
-  // Variante 1: tags XML estilo Anthropic, tolerante a espacios internos.
-  const xmlGrab = (tag) => {
-    const re = new RegExp(`<\\s*${tag}\\s*>([\\s\\S]*?)<\\s*/\\s*${tag}\\s*>`, 'i')
-    const m = clean.match(re)
-    return m ? m[1].trim() : null
-  }
-
-  let script = xmlGrab('SCRIPT')
-  let plist = xmlGrab('PLIST')
-  let description = xmlGrab('DESCRIPCION') || xmlGrab('DESCRIPTION')
-
-  // Variante 2 (fallback): code fences markdown con lenguaje pista.
-  // ```bash / ```sh / ```shell → SCRIPT
-  // ```xml / ```plist → PLIST
-  if (!script || !plist) {
-    const fenceRe = /```([a-zA-Z0-9_+-]*)\s*\n([\s\S]*?)```/g
-    let m
-    while ((m = fenceRe.exec(clean)) !== null) {
-      const lang = (m[1] || '').toLowerCase()
-      const body = m[2] || ''
-      if (!script && /^(bash|sh|shell|zsh)$/i.test(lang) && body.includes('#!/')) {
-        script = body.trim()
-      } else if (!plist && /^(xml|plist)$/i.test(lang) && body.includes('<plist')) {
-        plist = body.trim()
-      }
-    }
-  }
-
-  // Validación: descarta solo lo claramente placeholder.
-  // SCRIPT real: tiene shebang + algo de contenido.
-  // PLIST real: tiene cabecera xml + cierre /plist.
-  const isRealScript = (text) => {
-    if (!text || text.length < 40) return false
-    if (!text.includes('#!')) return false
-    return true
-  }
-  const isRealPlist = (text) => {
-    if (!text || text.length < 80) return false
-    if (!/<\?xml|<plist/i.test(text)) return false
-    if (!/<\/plist>/i.test(text)) return false
-    return true
-  }
-  const isRealDescription = (text) => {
-    if (!text || text.length < 10) return false
-    return true
-  }
-
-  if (!isRealScript(script)) script = null
-  if (!isRealPlist(plist)) plist = null
-  if (!isRealDescription(description)) description = null
-
-  // El botón "Aplicar al borrador" solo debe aparecer cuando tenemos una propuesta
-  // sustancial — al menos SCRIPT y PLIST juntos. Solo descripción no dispara.
-  // Esto evita que un placeholder corto de descripción que pase por encima del filtro
-  // (ej. "descripción refinada y precisa" del propio bootstrap si reaparece en pantalla)
-  // accione el botón.
-  if (!script || !plist) return null
-  return { script, plist, description }
-}
-
-function blocksEqual(a, b) {
-  if (!a && !b) return true
-  if (!a || !b) return false
-  return a.script === b.script && a.plist === b.plist && a.description === b.description
-}
-
-// ── Propuesta vía filesystem (source of truth) ──
-// Claude Code v2 oculta los bloques largos en su TUI (los procesa como tool_use
-// internos) → el stream PTY nunca contiene el script/plist literales. Solución:
-// pedirle que escriba los archivos a disco con su Write tool. POWER-AGENT pollea
-// el directorio y, cuando aparece el "READY", lee y emite blocks-detected.
-function proposalPaths(automationId) {
-  const dir = path.join(AGENT_PROPOSAL_BASE, automationId)
-  return {
-    dir,
-    script: path.join(dir, 'script.sh'),
-    plist: path.join(dir, 'plist.plist'),
-    description: path.join(dir, 'description.txt'),
-    ready: path.join(dir, 'READY')
-  }
-}
-
-function ensureProposalDir(automationId) {
-  const p = proposalPaths(automationId)
-  try { fs.mkdirSync(p.dir, { recursive: true }) } catch {}
-  // Limpia residuos de iteraciones anteriores para que la próxima propuesta empiece limpia.
-  for (const f of [p.script, p.plist, p.description, p.ready]) {
-    try { fs.unlinkSync(f) } catch {}
-  }
-  return p
-}
-
-function clearProposalFromDisk(automationId) {
-  const p = proposalPaths(automationId)
-  for (const f of [p.script, p.plist, p.description, p.ready]) {
-    try { fs.unlinkSync(f) } catch {}
-  }
-}
-
-function readProposalFromDisk(automationId) {
-  const p = proposalPaths(automationId)
-  try {
-    if (!fs.existsSync(p.ready)) return null
-    if (!fs.existsSync(p.script) || !fs.existsSync(p.plist)) return null
-    const script = fs.readFileSync(p.script, 'utf8')
-    const plist = fs.readFileSync(p.plist, 'utf8')
-    let description = ''
-    try { description = fs.readFileSync(p.description, 'utf8') } catch {}
-    // Validación: shebang en script, cierre </plist> en plist.
-    if (!script || !script.includes('#!')) return null
-    if (!plist || !/<plist[\s>]/i.test(plist) || !/<\/plist>/i.test(plist)) return null
-    return {
-      script: script.trim(),
-      plist: plist.trim(),
-      description: description.trim() || null
-    }
-  } catch {
-    return null
-  }
-}
+const {
+  proposalPaths,
+  ensureProposalDir,
+  clearProposalFromDisk,
+  readProposalFromDisk
+} = createProposalFiles(AGENT_PROPOSAL_BASE)
 
 function buildAgentBootstrapPrompt(automation) {
   const hasDraft = !!(automation.generatedScript || automation.generatedPlist)
@@ -3362,40 +2825,23 @@ function initTelegramBridge() {
 const TG_HISTORY_THRESHOLD = 30
 const TG_HISTORY_KEEP = 20
 
-function extractTurnText(obj) {
-  if (!obj?.message?.content) return ''
-  const content = obj.message.content
-  if (typeof content === 'string') return content.trim()
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => {
-        if (typeof block === 'string') return block
-        if (block?.type === 'text' && typeof block.text === 'string') return block.text
-        return ''
-      })
-      .join(' ')
-      .trim()
-  }
-  return ''
-}
-
-let codexHistoryCache = { key: '', rows: [] }
-let codexSessionIndexCache = { key: '', byId: new Map() }
-let codexStateThreadCache = new Map()
-let codexStateDbCacheKey = ''
 const CLAUDE_TITLE_CACHE_MAX = 600
 const claudeSessionTitleCache = new Map()
 const SESSION_META_CACHE_MAX = 300
 const currentSessionMetaCache = new Map()
 
-function statCacheKey(stat) {
-  if (!stat) return ''
-  return `${Number(stat.mtimeMs || 0)}:${Number(stat.size || 0)}`
-}
-
-function safeStat(filePath) {
-  try { return fs.statSync(filePath) } catch { return null }
-}
+const codexSessionReader = createCodexSessionReader({
+  historyPath: CODEX_HISTORY_PATH,
+  sessionIndexPath: CODEX_SESSION_INDEX_PATH,
+  stateDbPath: CODEX_STATE_DB_PATH
+})
+const {
+  loadCodexHistoryRows,
+  loadCodexSessionIndexMap,
+  readCodexStateThreadMeta,
+  guessCodexSessionFromHistory,
+  fileCacheKey
+} = codexSessionReader
 
 function rememberClaudeSessionTitle(filePath, entry) {
   if (!filePath || !entry) return
@@ -3422,148 +2868,6 @@ function rememberSessionMeta(cacheKey, entry) {
   }
 }
 
-function fileCacheKey(filePath) {
-  return statCacheKey(safeStat(filePath))
-}
-
-function clipText(text, max = 160) {
-  const t = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!t) return ''
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
-}
-
-function loadCodexHistoryRows() {
-  const key = fileCacheKey(CODEX_HISTORY_PATH)
-  if (!key) return []
-  if (codexHistoryCache.key === key) return codexHistoryCache.rows
-
-  let rows = []
-  try {
-    const raw = fs.readFileSync(CODEX_HISTORY_PATH, 'utf-8')
-    rows = raw
-      .split('\n')
-      .map((line) => {
-        if (!line.trim()) return null
-        try {
-          const obj = JSON.parse(line)
-          const sessionId = typeof obj?.session_id === 'string' ? obj.session_id.trim() : ''
-          const ts = Number(obj?.ts)
-          const tsMs = Number.isFinite(ts) ? ts * 1000 : 0
-          const text = typeof obj?.text === 'string' ? clipText(obj.text, 220) : ''
-          if (!sessionId) return null
-          return { sessionId, tsMs, text }
-        } catch {
-          return null
-        }
-      })
-      .filter(Boolean)
-  } catch {}
-
-  if (rows.length > 5000) rows = rows.slice(-5000)
-  codexHistoryCache = { key, rows }
-  return rows
-}
-
-function loadCodexSessionIndexMap() {
-  const key = fileCacheKey(CODEX_SESSION_INDEX_PATH)
-  if (!key) return new Map()
-  if (codexSessionIndexCache.key === key) return codexSessionIndexCache.byId
-
-  const byId = new Map()
-  try {
-    const raw = fs.readFileSync(CODEX_SESSION_INDEX_PATH, 'utf-8')
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const obj = JSON.parse(line)
-        const id = typeof obj?.id === 'string' ? obj.id.trim() : ''
-        const title = clipText(obj?.thread_name || obj?.title || obj?.preview || '', 220)
-        if (id && title) byId.set(id, title)
-      } catch {}
-    }
-  } catch {}
-
-  codexSessionIndexCache = { key, byId }
-  return byId
-}
-
-function escapeSqlLiteral(text) {
-  return String(text || '').replace(/'/g, "''")
-}
-
-function readCodexStateThreadMeta(threadId) {
-  const id = String(threadId || '').trim()
-  if (!id) return null
-  const dbKey = fileCacheKey(CODEX_STATE_DB_PATH)
-  if (!dbKey) return null
-  if (codexStateDbCacheKey !== dbKey) {
-    codexStateDbCacheKey = dbKey
-    codexStateThreadCache = new Map()
-  }
-  if (codexStateThreadCache.has(id)) return codexStateThreadCache.get(id)
-
-  const sql = `select json_object('title', coalesce(title,''), 'cwd', coalesce(cwd,'')) from threads where id='${escapeSqlLiteral(id)}' order by updated_at desc limit 1;`
-  let meta = null
-  try {
-    const out = spawnSync('sqlite3', [CODEX_STATE_DB_PATH, sql], {
-      encoding: 'utf8',
-      timeout: 1200,
-      maxBuffer: 1024 * 256
-    })
-    if (!out.error && out.status === 0) {
-      const line = String(out.stdout || '').trim().split('\n')[0] || ''
-      if (line.startsWith('{')) {
-        const obj = JSON.parse(line)
-        meta = {
-          title: clipText(obj?.title || '', 220),
-          cwd: String(obj?.cwd || '').trim()
-        }
-      }
-    }
-  } catch {}
-
-  codexStateThreadCache.set(id, meta)
-  if (codexStateThreadCache.size > 500) {
-    const oldest = codexStateThreadCache.keys().next().value
-    if (oldest) codexStateThreadCache.delete(oldest)
-  }
-  return meta
-}
-
-function extractCodexResumeId(args) {
-  if (!Array.isArray(args) || args.length < 2) return null
-  for (let i = 0; i < args.length - 1; i++) {
-    if (args[i] === 'resume' && args[i + 1]) return String(args[i + 1]).trim()
-  }
-  return null
-}
-
-function extractClaudeResumeId(args) {
-  if (!Array.isArray(args) || args.length < 2) return null
-  for (let i = 0; i < args.length - 1; i++) {
-    if (args[i] === '--resume' && args[i + 1]) return String(args[i + 1]).trim()
-  }
-  return null
-}
-
-function guessCodexSessionFromHistory(session) {
-  const rows = loadCodexHistoryRows()
-  if (!rows.length) return null
-
-  const sinceMs = Math.max(
-    Number(session?.ptyStartedAt || 0),
-    Number(session?.lastLocalInputAt || 0) - 1500
-  )
-
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i]
-    if (!row?.sessionId) continue
-    if (sinceMs > 0 && row.tsMs > 0 && row.tsMs + 2000 < sinceMs) continue
-    return row
-  }
-
-  return rows[rows.length - 1] || null
-}
 
 function readClaudeSessionTitle(cwd, sessionId) {
   const _perfT0 = PERF ? Date.now() : 0
@@ -3717,10 +3021,6 @@ function resolveSessionIdForRelay(session) {
     return guess.sessionId
   }
   return null
-}
-
-function escapeForCompactedPrompt(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
@@ -4211,363 +3511,6 @@ safeIpcHandle('fs-read-dir', async (event, dirPath) => {
   return { ok: true, entries: result }
 })
 
-function computeProjectGraph(rootPath) {
-  if (!rootPath) return { ok: false, error: 'no rootPath' }
-
-  const SKIP = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache',
-    '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode', 'coverage'])
-  const BIN_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
-    '.dmg', '.app', '.zip', '.tar', '.gz', '.pdf', '.ttf', '.woff', '.woff2',
-    '.eot', '.mp3', '.mp4', '.wav', '.ogg', '.db', '.sqlite'])
-
-  const MAX_GRAPH_FILES = 20000
-  const MAX_GRAPH_DIRS = 12000
-  const allFiles = []
-  const allDirs = []
-  const dirSet = new Set()
-  const fileMtime = new Map()
-
-  function addDir(p) {
-    if (!p || dirSet.has(p)) return
-    dirSet.add(p)
-    allDirs.push(p)
-  }
-
-  function walk(dir) {
-    let entries
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      if (allFiles.length > MAX_GRAPH_FILES || allDirs.length > MAX_GRAPH_DIRS) return
-      // Alineado con árbol lateral: solo saltar carpetas/archivos explícitamente ignorados.
-      if (SKIP.has(e.name) || e.name.startsWith('._')) continue
-      if (typeof e.isSymbolicLink === 'function' && e.isSymbolicLink()) continue
-      const full = path.join(dir, e.name)
-      if (e.isDirectory()) {
-        addDir(full)
-        walk(full)
-      } else if (e.isFile()) {
-        allFiles.push(full)
-        try { fileMtime.set(full, fs.statSync(full).mtimeMs || 0) } catch { fileMtime.set(full, 0) }
-      }
-    }
-  }
-
-  addDir(rootPath)
-  walk(rootPath)
-
-  if (allFiles.length > MAX_GRAPH_FILES) {
-    return { ok: false, error: `Proyecto demasiado grande: ${allFiles.length} archivos (máx ${MAX_GRAPH_FILES})` }
-  }
-  if (allDirs.length > MAX_GRAPH_DIRS) {
-    return { ok: false, error: `Proyecto demasiado grande: ${allDirs.length} carpetas (máx ${MAX_GRAPH_DIRS})` }
-  }
-
-  const fileByBasename = new Map()
-  const fileByBasenameMany = new Map()
-  const fileByRelNoExt = new Map()
-  const goDirAnyFile = new Map()
-  const goDirsByBase = new Map()
-  for (const f of allFiles) {
-    const base = path.basename(f, path.extname(f)).toLowerCase()
-    if (!fileByBasename.has(base)) fileByBasename.set(base, f)
-    if (!fileByBasenameMany.has(base)) fileByBasenameMany.set(base, [])
-    fileByBasenameMany.get(base).push(f)
-    const rel = path.relative(rootPath, f).replace(/\\/g, '/')
-    const relNoExt = rel.replace(/\.[^/.]+$/, '').toLowerCase()
-    if (!fileByRelNoExt.has(relNoExt)) fileByRelNoExt.set(relNoExt, f)
-    if (relNoExt.endsWith('/__init__')) {
-      const asPkg = relNoExt.slice(0, -'/__init__'.length)
-      if (asPkg && !fileByRelNoExt.has(asPkg)) fileByRelNoExt.set(asPkg, f)
-    }
-    if (path.extname(f).toLowerCase() === '.go') {
-      const dir = path.dirname(f)
-      if (!goDirAnyFile.has(dir)) goDirAnyFile.set(dir, f)
-      const baseDir = path.basename(dir).toLowerCase()
-      if (!goDirsByBase.has(baseDir)) goDirsByBase.set(baseDir, [])
-      goDirsByBase.get(baseDir).push(dir)
-    }
-  }
-
-  const allFilesSet = new Set(allFiles)
-  const edges = []
-
-  const pickFirstByExt = (arr, preferred = []) => {
-    if (!Array.isArray(arr) || arr.length === 0) return null
-    for (const ext of preferred) {
-      const hit = arr.find((p) => path.extname(p).toLowerCase() === ext)
-      if (hit) return hit
-    }
-    return arr[0]
-  }
-
-  const resolveModuleLike = (name, preferredExt = []) => {
-    const raw = String(name || '').trim()
-    if (!raw) return null
-    const asPath = raw.replace(/\./g, '/').toLowerCase()
-    if (fileByRelNoExt.has(asPath)) return fileByRelNoExt.get(asPath)
-    const relHit = fileByRelNoExt.get(raw.toLowerCase())
-    if (relHit) return relHit
-    const tail = asPath.split('/').pop()
-    return pickFirstByExt(fileByBasenameMany.get(tail), preferredExt)
-  }
-
-  const addEdge = (source, target) => {
-    if (!source || !target || source === target) return
-    if (!allFilesSet.has(source) || !allFilesSet.has(target)) return
-    edges.push({ source, target })
-  }
-
-  let goModuleName = ''
-  try {
-    const goModPath = path.join(rootPath, 'go.mod')
-    if (fs.existsSync(goModPath)) {
-      const goMod = fs.readFileSync(goModPath, 'utf8')
-      const mm = goMod.match(/^\s*module\s+([^\s]+)\s*$/m)
-      if (mm && mm[1]) goModuleName = mm[1].trim()
-    }
-  } catch {}
-
-  const resolveGoImportPath = (sourcePath, importPath) => {
-    const imp = String(importPath || '').trim()
-    if (!imp) return null
-    if (imp.startsWith('.')) {
-      const rel = path.resolve(path.dirname(sourcePath), imp)
-      const goFile = goDirAnyFile.get(rel)
-      if (goFile) return goFile
-      const base = path.basename(rel).toLowerCase()
-      const dirs = goDirsByBase.get(base)
-      return dirs && dirs.length ? goDirAnyFile.get(dirs[0]) : null
-    }
-    if (goModuleName && (imp === goModuleName || imp.startsWith(`${goModuleName}/`))) {
-      const tail = imp === goModuleName ? '' : imp.slice(goModuleName.length + 1)
-      const localDir = path.join(rootPath, tail)
-      const goFile = goDirAnyFile.get(localDir)
-      if (goFile) return goFile
-      const base = path.basename(localDir).toLowerCase()
-      const dirs = goDirsByBase.get(base)
-      return dirs && dirs.length ? goDirAnyFile.get(dirs[0]) : null
-    }
-    const tail = imp.split('/').pop()?.toLowerCase()
-    if (!tail) return null
-    const dirs = goDirsByBase.get(tail)
-    if (!dirs || !dirs.length) return null
-    return goDirAnyFile.get(dirs[0]) || null
-  }
-
-  for (const filePath of allFiles) {
-    let content
-    try { if (fs.statSync(filePath).size > 2 * 1024 * 1024) continue } catch { continue }
-    const ext = path.extname(filePath).toLowerCase()
-    if (BIN_EXTS.has(ext)) continue
-    try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
-
-    if (ext === '.md') {
-      const re = /\[\[([^\]|#]+?)(?:[|#][^\]]+)?\]\]/g
-      let m
-      while ((m = re.exec(content)) !== null) {
-        const target = m[1].trim().toLowerCase()
-        const targetFile = fileByBasename.get(target) ||
-          fileByBasename.get(target.split('/').pop())
-        if (targetFile && targetFile !== filePath) {
-          addEdge(filePath, targetFile)
-        }
-      }
-    }
-
-    if (['.js', '.ts', '.mjs', '.cjs'].includes(ext)) {
-      const re = /(?:import\s+(?:[^'"]+?\s+from\s+)?|require\s*\(\s*)['"](\.[^'"]+)['"]/g
-      let m
-      while ((m = re.exec(content)) !== null) {
-        let targetFile = path.resolve(path.dirname(filePath), m[1])
-        if (!path.extname(targetFile)) {
-          for (const tryExt of ['.js', '.ts', '.mjs', '/index.js', '/index.ts']) {
-            if (allFilesSet.has(targetFile + tryExt)) {
-              targetFile = targetFile + tryExt
-              break
-            }
-          }
-        }
-        if (allFilesSet.has(targetFile) && targetFile !== filePath) {
-          addEdge(filePath, targetFile)
-        }
-      }
-    }
-
-    if (ext === '.py') {
-      const relDir = path.dirname(path.relative(rootPath, filePath)).replace(/\\/g, '/')
-      const relParts = relDir === '.' ? [] : relDir.split('/').filter(Boolean)
-
-      const resolvePyImport = (specRaw) => {
-        const spec = String(specRaw || '').trim()
-        if (!spec) return null
-        const dm = spec.match(/^(\.+)(.*)$/)
-        if (!dm) return resolveModuleLike(spec, ['.py'])
-        const dots = dm[1].length
-        const rest = (dm[2] || '').replace(/^\./, '')
-        const up = Math.max(0, dots - 1)
-        const base = relParts.slice(0, Math.max(0, relParts.length - up))
-        const restParts = rest ? rest.split('.').filter(Boolean) : []
-        const relNoExt = [...base, ...restParts].join('/').toLowerCase()
-        if (!relNoExt) return null
-        return fileByRelNoExt.get(relNoExt) || resolveModuleLike(relNoExt, ['.py'])
-      }
-
-      const reFrom = /^\s*from\s+([A-Za-z_][\w\.]*|\.+[\w\.]*)\s+import\s+([A-Za-z_][\w\s,.*]*)/gm
-      let mFrom
-      while ((mFrom = reFrom.exec(content)) !== null) {
-        const fromSpec = mFrom[1].trim()
-        const imported = mFrom[2]
-          .split(',')
-          .map((s) => s.trim().split(/\s+as\s+/i)[0].trim())
-          .filter(Boolean)
-
-        const direct = resolvePyImport(fromSpec)
-        if (direct) addEdge(filePath, direct)
-        for (const name of imported) {
-          if (name === '*') continue
-          const combo = `${fromSpec}.${name}`
-          const target = resolvePyImport(combo)
-          if (target) addEdge(filePath, target)
-        }
-      }
-
-      const reImport = /^\s*import\s+([A-Za-z_][\w\.\s,]*)/gm
-      let mImport
-      while ((mImport = reImport.exec(content)) !== null) {
-        const mods = mImport[1]
-          .split(',')
-          .map((s) => s.trim().split(/\s+as\s+/i)[0].trim())
-          .filter(Boolean)
-        for (const mod of mods) {
-          const target = resolveModuleLike(mod, ['.py'])
-          if (target) addEdge(filePath, target)
-        }
-      }
-    }
-
-    if (ext === '.php') {
-      const tryResolvePhpPath = (rawTarget) => {
-        let p = String(rawTarget || '').trim()
-        if (!p) return null
-        p = p.replace(/^__DIR__\s*\.\s*/, '').replace(/^dirname\(__FILE__\)\s*\.\s*/, '')
-        p = p.replace(/^['"]|['"]$/g, '')
-        if (!p) return null
-        let candidate = p.startsWith('/')
-          ? path.resolve(rootPath, `.${p}`)
-          : path.resolve(path.dirname(filePath), p)
-        if (allFilesSet.has(candidate)) return candidate
-        if (!path.extname(candidate)) {
-          for (const extra of ['.php', '.inc.php', '/index.php']) {
-            if (allFilesSet.has(candidate + extra)) return candidate + extra
-          }
-        }
-        const tail = path.basename(candidate, path.extname(candidate)).toLowerCase()
-        return pickFirstByExt(fileByBasenameMany.get(tail), ['.php'])
-      }
-
-      const reIncQuoted = /\b(?:include|include_once|require|require_once)\s*(?:\(\s*)?["']([^"']+)["']/gi
-      let mi
-      while ((mi = reIncQuoted.exec(content)) !== null) {
-        const target = tryResolvePhpPath(mi[1])
-        if (target) addEdge(filePath, target)
-      }
-      const reIncDir = /\b(?:include|include_once|require|require_once)\s*(?:\(\s*)?(?:__DIR__|dirname\(__FILE__\))\s*\.\s*["']([^"']+)["']/gi
-      while ((mi = reIncDir.exec(content)) !== null) {
-        const target = tryResolvePhpPath(mi[1])
-        if (target) addEdge(filePath, target)
-      }
-    }
-
-    if (ext === '.go') {
-      const parseImportChunk = (chunk) => {
-        const reQ = /"([^"]+)"/g
-        let mq
-        while ((mq = reQ.exec(chunk)) !== null) {
-          const imp = mq[1]
-          const target = resolveGoImportPath(filePath, imp)
-          if (target) addEdge(filePath, target)
-        }
-      }
-
-      const reBlock = /\bimport\s*\(([\s\S]*?)\)/gm
-      let mb
-      while ((mb = reBlock.exec(content)) !== null) parseImportChunk(mb[1] || '')
-
-      const reSingle = /^\s*import\s+(?:[._A-Za-z][\w]*\s+)?"([^"]+)"/gm
-      let ms
-      while ((ms = reSingle.exec(content)) !== null) {
-        const target = resolveGoImportPath(filePath, ms[1])
-        if (target) addEdge(filePath, target)
-      }
-    }
-  }
-
-  const edgeSet = new Set()
-  const uniqueEdges = edges.filter(e => {
-    const key = [e.source, e.target].sort().join('|||')
-    if (edgeSet.has(key)) return false
-    edgeSet.add(key)
-    return true
-  })
-  // F-hier: marca explícita de referencias (vs parent-child).
-  for (const e of uniqueEdges) e.kind = 'reference'
-
-  const connectionCount = new Map(allFiles.map(f => [f, 0]))
-  for (const e of uniqueEdges) {
-    connectionCount.set(e.source, (connectionCount.get(e.source) || 0) + 1)
-    connectionCount.set(e.target, (connectionCount.get(e.target) || 0) + 1)
-  }
-
-  // F-hier: metadata jerárquica. parentId = carpeta contenedora si está en dirSet.
-  // depth = nº de separadores entre root y el nodo (0 para root, 1 para hijos directos).
-  const computeHier = (p, isRoot) => {
-    if (isRoot || p === rootPath) return { parentId: null, depth: 0 }
-    const parent = path.dirname(p)
-    const parentId = dirSet.has(parent) ? parent : null
-    let depth = 1
-    if (rootPath && p.startsWith(rootPath + path.sep)) {
-      const rel = p.slice(rootPath.length + 1)
-      depth = rel.split(path.sep).length
-    }
-    return { parentId, depth }
-  }
-
-  const nodes = allFiles.map(f => {
-    const { parentId, depth } = computeHier(f, false)
-    return {
-      id: f,
-      label: path.basename(f),
-      path: f,
-      connections: connectionCount.get(f) || 0,
-      mtimeMs: Number(fileMtime.get(f) || 0),
-      parentId,
-      depth
-    }
-  })
-
-  const dirs = allDirs.map((d) => {
-    const isRoot = d === rootPath
-    const { parentId, depth } = computeHier(d, isRoot)
-    return {
-      id: d,
-      label: path.basename(d) || d,
-      path: d,
-      type: 'folder',
-      isRoot,
-      connections: 0,
-      parentId,
-      depth
-    }
-  })
-
-  return { ok: true, nodes, edges: uniqueEdges, dirs }
-}
-
-function normalizeGraphRootPath(rootPath) {
-  const raw = String(rootPath || '').trim()
-  if (!raw) return ''
-  try { return path.resolve(raw) } catch { return raw }
-}
 
 function computeProjectGraphForSession(session, rootPath) {
   const root = normalizeGraphRootPath(rootPath)
@@ -5192,11 +4135,11 @@ ipcMain.handle('ws-server:close-session', async (_event, payload = {}) => {
 })
 
 ipcMain.handle('proposal:get-pending', () => {
-  return { pending: serializePendingProposalForRenderer(pendingAgentProposal) }
+  return { pending: serializePendingProposalForRenderer(agentProposalWatcher.getPending()) }
 })
 
 ipcMain.handle('proposal:approve', (event, payload = {}) => {
-  const pending = pendingAgentProposal
+  const pending = agentProposalWatcher.getPending()
   if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
   const requestedId = String(payload?.id || '').trim()
   if (requestedId && requestedId !== pending.id) {
@@ -5233,7 +4176,7 @@ ipcMain.handle('proposal:approve', (event, payload = {}) => {
 })
 
 ipcMain.handle('proposal:reject', (event, payload = {}) => {
-  const pending = pendingAgentProposal
+  const pending = agentProposalWatcher.getPending()
   if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
   const requestedId = String(payload?.id || '').trim()
   if (requestedId && requestedId !== pending.id) {
