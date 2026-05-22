@@ -48,6 +48,7 @@ const { createWindowFactory } = require('./main/window-factory')
 const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
 const { registerTasksIpc } = require('./main/tasks-ipc')
 const { registerProfilesEnterpriseIpc } = require('./main/profiles-enterprise-ipc')
+const { registerAutomationsIpc } = require('./main/automations-ipc')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -4320,183 +4321,13 @@ registerTasksIpc({
   openTasksManager
 })
 
-// ── Automations IPC ──
-function automationsNotReady() {
-  return { ok: false, error: 'AutomationManager no inicializado' }
-}
-
-ipcMain.handle('automations:list', async () => {
-  try {
-    if (!automationManager) return []
-    return await automationManager.list()
-  } catch (err) {
-    console.error('[automations:list] error:', err?.message || err)
-    return []
-  }
-})
-
-ipcMain.handle('automations:get', async (_e, { id } = {}) => {
-  try {
-    if (!automationManager) return null
-    return await automationManager.get(id)
-  } catch (err) {
-    console.error('[automations:get] error:', err?.message || err)
-    return null
-  }
-})
-
-ipcMain.handle('automations:generate-draft', async (_e, payload = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.generateDraft(payload)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:regenerate', async (_e, { id, patch } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.regenerate(id, patch || {})
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:update-draft', async (_e, { id, scriptText, plistText } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.updateDraft(id, { scriptText, plistText })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:install', async (_e, { id, force } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.install(id, { force: !!force })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:shellcheck-status', async () => {
-  if (!automationManager) return { available: false, path: null, installHint: 'brew install shellcheck' }
-  try {
-    return await automationManager.getShellcheckStatus()
-  } catch {
-    return { available: false, path: null, installHint: 'brew install shellcheck' }
-  }
-})
-
-ipcMain.handle('automations:lint', async (_e, { id } = {}) => {
-  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado' }
-  try {
-    return await automationManager.lintAutomation(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:uninstall', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.uninstall(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:run-once', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.runOnce(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:read-log', async (_e, { id, opts } = {}) => {
-  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado', content: '' }
-  try {
-    const content = await automationManager.readLog(id, opts || {})
-    return { ok: true, content }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), content: '' }
-  }
-})
-
-ipcMain.handle('automations:create-draft-shell', async (_e, payload = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.createDraftShell(payload || {})
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:remove', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    const res = await automationManager.remove(id)
-    // Limpieza: ventana PTY + ventana chat + persistencia de chat.
-    const pw = agentPtyWindowByAutomation.get(id)
-    if (pw && !pw.isDestroyed()) { try { pw.close() } catch {} }
-    const w = chatWindows.get(id)
-    if (w && !w.isDestroyed()) { try { w.close() } catch {} }
-    if (automationChat) { try { await automationChat.deleteChat(id) } catch {} }
-    return res
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:pause', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.pause(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:resume', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.resume(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:get-running', async () => {
-  if (!automationManager) return []
-  try {
-    return await automationManager.getRunningIds()
-  } catch (err) {
-    console.error('[automations:get-running] error:', err?.message || err)
-    return []
-  }
-})
-
-ipcMain.handle('automations:stop-run', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.stopRun(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('shell:reveal-in-finder', async (_e, { path: target } = {}) => {
-  try {
-    if (!target) return { ok: false, error: 'path requerido' }
-    shell.showItemInFolder(target)
-    return { ok: true }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+registerAutomationsIpc({
+  ipcMain,
+  shell,
+  getAutomationManager: () => automationManager,
+  getAutomationChat: () => automationChat,
+  getAgentPtyWindowByAutomation: () => agentPtyWindowByAutomation,
+  getChatWindows: () => chatWindows
 })
 
 // ── Automation chat IPC ──
