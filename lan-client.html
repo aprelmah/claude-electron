@@ -3203,10 +3203,14 @@
           appState.selectedResumeSessionId = activeResumeSessionId
           appState.stickyResumeSessionId = activeResumeSessionId
           const activeCli = String(msg?.cli || getSelectedSessionCli()).toLowerCase() === 'codex' ? 'codex' : 'claude'
+          const previousListCli = appState.sessionListCli || ''
           setStickyResumeForCli(activeCli, activeResumeSessionId)
           appState.sessionListCli = activeCli
           if (refs.sessionCliSelect && refs.sessionCliSelect.value !== activeCli) {
             refs.sessionCliSelect.value = activeCli
+          }
+          if (previousListCli && previousListCli !== activeCli && isSocketOpen()) {
+            requestReusableSessions({ forceRefresh: true, silent: true, cli: activeCli })
           }
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
