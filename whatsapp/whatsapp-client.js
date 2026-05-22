@@ -338,6 +338,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
   const queueLenByJid = new Map() // jid → nº mensajes en vuelo+pendientes para ese JID
   let inflightCount = 0
   const inflightWaiters = []
+  let autoReplyEpoch = 0
 
   function emitAutoReplySent(payload) {
     if (typeof onAutoReplySent !== 'function') return
@@ -594,6 +595,7 @@ function isAuthorized(jid) {
     // y emitimos un evento que el renderer puede mostrar.
     if (authErrorReported) return
     authErrorReported = true
+    if (config.autoReply !== false) autoReplyEpoch += 1
     config.autoReply = false
     console.error('[whatsapp] bridge rechaza X-Auth-Token persistentemente; auto-reply desactivado hasta reinicio.', err?.message || err)
     try { emitter.emit('bridge-auth-error', { message: err?.message || 'auth error', at: Date.now() }) } catch {}
@@ -703,7 +705,8 @@ function isAuthorized(jid) {
     // bloquear el poll: el siguiente cliente puede entrar en paralelo.
     queueLenByJid.set(jid, pending + 1)
     const prev = inflightByJid.get(jid) || Promise.resolve()
-    const next = prev.then(() => acquireSlot().then(() => respondTo(jid, msg))).catch(() => {})
+    const queuedEpoch = autoReplyEpoch
+    const next = prev.then(() => acquireSlot().then(() => respondTo(jid, msg, queuedEpoch))).catch(() => {})
     const tracked = next.finally(() => {
       releaseSlot()
       const cur = queueLenByJid.get(jid) || 0
@@ -714,9 +717,19 @@ function isAuthorized(jid) {
     inflightByJid.set(jid, tracked)
   }
 
-  async function respondTo(jid, msg) {
+  function canAutoReplyNow(jid, epoch) {
+    const chat = chats.get(jid)
+    if (!chat) return false
+    if (!config.autoReply) return false
+    if (epoch !== autoReplyEpoch) return false
+    if (chat.mode !== 'auto') return false
+    return true
+  }
+
+  async function respondTo(jid, msg, epoch) {
     const chat = chats.get(jid)
     if (!chat) return
+    if (!canAutoReplyNow(jid, epoch)) return
 
     // Pre-check: si el binario claude no está disponible, no intentamos spawn.
     // Avisamos al cliente UNA vez cada CLAUDE_UNAVAILABLE_NOTIFY_MS (anti-spam) y
@@ -750,6 +763,7 @@ function isAuthorized(jid) {
     }
 
     if (!promptBody || !promptBody.trim()) return
+    if (!canAutoReplyNow(jid, epoch)) return
 
     try {
       const text = await runClaudePersona({
@@ -765,6 +779,7 @@ function isAuthorized(jid) {
         model: config.model || '',
         effort: config.effort || ''
       })
+      if (!canAutoReplyNow(jid, epoch)) return
       const safeReply = sanitizeAutoReplyText(text)
       if (!safeReply) {
         console.warn('[whatsapp] auto-reply bloqueado por tono agresivo; se usa fallback y se pasa a manual')
@@ -1037,7 +1052,10 @@ function isAuthorized(jid) {
   }
 
   function updateConfig(next) {
+    const prevAutoReply = config.autoReply !== false
     config = saveConfig(next || {})
+    const nextAutoReply = config.autoReply !== false
+    if (prevAutoReply && !nextAutoReply) autoReplyEpoch += 1
     claudeBin = config.claudePath
     checkClaudeBinary()
     loadPersona()

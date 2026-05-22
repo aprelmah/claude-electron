@@ -143,6 +143,10 @@
     return !!(wa && typeof wa.bridgeStatus === 'function' && typeof wa.bridgeControl === 'function')
   }
 
+  function isAutoReplyEnabled() {
+    return status && status.autoReply !== false
+  }
+
   function waitMs(ms) {
     return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
   }
@@ -882,7 +886,7 @@
       const bubble = renderBubble(m, isAutoChat, transcripts)
       convoBodyEl.appendChild(bubble)
     }
-    if (currentJid && typingTimers.has(currentJid)) appendTypingBubble()
+    if (currentJid && typingTimers.has(currentJid) && isAutoReplyEnabled()) appendTypingBubble()
     if (stickBottom) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
   }
 
@@ -908,6 +912,7 @@
 
   function showTypingFor(jid) {
     if (!jid) return
+    if (!isAutoReplyEnabled()) return
     const existing = typingTimers.get(jid)
     if (existing) clearTimeout(existing)
     const t = setTimeout(() => hideTypingFor(jid), TYPING_TIMEOUT_MS)
@@ -923,6 +928,12 @@
     const t = typingTimers.get(jid)
     if (t) { clearTimeout(t); typingTimers.delete(jid) }
     if (jid === currentJid) removeTypingBubble()
+  }
+
+  function clearAllTyping() {
+    for (const t of typingTimers.values()) clearTimeout(t)
+    typingTimers.clear()
+    removeTypingBubble()
   }
 
   function renderBubble(m, isAutoChat, transcripts) {
@@ -1185,6 +1196,7 @@
     try {
       const s = await wa.getStatus()
       status = Object.assign(status, s || {})
+      if (!isAutoReplyEnabled()) clearAllTyping()
       updateStatusUI()
     } catch (e) {
       console.warn('[wa] getStatus error', e)
@@ -1763,6 +1775,11 @@
       $('#wa-cfg-status', cfgModalEl).textContent = 'Guardando…'
       try {
         const r = await wa.saveConfig(partial)
+        if (r && r.ok) {
+          status.autoReply = partial.autoReply !== false
+          if (!isAutoReplyEnabled()) clearAllTyping()
+          updateStatusUI()
+        }
         await refreshStatus()
         $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok) ? 'Guardado.' : 'Error guardando'
       } catch (e) {
@@ -1961,7 +1978,7 @@
         const chatRef = chats.find(c => c && c.jid === jid)
         if (message.fromMe === true) {
           hideTypingFor(jid)
-        } else if (chatRef && chatRef.mode === 'auto') {
+        } else if (chatRef && chatRef.mode === 'auto' && isAutoReplyEnabled()) {
           showTypingFor(jid)
         }
         if (jid === currentJid) {
@@ -2027,6 +2044,7 @@
         } else if (s && typeof s === 'object') {
           status = Object.assign(status, s)
         }
+        if (!isAutoReplyEnabled()) clearAllTyping()
         updateStatusUI()
         if (qrModalEl && !qrModalEl.classList.contains('hidden')) refreshQrModal()
       })
