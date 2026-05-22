@@ -808,25 +808,7 @@ async function newTask() {
   if (state.dirty) {
     if (!confirm('Hay cambios sin guardar. ¿Descartar?')) return;
   }
-  // Agente-first: abre la ventana PTY del agente para crear la tarea conversacionalmente.
-  // El usuario revisa, da OK ("Guardar y cerrar") y la tarea aparece en la lista.
-  if (api.taskAgentOpen) {
-    try {
-      const r = await api.taskAgentOpen({ mode: 'create' });
-      if (!r || r.ok === false) {
-        toast((r && r.error) || 'No se pudo abrir el agente. Mostrando editor a mano.', 'error');
-        showEditorFallback();
-      }
-    } catch (e) {
-      toast('Error abriendo agente: ' + (e && e.message ? e.message : e), 'error');
-      showEditorFallback();
-    }
-  } else {
-    showEditorFallback();
-  }
-}
-
-function showEditorFallback() {
+  // Form clásico: el "agente-first" se ha retirado. + Nueva muestra el editor vacío.
   state.selectedId = null;
   renderList();
   showEditor(emptyTaskDraft());
@@ -836,15 +818,21 @@ function showEditorFallback() {
 
 async function talkWithAgent() {
   if (!state.selectedId) return;
-  if (!api.taskAgentOpen) { toast('Agente no disponible', 'error'); return; }
   const t = state.tasks.find((x) => x.id === state.selectedId);
   if (!t) return;
+  if (!t.sessionId) {
+    toast('Esta tarea aún no tiene sesión Claude. Ejecútala al menos una vez.', 'info');
+    return;
+  }
+  if (!api.openSession) { toast('Sesión interactiva no disponible', 'error'); return; }
   try {
-    // Si la tarea tiene sessionId vivo y resume activo → modo 'resume' (--resume).
-    // Si no → 'iterate' (chatear sobre la tarea actual, agente puede emitir update).
-    const mode = (t.sessionId && t.resume !== false) ? 'resume' : 'iterate';
-    const r = await api.taskAgentOpen({ mode, taskId: t.id });
-    if (!r || r.ok === false) toast((r && r.error) || 'No se pudo abrir el agente', 'error');
+    const r = await api.openSession({
+      sessionId: t.sessionId,
+      cwd: t.cwd || '',
+      cli: t.cli || 'claude',
+      taskName: t.name || ''
+    });
+    if (!r || r.ok === false) toast((r && r.error) || 'No se pudo abrir la sesión', 'error');
   } catch (e) {
     toast('Error: ' + (e && e.message ? e.message : e), 'error');
   }

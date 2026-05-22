@@ -4047,12 +4047,74 @@ if (PERF) {
   }, 5000)
 }
 
+// Captura del último prompt enviado al PTY (para "Programar este prompt"). Mantenemos
+// un buffer heurístico: chars imprimibles, soporta backspace y bracketed paste, y al
+// ver \r o \n cuajamos el buffer en lastUserPromptFromTerm.
+let lastUserPromptFromTerm = ''
+let _userInputBuffer = ''
+let _inPaste = false
+function _absorbUserInput(data) {
+  if (typeof data !== 'string') return
+  let i = 0
+  while (i < data.length) {
+    const c = data[i]
+    // Bracketed paste start: ESC [ 2 0 0 ~
+    if (c === '\x1b' && data.substr(i, 6) === '\x1b[200~') {
+      _inPaste = true
+      i += 6
+      continue
+    }
+    if (c === '\x1b' && data.substr(i, 6) === '\x1b[201~') {
+      _inPaste = false
+      i += 6
+      continue
+    }
+    if (_inPaste) {
+      // Dentro del paste tratamos todo como texto literal (incluido \n).
+      if (c === '\r' || c === '\n') _userInputBuffer += '\n'
+      else _userInputBuffer += c
+      i += 1
+      continue
+    }
+    // ESC + secuencia (flechas, F-keys, etc.): saltar hasta letra final.
+    if (c === '\x1b') {
+      i += 1
+      // skip CSI
+      if (data[i] === '[') {
+        i += 1
+        while (i < data.length && !/[a-zA-Z~]/.test(data[i])) i += 1
+        i += 1
+      }
+      continue
+    }
+    // Backspace o DEL
+    if (c === '\x7f' || c === '\b') {
+      if (_userInputBuffer.length) _userInputBuffer = _userInputBuffer.slice(0, -1)
+      i += 1
+      continue
+    }
+    // Enter
+    if (c === '\r' || c === '\n') {
+      const trimmed = _userInputBuffer.trim()
+      if (trimmed.length >= 2) lastUserPromptFromTerm = trimmed
+      _userInputBuffer = ''
+      i += 1
+      continue
+    }
+    // Ctrl chars: ignorar
+    if (c.charCodeAt(0) < 0x20) { i += 1; continue }
+    _userInputBuffer += c
+    i += 1
+  }
+}
+
 term.onData((data) => {
   if (PERF) {
     const bytes = (typeof data === 'string') ? new Blob([data]).size : (data?.length || 0)
     perfKeyQueue.push({ t: performance.now(), bytes })
     if (perfKeyQueue.length > 50) perfKeyQueue.shift()
   }
+  try { _absorbUserInput(data) } catch {}
   window.api.writePty(data)
 })
 window.api.onPtyData((chunk) => {
@@ -4206,6 +4268,106 @@ cliSelector.addEventListener('change', async (e) => {
   document.getElementById('btn-tasks')?.addEventListener('click', () => {
     try { window.api.openTasksManager?.() } catch {}
   })
+
+  // ── Botón "Programar este prompt" → modal ──
+  document.getElementById('btn-schedule-prompt')?.addEventListener('click', () => {
+    openSchedulePromptModal().catch((e) => console.error('[schedule-prompt] error:', e))
+  })
+
+  async function openSchedulePromptModal() {
+    if (document.getElementById('schedule-prompt-backdrop')) return
+    const activeCli = await (window.api.getActiveCli ? window.api.getActiveCli() : Promise.resolve('claude'))
+    let cwd = ''
+    try { cwd = await window.api.ptyCwd() } catch {}
+
+    const backdrop = document.createElement('div')
+    backdrop.id = 'schedule-prompt-backdrop'
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:20px;'
+    const isLight = document.body.classList.contains('light')
+    const bg = isLight ? '#ffffff' : '#1f2127'
+    const fg = isLight ? '#1a1a1d' : '#f0f0f3'
+    const border = isLight ? '#d8d8de' : '#33363d'
+    const inputBg = isLight ? '#f5f5f7' : '#15171b'
+    const accent = '#3fb950'
+
+    const modal = document.createElement('div')
+    modal.style.cssText = `background:${bg};color:${fg};border:1px solid ${border};border-radius:10px;width:min(560px,100%);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.5);font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;`
+    modal.innerHTML = `
+      <div style="padding:14px 18px;border-bottom:1px solid ${border};font-size:14px;font-weight:600;">Programar este prompt</div>
+      <div style="padding:14px 18px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;">
+        <label style="display:flex;flex-direction:column;gap:5px;">
+          <span style="font-size:11px;color:${isLight ? '#666' : '#aaa'};text-transform:uppercase;letter-spacing:0.4px;">Nombre</span>
+          <input id="sp-name" type="text" style="background:${inputBg};color:${fg};border:1px solid ${border};border-radius:6px;padding:8px 10px;font:13px inherit;" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:5px;">
+          <span style="font-size:11px;color:${isLight ? '#666' : '#aaa'};text-transform:uppercase;letter-spacing:0.4px;">Frecuencia</span>
+          <select id="sp-freq" style="background:${inputBg};color:${fg};border:1px solid ${border};border-radius:6px;padding:8px 10px;font:13px inherit;">
+            <option value="0 9 * * *">Cada día a las 09:00</option>
+            <option value="0 9-21/4 * * *">Cada 4 horas (9 a 21)</option>
+            <option value="0 * * * *">Cada hora en punto</option>
+            <option value="0 9 * * 1">Cada lunes a las 09:00</option>
+            <option value="__custom">Personalizado (cron)</option>
+          </select>
+          <input id="sp-cron" type="text" placeholder="m h dom mon dow" style="display:none;background:${inputBg};color:${fg};border:1px solid ${border};border-radius:6px;padding:8px 10px;font:13px monospace;margin-top:6px;" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:5px;">
+          <span style="font-size:11px;color:${isLight ? '#666' : '#aaa'};text-transform:uppercase;letter-spacing:0.4px;">Prompt</span>
+          <textarea id="sp-prompt" rows="7" style="background:${inputBg};color:${fg};border:1px solid ${border};border-radius:6px;padding:8px 10px;font:13px inherit;resize:vertical;min-height:120px;"></textarea>
+        </label>
+        <div id="sp-error" style="display:none;color:#f87171;font-size:12px;"></div>
+      </div>
+      <div style="padding:12px 18px;border-top:1px solid ${border};display:flex;justify-content:flex-end;gap:8px;">
+        <button id="sp-cancel" style="background:transparent;color:${fg};border:1px solid ${border};border-radius:6px;padding:7px 14px;cursor:pointer;font:13px inherit;">Cancelar</button>
+        <button id="sp-save" style="background:${accent};color:#fff;border:none;border-radius:6px;padding:7px 14px;cursor:pointer;font:13px inherit;font-weight:600;">Guardar y cerrar</button>
+      </div>`
+    backdrop.appendChild(modal)
+    document.body.appendChild(backdrop)
+
+    const $ = (id) => modal.querySelector('#' + id)
+    $('sp-name').value = 'Tarea sin nombre'
+    $('sp-prompt').value = lastUserPromptFromTerm || ''
+    const freq = $('sp-freq')
+    const cron = $('sp-cron')
+    freq.addEventListener('change', () => {
+      cron.style.display = freq.value === '__custom' ? '' : 'none'
+      if (freq.value === '__custom' && !cron.value) cron.value = '0 * * * *'
+    })
+
+    function close() { try { backdrop.remove() } catch {} }
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close() })
+    $('sp-cancel').addEventListener('click', close)
+    document.addEventListener('keydown', function escHandler(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler) }
+    })
+
+    $('sp-save').addEventListener('click', async () => {
+      const errBox = $('sp-error')
+      errBox.style.display = 'none'
+      const name = ($('sp-name').value || '').trim() || 'Tarea sin nombre'
+      const cronExpr = freq.value === '__custom' ? ($('sp-cron').value || '').trim() : freq.value
+      const prompt = ($('sp-prompt').value || '').trim()
+      if (!prompt) { errBox.textContent = 'El prompt no puede estar vacío.'; errBox.style.display = ''; return }
+      if (!cronExpr) { errBox.textContent = 'Frecuencia inválida.'; errBox.style.display = ''; return }
+      $('sp-save').disabled = true
+      try {
+        const res = await window.api.tasksCreateFromPrompt?.({ name, cron: cronExpr, prompt, cli: activeCli, cwd })
+        if (!res || res.ok === false) {
+          errBox.textContent = (res && res.error) || 'No se pudo crear la tarea.'
+          errBox.style.display = ''
+          $('sp-save').disabled = false
+          return
+        }
+        close()
+        showTaskToast('Tarea creada', 'ok')
+      } catch (e) {
+        errBox.textContent = 'Error: ' + (e && e.message ? e.message : e)
+        errBox.style.display = ''
+        $('sp-save').disabled = false
+      }
+    })
+
+    setTimeout(() => $('sp-name').focus(), 30)
+  }
 
   // ── Toasts para runs programados ──
   function ensureToastContainer() {

@@ -43,6 +43,36 @@ function registerTasksIpc({
     return assertScheduler().upsertTask(data)
   })
 
+  ipcMain.handle('tasks:create-from-prompt', async (_event, payload = {}) => {
+    try {
+      const sched = assertScheduler()
+      const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : 'Tarea sin nombre'
+      const cron = typeof payload.cron === 'string' ? payload.cron.trim() : ''
+      const prompt = typeof payload.prompt === 'string' ? payload.prompt.trim() : ''
+      const cli = payload.cli === 'codex' ? 'codex' : 'claude'
+      const cwd = typeof payload.cwd === 'string' ? payload.cwd : ''
+      if (!prompt) return { ok: false, error: 'El prompt no puede estar vacío' }
+      if (!cron) return { ok: false, error: 'Falta cron' }
+      const v = sched.validateCron(cron)
+      if (!v || v.ok === false) return { ok: false, error: 'Cron inválido: ' + (v && v.error ? v.error : cron) }
+      const task = await sched.upsertTask({
+        name,
+        cron,
+        prompt,
+        cli,
+        cwd,
+        model: 'haiku',
+        effort: '',
+        resume: true,
+        enabled: true,
+        sinks: { logApp: true, notifyMacOS: true, telegram: true }
+      })
+      return { ok: true, id: task && task.id }
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : String(err) }
+    }
+  })
+
   ipcMain.handle('tasks:update', async (_event, { id, patch }) => {
     const sched = assertScheduler()
     const current = await sched.persistence.getTask(id)
