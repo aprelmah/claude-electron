@@ -16,6 +16,8 @@ const btnSettings = document.getElementById('btn-settings')
 const btnBitacora = document.getElementById('btn-bitacora')
 const btnProposals = document.getElementById('btn-proposals')
 const proposalBadge = document.getElementById('proposal-badge')
+const btnTasksInbox = document.getElementById('btn-tasks-inbox')
+const tasksInboxBadge = document.getElementById('tasks-inbox-badge')
 const proposalModal = document.getElementById('proposal-modal')
 const proposalModalId = document.getElementById('proposal-modal-id')
 const proposalTitle = document.getElementById('proposal-title')
@@ -4165,4 +4167,262 @@ cliSelector.addEventListener('change', async (e) => {
   }
 
   term.focus()
+})()
+
+// === Bandeja de respuestas de tareas ===
+;(function setupTasksInbox() {
+  if (!btnTasksInbox || !window.api?.tasksInbox) return
+
+  const api = window.api.tasksInbox
+  let dropdown = null
+  let outputModal = null
+  let lastItems = []
+
+  function fmtRelativeInbox(ts) {
+    if (!ts) return ''
+    const date = new Date(ts)
+    if (isNaN(date.getTime())) return ''
+    const now = Date.now()
+    const diff = now - date.getTime()
+    if (diff < 60_000) return 'ahora'
+    if (diff < 3600_000) return 'hace ' + Math.floor(diff / 60_000) + ' min'
+    const today = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const hhmm = pad(date.getHours()) + ':' + pad(date.getMinutes())
+    if (date.toDateString() === today.toDateString()) return 'hoy ' + hhmm
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+    if (date.toDateString() === yesterday.toDateString()) return 'ayer ' + hhmm
+    return pad(date.getDate()) + '/' + pad(date.getMonth() + 1) + ' ' + hhmm
+  }
+
+  function escapeHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
+  function updateBadge(count) {
+    const n = Math.max(0, Number(count) || 0)
+    if (!tasksInboxBadge) return
+    tasksInboxBadge.textContent = String(n > 99 ? '99+' : n)
+    tasksInboxBadge.classList.toggle('hidden', n <= 0)
+  }
+
+  async function refreshBadge() {
+    try {
+      const res = await api.get({ unreadOnly: true, limit: 1 })
+      updateBadge(res?.unreadCount || 0)
+    } catch {}
+  }
+
+  function ensureOutputModal() {
+    if (outputModal) return outputModal
+    outputModal = document.createElement('div')
+    outputModal.id = 'tasks-inbox-output-modal'
+    outputModal.className = 'hidden'
+    outputModal.innerHTML = `
+      <div class="tio-card">
+        <div class="tio-header">
+          <span class="tio-title">Salida de tarea</span>
+          <button type="button" class="tio-close" aria-label="Cerrar">Cerrar</button>
+        </div>
+        <div class="tio-body"><pre class="tio-output"></pre></div>
+      </div>
+    `
+    document.body.appendChild(outputModal)
+    const close = () => outputModal.classList.add('hidden')
+    outputModal.addEventListener('click', (e) => {
+      if (e.target === outputModal) close()
+    })
+    outputModal.querySelector('.tio-close').addEventListener('click', close)
+    return outputModal
+  }
+
+  function showOutputModal(item) {
+    const m = ensureOutputModal()
+    m.querySelector('.tio-title').textContent = 'Salida · ' + (item?.taskName || 'Tarea')
+    m.querySelector('.tio-output').textContent = String(item?.output || item?.summary || '(sin salida)')
+    m.classList.remove('hidden')
+  }
+
+  function ensureDropdown() {
+    if (dropdown) return dropdown
+    dropdown = document.createElement('div')
+    dropdown.id = 'tasks-inbox-dropdown'
+    dropdown.className = 'hidden'
+    dropdown.innerHTML = `
+      <div class="tasks-inbox-header">
+        <span>Respuestas pendientes</span>
+        <button type="button" class="tasks-inbox-clear" title="Marcar todo como leído">Marcar todo leído</button>
+      </div>
+      <div class="tasks-inbox-list"></div>
+      <div class="tasks-inbox-footer"><a class="tasks-inbox-open-manager">Ver todas en Tareas programadas</a></div>
+    `
+    document.body.appendChild(dropdown)
+    dropdown.addEventListener('click', (e) => e.stopPropagation())
+    dropdown.querySelector('.tasks-inbox-clear').addEventListener('click', async () => {
+      try {
+        const res = await api.markAllRead()
+        updateBadge(res?.unreadCount || 0)
+        await loadAndRender()
+      } catch (err) {
+        console.error('[tasksInbox] markAllRead error:', err)
+      }
+    })
+    dropdown.querySelector('.tasks-inbox-open-manager').addEventListener('click', () => {
+      hideDropdown()
+      try { document.getElementById('btn-tasks')?.click() } catch {}
+    })
+    return dropdown
+  }
+
+  function positionDropdown() {
+    if (!dropdown || !btnTasksInbox) return
+    const rect = btnTasksInbox.getBoundingClientRect()
+    const dw = 360
+    let left = rect.left
+    if (left + dw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - dw - 8)
+    dropdown.style.left = left + 'px'
+    dropdown.style.top = (rect.bottom + 6) + 'px'
+  }
+
+  function renderItems(items) {
+    const dd = ensureDropdown()
+    const list = dd.querySelector('.tasks-inbox-list')
+    if (!items || !items.length) {
+      list.innerHTML = '<div class="tasks-inbox-empty">Sin respuestas pendientes.</div>'
+      return
+    }
+    const html = items.map((it) => {
+      const cls = 'tasks-inbox-item' + (it.read ? '' : ' unread')
+      const time = escapeHtml(fmtRelativeInbox(it.finishedAt))
+      const cli = escapeHtml((it.cli || '').toLowerCase())
+      const name = escapeHtml(it.taskName || '(sin nombre)')
+      const statusErr = it.status && it.status !== 'ok' ? ' ti-status-err' : ''
+      const sum = escapeHtml(it.summary || '')
+      return `<div class="tasks-inbox-item${it.read ? '' : ' unread'}" data-run-id="${escapeHtml(it.runId || '')}">
+        <div class="ti-line1"><span class="ti-name${statusErr}">${name}</span>${cli ? `<span class="ti-cli">${cli}</span>` : ''}</div>
+        <div class="ti-time">${time}</div>
+        <div class="ti-summary">${sum}</div>
+      </div>`
+    }).join('')
+    list.innerHTML = html
+    list.querySelectorAll('.tasks-inbox-item').forEach((row) => {
+      row.addEventListener('click', async () => {
+        const runId = row.dataset.runId
+        if (!runId) return
+        const item = lastItems.find((x) => x.runId === runId)
+        if (!item) return
+        try { await api.markRead(runId) } catch {}
+        try { await refreshBadge() } catch {}
+        hideDropdown()
+        if (item.sessionId) {
+          try {
+            const res = await api.openTaskSession({
+              sessionId: item.sessionId,
+              cwd: item.cwd,
+              cli: item.cli
+            })
+            if (!res?.ok) {
+              const msg = res?.error || 'No pude abrir la sesión'
+              try { showStatus && showStatus(msg, 'error', 5000) } catch {}
+              showOutputModal(item)
+            }
+          } catch (err) {
+            try { showStatus && showStatus(err?.message || String(err), 'error', 5000) } catch {}
+            showOutputModal(item)
+          }
+        } else {
+          try { showStatus && showStatus('Esta tarea no guarda sesión continuable. Abriendo el output.', 'info', 4000) } catch {}
+          showOutputModal(item)
+        }
+      })
+    })
+  }
+
+  async function loadAndRender() {
+    try {
+      const res = await api.get({ limit: 50 })
+      const items = Array.isArray(res?.items) ? res.items : []
+      lastItems = items
+      updateBadge(res?.unreadCount || 0)
+      renderItems(items)
+    } catch (err) {
+      console.error('[tasksInbox] load error:', err)
+      lastItems = []
+      const dd = ensureDropdown()
+      dd.querySelector('.tasks-inbox-list').innerHTML = '<div class="tasks-inbox-empty">Sin respuestas pendientes.</div>'
+    }
+  }
+
+  function showDropdown() {
+    ensureDropdown()
+    dropdown.classList.remove('hidden')
+    positionDropdown()
+    loadAndRender()
+  }
+
+  function hideDropdown() {
+    if (dropdown) dropdown.classList.add('hidden')
+  }
+
+  btnTasksInbox.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (dropdown && !dropdown.classList.contains('hidden')) {
+      hideDropdown()
+    } else {
+      showDropdown()
+    }
+  })
+
+  document.addEventListener('click', (e) => {
+    if (!dropdown || dropdown.classList.contains('hidden')) return
+    if (dropdown.contains(e.target) || btnTasksInbox.contains(e.target)) return
+    hideDropdown()
+  })
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dropdown && !dropdown.classList.contains('hidden')) hideDropdown()
+  })
+
+  window.addEventListener('resize', () => {
+    if (dropdown && !dropdown.classList.contains('hidden')) positionDropdown()
+  })
+
+  // Listener del broadcast del backend
+  if (api.onUpdated) {
+    api.onUpdated((payload) => {
+      updateBadge(payload?.unreadCount || 0)
+      if (dropdown && !dropdown.classList.contains('hidden')) loadAndRender()
+    })
+  }
+
+  // Listener para abrir sesión desde main process
+  if (api.onRequestOpenSession) {
+    api.onRequestOpenSession(async ({ sessionId, cwd, cli } = {}) => {
+      if (!sessionId || !cwd) return
+      try {
+        try { showStatus && showStatus('Continuando sesión…', 'busy') } catch {}
+        try {
+          if (cli && typeof window.api?.setActiveCli === 'function') {
+            await window.api.setActiveCli(cli)
+          }
+        } catch {}
+        try { term.reset() } catch {}
+        try { term.clear() } catch {}
+        await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
+        try { hideStatus && hideStatus() } catch {}
+        try { term.focus() } catch {}
+      } catch (err) {
+        try { showStatus && showStatus(err?.message || String(err), 'error', 6000) } catch {}
+      }
+    })
+  }
+
+  // Carga inicial
+  refreshBadge()
 })()

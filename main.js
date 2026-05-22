@@ -2678,6 +2678,51 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) =
   })
 })
 
+// Abrir una sesión continuable desde la bandeja de tareas.
+// Valida sessionId + existencia del JSONL, enfoca la ventana principal y
+// pide al renderer que ejecute resumeSession() (necesita cols/rows del xterm).
+ipcMain.handle('app:open-task-session', async (_event, payload = {}) => {
+  try {
+    const sessionId = String(payload?.sessionId || '').trim()
+    const cwd = String(payload?.cwd || '').trim()
+    const cli = String(payload?.cli || 'claude').trim() || 'claude'
+
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (!uuidRe.test(sessionId)) {
+      return { ok: false, error: 'sessionId inválido' }
+    }
+    if (!cwd) return { ok: false, error: 'cwd requerido' }
+
+    if (cli === 'claude') {
+      const jsonlPath = path.join(projectDirFor(cwd), `${sessionId}.jsonl`)
+      if (!fs.existsSync(jsonlPath)) {
+        return { ok: false, error: 'Sesión no encontrada en disco' }
+      }
+    }
+
+    const target = primaryWcId != null ? sessions.get(primaryWcId) : null
+    const fallback = target || Array.from(sessions.values()).find((x) => x?.win && !x.win.isDestroyed())
+    if (!fallback?.win || fallback.win.isDestroyed()) {
+      return { ok: false, error: 'Ventana principal no disponible' }
+    }
+
+    try {
+      if (fallback.win.isMinimized()) fallback.win.restore()
+      fallback.win.show()
+      fallback.win.focus()
+    } catch {}
+
+    try {
+      fallback.win.webContents.send('app:request-open-session', { sessionId, cwd, cli })
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
 ipcMain.handle('get-system-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
 
 ipcMain.handle('get-active-cli', (event) => {
