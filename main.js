@@ -52,6 +52,7 @@ const { registerAutomationsIpc } = require('./main/automations-ipc')
 const { registerBitacoraIpc } = require('./main/bitacora-ipc')
 const { createHealthCollectors } = require('./main/health-collectors')
 const { createSessionListing } = require('./main/claude-session-listing')
+const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -3837,36 +3838,11 @@ ipcMain.handle('app:disconnect-session-from-telegram', async (event) => {
   }
 })
 
-ipcMain.on('window-close', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  // decision: hide solo si es la única ventana (preserva comportamiento previo); con múltiples, close.
-  if (sessions.size > 1) w.close()
-  else w.hide()
-})
-
-ipcMain.on('window-minimize', (event) => {
-  winFromEvent(event)?.minimize()
-})
-
-ipcMain.on('window-toggle-maximize', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  w.isMaximized() ? w.unmaximize() : w.maximize()
-})
-
-ipcMain.on('window-toggle-pin', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  w.setAlwaysOnTop(!w.isAlwaysOnTop())
-})
-
-ipcMain.handle('is-pinned', (event) => {
-  return winFromEvent(event)?.isAlwaysOnTop() ?? false
-})
-
-ipcMain.on('window-new', () => {
-  createWindow()
+registerWindowControlsIpc({
+  ipcMain,
+  winFromEvent,
+  getSessions: () => sessions,
+  createWindow
 })
 
 registerBitacoraIpc({
