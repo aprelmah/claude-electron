@@ -1,6 +1,7 @@
 # POWER-AGENT Runbook
 
 ## Latest Handoff
+- **`HANDOFF-CODEX-2026-05-22-WHATSAPP-GRUPOS-AUTO-GLOBAL.md`** — cierre de continuidad: grupos forzados a MANUAL (backend+UI) y botón `AUTO TODO` para forzar AUTO masivo en chats individuales.
 - **`HANDOFF-CODEX-2026-05-22-WHATSAPP-PANEL-CONTINUIDAD-FINAL.md`** — continuidad final WhatsApp (STOP/START bridge estable sin refresh manual, QR modal con polling+reintento, descarga de media desde visor y fix de race: auto-reply global OFF invalida colas pendientes + apaga typing UI).
 - **`HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md`** — RELEASE ACTUAL (1.3.0). Ola 1 + Ola 2 + post-fixes: Electron 32 LTS, main.js modularizado a 34 módulos en `main/`, WhatsApp bridge con auth token, sesiones Codex en LAN, hot session switch, drag&drop con webUtils. Tag `release-1.3.0-2026-05-22`. Empezar SIEMPRE por este archivo.
 - `HANDOFF-CODEX-2026-05-21-REMOTE-SESSION-CONTINUIDAD-CHAT-FIRST.md` (continuidad final de sesión remota LAN: flujo cámara/archivo chat-first, fixes de ACL read-only, despliegue y pendientes de rediseño/refactor UX).
