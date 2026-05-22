@@ -365,6 +365,7 @@
       display: grid;
       gap: 8px;
     }
+    body:not([data-connected="true"]) .session-dock { display: none; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
@@ -1420,8 +1421,8 @@
             <div class="field">
               <label for="provider-id">Proveedor</label>
               <select id="provider-id" class="control">
-                <option value="codex">Codex</option>
                 <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
               </select>
             </div>
             <div class="field">
