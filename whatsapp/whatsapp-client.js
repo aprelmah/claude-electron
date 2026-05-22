@@ -4,12 +4,14 @@ const os = require('os')
 const http = require('http')
 const { EventEmitter } = require('events')
 const { runClaudePersona, buildPrompt } = require('./whatsapp-auto-reply')
+const { readToken, HEADER_NAME, defaultTokenPath } = require('./whatsapp-auth')
 
 const BRIDGE_URL = 'http://127.0.0.1:3031'
 const BRIDGE_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
 const CONFIG_PATH = path.join(BRIDGE_DIR, 'config.json')
 const STATE_PATH = path.join(BRIDGE_DIR, 'state.json')
 const MEDIA_DIR = path.join(BRIDGE_DIR, 'media')
+const AUTH_TOKEN_PATH = defaultTokenPath()
 const POLL_MS = 1500
 const STATUS_POLL_MS = 5000
 const STATE_FLUSH_MS = 5000
@@ -180,7 +182,31 @@ function parseDataUrlBase64(value) {
   return { mimetype: m[1], base64: m[2] }
 }
 
-function bridgeFetch(method, urlPath, body) {
+// Token cacheado en memoria. Si el bridge devuelve 401 lo relemos del disco una
+// sola vez y reintentamos. Esto cubre:
+//   - Primer arranque del bridge (genera token nuevo después del primer fetch).
+//   - Rotación manual (usuario borra el archivo y el bridge regenera).
+let cachedAuthToken = null
+let cachedAuthMtime = 0
+let authErrorReported = false
+
+function loadAuthTokenFromDisk() {
+  try {
+    const stat = fs.statSync(AUTH_TOKEN_PATH)
+    cachedAuthMtime = stat.mtimeMs || 0
+  } catch {
+    cachedAuthMtime = 0
+  }
+  cachedAuthToken = readToken({ tokenPath: AUTH_TOKEN_PATH })
+  return cachedAuthToken
+}
+
+function getAuthToken({ forceReload = false } = {}) {
+  if (forceReload || !cachedAuthToken) return loadAuthTokenFromDisk()
+  return cachedAuthToken
+}
+
+function bridgeFetchOnce(method, urlPath, body, { token } = {}) {
   return new Promise((resolve, reject) => {
     const payload = body !== undefined ? Buffer.from(JSON.stringify(body)) : null
     const headers = {}
@@ -188,6 +214,7 @@ function bridgeFetch(method, urlPath, body) {
       headers['content-type'] = 'application/json'
       headers['content-length'] = payload.length
     }
+    if (token) headers[HEADER_NAME] = token
     // Subimos timeout para payloads grandes (envíos de media en base64).
     const timeout = payload && payload.length > BRIDGE_LARGE_PAYLOAD_BYTES
       ? BRIDGE_TIMEOUT_LARGE_MS
@@ -220,6 +247,38 @@ function bridgeFetch(method, urlPath, body) {
     if (payload) req.write(payload)
     req.end()
   })
+}
+
+// Wrapper público: inyecta token y maneja 401 con un único retry tras re-leer
+// el token del disco. Si vuelve a fallar, propaga el error.
+function bridgeFetch(method, urlPath, body) {
+  return (async () => {
+    const tok = getAuthToken()
+    try {
+      return await bridgeFetchOnce(method, urlPath, body, { token: tok })
+    } catch (err) {
+      if (err && err.status === 401) {
+        // Reintenta una vez tras releer del disco (token puede haberse generado
+        // por el bridge justo después del primer fetch, o rotado).
+        const fresh = getAuthToken({ forceReload: true })
+        if (fresh && fresh !== tok) {
+          try {
+            return await bridgeFetchOnce(method, urlPath, body, { token: fresh })
+          } catch (err2) {
+            if (err2 && err2.status === 401) throw markAuthError(err2)
+            throw err2
+          }
+        }
+        throw markAuthError(err)
+      }
+      throw err
+    }
+  })()
+}
+
+function markAuthError(err) {
+  err.bridgeAuthError = true
+  return err
 }
 
 function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySent } = {}) {
@@ -474,6 +533,9 @@ function isAuthorized(jid) {
         await handleIncoming(raw)
       }
     } catch (err) {
+      if (err && err.bridgeAuthError) {
+        handleBridgeAuthError(err)
+      }
       // backoff exponencial hasta 30s
       pollBackoffMs = Math.min(pollBackoffMs * 2, 30_000)
       if (pollBackoffMs >= 8000 && pollBackoffMs % 8000 < POLL_MS) {
@@ -485,6 +547,17 @@ function isAuthorized(jid) {
         pollTimer.unref?.()
       }
     }
+  }
+
+  function handleBridgeAuthError(err) {
+    // Si el bridge nos rechaza por token persistentemente, desactivamos auto-reply
+    // en memoria (sin tocar config en disco) para que Claude no intente responder
+    // y emitimos un evento que el renderer puede mostrar.
+    if (authErrorReported) return
+    authErrorReported = true
+    config.autoReply = false
+    console.error('[whatsapp] bridge rechaza X-Auth-Token persistentemente; auto-reply desactivado hasta reinicio.', err?.message || err)
+    try { emitter.emit('bridge-auth-error', { message: err?.message || 'auth error', at: Date.now() }) } catch {}
   }
 
   async function handleIncoming(raw) {
@@ -954,7 +1027,15 @@ function isAuthorized(jid) {
     if (!stopped && pollTimer) return // ya activo
     stopped = false
     pollBackoffMs = POLL_MS
+    authErrorReported = false
     fs.mkdirSync(BRIDGE_DIR, { recursive: true })
+    // Carga token de auth (si existe). Si no existe, el primer fetch fallará con
+    // 401 y el bridge debería generarlo; el siguiente intento lo encontrará en
+    // disco. Si el bridge no está corriendo, los fetch fallan por conexión.
+    loadAuthTokenFromDisk()
+    if (!cachedAuthToken) {
+      console.warn('[whatsapp] no auth token in disk at', AUTH_TOKEN_PATH, '— se intentará releer tras el primer fetch')
+    }
     config = loadConfig()
     claudeBin = config.claudePath
     checkClaudeBinary()
