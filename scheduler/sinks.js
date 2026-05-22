@@ -40,4 +40,31 @@ function createSinks({ telegramBridge, broadcastToAllWindows }) {
   }
 }
 
-module.exports = { createSinks }
+function createInboxSink({ inbox, broadcast }) {
+  if (!inbox) return null
+  const bc = typeof broadcast === 'function' ? broadcast : () => {}
+  return function inboxSink({ task, run }) {
+    try {
+      if (!run || run.status !== 'ok') return
+      const sessionId = (task && task.sessionId) || (run && run.sessionId) || null
+      inbox.appendUnread({
+        runId: run.runId,
+        taskId: task ? task.id : '',
+        taskName: task ? task.name : '',
+        cli: task ? task.cli : 'claude',
+        sessionId,
+        cwd: (task && task.cwd) || '',
+        finishedAt: run.finishedAt,
+        status: 'ok',
+        output: run.output || ''
+      })
+      try {
+        bc('tasks:inbox-updated', { unreadCount: inbox.count({ unreadOnly: true }) })
+      } catch {}
+    } catch {
+      // Un fallo en el inbox no debe romper el scheduler
+    }
+  }
+}
+
+module.exports = { createSinks, createInboxSink }

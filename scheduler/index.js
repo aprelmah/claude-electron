@@ -150,6 +150,9 @@ class TaskScheduler {
     if (task.sinks && task.sinks.telegram && this.sinks.telegram) {
       try { await this.sinks.telegram({ task, run }) } catch {}
     }
+    if (this.sinks.inbox) {
+      try { this.sinks.inbox({ task, run }) } catch {}
+    }
 
     // Recalcular nextRunAt tras el run (cron sigue activo)
     if (task.enabled) this._updateNextRun(task).catch(() => {})

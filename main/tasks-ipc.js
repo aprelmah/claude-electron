@@ -12,7 +12,9 @@ function registerTasksIpc({
   getAppConfig,
   getSessions,
   getTasksManagerWin,
-  openTasksManager
+  openTasksManager,
+  getInbox,
+  getSessionLinks
 }) {
   function assertScheduler() {
     const sched = getScheduler()
@@ -135,6 +137,42 @@ function registerTasksIpc({
     const w = getTasksManagerWin()
     if (w && !w.isDestroyed()) w.minimize()
     return { ok: true }
+  })
+
+  ipcMain.handle('tasks:reset-session', async (_event, { id }) => {
+    const sched = assertScheduler()
+    const current = await sched.persistence.getTask(id)
+    if (!current) throw new Error('Tarea no encontrada')
+    await sched.persistence.updateTask(id, { sessionId: null })
+    return { ok: true }
+  })
+
+  ipcMain.handle('tasks:get-inbox', async (_event, opts = {}) => {
+    const inbox = getInbox && getInbox()
+    if (!inbox) return { items: [], unreadCount: 0 }
+    const items = inbox.list({ unreadOnly: !!opts.unreadOnly, limit: opts.limit || 100 })
+    return { items, unreadCount: inbox.count({ unreadOnly: true }) }
+  })
+
+  ipcMain.handle('tasks:mark-inbox-read', async (_event, { runId } = {}) => {
+    const inbox = getInbox && getInbox()
+    if (!inbox) return { ok: false }
+    inbox.markRead(runId)
+    return { ok: true, unreadCount: inbox.count({ unreadOnly: true }) }
+  })
+
+  ipcMain.handle('tasks:mark-all-read', async () => {
+    const inbox = getInbox && getInbox()
+    if (!inbox) return { ok: false }
+    inbox.markAllRead()
+    return { ok: true, unreadCount: 0 }
+  })
+
+  ipcMain.handle('tasks:session-links', async (_event, { sessionId } = {}) => {
+    const sl = getSessionLinks && getSessionLinks()
+    if (!sl) return { links: null, isLinked: false }
+    const links = sl.getLinks(sessionId)
+    return { links, isLinked: !!(links && (links.task || links.telegram || links.whatsapp)) }
   })
 }
 
