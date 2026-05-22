@@ -6340,17 +6340,29 @@ ipcMain.handle('whatsapp:send-text', async (_e, jid, text, opts) => {
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 
+// Sandbox para envío de media: aceptamos data URL inline (base64 puro, no
+// toca FS) o filePath dentro de roots permitidos. Sin esto, un XSS podría
+// hacer "whatsapp:send-image('victima', '~/.ssh/id_rsa')".
+function isMediaInputSafe(input) {
+  if (typeof input !== 'string' || !input) return false
+  if (input.startsWith('data:')) return true
+  return isPathSafe(input, allowedFsRoots())
+}
+
 ipcMain.handle('whatsapp:send-image', async (_e, jid, filePath, caption) => {
+  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
   try { return await requireWhatsapp().sendMedia(jid, filePath, 'image', { caption: caption || '' }) }
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 
 ipcMain.handle('whatsapp:send-audio', async (_e, jid, filePath, ptt) => {
+  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
   try { return await requireWhatsapp().sendMedia(jid, filePath, 'audio', { ptt: ptt !== false }) }
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
 
 ipcMain.handle('whatsapp:send-document', async (_e, jid, filePath, caption) => {
+  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
   try { return await requireWhatsapp().sendMedia(jid, filePath, 'document', { caption: caption || '' }) }
   catch (err) { return { ok: false, error: err?.message || String(err) } }
 })
