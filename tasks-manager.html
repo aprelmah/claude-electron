@@ -152,6 +152,26 @@ body {
   border-color: var(--error);
 }
 
+.btn-small {
+  -webkit-app-region: no-drag;
+  padding: 3px 9px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.btn-small:hover:not(:disabled) { background: var(--bg-elev); }
+.btn-small:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-small.btn-warn { color: #e85; }
+.btn-small.btn-warn:hover:not(:disabled) {
+  background: rgba(232, 136, 85, 0.1);
+  border-color: #e85;
+}
+
 .icon-btn {
   -webkit-app-region: no-drag;
   background: transparent;
@@ -1166,6 +1186,19 @@ input[type="radio"], input[type="checkbox"] {
             <input type="checkbox" id="f-resume">
             Reanudar sesión (mantener contexto entre runs)
           </label>
+          <div id="session-info-block" class="session-info-block" style="margin-top:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-elev);font-size:12px;display:none;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div style="flex:1;min-width:0;">
+                <span style="color:var(--fg-muted);">Sesión actual:</span>
+                <code id="task-session-id" style="font-family:var(--mono);font-size:11px;color:var(--fg);background:transparent;padding:0;margin-left:4px;">—</code>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0;">
+                <button type="button" id="btn-open-task-session" class="btn-small" title="Abrir sesión en ventana principal">▶ Abrir</button>
+                <button type="button" id="btn-reset-task-session" class="btn-small btn-warn" title="Resetear sesión (próxima run arranca limpia)">↺ Resetear</button>
+              </div>
+            </div>
+            <div id="task-session-status" style="margin-top:6px;color:var(--fg-muted);font-size:11px;line-height:1.4;">Esta tarea no reanuda sesión. Activa la casilla para mantener contexto entre runs.</div>
+          </div>
         </div>
 
         <div class="field">

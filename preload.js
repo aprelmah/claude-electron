@@ -120,6 +120,7 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('app:request-open-session', h)
     }
   },
+  tasksSessionLinks: (sessionId) => ipcRenderer.invoke('tasks:session-links', { sessionId }),
   openBitacoraWindow: () => ipcRenderer.invoke('bitacora:open'),
   onTaskRunStarted: (cb) => {
     const h = (_e, p) => cb(p)

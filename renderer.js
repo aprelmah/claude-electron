@@ -3794,6 +3794,55 @@ window.addEventListener('mouseup', () => {
 
 // ── Sesiones (historial) ──
 
+// Cache de session-links con TTL para no martillear al main en cada render.
+const sessionLinksCache = new Map() // sessionId -> { at: ts, value: {links, isLinked} }
+const SESSION_LINKS_TTL_MS = 10_000
+
+async function getSessionLinksCached(sessionId) {
+  if (!sessionId) return null
+  const now = Date.now()
+  const hit = sessionLinksCache.get(sessionId)
+  if (hit && (now - hit.at) < SESSION_LINKS_TTL_MS) return hit.value
+  try {
+    if (typeof window.api.tasksSessionLinks !== 'function') return null
+    const value = await window.api.tasksSessionLinks(sessionId)
+    if (value && typeof value === 'object') {
+      sessionLinksCache.set(sessionId, { at: now, value })
+      return value
+    }
+  } catch {}
+  return null
+}
+
+function describeSessionLinks(links) {
+  const reasons = []
+  if (!links) return reasons
+  if (links.task) reasons.push(`Tarea programada: ${links.task.name || links.task.id || '?'}`)
+  if (links.telegram) reasons.push(`Chat Telegram: ${links.telegram.chatId || '?'}`)
+  if (links.whatsapp) reasons.push(`Chat WhatsApp: ${links.whatsapp.jid || '?'}`)
+  return reasons
+}
+
+async function resumeSessionFromHistory(s, cwd) {
+  if (sessionsModal && !sessionsModal.classList.contains('hidden')) {
+    sessionsModal.classList.add('hidden')
+  }
+  showStatus('Continuando sesión…', 'busy')
+  fitAndSync()
+  term.reset()
+  term.clear()
+  try {
+    await window.api.resumeSession(s.id, cwd, term.cols, term.rows)
+    fitAndSync()
+    await updateCwdLabel()
+    await refreshSessionStrip(true)
+    hideStatus()
+    term.focus()
+  } catch (err) {
+    showStatus(errorMessage(err), 'error', 6000)
+  }
+}
+
 function fmtRelative(ts) {
   const diff = Date.now() - ts
   const m = Math.floor(diff / 60000)
@@ -3835,6 +3884,7 @@ async function openSessions() {
             <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" fill="none" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
           <button class="btn-edit-content" title="Editar contenido original (.jsonl)">✎</button>
+          <span class="session-link-badge" style="display:none;margin-left:6px;font-size:11px;cursor:help;" aria-hidden="true">🔗</span>
         </div>
         <div class="session-preview"></div>
         <div class="session-meta">
@@ -3849,6 +3899,19 @@ async function openSessions() {
         <button class="btn-delete" title="Borrar sesión">🗑</button>
       </div>
     `
+
+    // Async fetch de enlaces para mostrar el lock + tooltip. No bloquea el render.
+    getSessionLinksCached(s.id).then((info) => {
+      if (!info || !info.isLinked) return
+      const badge = row.querySelector('.session-link-badge')
+      if (!badge) return
+      const reasons = describeSessionLinks(info.links || {})
+      badge.title = reasons.length
+        ? `Sesión enlazada:\n${reasons.map((r) => '· ' + r).join('\n')}`
+        : 'Sesión enlazada'
+      badge.style.display = ''
+      badge.setAttribute('aria-hidden', 'false')
+    }).catch(() => {})
     const previewEl = row.querySelector('.session-preview')
     previewEl.textContent = s.preview
 
@@ -3913,27 +3976,25 @@ async function openSessions() {
 
     row.querySelector('.btn-resume').addEventListener('click', async (e) => {
       e.stopPropagation()
-      sessionsModal.classList.add('hidden')
-      showStatus('Continuando sesión…', 'busy')
-      fitAndSync()
-      term.reset()
-      term.clear()
-      try {
-        await window.api.resumeSession(s.id, cwd, term.cols, term.rows)
-        fitAndSync()
-        await updateCwdLabel()
-        await refreshSessionStrip(true)
-        hideStatus()
-        term.focus()
-      } catch (err) {
-        showStatus(errorMessage(err), 'error', 6000)
-      }
+      await resumeSessionFromHistory(s, cwd)
     })
 
     row.querySelector('.btn-delete').addEventListener('click', async (e) => {
       e.stopPropagation()
-      if (!confirm(`¿Borrar esta sesión?\n\n${s.preview}`)) return
+      // Si está enlazada a una tarea/telegram/whatsapp, pedir confirmación dura primero.
+      const info = await getSessionLinksCached(s.id)
+      if (info && info.isLinked) {
+        const reasons = describeSessionLinks(info.links || {})
+        const ok = confirm(
+          `Esta sesión es la memoria continua de:\n\n  · ${reasons.join('\n  · ')}\n\n` +
+          `Si la borras, la próxima ejecución arrancará desde cero.\n\n¿Continuar?`
+        )
+        if (!ok) return
+      } else {
+        if (!confirm(`¿Borrar esta sesión?\n\n${s.preview}`)) return
+      }
       await window.api.deleteSession(cwd, s.id)
+      sessionLinksCache.delete(s.id)
       row.remove()
       if (!sessionsList.children.length) sessionsEmpty.classList.remove('hidden')
     })
@@ -4004,6 +4065,19 @@ window.api.onPtyData((chunk) => {
   term.write(chunk)
 })
 window.api.onInjectPath((p) => injectToPty(`@${p} `))
+
+// Disparado desde el tasks-manager para abrir una sesión histórica en la ventana principal.
+if (typeof window.api.onOpenSessionRequest === 'function') {
+  window.api.onOpenSessionRequest(async (payload) => {
+    if (!payload || !payload.sessionId) return
+    try {
+      const cwd = payload.cwd || await window.api.ptyCwd()
+      await resumeSessionFromHistory({ id: payload.sessionId, preview: '' }, cwd)
+    } catch (err) {
+      console.error('[open-session]', err)
+    }
+  })
+}
 window.api.onGraphFileActive((p) => {
   if (PERF) perfGraphCounter.n++
   graphLastActivePath = p || graphLastActivePath
