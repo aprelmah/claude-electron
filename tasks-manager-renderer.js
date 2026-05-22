@@ -574,26 +574,137 @@ function emptyTaskDraft() {
 }
 
 function showEditor(task) {
-  $('#editor-content').style.display = 'block';
   $('#editor-actions').style.display = 'flex';
   $('#editor-empty').style.display = 'none';
-  $('#editor-header').textContent = task && task.id ? 'Editor — ' + (task.name || '') : 'Editor — nueva';
-  fillForm(task);
+
+  const isExisting = !!(task && task.id);
+  const details = $('#task-editor-collapsed');
+  const editorContent = $('#editor-content');
+
+  if (isExisting) {
+    // Vista detalle de solo lectura (agente-first) + editor colapsable.
+    $('#editor-header').textContent = 'Detalle — ' + (task.name || '');
+    renderTaskDetailView(task);
+    $('#task-view').style.display = 'block';
+    if (details) {
+      details.style.display = 'block';
+      // El editor empieza colapsado. Su contenido se oculta hasta que el usuario abra.
+      if (!details.dataset.wired) {
+        details.addEventListener('toggle', onToggleEditorDetails);
+        details.dataset.wired = '1';
+      }
+      editorContent.style.display = details.open ? 'block' : 'none';
+      $('#btn-save').style.display = details.open ? '' : 'none';
+      $('#btn-save').textContent = 'Guardar cambios';
+    }
+    fillForm(task);
+  } else {
+    // Modo "nueva" sin agente (fallback): editor directo, sin vista detalle.
+    $('#editor-header').textContent = 'Editor — nueva';
+    $('#task-view').style.display = 'none';
+    if (details) details.style.display = 'none';
+    editorContent.style.display = 'block';
+    $('#btn-save').style.display = '';
+    $('#btn-save').textContent = 'Guardar';
+    fillForm(task);
+  }
+}
+
+function onToggleEditorDetails() {
+  const details = $('#task-editor-collapsed');
+  const editorContent = $('#editor-content');
+  if (!details || !editorContent) return;
+  editorContent.style.display = details.open ? 'block' : 'none';
+  $('#btn-save').style.display = details.open ? '' : 'none';
 }
 
 function hideEditor() {
   $('#editor-content').style.display = 'none';
   $('#editor-actions').style.display = 'none';
   $('#editor-empty').style.display = 'flex';
-  $('#editor-header').textContent = 'Editor';
+  $('#editor-header').textContent = 'Detalle';
+  $('#task-view').style.display = 'none';
+  $('#task-view').innerHTML = '';
+  const details = $('#task-editor-collapsed');
+  if (details) {
+    details.open = false;
+    details.style.display = 'none';
+  }
+}
+
+function renderTaskDetailView(task) {
+  const host = $('#task-view');
+  host.innerHTML = '';
+
+  const sched = task.schedule || (task.cron ? cronToSchedule(task.cron) : null);
+  const schedTxt = sched ? scheduleSummary({ schedule: sched, cron: task.cron }) : (task.cron || '—');
+  const nextTxt = task.nextRunAt ? formatNextRun(new Date(task.nextRunAt)) : '—';
+
+  const isLive = Array.from(state.liveRuns.values()).some((r) => r.taskId === task.id);
+  const statusPill = isLive
+    ? el('span', { class: 'task-view-pill warn' }, '⟳ ejecutándose')
+    : task.enabled
+      ? el('span', { class: 'task-view-pill ok' }, '✓ activa')
+      : el('span', { class: 'task-view-pill muted' }, '⏸ pausada');
+
+  // Bloque cabecera: nombre + estado
+  const header = el('div', { class: 'task-view-block' });
+  header.appendChild(el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:6px;' },
+    el('div', { style: 'font-size:15px;font-weight:600;flex:1;' }, task.name || '(sin nombre)'),
+    statusPill
+  ));
+  if (task.lastStatus) {
+    const lastPillClass = task.lastStatus === 'ok' ? 'ok'
+      : task.lastStatus === 'error' ? 'warn' : 'muted';
+    header.appendChild(el('div', { style: 'font-size:11px;color:var(--fg-muted);' },
+      'Último run: ',
+      el('span', { class: 'task-view-pill ' + lastPillClass }, task.lastStatus),
+      '  ·  ' + fmtRelative(task.lastRunAt) +
+      (task.lastDurationMs ? '  ·  ' + fmtDuration(task.lastDurationMs) : '')
+    ));
+  }
+  host.appendChild(header);
+
+  // KV rows
+  host.appendChild(kvDetail('Cuándo', schedTxt + '  ·  próxima: ' + nextTxt));
+  host.appendChild(kvDetail('Cron', task.cron || '—'));
+  host.appendChild(kvDetail('CLI', task.cli || 'claude'));
+  if (task.model) host.appendChild(kvDetail('Modelo', task.model));
+  if (task.effort) host.appendChild(kvDetail('Effort', task.effort));
+  host.appendChild(kvDetail('Reanudar sesión', task.resume ? 'sí (mantiene contexto entre runs)' : 'no'));
+  host.appendChild(kvDetail('CWD', task.cwd || '(sin cwd)'));
+  if (task.sessionId) host.appendChild(kvDetail('Session ID', String(task.sessionId).slice(0, 12) + '…'));
+
+  // Sinks
+  const sinks = task.sinks || {};
+  const sinkList = [];
+  if (sinks.logApp !== false) sinkList.push('Log en app');
+  if (sinks.notifyMacOS) sinkList.push('Notificación macOS');
+  if (sinks.telegram) sinkList.push('Telegram');
+  host.appendChild(kvDetail('Output', sinkList.length ? sinkList.join('  ·  ') : '(ninguno)'));
+
+  // Prompt
+  const promptSec = el('div', { class: 'task-view-block', style: 'margin-top:14px;' });
+  promptSec.appendChild(el('div', { class: 'field-label', style: 'margin-bottom:5px;' }, 'Prompt'));
+  promptSec.appendChild(el('div', { class: 'task-view-prompt' }, task.prompt || '(sin prompt)'));
+  host.appendChild(promptSec);
+}
+
+function kvDetail(k, v) {
+  return el('div', { class: 'kv-row' },
+    el('div', { class: 'k' }, k),
+    el('div', { class: 'v' }, String(v))
+  );
 }
 
 function refreshActionsState() {
   const t = state.tasks.find((x) => x.id === state.selectedId);
-  $('#btn-toggle').textContent = t && t.enabled ? 'Pausar' : 'Activar';
+  $('#btn-toggle').textContent = t && t.enabled ? '⏸ Pausar' : '▶ Activar';
   $('#btn-toggle').style.display = state.selectedId ? '' : 'none';
   $('#btn-delete').style.display = state.selectedId ? '' : 'none';
   $('#btn-run-now').style.display = state.selectedId ? '' : 'none';
+  const btnTalk = $('#btn-talk-agent');
+  if (btnTalk) btnTalk.style.display = state.selectedId ? '' : 'none';
   const liveForSelected = Array.from(state.liveRuns.values()).some((r) => r.taskId === state.selectedId);
   $('#btn-cancel').style.display = liveForSelected ? '' : 'none';
 }
@@ -614,15 +725,50 @@ async function selectTask(id) {
   renderRuns();
 }
 
-function newTask() {
+async function newTask() {
   if (state.dirty) {
     if (!confirm('Hay cambios sin guardar. ¿Descartar?')) return;
   }
+  // Agente-first: abre la ventana PTY del agente para crear la tarea conversacionalmente.
+  // El usuario revisa, da OK ("Guardar y cerrar") y la tarea aparece en la lista.
+  if (api.taskAgentOpen) {
+    try {
+      const r = await api.taskAgentOpen({ mode: 'create' });
+      if (!r || r.ok === false) {
+        toast((r && r.error) || 'No se pudo abrir el agente. Mostrando editor a mano.', 'error');
+        showEditorFallback();
+      }
+    } catch (e) {
+      toast('Error abriendo agente: ' + (e && e.message ? e.message : e), 'error');
+      showEditorFallback();
+    }
+  } else {
+    showEditorFallback();
+  }
+}
+
+function showEditorFallback() {
   state.selectedId = null;
   renderList();
   showEditor(emptyTaskDraft());
   state.dirty = true;
   refreshActionsState();
+}
+
+async function talkWithAgent() {
+  if (!state.selectedId) return;
+  if (!api.taskAgentOpen) { toast('Agente no disponible', 'error'); return; }
+  const t = state.tasks.find((x) => x.id === state.selectedId);
+  if (!t) return;
+  try {
+    // Si la tarea tiene sessionId vivo y resume activo → modo 'resume' (--resume).
+    // Si no → 'iterate' (chatear sobre la tarea actual, agente puede emitir update).
+    const mode = (t.sessionId && t.resume !== false) ? 'resume' : 'iterate';
+    const r = await api.taskAgentOpen({ mode, taskId: t.id });
+    if (!r || r.ok === false) toast((r && r.error) || 'No se pudo abrir el agente', 'error');
+  } catch (e) {
+    toast('Error: ' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 async function saveTask() {
@@ -989,10 +1135,43 @@ async function selectAutomation(id) {
   maybeStartLogPolling();
 }
 
-function newAutomation() {
+async function newAutomation() {
   if (state.autoDirty) {
     if (!confirm('Hay cambios sin guardar. ¿Descartar?')) return;
   }
+  // Agente-first: crea un draft shell mínimo (nombre placeholder, daily 09:00)
+  // y abre directamente la ventana PTY del agente. El agente preguntará al
+  // usuario qué quiere automatizar, le pondrá un nombre real al guardar el
+  // script y propondrá una schedule cuando aplique.
+  if (api.automationsCreateDraftShell && api.openAutomationChat) {
+    try {
+      setAutoBusy(true);
+      const placeholderName = 'Nueva automatización ' + new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+      const res = await api.automationsCreateDraftShell({
+        name: placeholderName,
+        description: '',
+        schedule: { type: 'daily', time: '09:00' }
+      });
+      if (!res || res.ok === false) {
+        toast((res && res.error) || 'No se pudo crear borrador', 'error');
+        return;
+      }
+      const draft = res.automation || res;
+      state.selectedAutomationId = draft.id;
+      state.selectedAutomation = draft;
+      try { state.automations = (await api.automationsList()) || []; renderAutomationsList(); } catch {}
+      showAutomationEditor(draft);
+      const r = await api.openAutomationChat({ automationId: draft.id });
+      if (!r || r.ok === false) toast((r && r.error) || 'No se pudo abrir el agente', 'error');
+      return;
+    } catch (e) {
+      toast('Error: ' + (e && e.message ? e.message : e), 'error');
+      return;
+    } finally {
+      setAutoBusy(false);
+    }
+  }
+  // Fallback (sin draft shell / sin PTY): editor manual.
   state.selectedAutomationId = null;
   state.selectedAutomation = emptyAutomationDraft();
   state.autoDirty = true;
@@ -1828,6 +2007,8 @@ function wireEvents() {
   $('#btn-delete').addEventListener('click', deleteTask);
   $('#btn-run-now').addEventListener('click', runNow);
   $('#btn-cancel').addEventListener('click', cancelRun);
+  const btnTalk = $('#btn-talk-agent');
+  if (btnTalk) btnTalk.addEventListener('click', talkWithAgent);
   $('#btn-pick-folder').addEventListener('click', pickFolder);
   $('#btn-modal-close').addEventListener('click', hideModal);
   $('#modal-bg').addEventListener('click', (e) => { if (e.target === $('#modal-bg')) hideModal(); });

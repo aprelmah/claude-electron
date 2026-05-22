@@ -1014,6 +1014,72 @@ input[type="radio"], input[type="checkbox"] {
 :focus:not(:focus-visible) {
   outline: none;
 }
+
+/* ---------- Task detail view (agente-first) ---------- */
+.task-view-block { margin-bottom: 12px; }
+.task-view-prompt {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.task-view-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--fg-muted);
+  margin-right: 6px;
+}
+.task-view-pill.ok { background: rgba(124, 217, 156, 0.15); color: var(--ok); }
+.task-view-pill.warn { background: rgba(240, 192, 96, 0.15); color: var(--warn); }
+.task-view-pill.muted { background: var(--bg3); color: var(--fg-muted); }
+
+/* <details> editor colapsable */
+.collapsible-editor {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.collapsible-editor > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  list-style: none;
+  padding: 4px 0;
+  user-select: none;
+}
+.collapsible-editor > summary:hover { color: var(--fg); }
+.collapsible-editor > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s;
+}
+.collapsible-editor[open] > summary::before {
+  transform: rotate(90deg);
+}
+.collapsible-editor[open] {
+  background: rgba(255,255,255,0.02);
+  padding: 12px;
+  border-radius: 6px;
+}
 </style>
 </head>
 <body>
@@ -1044,8 +1110,15 @@ input[type="radio"], input[type="checkbox"] {
     </div>
 
     <div id="col-editor">
-      <div class="col-header" id="editor-header">Editor</div>
-      <div id="editor-content" style="display:none;">
+      <div class="col-header" id="editor-header">Detalle</div>
+
+      <div id="task-view" style="display:none;flex:1;min-height:0;overflow-y:auto;padding:16px 18px;"></div>
+
+      <details id="task-editor-collapsed" class="collapsible-editor" style="display:none;margin:0 18px 12px 18px;">
+        <summary>✎ Editar a mano</summary>
+      </details>
+
+      <div id="editor-content" style="display:none;padding:0 18px 12px 18px;">
         <div class="field">
           <label class="field-label" for="f-name">Nombre</label>
           <input type="text" id="f-name" placeholder="p.ej. Resumen diario">
@@ -1188,10 +1261,11 @@ input[type="radio"], input[type="checkbox"] {
       </div>
 
       <div id="editor-actions" style="display:none;">
-        <button id="btn-save" class="btn btn-primary">Guardar</button>
-        <button id="btn-toggle" class="btn">Activar</button>
-        <button id="btn-run-now" class="btn">▶ Ejecutar ahora</button>
+        <button id="btn-run-now" class="btn btn-primary">▶ Ejecutar ahora</button>
+        <button id="btn-toggle" class="btn">⏸ Pausar</button>
+        <button id="btn-talk-agent" class="btn">💬 Hablar con el agente</button>
         <button id="btn-cancel" class="btn" style="display:none;">■ Cancelar</button>
+        <button id="btn-save" class="btn" style="display:none;">Guardar cambios</button>
         <div class="spacer"></div>
         <button id="btn-delete" class="btn btn-danger">Eliminar</button>
       </div>
