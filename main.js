@@ -42,6 +42,7 @@ const {
   extractClaudeResumeId
 } = require('./main/session-helpers')
 const { createCodexSessionReader } = require('./main/codex-session-reader')
+const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -168,8 +169,6 @@ let telegramBridge = null
 let whatsappClient = null
 let whatsappReachable = false
 let whatsappRetryTimer = null
-let agentProposalPollId = null
-let pendingAgentProposal = null
 let autoUpdater = null
 let lanWsServer = null
 const autoUpdateState = {
@@ -1288,169 +1287,46 @@ function logProposalRejectedStub(payload = {}) {
   logSemantic('propuesta_rechazada', payload)
 }
 
-function sanitizeProposalIdForFilename(id) {
-  const cleaned = String(id || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, '_')
-    .slice(0, 140)
-  if (cleaned) return cleaned
-  return `proposal-${Date.now()}`
-}
-
-function guessProposalIdFromFile(filePath) {
-  const name = path.basename(String(filePath || ''))
-  if (!name.startsWith(AGENT_PROPOSAL_FILE_PREFIX) || !name.endsWith(AGENT_PROPOSAL_FILE_SUFFIX)) return ''
-  return name
-    .slice(AGENT_PROPOSAL_FILE_PREFIX.length, name.length - AGENT_PROPOSAL_FILE_SUFFIX.length)
-    .trim()
-}
-
-function buildProposalMarkerPath(id, state) {
-  const suffix = state === 'approved' ? 'approved' : 'rejected'
-  return path.join(
-    AGENT_PROPOSAL_DIR,
-    `${AGENT_PROPOSAL_FILE_PREFIX}${sanitizeProposalIdForFilename(id)}-${suffix}`
-  )
-}
-
-function serializePendingProposalForRenderer(proposal) {
-  if (!proposal) return null
-  return {
-    id: String(proposal.id || '').trim(),
-    title: String(proposal.title || '').trim(),
-    description: String(proposal.description || '').trim(),
-    command: String(proposal.command || '').trim(),
-    script_path: String(proposal.script_path || '').trim(),
-    script_preview: typeof proposal.script_preview === 'string' ? proposal.script_preview : ''
-  }
-}
-
-function normalizeProposalPayload(raw, sourcePath = '') {
-  if (!raw || typeof raw !== 'object') return { ok: false, error: 'payload inválido' }
-  const id = String(raw.id || guessProposalIdFromFile(sourcePath) || '').trim()
-  const title = String(raw.title || '').trim()
-  const description = String(raw.description || '').trim()
-  const command = String(raw.command || '').trim()
-  const scriptPath = String(raw.script_path || '').trim()
-  const scriptPreview = typeof raw.script_preview === 'string' ? raw.script_preview : ''
-  if (!id) return { ok: false, error: 'id requerido' }
-  if (!command) return { ok: false, error: 'command requerido' }
-  return {
-    ok: true,
-    proposal: {
-      id,
-      title: title || 'Propuesta pendiente',
-      description,
-      command,
-      script_path: scriptPath,
-      script_preview: scriptPreview.slice(0, 200000)
-    }
-  }
-}
-
-function pickNextAgentProposalFile() {
-  let names = []
-  try { names = fs.readdirSync(AGENT_PROPOSAL_DIR) } catch { return null }
-  const files = []
-  for (const name of names) {
-    if (!name.startsWith(AGENT_PROPOSAL_FILE_PREFIX) || !name.endsWith(AGENT_PROPOSAL_FILE_SUFFIX)) continue
-    const full = path.join(AGENT_PROPOSAL_DIR, name)
-    let stat = null
-    try { stat = fs.statSync(full) } catch { continue }
-    if (!stat || !stat.isFile()) continue
-    files.push({ full, mtimeMs: Number(stat.mtimeMs || 0), name })
-  }
-  if (!files.length) return null
-  files.sort((a, b) => (a.mtimeMs - b.mtimeMs) || a.name.localeCompare(b.name))
-  return files[0].full
-}
-
 function getPrimaryWindowSession() {
   return primaryWcId != null ? sessions.get(primaryWcId) : null
 }
 
-function emitPendingProposalToRenderer(proposal) {
-  const payload = serializePendingProposalForRenderer(proposal)
-  if (!payload) return false
-  const first = getPrimaryWindowSession()
-  const candidates = []
-  if (first) candidates.push(first)
-  for (const s of sessions.values()) {
-    if (!s || s === first) continue
-    candidates.push(s)
-  }
-  for (const s of candidates) {
-    if (!s?.win || s.win.isDestroyed()) continue
-    try {
-      s.win.webContents.send('proposal:new', payload)
-      return true
-    } catch {}
-  }
-  return false
-}
-
-function syncPendingProposalToWindow(win) {
-  if (!pendingAgentProposal || !win || win.isDestroyed()) return
-  try {
-    win.webContents.send('proposal:new', serializePendingProposalForRenderer(pendingAgentProposal))
-  } catch {}
-}
-
-function pauseAgentProposalPolling() {
-  if (!agentProposalPollId) return
-  try { clearInterval(agentProposalPollId) } catch {}
-  agentProposalPollId = null
-}
-
-function detectPendingAgentProposal() {
-  if (pendingAgentProposal) return
-  const filePath = pickNextAgentProposalFile()
-  if (!filePath) return
-
-  let raw = null
-  try {
-    raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-  } catch (err) {
-    console.warn('[proposal] invalid JSON:', filePath, err?.message || err)
-    const markerPath = buildProposalMarkerPath(guessProposalIdFromFile(filePath), 'rejected')
-    try { fs.writeFileSync(markerPath, '') } catch {}
-    try { fs.unlinkSync(filePath) } catch {}
-    return
-  }
-
-  const normalized = normalizeProposalPayload(raw, filePath)
-  if (!normalized.ok) {
-    console.warn('[proposal] malformed payload:', filePath, normalized.error)
-    const markerPath = buildProposalMarkerPath(raw?.id || guessProposalIdFromFile(filePath), 'rejected')
-    try { fs.writeFileSync(markerPath, '') } catch {}
-    try { fs.unlinkSync(filePath) } catch {}
-    return
-  }
-
-  pendingAgentProposal = {
-    ...normalized.proposal,
-    filePath,
-    detectedAt: Date.now()
-  }
-  pauseAgentProposalPolling()
-  emitPendingProposalToRenderer(pendingAgentProposal)
-}
-
-function startAgentProposalPolling() {
-  if (agentProposalPollId || pendingAgentProposal) return
-  agentProposalPollId = setInterval(() => {
-    try { detectPendingAgentProposal() } catch (err) {
-      console.error('[proposal] poll failed:', err?.message || err)
+const agentProposalWatcher = createAgentProposalWatcher({
+  baseDir: AGENT_PROPOSAL_DIR,
+  filePrefix: AGENT_PROPOSAL_FILE_PREFIX,
+  fileSuffix: AGENT_PROPOSAL_FILE_SUFFIX,
+  pollMs: AGENT_PROPOSAL_POLL_MS,
+  emitToRenderers: (payload) => {
+    if (!payload) return false
+    const first = getPrimaryWindowSession()
+    const candidates = []
+    if (first) candidates.push(first)
+    for (const s of sessions.values()) {
+      if (!s || s === first) continue
+      candidates.push(s)
     }
-  }, AGENT_PROPOSAL_POLL_MS)
-  agentProposalPollId.unref?.()
-  detectPendingAgentProposal()
-}
+    for (const s of candidates) {
+      if (!s?.win || s.win.isDestroyed()) continue
+      try {
+        s.win.webContents.send('proposal:new', payload)
+        return true
+      } catch {}
+    }
+    return false
+  },
+  broadcastCleared: (payload) => broadcastToAllWindows('proposal:cleared', payload)
+})
 
-function resumeAgentProposalPolling() {
-  if (pendingAgentProposal) return
-  startAgentProposalPolling()
-}
+const sanitizeProposalIdForFilename = agentProposalWatcher.sanitizeProposalIdForFilename
+const guessProposalIdFromFile = agentProposalWatcher.guessProposalIdFromFile
+const buildProposalMarkerPath = agentProposalWatcher.buildProposalMarkerPath
+const serializePendingProposalForRenderer = agentProposalWatcher.serializeForRenderer
+const syncPendingProposalToWindow = agentProposalWatcher.syncToWindow
+const pauseAgentProposalPolling = agentProposalWatcher.pause
+const detectPendingAgentProposal = agentProposalWatcher.detect
+const startAgentProposalPolling = agentProposalWatcher.start
+const resumeAgentProposalPolling = agentProposalWatcher.resume
+const finalizePendingProposal = agentProposalWatcher.finalize
 
 function resolveProposalExecutionSession(event) {
   const fromEvent = event ? getSessionByEvent(event) : null
@@ -1461,22 +1337,6 @@ function resolveProposalExecutionSession(event) {
     if (s?.pty) return s
   }
   return fromEvent || primary || null
-}
-
-function finalizePendingProposal(state) {
-  if (!pendingAgentProposal) return { ok: false, error: 'No hay propuesta pendiente' }
-  const current = pendingAgentProposal
-  const markerPath = buildProposalMarkerPath(current.id, state)
-  try { fs.writeFileSync(markerPath, '') } catch (err) {
-    console.error('[proposal] marker write failed:', err?.message || err)
-  }
-  if (current.filePath) {
-    try { fs.unlinkSync(current.filePath) } catch {}
-  }
-  pendingAgentProposal = null
-  try { broadcastToAllWindows('proposal:cleared', { id: current.id, state }) } catch {}
-  resumeAgentProposalPolling()
-  return { ok: true, markerPath }
 }
 
 // ── Tree watcher per-session ──
@@ -4236,11 +4096,11 @@ ipcMain.handle('ws-server:close-session', async (_event, payload = {}) => {
 })
 
 ipcMain.handle('proposal:get-pending', () => {
-  return { pending: serializePendingProposalForRenderer(pendingAgentProposal) }
+  return { pending: serializePendingProposalForRenderer(agentProposalWatcher.getPending()) }
 })
 
 ipcMain.handle('proposal:approve', (event, payload = {}) => {
-  const pending = pendingAgentProposal
+  const pending = agentProposalWatcher.getPending()
   if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
   const requestedId = String(payload?.id || '').trim()
   if (requestedId && requestedId !== pending.id) {
@@ -4277,7 +4137,7 @@ ipcMain.handle('proposal:approve', (event, payload = {}) => {
 })
 
 ipcMain.handle('proposal:reject', (event, payload = {}) => {
-  const pending = pendingAgentProposal
+  const pending = agentProposalWatcher.getPending()
   if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
   const requestedId = String(payload?.id || '').trim()
   if (requestedId && requestedId !== pending.id) {
