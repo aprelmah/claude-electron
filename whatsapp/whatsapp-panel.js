@@ -62,6 +62,10 @@
   let bridgeControlBtnEl = null
   let bridgeControlBusy = false
   let bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: '' }
+  let qrPollTimerId = null
+  let qrLoadBusy = false
+  let viewerMediaUrl = ''
+  let viewerMediaName = ''
 
   // ── Utilidades ──
   function $(sel, root = document) { return root.querySelector(sel) }
@@ -137,6 +141,24 @@
 
   function canBridgeControl() {
     return !!(wa && typeof wa.bridgeStatus === 'function' && typeof wa.bridgeControl === 'function')
+  }
+
+  function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+  }
+
+  function mediaFileNameFromUrl(mediaUrl) {
+    const raw = String(mediaUrl || '').trim()
+    if (!raw) return ''
+    try {
+      const u = new URL(raw)
+      const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
+      return name ? name.split('/').pop() || '' : ''
+    } catch {
+      if (!raw.toLowerCase().startsWith('wa-media://')) return ''
+      const stripped = raw.replace(/^wa-media:\/\//i, '').split(/[?#]/)[0] || ''
+      try { return decodeURIComponent(stripped).split('/').pop() || '' } catch { return stripped.split('/').pop() || '' }
+    }
   }
 
   function foldText(s) {
@@ -441,6 +463,36 @@
   opacity: 0.75;
   cursor: wait;
 }
+.wa-qr-render.wa-qr-empty {
+  background: rgba(255,255,255,0.1);
+  color: #dbe2e8;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  text-align: center;
+  max-width: 280px;
+}
+.wa-img-actions {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 6px;
+}
+.wa-img-download {
+  width: auto !important;
+  height: auto !important;
+  padding: 6px 10px !important;
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+}
+.wa-img-download[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
 `
     const style = document.createElement('style')
     style.id = 'wa-panel-extra-styles'
@@ -564,6 +616,7 @@
         </div>
         <div class="wa-qr-body">
           <pre class="wa-qr-render" aria-label="código QR"></pre>
+          <button class="icon-btn text-btn" id="wa-qr-refresh" type="button">Reintentar</button>
           <div class="wa-qr-note">Si no aparece nada, abre WhatsApp → Dispositivos vinculados → Vincular dispositivo.</div>
         </div>
       </div>
@@ -636,6 +689,9 @@
     img.innerHTML = `
       <div class="modal-backdrop" data-close="wa-img-modal"></div>
       <div class="wa-img-viewer">
+        <div class="wa-img-actions">
+          <button class="icon-btn wa-img-download" id="wa-img-download" type="button">Descargar</button>
+        </div>
         <img alt="Imagen" />
         <button class="modal-close wa-img-close" data-close="wa-img-modal">×</button>
       </div>
@@ -909,7 +965,7 @@
     // Cuerpo según tipo
     if (m.type === 'image' && m.mediaUrl) {
       const img = el('img', { cls: 'wa-bubble-img', attrs: { src: m.mediaUrl, alt: 'imagen' } })
-      img.addEventListener('click', () => openImageViewer(m.mediaUrl))
+      img.addEventListener('click', () => openImageViewer(m.mediaUrl, m.body || 'imagen'))
       bubble.appendChild(img)
       if (m.body) bubble.appendChild(el('div', { cls: 'wa-bubble-caption', text: m.body }))
     } else if (m.type === 'audio' && m.mediaUrl) {
@@ -1203,8 +1259,20 @@
     bridgeControlBusy = true
     updateBridgeControlUI()
     const action = bridgeStatus.running ? 'stop' : 'start'
+    let res = null
     try {
-      const res = await wa.bridgeControl(action)
+      res = await wa.bridgeControl(action)
+      if (res && res.bridge && typeof res.bridge === 'object') {
+        bridgeStatus = Object.assign(
+          { available: true, loaded: false, running: false, pid: 0, lastExit: null, detail: '' },
+          res.bridge
+        )
+      }
+      if (action === 'stop') {
+        status.connected = false
+        status.qrPresent = false
+      }
+      updateStatusUI()
       if (!res || !res.ok) {
         const msg = (res && res.error) ? res.error : `No se pudo ${action === 'stop' ? 'parar' : 'arrancar'} el bridge`
         showInputError(msg)
@@ -1212,11 +1280,24 @@
     } catch (e) {
       showInputError((e && e.message) || `Error al ${action === 'stop' ? 'parar' : 'arrancar'} bridge`)
     } finally {
+      // El bridge tarda unos segundos en asentarse. Poll corto para evitar que
+      // el usuario tenga que refrescar manualmente la ventana.
+      const deadline = Date.now() + 8000
+      while (Date.now() < deadline) {
+        await refreshBridgeStatus()
+        await refreshStatus()
+        const settledStop = action === 'stop' && bridgeStatus.running === false
+        const settledStart = action === 'start' && bridgeStatus.running === true
+        if (settledStop || settledStart) break
+        await waitMs(400)
+      }
       bridgeControlBusy = false
       await refreshBridgeStatus()
       await refreshStatus()
-      if (bridgeStatus.running) {
-        await refreshChats()
+      if (action === 'start' && bridgeStatus.running) await refreshChats()
+      if (action === 'stop') {
+        status.connected = false
+        status.qrPresent = false
       }
       updateStatusUI()
     }
@@ -1509,29 +1590,101 @@
   }
 
   // ── Visor de imagen ──
-  function openImageViewer(src) {
+  function openImageViewer(src, suggestedName) {
     if (!imgViewerEl) return
     const img = $('img', imgViewerEl)
+    const dl = $('#wa-img-download', imgViewerEl)
+    viewerMediaUrl = String(src || '')
+    viewerMediaName = String(suggestedName || '') || mediaFileNameFromUrl(src) || 'imagen'
     img.src = src
+    if (dl) {
+      dl.disabled = !viewerMediaUrl
+      dl.textContent = 'Descargar'
+    }
     imgViewerEl.classList.remove('hidden')
   }
 
+  async function downloadViewerMedia() {
+    if (!viewerMediaUrl) return
+    const dl = imgViewerEl ? $('#wa-img-download', imgViewerEl) : null
+    if (dl) { dl.disabled = true; dl.textContent = 'Guardando…' }
+    try {
+      if (wa && typeof wa.saveMediaAs === 'function') {
+        const res = await wa.saveMediaAs(viewerMediaUrl, viewerMediaName || mediaFileNameFromUrl(viewerMediaUrl) || 'media')
+        if (!res || (!res.ok && !res.canceled)) {
+          showInputError((res && res.error) || 'No se pudo guardar la media')
+        }
+      } else {
+        const a = document.createElement('a')
+        a.href = viewerMediaUrl
+        a.download = mediaFileNameFromUrl(viewerMediaUrl) || 'media'
+        a.target = '_blank'
+        a.rel = 'noopener'
+        a.click()
+      }
+    } catch (e) {
+      showInputError(e && e.message ? e.message : 'No se pudo guardar la media')
+    } finally {
+      if (dl) { dl.disabled = !viewerMediaUrl; dl.textContent = 'Descargar' }
+    }
+  }
+
   // ── Modal QR ──
+  function closeQrModal() {
+    if (qrPollTimerId) {
+      clearInterval(qrPollTimerId)
+      qrPollTimerId = null
+    }
+    qrLoadBusy = false
+    if (qrModalEl) qrModalEl.classList.add('hidden')
+  }
+
+  function setQrText(text, isEmpty = false) {
+    const pre = qrModalEl ? $('.wa-qr-render', qrModalEl) : null
+    if (!pre) return
+    pre.classList.toggle('wa-qr-empty', !!isEmpty)
+    pre.textContent = String(text || '')
+  }
+
+  async function refreshQrModal() {
+    if (!wa || qrLoadBusy || !qrModalEl || qrModalEl.classList.contains('hidden')) return
+    qrLoadBusy = true
+    try {
+      const [statusRes, qrRes] = await Promise.all([
+        wa.getStatus().catch(() => null),
+        wa.getQR().catch(() => null)
+      ])
+      if (qrRes && qrRes.qr) {
+        setQrText(renderQrAscii(qrRes.qr), false)
+        return
+      }
+      const connected = !!(statusRes && statusRes.connected)
+      const qrPending = !!((statusRes && statusRes.qrPresent) || (qrRes && qrRes.status === 'qr'))
+      if (connected) {
+        setQrText('WhatsApp ya está conectado.\nSi quieres un QR nuevo, primero usa STOP y luego START en el panel.', true)
+      } else if (qrPending) {
+        setQrText('QR pendiente.\nEspera unos segundos, se actualiza automáticamente.', true)
+      } else {
+        setQrText('No hay QR activo ahora.\nPulsa STOP y START para reiniciar el bridge y regenerar el QR.', true)
+      }
+    } catch (e) {
+      setQrText('Error al consultar el QR. Reintenta en unos segundos.', true)
+    } finally {
+      qrLoadBusy = false
+    }
+  }
+
+  function startQrPolling() {
+    if (qrPollTimerId) return
+    qrPollTimerId = setInterval(() => { refreshQrModal() }, 2000)
+  }
+
   async function openQrModal() {
     if (!wa) return
     qrModalEl.classList.remove('hidden')
-    const pre = $('.wa-qr-render', qrModalEl)
-    pre.textContent = 'Cargando…'
-    try {
-      const r = await wa.getQR()
-      if (r && r.qr) {
-        pre.textContent = renderQrAscii(r.qr)
-      } else {
-        pre.textContent = '(sin QR pendiente — quizá ya está conectado)'
-      }
-    } catch (e) {
-      pre.textContent = '(error obteniendo QR)'
-    }
+    setQrText('Cargando QR…', true)
+    await refreshQrModal()
+    startQrPolling()
   }
 
   // Render mínimo: el backend devuelve string ya en formato bloques (██  ██), lo pintamos tal cual.
@@ -1787,9 +1940,9 @@
         }
       }
       if (e.key === 'Escape') {
-        if (!qrModalEl.classList.contains('hidden')) { qrModalEl.classList.add('hidden'); return }
+        if (!qrModalEl.classList.contains('hidden')) { closeQrModal(); return }
         if (!cfgModalEl.classList.contains('hidden')) { cfgModalEl.classList.add('hidden'); return }
-        if (!imgViewerEl.classList.contains('hidden')) { imgViewerEl.classList.add('hidden'); return }
+        if (!imgViewerEl.classList.contains('hidden')) { imgViewerEl.classList.add('hidden'); viewerMediaUrl = ''; viewerMediaName = ''; return }
         if (personaModalEl && !personaModalEl.classList.contains('hidden')) { personaModalEl.classList.add('hidden'); return }
       }
     })
@@ -1875,6 +2028,7 @@
           status = Object.assign(status, s)
         }
         updateStatusUI()
+        if (qrModalEl && !qrModalEl.classList.contains('hidden')) refreshQrModal()
       })
       if (typeof u === 'function') unsubs.push(u)
     }
@@ -1882,7 +2036,16 @@
 
   // ── Cierre de modales (delegado) ──
   function bindModalsClose() {
-    const closeBy = (id) => document.getElementById(id)?.classList.add('hidden')
+    const closeBy = (id) => {
+      if (id === 'wa-qr-modal') { closeQrModal(); return }
+      if (id === 'wa-img-modal') {
+        document.getElementById(id)?.classList.add('hidden')
+        viewerMediaUrl = ''
+        viewerMediaName = ''
+        return
+      }
+      document.getElementById(id)?.classList.add('hidden')
+    }
     document.body.addEventListener('click', (e) => {
       const t = e.target
       if (!(t instanceof Element)) return
@@ -1890,7 +2053,7 @@
       if (closeId) closeBy(closeId)
     })
     // backdrop click cierra qr y cfg
-    qrModalEl.querySelector('.modal-backdrop').addEventListener('click', () => qrModalEl.classList.add('hidden'))
+    qrModalEl.querySelector('.modal-backdrop').addEventListener('click', closeQrModal)
     cfgModalEl.querySelector('.modal-backdrop').addEventListener('click', () => cfgModalEl.classList.add('hidden'))
     if (personaModalEl) {
       const bd = personaModalEl.querySelector('.modal-backdrop')
@@ -1953,6 +2116,10 @@
     $('#wa-btn-qr', panelEl).addEventListener('click', openQrModal)
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
     if (bridgeControlBtnEl) bridgeControlBtnEl.addEventListener('click', toggleBridgeControl)
+    const qrRefreshBtn = $('#wa-qr-refresh', qrModalEl)
+    if (qrRefreshBtn) qrRefreshBtn.addEventListener('click', () => { refreshQrModal() })
+    const imgDownloadBtn = $('#wa-img-download', imgViewerEl)
+    if (imgDownloadBtn) imgDownloadBtn.addEventListener('click', () => { downloadViewerMedia() })
     const personaBtn = $('#wa-btn-persona', panelEl)
     if (personaBtn) personaBtn.addEventListener('click', openPersonaModal)
     if (searchInputEl) {
@@ -2005,6 +2172,7 @@
 
     window.addEventListener('beforeunload', () => {
       if (pollTimerId) { clearInterval(pollTimerId); pollTimerId = null }
+      if (qrPollTimerId) { clearInterval(qrPollTimerId); qrPollTimerId = null }
       if (footerCleanup) { try { footerCleanup() } catch {} ; footerCleanup = null }
       while (unsubs.length) { try { unsubs.pop()() } catch {} }
     }, { once: true })

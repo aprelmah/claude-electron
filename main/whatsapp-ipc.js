@@ -100,8 +100,25 @@ function isBenignBootstrapFailure(message) {
   return s.includes('already') || s.includes('in progress') || s.includes('input/output error')
 }
 
+function mediaFileNameFromUrl(mediaUrl) {
+  const raw = String(mediaUrl || '').trim()
+  if (!raw) return ''
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'wa-media:') return ''
+    const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
+    return path.basename(name || '')
+  } catch {
+    if (!raw.toLowerCase().startsWith('wa-media://')) return ''
+    const stripped = raw.replace(/^wa-media:\/\//i, '').split(/[?#]/)[0] || ''
+    try { return path.basename(decodeURIComponent(stripped)) } catch { return path.basename(stripped) }
+  }
+}
+
 function registerWhatsappIpc({
   ipcMain,
+  dialog,
+  winFromEvent,
   getClient,
   getClientLoadError,
   getReachable,
@@ -260,6 +277,35 @@ function registerWhatsappIpc({
     if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
     try { return await requireWhatsapp().sendMedia(jid, filePath, 'document', { caption: caption || '' }) }
     catch (err) { return { ok: false, error: err?.message || String(err) } }
+  })
+
+  ipcMain.handle('whatsapp:save-media-as', async (event, mediaUrl, suggestedName) => {
+    try {
+      if (!dialog || typeof dialog.showSaveDialog !== 'function') {
+        return { ok: false, error: 'Save dialog no disponible' }
+      }
+      const baseName = mediaFileNameFromUrl(mediaUrl)
+      if (!baseName) return { ok: false, error: 'URL de media inválida' }
+      const sourcePath = path.join(WA_MEDIA_DIR, baseName)
+      if (!fs.existsSync(sourcePath)) return { ok: false, error: `Media no encontrada: ${baseName}` }
+
+      const sourceExt = path.extname(baseName)
+      let desired = path.basename(String(suggestedName || '').trim())
+      if (!desired) desired = baseName
+      if (!path.extname(desired) && sourceExt) desired += sourceExt
+      const defaultPath = path.join(os.homedir(), 'Downloads', desired)
+
+      const save = await dialog.showSaveDialog(winFromEvent ? winFromEvent(event) : undefined, {
+        defaultPath,
+        properties: ['createDirectory', 'showOverwriteConfirmation']
+      })
+      if (save.canceled || !save.filePath) return { ok: false, canceled: true }
+
+      fs.copyFileSync(sourcePath, save.filePath)
+      return { ok: true, path: save.filePath, name: path.basename(save.filePath) }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
   })
 
   ipcMain.handle('whatsapp:request-phone', async (_e, jid) => {

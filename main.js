@@ -3143,6 +3143,8 @@ registerAutomationChatIpc({
 // ── WhatsApp IPC ──
 registerWhatsappIpc({
   ipcMain,
+  dialog,
+  winFromEvent,
   getClient: () => whatsappClient,
   getClientLoadError: () => whatsappModuleLoadError,
   getReachable: () => whatsappReachable,

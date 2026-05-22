@@ -134,6 +134,7 @@ contextBridge.exposeInMainWorld('api', {
     sendImage: (jid, filePath, caption) => ipcRenderer.invoke('whatsapp:send-image', jid, filePath, caption || ''),
     sendAudio: (jid, filePath, ptt) => ipcRenderer.invoke('whatsapp:send-audio', jid, filePath, ptt !== false),
     sendDocument: (jid, filePath, caption) => ipcRenderer.invoke('whatsapp:send-document', jid, filePath, caption || ''),
+    saveMediaAs: (mediaUrl, suggestedName) => ipcRenderer.invoke('whatsapp:save-media-as', mediaUrl, suggestedName || ''),
     requestPhone: (jid) => ipcRenderer.invoke('whatsapp:request-phone', jid),
     setMode: (jid, mode) => ipcRenderer.invoke('whatsapp:set-mode', jid, mode),
     markRead: (jid) => ipcRenderer.invoke('whatsapp:mark-read', jid),
