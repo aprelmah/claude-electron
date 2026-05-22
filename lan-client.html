@@ -1446,6 +1446,13 @@
     <section class="card card-pad session-dock" aria-label="Selector de sesión LAN">
       <div class="session-picker">
         <div class="session-picker-row">
+          <div class="field" style="min-width:140px">
+            <label for="session-cli">CLI</label>
+            <select id="session-cli" class="control">
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
+          </div>
           <div class="field">
             <label for="session-select">Sesión reutilizable</label>
             <select id="session-select" class="control">
@@ -1669,6 +1676,7 @@
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
       btnSessionOpen: document.getElementById('btn-session-open'),
       sessionSelect: document.getElementById('session-select'),
+      sessionCliSelect: document.getElementById('session-cli'),
       btnSessionRefresh: document.getElementById('btn-session-refresh'),
       sessionPickerMeta: document.getElementById('session-picker-meta'),
       btnTopbarDisconnect: document.getElementById('btn-topbar-disconnect'),
@@ -1855,6 +1863,9 @@
       pendingSessionStartRequestId: '',
       selectedResumeSessionId: '',
       stickyResumeSessionId: '',
+      stickyResumeSessionByCli: { claude: '', codex: '' },
+      sessionListCli: 'claude',
+      sessionListRequestedCli: 'claude',
       sessionLockHeartbeatTimer: null,
       autoStartMode: 'off',
       fsReqSeq: 0,
@@ -2269,9 +2280,28 @@
       return `…/${parts.slice(-3).join('/')}`
     }
 
+    function getSelectedSessionCli() {
+      const raw = String(refs.sessionCliSelect?.value || 'claude').toLowerCase()
+      return raw === 'codex' ? 'codex' : 'claude'
+    }
+
+    function getStickyResumeForCli(cli) {
+      const key = cli === 'codex' ? 'codex' : 'claude'
+      const map = appState.stickyResumeSessionByCli || (appState.stickyResumeSessionByCli = { claude: '', codex: '' })
+      return String(map[key] || '')
+    }
+
+    function setStickyResumeForCli(cli, sessionId) {
+      const key = cli === 'codex' ? 'codex' : 'claude'
+      const map = appState.stickyResumeSessionByCli || (appState.stickyResumeSessionByCli = { claude: '', codex: '' })
+      map[key] = String(sessionId || '')
+    }
+
     function renderSessionSelector() {
       const list = Array.isArray(appState.sessionList) ? appState.sessionList : []
-      const selectedBefore = String(appState.stickyResumeSessionId || appState.selectedResumeSessionId || refs.sessionSelect.value || '').trim()
+      const currentCli = appState.sessionListCli || getSelectedSessionCli()
+      const stickyForCli = getStickyResumeForCli(currentCli)
+      const selectedBefore = String(stickyForCli || appState.selectedResumeSessionId || refs.sessionSelect.value || '').trim()
       refs.sessionSelect.innerHTML = ''
 
       const baseOption = document.createElement('option')
@@ -2307,13 +2337,19 @@
       const canKeepSelection = selectedBefore && Array.from(refs.sessionSelect.options).some((opt) => opt.value === selectedBefore && !opt.disabled)
       refs.sessionSelect.value = canKeepSelection ? selectedBefore : ''
       appState.selectedResumeSessionId = refs.sessionSelect.value || ''
-      if (appState.selectedResumeSessionId) appState.stickyResumeSessionId = appState.selectedResumeSessionId
-      else if (list.length > 0 && !canKeepSelection) appState.stickyResumeSessionId = ''
+      if (appState.selectedResumeSessionId) {
+        appState.stickyResumeSessionId = appState.selectedResumeSessionId
+        setStickyResumeForCli(currentCli, appState.selectedResumeSessionId)
+      } else if (list.length > 0 && !canKeepSelection) {
+        appState.stickyResumeSessionId = ''
+        setStickyResumeForCli(currentCli, '')
+      }
 
-      const selectorLocked = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
-      refs.sessionSelect.disabled = selectorLocked
-      refs.btnSessionRefresh.disabled = !isSocketOpen() || !!appState.sessionInfo || !!appState.pendingSessionStartRequestId
-      refs.btnSessionOpen.disabled = !!appState.pendingSessionStartRequestId
+      const pickerBusy = !!appState.pendingSessionStartRequestId
+      refs.sessionSelect.disabled = !isSocketOpen() || pickerBusy
+      if (refs.sessionCliSelect) refs.sessionCliSelect.disabled = pickerBusy
+      refs.btnSessionRefresh.disabled = !isSocketOpen() || pickerBusy
+      refs.btnSessionOpen.disabled = pickerBusy
       refs.btnSessionOpen.textContent = appState.sessionInfo
         ? 'Cambiar sesión'
         : (isSocketOpen() ? 'Abrir sesión' : 'Conectar y abrir')
@@ -2322,17 +2358,22 @@
         setSessionPickerMeta('Conecta primero para cargar sesiones de esta carpeta.')
         return
       }
-      if (appState.sessionInfo) {
+      if (appState.sessionInfo && (appState.sessionListCli || 'claude') === (appState.sessionInfo?.cli || 'claude')) {
         const resumed = String(appState.sessionInfo?.resumeSessionId || '').trim()
-        if (resumed) setSessionPickerMeta(`Sesión activa: reanudada (${resumed}).`, 'ok')
-        else setSessionPickerMeta('Sesión activa: nueva sesión (sin reanudar).', 'ok')
+        if (resumed) setSessionPickerMeta(`Sesión activa: ${currentCli} · reanudada (${resumed}). Elige otra y pulsa Cambiar sesión para cambio en caliente.`, 'ok')
+        else setSessionPickerMeta(`Sesión activa: ${currentCli} · nueva (sin reanudar). Elige otra y pulsa Cambiar sesión para cambio en caliente.`, 'ok')
         return
       }
       const cwdHint = shortPathForHint(appState.sessionListCwd)
       const parts = []
       if (cwdHint) parts.push(`Carpeta ${cwdHint}`)
-      parts.push(`${freeCount} libres`)
-      parts.push(`${occupiedCount} ocupadas`)
+      parts.push(`CLI ${currentCli}`)
+      if (appState.sessionListCli === 'codex' && list.length === 0) {
+        parts.push('Codex no expone sesiones reutilizables (todavía) o no hay sesiones en esta carpeta.')
+      } else {
+        parts.push(`${freeCount} libres`)
+        parts.push(`${occupiedCount} ocupadas`)
+      }
       setSessionPickerMeta(parts.join(' · '), 'warn')
     }
 
@@ -2367,23 +2408,27 @@
       sendMessage({ type: 'session:heartbeat', sessionId: resumeSessionId })
     }
 
-    function requestReusableSessions({ forceRefresh = false, silent = false } = {}) {
+    function requestReusableSessions({ forceRefresh = false, silent = false, cli } = {}) {
       if (!isSocketOpen()) {
         if (!silent) setSessionPickerMeta('Conecta primero para listar sesiones.', 'warn')
         renderSessionSelector()
         return false
       }
+      const cliChoice = (cli === 'codex' ? 'codex' : (cli === 'claude' ? 'claude' : getSelectedSessionCli()))
+      appState.sessionListRequestedCli = cliChoice
       const requestId = `sess-list-${Date.now()}-${++appState.sessionListReqSeq}`
-      const sent = sendMessage({ type: 'session:list', requestId, forceRefresh })
+      const sent = sendMessage({ type: 'session:list', requestId, cli: cliChoice, forceRefresh })
       if (!sent) {
         if (!silent) setSessionPickerMeta('No se pudo pedir la lista de sesiones.', 'err')
         return false
       }
-      if (!silent) setSessionPickerMeta('Actualizando sesiones de esta carpeta…', 'warn')
+      if (!silent) setSessionPickerMeta(`Actualizando sesiones de ${cliChoice}…`, 'warn')
       return true
     }
 
     function applySessionListMessage(msg = {}) {
+      const replyCli = String(msg.cli || appState.sessionListRequestedCli || 'claude').toLowerCase() === 'codex' ? 'codex' : 'claude'
+      appState.sessionListCli = replyCli
       if (msg.ok === false) {
         const errorTextMsg = formatSessionStartError(msg.error || {})
         setSessionPickerMeta(errorTextMsg, 'err')
@@ -2391,9 +2436,13 @@
       }
       appState.sessionList = Array.isArray(msg.sessions) ? msg.sessions : []
       appState.sessionListCwd = String(msg.cwd || '').trim()
-      const selected = String(msg.selectedSessionId || appState.stickyResumeSessionId || appState.selectedResumeSessionId || '').trim()
+      const stickyForCli = getStickyResumeForCli(replyCli)
+      const selected = String(msg.selectedSessionId || stickyForCli || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
-      if (selected) appState.stickyResumeSessionId = selected
+      if (selected) {
+        appState.stickyResumeSessionId = selected
+        setStickyResumeForCli(replyCli, selected)
+      }
       renderSessionSelector()
       if (!appState.pendingSessionStartRequestId && !appState.sessionInfo) {
         if (appState.autoStartMode === 'always') {
@@ -2413,24 +2462,35 @@
         setConnectionStatus('error', 'Conecta primero para iniciar sesión')
         return false
       }
-      if (appState.sessionInfo) return true
+      const hot = options?.mode === 'hot' || (!!appState.sessionInfo && options?.hotIfInitialized !== false)
+      if (appState.sessionInfo && !hot) return true
       if (appState.pendingSessionStartRequestId) {
         setConnectionStatus('connecting', 'Esperando confirmación de inicio de sesión…')
         return false
       }
       const selected = String(refs.sessionSelect.value || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
-      if (selected) appState.stickyResumeSessionId = selected
+      const currentCli = getSelectedSessionCli()
+      if (selected) {
+        appState.stickyResumeSessionId = selected
+        setStickyResumeForCli(currentCli, selected)
+      }
       const requestId = `sess-start-${Date.now()}-${++appState.sessionStartReqSeq}`
-      const sent = sendMessage({ type: 'session:start', requestId, sessionId: selected })
+      const payload = { type: 'session:start', requestId, sessionId: selected, cli: currentCli }
+      if (hot) payload.mode = 'hot'
+      const sent = sendMessage(payload)
       if (!sent) {
         setConnectionStatus('error', 'No se pudo solicitar inicio de sesión')
         return false
       }
       appState.pendingSessionStartRequestId = requestId
-      refs.btnConnect.textContent = 'Entrando…'
+      refs.btnConnect.textContent = hot ? 'Cambiando…' : 'Entrando…'
       renderSessionSelector()
-      if (selected) {
+      if (hot) {
+        if (selected) setHandshakeStatus('warn', `Cambiando en caliente a sesión ${selected}…`, 'cambiando')
+        else setHandshakeStatus('warn', 'Cambiando en caliente a nueva sesión…', 'cambiando')
+        setConnectionStatus('connecting', 'Cambio de sesión en caliente…')
+      } else if (selected) {
         setHandshakeStatus('warn', `Reservando sesión ${selected}…`, 'iniciando')
         setConnectionStatus('connecting', 'Reanudando sesión seleccionada…')
       } else {
@@ -3142,6 +3202,12 @@
           const activeResumeSessionId = String(msg?.resumeSessionId || '').trim()
           appState.selectedResumeSessionId = activeResumeSessionId
           appState.stickyResumeSessionId = activeResumeSessionId
+          const activeCli = String(msg?.cli || getSelectedSessionCli()).toLowerCase() === 'codex' ? 'codex' : 'claude'
+          setStickyResumeForCli(activeCli, activeResumeSessionId)
+          appState.sessionListCli = activeCli
+          if (refs.sessionCliSelect && refs.sessionCliSelect.value !== activeCli) {
+            refs.sessionCliSelect.value = activeCli
+          }
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
           clearAgentReplyIdleTimer()
@@ -3241,8 +3307,7 @@
 
     function openOrSwitchSelectedSession() {
       if (appState.sessionInfo) {
-        disconnect()
-        window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 220)
+        startSelectedSession({ mode: 'hot' })
         return
       }
       if (isSocketOpen()) {
@@ -3434,12 +3499,31 @@
     refs.sessionSelect.addEventListener('change', () => {
       appState.selectedResumeSessionId = String(refs.sessionSelect.value || '').trim()
       appState.stickyResumeSessionId = appState.selectedResumeSessionId
+      const cliNow = appState.sessionListCli || getSelectedSessionCli()
+      setStickyResumeForCli(cliNow, appState.selectedResumeSessionId)
       if (appState.selectedResumeSessionId) {
-        setSessionPickerMeta(`Sesión ${appState.selectedResumeSessionId} seleccionada. Pulsa Entrar para reanudar.`, 'warn')
+        setSessionPickerMeta(`Sesión ${appState.selectedResumeSessionId} seleccionada. Pulsa ${appState.sessionInfo ? 'Cambiar sesión' : 'Entrar'} para ${appState.sessionInfo ? 'cambiar en caliente' : 'reanudar'}.`, 'warn')
       } else {
-        setSessionPickerMeta('Nueva sesión seleccionada. Pulsa Entrar para iniciar.', 'warn')
+        setSessionPickerMeta(`Nueva sesión seleccionada. Pulsa ${appState.sessionInfo ? 'Cambiar sesión' : 'Entrar'} para ${appState.sessionInfo ? 'arrancarla en caliente' : 'iniciar'}.`, 'warn')
       }
     })
+
+    if (refs.sessionCliSelect) {
+      refs.sessionCliSelect.addEventListener('change', () => {
+        const previousCli = appState.sessionListCli || 'claude'
+        if (previousCli) setStickyResumeForCli(previousCli, appState.selectedResumeSessionId || '')
+        const nextCli = getSelectedSessionCli()
+        appState.sessionListCli = nextCli
+        appState.selectedResumeSessionId = getStickyResumeForCli(nextCli)
+        appState.stickyResumeSessionId = appState.selectedResumeSessionId
+        if (!isSocketOpen()) {
+          setSessionPickerMeta(`CLI ${nextCli} seleccionado. Conecta primero para listar sesiones.`, 'warn')
+          renderSessionSelector()
+          return
+        }
+        requestReusableSessions({ forceRefresh: true, silent: false, cli: nextCli })
+      })
+    }
 
     refs.providerSelect.addEventListener('change', () => {
       renderProviderDependentOptions(refs.providerSelect.value)
