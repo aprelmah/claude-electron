@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   whatsapp: {
     status: () => ipcRenderer.invoke('whatsapp:status'),
     getStatus: () => ipcRenderer.invoke('whatsapp:status'),
+    bridgeStatus: () => ipcRenderer.invoke('whatsapp:bridge-status'),
+    bridgeControl: (action) => ipcRenderer.invoke('whatsapp:bridge-control', action),
     getQr: () => ipcRenderer.invoke('whatsapp:get-qr'),
     getQR: () => ipcRenderer.invoke('whatsapp:get-qr'),
     getChats: () => ipcRenderer.invoke('whatsapp:get-chats'),

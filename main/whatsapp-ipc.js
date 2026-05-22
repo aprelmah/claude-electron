@@ -3,6 +3,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { spawnSync } = require('child_process')
 const { atomicWriteFileSync } = require('./atomic-writes')
 const { isPathSafe } = require('./path-sandbox')
 
@@ -17,6 +18,87 @@ const WA_SAFE_CONFIG_FIELDS = new Set([
   'effort',
   'handoverOnFromMe'
 ])
+
+const WA_BRIDGE_LABEL = 'com.luismi.whatsapp-bridge'
+const WA_BRIDGE_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${WA_BRIDGE_LABEL}.plist`)
+
+function launchctlExec(args) {
+  const run = spawnSync('launchctl', args, { encoding: 'utf8' })
+  return {
+    ok: !run.error && run.status === 0,
+    status: Number(run.status ?? -1),
+    stdout: String(run.stdout || ''),
+    stderr: String(run.stderr || ''),
+    error: run.error ? (run.error.message || String(run.error)) : ''
+  }
+}
+
+function parseLaunchctlListLine(line) {
+  const parts = String(line || '').trim().split(/\s+/g)
+  if (parts.length < 3) return null
+  const label = parts[parts.length - 1]
+  const pidToken = parts[0]
+  const statusToken = parts[1]
+  const pid = /^\d+$/.test(pidToken) ? Number(pidToken) : 0
+  const lastExit = /^-?\d+$/.test(statusToken) ? Number(statusToken) : null
+  return { label, pid, lastExit }
+}
+
+function getBridgeServiceStatus() {
+  const run = launchctlExec(['list'])
+  if (!run.ok) {
+    const detail = run.error || run.stderr || `launchctl exit ${run.status}`
+    return {
+      ok: false,
+      label: WA_BRIDGE_LABEL,
+      loaded: false,
+      running: false,
+      pid: 0,
+      lastExit: null,
+      detail: String(detail || '').slice(0, 240)
+    }
+  }
+
+  const line = run.stdout
+    .split('\n')
+    .map((v) => v.trim())
+    .find((v) => v.endsWith(` ${WA_BRIDGE_LABEL}`) || v.endsWith(`\t${WA_BRIDGE_LABEL}`))
+
+  if (!line) {
+    return {
+      ok: true,
+      label: WA_BRIDGE_LABEL,
+      loaded: false,
+      running: false,
+      pid: 0,
+      lastExit: null,
+      detail: 'Servicio no cargado en launchd'
+    }
+  }
+
+  const parsed = parseLaunchctlListLine(line)
+  const pid = parsed?.pid || 0
+  const lastExit = parsed?.lastExit ?? null
+  return {
+    ok: true,
+    label: WA_BRIDGE_LABEL,
+    loaded: true,
+    running: pid > 0,
+    pid,
+    lastExit,
+    detail: pid > 0 ? `PID ${pid}` : `Cargado (exit ${lastExit == null ? '-' : lastExit})`
+  }
+}
+
+function isBenignBootoutFailure(message) {
+  const s = String(message || '').toLowerCase()
+  return s.includes('could not find') || s.includes('no such process') || s.includes('not loaded')
+}
+
+function isBenignBootstrapFailure(message) {
+  const s = String(message || '').toLowerCase()
+  return s.includes('already') || s.includes('in progress') || s.includes('input/output error')
+}
 
 function registerWhatsappIpc({
   ipcMain,
@@ -59,6 +141,74 @@ function registerWhatsappIpc({
       return { ...s, reachable: getReachable() }
     } catch (err) {
       return { connected: false, qrPresent: false, reachable: false, error: err?.message }
+    }
+  })
+
+  ipcMain.handle('whatsapp:bridge-status', async () => {
+    return getBridgeServiceStatus()
+  })
+
+  ipcMain.handle('whatsapp:bridge-control', async (_e, actionRaw) => {
+    const action = String(actionRaw || '').trim().toLowerCase()
+    if (!['start', 'stop', 'restart'].includes(action)) {
+      return { ok: false, error: 'Acción inválida', bridge: getBridgeServiceStatus() }
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+    const domain = `gui/${uid}`
+    const serviceTarget = `${domain}/${WA_BRIDGE_LABEL}`
+    const client = getClient()
+
+    function stopClientSafe() {
+      try { client?.stop?.() } catch {}
+    }
+    function startClientSafe() {
+      try { client?.start?.() } catch {}
+    }
+
+    function stopService() {
+      stopClientSafe()
+      const byLabel = launchctlExec(['bootout', serviceTarget])
+      if (byLabel.ok) return { ok: true, step: 'bootout-label', run: byLabel }
+      const msg1 = `${byLabel.error || ''} ${byLabel.stderr || ''}`.trim()
+      if (isBenignBootoutFailure(msg1)) return { ok: true, step: 'bootout-label-benign', run: byLabel }
+      const byPlist = launchctlExec(['bootout', domain, WA_BRIDGE_PLIST])
+      if (byPlist.ok) return { ok: true, step: 'bootout-plist', run: byPlist }
+      const msg2 = `${byPlist.error || ''} ${byPlist.stderr || ''}`.trim()
+      if (isBenignBootoutFailure(msg2)) return { ok: true, step: 'bootout-plist-benign', run: byPlist }
+      return { ok: false, step: 'bootout-failed', run: byPlist, error: msg2 || msg1 || 'bootout failed' }
+    }
+
+    function startService() {
+      const bootstrap = launchctlExec(['bootstrap', domain, WA_BRIDGE_PLIST])
+      const bootstrapMsg = `${bootstrap.error || ''} ${bootstrap.stderr || ''}`.trim()
+      if (!bootstrap.ok && !isBenignBootstrapFailure(bootstrapMsg)) {
+        return { ok: false, step: 'bootstrap-failed', run: bootstrap, error: bootstrapMsg || 'bootstrap failed' }
+      }
+      const kickstart = launchctlExec(['kickstart', '-k', serviceTarget])
+      if (!kickstart.ok) {
+        const msg = `${kickstart.error || ''} ${kickstart.stderr || ''}`.trim()
+        return { ok: false, step: 'kickstart-failed', run: kickstart, error: msg || 'kickstart failed' }
+      }
+      startClientSafe()
+      return { ok: true, step: 'kickstart', run: kickstart }
+    }
+
+    try {
+      let op = null
+      if (action === 'stop') op = stopService()
+      else if (action === 'start') op = startService()
+      else {
+        const stopped = stopService()
+        if (!stopped.ok) op = stopped
+        else op = startService()
+      }
+      const bridge = getBridgeServiceStatus()
+      if (!op || !op.ok) {
+        return { ok: false, error: op?.error || 'Operación fallida', step: op?.step || '', bridge }
+      }
+      return { ok: true, action, step: op.step, bridge }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err), bridge: getBridgeServiceStatus() }
     }
   })
 

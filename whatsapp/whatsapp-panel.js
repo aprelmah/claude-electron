@@ -59,6 +59,9 @@
   let unsubs = []
   let footerCleanup = null
   let pollTimerId = null
+  let bridgeControlBtnEl = null
+  let bridgeControlBusy = false
+  let bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: '' }
 
   // ── Utilidades ──
   function $(sel, root = document) { return root.querySelector(sel) }
@@ -108,6 +111,32 @@
     return String(s || '').replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[c])
+  }
+
+  function compactSingleLine(value) {
+    return String(value || '')
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+      .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  function cleanHumanLabel(value) {
+    const raw = compactSingleLine(value)
+    if (!raw) return ''
+    const normalized = raw.normalize('NFKD')
+    const marks = (normalized.match(/[\u0300-\u036f]/g) || []).length
+    if (marks < 3) return raw
+    const plain = compactSingleLine(
+      normalized
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\p{L}\p{N} ._+\-]/gu, ' ')
+    )
+    return plain || raw
+  }
+
+  function canBridgeControl() {
+    return !!(wa && typeof wa.bridgeStatus === 'function' && typeof wa.bridgeControl === 'function')
   }
 
   function foldText(s) {
@@ -260,7 +289,8 @@
   function chatLabel(c) {
     if (!c) return ''
     const jid = String(c.jid || '')
-    if (c.displayName && c.displayName.trim()) return c.displayName.trim()
+    const display = cleanHumanLabel(c.displayName)
+    if (display) return display
     if (isGroupJid(jid)) return `Grupo ${groupIdPreview(jid)}`
     const phone = chatPhone(c)
     if (phone) return phone
@@ -280,7 +310,7 @@
 
   function participantLabel(message) {
     if (!message) return ''
-    const explicit = String(message.participantName || '').trim()
+    const explicit = cleanHumanLabel(message.participantName)
     if (explicit) return explicit
     const jid = String(message.participant || '').trim()
     if (!jid) return ''
@@ -292,7 +322,7 @@
     }
     const digits = normalizeDigits(local)
     if (digits.length >= 8 && digits.length <= 15) return formatPhone(digits)
-    return local
+    return cleanHumanLabel(local) || local
   }
 
   function avatarInitials(c) {
@@ -376,6 +406,41 @@
   padding: 4px; border-radius: 4px; text-align: center;
 }
 .wa-emoji-item:hover { background: rgba(255,255,255,0.1); }
+.wa-bridge-toggle {
+  width: auto !important;
+  min-width: 56px;
+  height: 22px !important;
+  padding: 0 8px !important;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #d6dde3;
+  background: rgba(255,255,255,0.04);
+}
+.wa-bridge-toggle .wa-bridge-pill { pointer-events: none; }
+.wa-bridge-toggle.wa-run {
+  border-color: rgba(37,211,102,0.45);
+  color: #8ef2bc;
+  background: rgba(37,211,102,0.13);
+}
+.wa-bridge-toggle.wa-stop {
+  border-color: rgba(255,159,64,0.45);
+  color: #ffcf8f;
+  background: rgba(255,159,64,0.13);
+}
+.wa-bridge-toggle.wa-down {
+  border-color: rgba(240,71,71,0.45);
+  color: #ff9e9e;
+  background: rgba(240,71,71,0.13);
+}
+.wa-bridge-toggle.wa-busy {
+  opacity: 0.75;
+  cursor: wait;
+}
 `
     const style = document.createElement('style')
     style.id = 'wa-panel-extra-styles'
@@ -416,6 +481,9 @@
         </button>
         <button class="icon-btn small wa-header-btn" id="wa-btn-cfg" title="Configuración" aria-label="Configuración">
           <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
+        </button>
+        <button class="icon-btn small wa-header-btn wa-bridge-toggle" id="wa-btn-bridge-toggle" title="Parar bridge WhatsApp (emergencia)" aria-label="Parar bridge WhatsApp">
+          <span class="wa-bridge-pill">STOP</span>
         </button>
         <button class="icon-btn small wa-header-btn" id="wa-btn-close" title="Cerrar panel" aria-label="Cerrar">
           <svg viewBox="0 0 24 24" width="14" height="14"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
@@ -1067,27 +1135,116 @@
     }
   }
 
+  async function refreshBridgeStatus() {
+    if (!canBridgeControl()) {
+      bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: 'sin control bridge' }
+      updateBridgeControlUI()
+      updateStatusUI()
+      return
+    }
+    try {
+      const info = await wa.bridgeStatus()
+      bridgeStatus = Object.assign(
+        { available: true, loaded: false, running: false, pid: 0, lastExit: null, detail: '' },
+        info || {}
+      )
+    } catch (e) {
+      bridgeStatus = {
+        available: true,
+        loaded: false,
+        running: false,
+        pid: 0,
+        lastExit: null,
+        detail: e && e.message ? e.message : 'error leyendo bridge'
+      }
+    }
+    updateBridgeControlUI()
+    updateStatusUI()
+  }
+
+  function bridgeStateText() {
+    if (!canBridgeControl()) return 'bridge sin control'
+    if (bridgeControlBusy) return 'bridge aplicando…'
+    return bridgeStatus.running ? 'bridge activo' : 'bridge parado'
+  }
+
+  function updateBridgeControlUI() {
+    if (!bridgeControlBtnEl) return
+    const supported = canBridgeControl()
+    const pill = $('.wa-bridge-pill', bridgeControlBtnEl)
+    bridgeControlBtnEl.classList.remove('wa-run', 'wa-stop', 'wa-down', 'wa-busy')
+    bridgeControlBtnEl.disabled = bridgeControlBusy || !supported
+
+    if (!supported) {
+      if (pill) pill.textContent = 'N/A'
+      bridgeControlBtnEl.classList.add('wa-down')
+      bridgeControlBtnEl.title = 'Control bridge no disponible'
+      bridgeControlBtnEl.setAttribute('aria-label', 'Control bridge no disponible')
+      return
+    }
+
+    if (bridgeControlBusy) bridgeControlBtnEl.classList.add('wa-busy')
+    if (bridgeStatus.running) {
+      bridgeControlBtnEl.classList.add('wa-run')
+      if (pill) pill.textContent = bridgeControlBusy ? '...' : 'STOP'
+      bridgeControlBtnEl.title = 'Parar bridge WhatsApp (emergencia)'
+      bridgeControlBtnEl.setAttribute('aria-label', 'Parar bridge WhatsApp')
+      return
+    }
+
+    bridgeControlBtnEl.classList.add(bridgeStatus.loaded ? 'wa-stop' : 'wa-down')
+    if (pill) pill.textContent = bridgeControlBusy ? '...' : 'START'
+    bridgeControlBtnEl.title = 'Arrancar bridge WhatsApp'
+    bridgeControlBtnEl.setAttribute('aria-label', 'Arrancar bridge WhatsApp')
+  }
+
+  async function toggleBridgeControl() {
+    if (!canBridgeControl() || bridgeControlBusy) return
+    bridgeControlBusy = true
+    updateBridgeControlUI()
+    const action = bridgeStatus.running ? 'stop' : 'start'
+    try {
+      const res = await wa.bridgeControl(action)
+      if (!res || !res.ok) {
+        const msg = (res && res.error) ? res.error : `No se pudo ${action === 'stop' ? 'parar' : 'arrancar'} el bridge`
+        showInputError(msg)
+      }
+    } catch (e) {
+      showInputError((e && e.message) || `Error al ${action === 'stop' ? 'parar' : 'arrancar'} bridge`)
+    } finally {
+      bridgeControlBusy = false
+      await refreshBridgeStatus()
+      await refreshStatus()
+      if (bridgeStatus.running) {
+        await refreshChats()
+      }
+      updateStatusUI()
+    }
+  }
+
   function updateStatusUI() {
     if (statusDotEl) {
       statusDotEl.classList.remove('wa-status-off', 'wa-status-pending', 'wa-status-on')
-      if (!bridgeReady) statusDotEl.classList.add('wa-status-off')
+      if (!bridgeReady || (canBridgeControl() && !bridgeStatus.running)) statusDotEl.classList.add('wa-status-off')
       else if (status.connected) statusDotEl.classList.add('wa-status-on')
       else if (status.qrPresent) statusDotEl.classList.add('wa-status-pending')
       else statusDotEl.classList.add('wa-status-off')
     }
     const sub = $('#wa-header-sub', panelEl)
+    const bridgeLbl = bridgeStateText()
     if (sub) {
       const modelLbl = status.model ? status.model : 'default'
       const effortLbl = status.effort ? `/${status.effort}` : ''
       const owner = formatPhone(status.ownerNumber) || status.ownerNumber || ''
       if (!bridgeReady) sub.textContent = 'bridge no disponible'
-      else if (status.connected) sub.textContent = owner ? `conectado · ${owner} · ${modelLbl}${effortLbl}` : `conectado · ${modelLbl}${effortLbl}`
-      else if (status.qrPresent) sub.textContent = 'esperando QR…'
-      else sub.textContent = 'desconectado'
+      else if (status.connected) sub.textContent = owner ? `conectado · ${owner} · ${modelLbl}${effortLbl} · ${bridgeLbl}` : `conectado · ${modelLbl}${effortLbl} · ${bridgeLbl}`
+      else if (status.qrPresent) sub.textContent = `esperando QR… · ${bridgeLbl}`
+      else sub.textContent = `desconectado · ${bridgeLbl}`
     }
     // habilitar/deshabilitar botones del header
     const qrBtn = $('#wa-btn-qr', panelEl)
     if (qrBtn) qrBtn.classList.toggle('attention', !!status.qrPresent && !status.connected)
+    updateBridgeControlUI()
   }
 
   function updateUnreadBadge() {
@@ -1099,8 +1256,10 @@
     } else {
       unreadBadgeEl.classList.add('hidden')
     }
-    toggleBtn.classList.toggle('wa-has-unread', total > 0)
-    toggleBtn.classList.toggle('wa-connected', !!status.connected)
+    if (toggleBtn) {
+      toggleBtn.classList.toggle('wa-has-unread', total > 0)
+      toggleBtn.classList.toggle('wa-connected', !!status.connected)
+    }
   }
 
   // ── Footer (input, adjuntar, micro) ──
@@ -1188,7 +1347,14 @@
   }
 
   function showInputError(msg) {
-    if (!inputEl) return
+    if (!inputEl) {
+      const sub = panelEl ? $('#wa-header-sub', panelEl) : null
+      if (sub) {
+        sub.textContent = msg || 'Error'
+        setTimeout(() => updateStatusUI(), 2500)
+      }
+      return
+    }
     const prev = inputEl.placeholder
     inputEl.placeholder = msg
     inputEl.classList.add('wa-input-err')
@@ -1760,6 +1926,7 @@
     chatListEl = $('.wa-chatlist', panelEl)
     convoEl = $('.wa-convo', panelEl)
     statusDotEl = $('.wa-status-dot', panelEl)
+    bridgeControlBtnEl = $('#wa-btn-bridge-toggle', panelEl)
     searchInputEl = $('#wa-search-input', panelEl)
 
     // 3. Modales
@@ -1785,6 +1952,7 @@
     })
     $('#wa-btn-qr', panelEl).addEventListener('click', openQrModal)
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
+    if (bridgeControlBtnEl) bridgeControlBtnEl.addEventListener('click', toggleBridgeControl)
     const personaBtn = $('#wa-btn-persona', panelEl)
     if (personaBtn) personaBtn.addEventListener('click', openPersonaModal)
     if (searchInputEl) {
@@ -1824,6 +1992,7 @@
         toggleBtn.title = 'WhatsApp bridge no disponible'
       }
     } else {
+      refreshBridgeStatus()
       refreshStatus()
       refreshChats().then(() => {
         try {
@@ -1831,7 +2000,7 @@
           if (last && chats.find(c => c.jid === last)) selectChat(last)
         } catch {}
       })
-      pollTimerId = setInterval(() => { refreshStatus(); refreshChats() }, 15000)
+      pollTimerId = setInterval(() => { refreshBridgeStatus(); refreshStatus(); refreshChats() }, 15000)
     }
 
     window.addEventListener('beforeunload', () => {
