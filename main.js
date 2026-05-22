@@ -32,6 +32,16 @@ const {
   createProposalFiles
 } = require('./main/agent-pty-proposal')
 const {
+  extractTurnText,
+  statCacheKey,
+  safeStat,
+  clipText,
+  escapeSqlLiteral,
+  escapeForCompactedPrompt,
+  extractCodexResumeId,
+  extractClaudeResumeId
+} = require('./main/session-helpers')
+const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
   normalizeMcpServerList,
@@ -2953,23 +2963,6 @@ function initTelegramBridge() {
 const TG_HISTORY_THRESHOLD = 30
 const TG_HISTORY_KEEP = 20
 
-function extractTurnText(obj) {
-  if (!obj?.message?.content) return ''
-  const content = obj.message.content
-  if (typeof content === 'string') return content.trim()
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => {
-        if (typeof block === 'string') return block
-        if (block?.type === 'text' && typeof block.text === 'string') return block.text
-        return ''
-      })
-      .join(' ')
-      .trim()
-  }
-  return ''
-}
-
 let codexHistoryCache = { key: '', rows: [] }
 let codexSessionIndexCache = { key: '', byId: new Map() }
 let codexStateThreadCache = new Map()
@@ -2978,15 +2971,6 @@ const CLAUDE_TITLE_CACHE_MAX = 600
 const claudeSessionTitleCache = new Map()
 const SESSION_META_CACHE_MAX = 300
 const currentSessionMetaCache = new Map()
-
-function statCacheKey(stat) {
-  if (!stat) return ''
-  return `${Number(stat.mtimeMs || 0)}:${Number(stat.size || 0)}`
-}
-
-function safeStat(filePath) {
-  try { return fs.statSync(filePath) } catch { return null }
-}
 
 function rememberClaudeSessionTitle(filePath, entry) {
   if (!filePath || !entry) return
@@ -3015,12 +2999,6 @@ function rememberSessionMeta(cacheKey, entry) {
 
 function fileCacheKey(filePath) {
   return statCacheKey(safeStat(filePath))
-}
-
-function clipText(text, max = 160) {
-  const t = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!t) return ''
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
 }
 
 function loadCodexHistoryRows() {
@@ -3078,10 +3056,6 @@ function loadCodexSessionIndexMap() {
   return byId
 }
 
-function escapeSqlLiteral(text) {
-  return String(text || '').replace(/'/g, "''")
-}
-
 function readCodexStateThreadMeta(threadId) {
   const id = String(threadId || '').trim()
   if (!id) return null
@@ -3119,22 +3093,6 @@ function readCodexStateThreadMeta(threadId) {
     if (oldest) codexStateThreadCache.delete(oldest)
   }
   return meta
-}
-
-function extractCodexResumeId(args) {
-  if (!Array.isArray(args) || args.length < 2) return null
-  for (let i = 0; i < args.length - 1; i++) {
-    if (args[i] === 'resume' && args[i + 1]) return String(args[i + 1]).trim()
-  }
-  return null
-}
-
-function extractClaudeResumeId(args) {
-  if (!Array.isArray(args) || args.length < 2) return null
-  for (let i = 0; i < args.length - 1; i++) {
-    if (args[i] === '--resume' && args[i + 1]) return String(args[i + 1]).trim()
-  }
-  return null
 }
 
 function guessCodexSessionFromHistory(session) {
@@ -3308,10 +3266,6 @@ function resolveSessionIdForRelay(session) {
     return guess.sessionId
   }
   return null
-}
-
-function escapeForCompactedPrompt(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
