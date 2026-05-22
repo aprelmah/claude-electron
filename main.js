@@ -54,6 +54,18 @@ const { createHealthCollectors } = require('./main/health-collectors')
 const { createSessionListing } = require('./main/claude-session-listing')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
+  buildLanSessionLegacyRoots,
+  createLanPermissionNormalizer,
+  sanitizeLanRequestedModel,
+  sanitizeLanRequestedCli,
+  sanitizeLanRequestedEffort,
+  buildLanCliArgs,
+  resolveLanRemoteContextInput,
+  resolveLanRemoteIp,
+  LAN_CLAUDE_EFFORT_LEVELS: _LAN_CLAUDE_EFFORT_LEVELS,
+  LAN_CODEX_EFFORT_LEVELS: _LAN_CODEX_EFFORT_LEVELS
+} = require('./main/lan-helpers')
+const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
   normalizeMcpServerList,
@@ -138,8 +150,8 @@ const DEFAULT_LAN_ROLE_PERMISSIONS = Object.freeze({
   'viewer.open': true,
   'automations.manage': true
 })
-const LAN_CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
-const LAN_CODEX_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
+const LAN_CLAUDE_EFFORT_LEVELS = _LAN_CLAUDE_EFFORT_LEVELS
+const LAN_CODEX_EFFORT_LEVELS = _LAN_CODEX_EFFORT_LEVELS
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -637,75 +649,10 @@ function getLanClientHtmlPath() {
   return path.join(__dirname, 'lan-client.html')
 }
 
-function buildLanSessionLegacyRoots(baseCwd) {
-  const roots = new Set()
-  if (baseCwd) roots.add(baseCwd)
-  roots.add(os.homedir())
-  return Array.from(roots).map((item) => path.resolve(item))
-}
-
-function normalizeLanPermissionMap(rawPermissions) {
-  const src = rawPermissions && typeof rawPermissions === 'object' ? rawPermissions : {}
-  const out = {}
-  for (const key of LAN_PERMISSION_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(src, key)) out[key] = Boolean(src[key])
-    else out[key] = Boolean(DEFAULT_LAN_ROLE_PERMISSIONS[key])
-  }
-  return out
-}
-
-function sanitizeLanRequestedModel(raw, maxLen = 120) {
-  const text = String(raw || '').trim()
-  if (!text) return ''
-  const clipped = text.length > maxLen ? text.slice(0, maxLen) : text
-  if (!/^[a-zA-Z0-9._:/-]+$/.test(clipped)) return ''
-  return clipped
-}
-
-function sanitizeLanRequestedCli(raw) {
-  const text = String(raw || '').trim().toLowerCase()
-  if (!text) return ''
-  if (text === 'claude' || text === 'codex') return text
-  return ''
-}
-
-function sanitizeLanRequestedEffort(raw, cli = '') {
-  const text = String(raw || '').trim().toLowerCase()
-  if (!text) return ''
-  if (cli === 'codex') return LAN_CODEX_EFFORT_LEVELS.has(text) ? text : ''
-  if (cli === 'claude') return LAN_CLAUDE_EFFORT_LEVELS.has(text) ? text : ''
-  if (LAN_CLAUDE_EFFORT_LEVELS.has(text) || LAN_CODEX_EFFORT_LEVELS.has(text)) return text
-  return ''
-}
-
-function buildLanCliArgs(cli, { model = '', effort = '' } = {}) {
-  const args = []
-  if (cli === 'codex') {
-    args.push('--no-alt-screen')
-    if (model) args.push('-m', model)
-    if (effort) args.push('-c', `model_reasoning_effort=${effort}`)
-    return args
-  }
-  if (model) args.push('--model', model)
-  if (effort) args.push('--effort', effort)
-  return args
-}
-
-function resolveLanRemoteContextInput(remoteMeta = {}) {
-  if (remoteMeta && typeof remoteMeta === 'object' && remoteMeta.requestedContext && typeof remoteMeta.requestedContext === 'object') {
-    return remoteMeta.requestedContext
-  }
-  return remoteMeta
-}
-
-function resolveLanRemoteIp(remoteMeta = {}) {
-  if (remoteMeta && typeof remoteMeta === 'object') {
-    if (typeof remoteMeta.ip === 'string' && remoteMeta.ip.trim()) return remoteMeta.ip.trim()
-    const reqIp = remoteMeta.req?.socket?.remoteAddress
-    if (typeof reqIp === 'string' && reqIp.trim()) return reqIp.trim()
-  }
-  return ''
-}
+const normalizeLanPermissionMap = createLanPermissionNormalizer({
+  LAN_PERMISSION_KEYS,
+  DEFAULT_LAN_ROLE_PERMISSIONS
+})
 
 function resolveLanEnterpriseContext(remoteContext, activeProfile, fallbackCwd) {
   const legacyRoots = buildLanSessionLegacyRoots(fallbackCwd)
