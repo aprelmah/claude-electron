@@ -46,6 +46,7 @@ const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
 const { createWindowFactory } = require('./main/window-factory')
 const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
+const { registerTasksIpc } = require('./main/tasks-ipc')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -4422,123 +4423,16 @@ registerViewerGraphIpc({
   openViewerWindow
 })
 
-// ── Tasks Manager IPC ──
-ipcMain.handle('tasks-manager:open', async () => {
-  await openTasksManager()
-  return { ok: true }
-})
-
-function assertScheduler() {
-  if (!tasksScheduler) throw new Error('Scheduler no inicializado')
-  return tasksScheduler
-}
-
-ipcMain.handle('tasks:list', async () => {
-  if (!tasksScheduler) return []
-  return tasksScheduler.persistence.loadTasks()
-})
-
-ipcMain.handle('tasks:get', async (_event, { id }) => {
-  if (!tasksScheduler) return null
-  return tasksScheduler.persistence.getTask(id)
-})
-
-ipcMain.handle('tasks:create', async (_event, data) => {
-  return assertScheduler().upsertTask(data)
-})
-
-ipcMain.handle('tasks:update', async (_event, { id, patch }) => {
-  const sched = assertScheduler()
-  const current = await sched.persistence.getTask(id)
-  if (!current) throw new Error('Tarea no encontrada')
-  return sched.upsertTask({ ...current, ...patch, id })
-})
-
-ipcMain.handle('tasks:delete', async (_event, { id }) => {
-  await assertScheduler().deleteTask(id)
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:toggle', async (_event, { id, enabled }) => {
-  return assertScheduler().toggle(id, enabled)
-})
-
-ipcMain.handle('tasks:run-now', async (_event, { id }) => {
-  const sched = assertScheduler()
-  const runId = require('crypto').randomUUID()
-  // disparar en background; no esperar a que termine
-  Promise.resolve().then(() => sched.runNow(id)).catch((err) => {
-    console.error('[tasks:run-now] error:', err?.message || err)
-  })
-  return { ok: true, runId }
-})
-
-ipcMain.handle('tasks:cancel', async (_event, { id }) => {
-  assertScheduler().cancel(id)
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:get-runs', async (_event, payload = {}) => {
-  if (!tasksScheduler) return []
-  const { taskId, limit = 100 } = payload
-  return tasksScheduler.persistence.getRuns({ taskId, limit })
-})
-
-ipcMain.handle('tasks:validate-cron', async (_event, { expr }) => {
-  if (!tasksScheduler) return { ok: false, error: 'Scheduler no listo' }
-  return tasksScheduler.validateCron(expr)
-})
-
-ipcMain.handle('tasks:list-cwds', async () => {
-  let history = []
-  try {
-    if (tasksScheduler) history = await tasksScheduler.persistence.loadCwdHistory()
-  } catch {}
-  const liveCwds = []
-  for (const s of sessions.values()) {
-    if (s?.cwd) liveCwds.push(s.cwd)
-  }
-  const all = Array.from(new Set([...(Array.isArray(history) ? history : []), ...liveCwds]))
-  if (!all.length) return [os.homedir()]
-  return all
-})
-
-ipcMain.handle('tasks:get-cron-presets', () => cronPresets)
-
-ipcMain.handle('tasks:pick-folder', async (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender) || windowFactory.getTasksManagerWin()
-  const result = await dialog.showOpenDialog(win, {
-    properties: ['openDirectory']
-  })
-  if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
-  return { path: result.filePaths[0], canceled: false }
-})
-
-ipcMain.handle('tasks:get-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
-
-ipcMain.handle('tasks:get-telegram-configured', () => {
-  const tg = appConfig?.telegram || {}
-  return !!(tg.botToken && Array.isArray(tg.allowedUsers) && tg.allowedUsers.length)
-})
-
-ipcMain.handle('tasks:get-default-model-effort', () => {
-  const tg = appConfig?.telegram || {}
-  return {
-    claude: { model: tg.claudeModel || '', effort: tg.claudeEffort || '' },
-    codex: { model: tg.codexModel || '', effort: tg.codexEffort || '' }
-  }
-})
-
-ipcMain.handle('tasks:window-close', () => {
-  const w = windowFactory.getTasksManagerWin()
-  if (w && !w.isDestroyed()) w.close()
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:window-minimize', () => {
-  const w = windowFactory.getTasksManagerWin()
-  if (w && !w.isDestroyed()) w.minimize()
-  return { ok: true }
+registerTasksIpc({
+  ipcMain,
+  BrowserWindow,
+  dialog,
+  nativeTheme,
+  getScheduler: () => tasksScheduler,
+  getAppConfig: () => appConfig,
+  getSessions: () => sessions,
+  getTasksManagerWin: () => windowFactory.getTasksManagerWin(),
+  openTasksManager
 })
 
 // ── Automations IPC ──
