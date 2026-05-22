@@ -546,6 +546,7 @@ function fillForm(task) {
   $('#f-cwd').value = task.cwd || '';
   populateModelEffort(task.cli || 'claude', task.model || '', task.effort || '');
   $('#f-resume').checked = !!task.resume;
+  updateSessionInfoBlock(task);
   $('#f-prompt').value = task.prompt || '';
   const sinks = task.sinks || {};
   $('#f-sink-log').checked = sinks.logApp !== false;
@@ -571,6 +572,84 @@ function emptyTaskDraft() {
     resume: false,
     sinks: { logApp: true, notifyMacOS: false, telegram: false },
   };
+}
+
+function updateSessionInfoBlock(task) {
+  const block = $('#session-info-block');
+  const codeEl = $('#task-session-id');
+  const statusEl = $('#task-session-status');
+  const btnOpen = $('#btn-open-task-session');
+  const btnReset = $('#btn-reset-task-session');
+  if (!block || !codeEl || !statusEl || !btnOpen || !btnReset) return;
+
+  block.style.display = 'block';
+  const resumeOn = $('#f-resume').checked;
+  const sid = task && task.sessionId ? String(task.sessionId) : '';
+
+  if (!resumeOn) {
+    codeEl.textContent = '—';
+    codeEl.removeAttribute('title');
+    statusEl.textContent = 'Esta tarea no reanuda sesión. Activa la casilla para mantener contexto entre runs.';
+    btnOpen.disabled = true;
+    btnReset.disabled = true;
+    return;
+  }
+
+  if (!sid) {
+    codeEl.textContent = '—';
+    codeEl.removeAttribute('title');
+    statusEl.textContent = 'Aún no se ha capturado sesión. Se creará en la próxima ejecución.';
+    btnOpen.disabled = true;
+    btnReset.disabled = true;
+    return;
+  }
+
+  const truncated = sid.length > 12 ? `${sid.slice(0, 8)}…${sid.slice(-4)}` : sid;
+  codeEl.textContent = truncated;
+  codeEl.title = sid;
+  let when = '';
+  if (task && task.lastRunAt) {
+    try { when = new Date(task.lastRunAt).toLocaleString('es-ES'); } catch { when = ''; }
+  }
+  statusEl.textContent = when ? `Capturada el ${when}` : 'Sesión continua activa.';
+  btnOpen.disabled = false;
+  btnReset.disabled = false;
+}
+
+async function resetCurrentTaskSession() {
+  if (!state.selectedId) return;
+  if (!confirm('¿Resetear la sesión continua de esta tarea? La próxima ejecución arrancará desde cero, sin memoria previa.')) return;
+  try {
+    const res = await api.resetSession(state.selectedId);
+    if (res && res.ok === false) {
+      toast('Error: ' + (res.error || 'No se pudo resetear'), 'error');
+      return;
+    }
+    // Recarga la tarea y repinta el bloque.
+    const fresh = await api.get(state.selectedId);
+    if (fresh) {
+      const idx = state.tasks.findIndex((t) => t.id === fresh.id);
+      if (idx >= 0) state.tasks[idx] = fresh;
+      fillForm(fresh);
+    }
+    toast('Sesión reseteada', 'ok');
+  } catch (e) {
+    toast('Error: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+async function openCurrentTaskSession() {
+  if (!state.selectedId) return;
+  const t = state.tasks.find((x) => x.id === state.selectedId);
+  if (!t || !t.sessionId) return;
+  try {
+    const res = await api.openSession({ sessionId: t.sessionId, cwd: t.cwd || '', cli: t.cli || 'claude' });
+    if (res && res.ok === false) {
+      toast('Error: ' + (res.error || 'No se pudo abrir'), 'error');
+    }
+  } catch (e) {
+    toast('Error: ' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 function showEditor(task) {
@@ -1829,6 +1908,12 @@ function wireEvents() {
   $('#btn-run-now').addEventListener('click', runNow);
   $('#btn-cancel').addEventListener('click', cancelRun);
   $('#btn-pick-folder').addEventListener('click', pickFolder);
+  $('#btn-reset-task-session').addEventListener('click', resetCurrentTaskSession);
+  $('#btn-open-task-session').addEventListener('click', openCurrentTaskSession);
+  $('#f-resume').addEventListener('change', () => {
+    const t = state.tasks.find((x) => x.id === state.selectedId);
+    updateSessionInfoBlock(t || { resume: $('#f-resume').checked, sessionId: '' });
+  });
   $('#btn-modal-close').addEventListener('click', hideModal);
   $('#modal-bg').addEventListener('click', (e) => { if (e.target === $('#modal-bg')) hideModal(); });
 

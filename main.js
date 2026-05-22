@@ -3133,6 +3133,35 @@ ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blo
   }
 })
 
+ipcMain.handle('app:open-task-session', async (_event, payload = {}) => {
+  try {
+    const sessionId = String(payload.sessionId || '').trim()
+    const cwd = payload.cwd ? String(payload.cwd) : ''
+    const cli = payload.cli ? String(payload.cli) : ''
+    if (!/^[a-f0-9-]{32,40}$/i.test(sessionId)) {
+      return { ok: false, error: 'sessionId inválido' }
+    }
+    // 1. Buscar ventana principal (primary). Si no hay, intenta la primera ventana de sessions Map.
+    let target = primaryWcId != null ? sessions.get(primaryWcId) : null
+    if (!target) {
+      const first = sessions.values().next().value
+      if (first) target = first
+    }
+    if (!target || !target.win || target.win.isDestroyed()) {
+      return { ok: false, error: 'ventana principal no disponible' }
+    }
+    const win = target.win
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    // 2. Pedirle al renderer principal que abra la sesión (la lógica de open vive en el renderer).
+    win.webContents.send('app:request-open-session', { sessionId, cwd, cli })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+})
+
 registerAutomationChatIpc({
   ipcMain,
   BrowserWindow,
