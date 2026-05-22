@@ -29,8 +29,12 @@ const {
   flattenTerminal,
   extractAgentBlocks,
   blocksEqual,
-  createProposalFiles
+  createProposalFiles,
+  extractTaskBlock,
+  taskBlocksEqual,
+  createTaskProposalFiles
 } = require('./main/agent-pty-proposal')
+const { registerTaskAgentIpc } = require('./main/task-agent-ipc')
 const {
   extractTurnText,
   statCacheKey,
@@ -70,7 +74,6 @@ const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
 const { registerAutomationChatIpc } = require('./main/automation-chat-ipc')
-const { registerTaskChatIpc } = require('./main/task-chat-ipc')
 const { createClaudeSessionCache } = require('./main/claude-session-cache')
 const { registerTelegramSessionLinkIpc } = require('./main/telegram-session-link-ipc')
 const { createRelayTranscriptHelpers } = require('./main/relay-transcript-helpers')
@@ -108,7 +111,6 @@ const { createSessionLinks } = require('./main/session-links')
 const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
-const { createTaskChat, DEFAULT_THREAD_ID: TASK_CHAT_DEFAULT_THREAD_ID } = require('./tasks/chat')
 const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
 let createWhatsAppClient = null
 let WA_MEDIA_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'media')
@@ -1399,14 +1401,10 @@ let tasksInbox = null
 let sessionLinks = null
 let automationManager = null
 let automationChat = null
-let taskChat = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
 const chatWcToAutomation = new Map() // wcId → automationId
-// Ventanas del asistente de tareas. Una global por ahora (thread id fijo).
-const taskChatWindows = new Map() // threadId → BrowserWindow
-const taskChatWcToThread = new Map() // wcId → threadId
 
 const windowFactory = createWindowFactory({
   BrowserWindow,
@@ -1443,15 +1441,6 @@ function broadcastAutomationChat(channel, payload) {
   const id = payload && payload.automationId
   if (!id) return
   const win = chatWindows.get(id)
-  if (!win || win.isDestroyed()) return
-  try { win.webContents.send(channel, payload) } catch {}
-}
-
-// Emite eventos del task-chat a la ventana del threadId correspondiente.
-function broadcastTaskChat(channel, payload) {
-  const tid = payload && payload.threadId
-  if (!tid) return
-  const win = taskChatWindows.get(tid)
   if (!win || win.isDestroyed()) return
   try { win.webContents.send(channel, payload) } catch {}
 }
@@ -1687,6 +1676,302 @@ function killAgentPty(session) {
   session.pty._alive = false
   try { session.pty.kill() } catch {}
   session.pty = null
+}
+
+// ── Task Agent PTY (creación / iteración / resume de tareas programadas) ─
+//
+// Sesiones del agente PTY de TAREAS. Misma idea que el de automatizaciones
+// pero con bootstrap específico (bloque <TASK>{json}</TASK> + filesystem en
+// /tmp/poweragent-proposal/task-<sessionId>/).
+const taskAgentSessions = new Map() // wcId → TaskAgentPtySession
+
+const {
+  taskProposalPaths,
+  ensureTaskProposalDir,
+  clearTaskProposalFromDisk,
+  readTaskProposalFromDisk
+} = createTaskProposalFiles(AGENT_PROPOSAL_BASE)
+
+function buildTaskAgentBootstrapPrompt({ mode, task }) {
+  const lines = []
+  if (mode === 'iterate' && task) {
+    lines.push('Eres un asistente de POWER-AGENT que ayuda a iterar UNA tarea programada ya creada.')
+    lines.push('')
+    lines.push('Estado actual de la tarea (contexto, NO la repitas tal cual al usuario):')
+    lines.push('- name: ' + (task.name || '(sin nombre)'))
+    lines.push('- cron: ' + (task.cron || '—'))
+    lines.push('- cli: ' + (task.cli || 'claude'))
+    lines.push('- model: ' + (task.model || ''))
+    lines.push('- effort: ' + (task.effort || ''))
+    lines.push('- resume: ' + (task.resume !== false))
+    lines.push('- cwd: ' + (task.cwd || ''))
+    lines.push('- enabled: ' + (task.enabled !== false))
+    lines.push('- sinks: ' + JSON.stringify(task.sinks || {}))
+    lines.push('- prompt actual:')
+    lines.push('  """')
+    lines.push((task.prompt || '').split('\n').map(l => '  ' + l).join('\n'))
+    lines.push('  """')
+    lines.push('')
+    lines.push('Pregunta al usuario qué quiere ajustar. Cuando tengas claro el cambio, devuelve la VERSIÓN COMPLETA actualizada en un bloque `<TASK>...</TASK>` con TODO el JSON (no solo el diff).')
+  } else {
+    lines.push('Eres un asistente de POWER-AGENT que ayuda a crear UNA tarea programada.')
+    lines.push('')
+    lines.push('Una tarea programada es un prompt que se ejecuta automáticamente cada cierto tiempo contra Claude headless. Útil para: revisar correo cada 4h, listar eventos del día, generar resúmenes, monitorizar algo.')
+  }
+  lines.push('')
+  lines.push('REGLAS de conversación:')
+  lines.push('- Pregunta una sola cosa por turno.')
+  lines.push('- Asume valores razonables y proponlos; el usuario solo corrige.')
+  lines.push('- Castellano de España, coloquial. Sin emojis. Frases cortas.')
+  lines.push('- En cuanto tengas claro qué hacer y con qué frecuencia, devuelve la propuesta en un bloque `<TASK>...</TASK>` con JSON válido y NADA MÁS dentro del bloque.')
+  lines.push('')
+  lines.push('Schema obligatorio:')
+  lines.push('{')
+  lines.push('  "name": "nombre corto descriptivo",')
+  lines.push('  "enabled": true,')
+  lines.push('  "cron": "M H D MES DOW (5 campos)",')
+  lines.push('  "cli": "claude",')
+  lines.push('  "cwd": "",')
+  lines.push('  "prompt": "instrucción clara al modelo, en castellano, mencionando MCPs por nombre si aplica",')
+  lines.push('  "model": "haiku",')
+  lines.push('  "effort": "",')
+  lines.push('  "resume": true,')
+  lines.push('  "sinks": { "logApp": true, "notifyMacOS": true, "telegram": false }')
+  lines.push('}')
+  lines.push('')
+  lines.push('Reglas de campos:')
+  lines.push('- model: "haiku" salvo que el usuario pida razonamiento profundo ("sonnet" o "opus").')
+  lines.push('- resume: true salvo orden contraria.')
+  lines.push('- cwd: "" salvo proyecto concreto.')
+  lines.push('- telegram: true solo si el usuario quiere recibir el resultado en Telegram.')
+  lines.push('- cron: presets útiles "0 9 * * *" diario 09:00, "0 */4 * * *" cada 4h, "0 0 * * 1-5" laborables.')
+  lines.push('')
+  lines.push('MCPs disponibles en claude para que el prompt los use: Google Calendar, Gmail, Google Tasks, Google Drive, Obsidian, Supabase.')
+  lines.push('')
+  lines.push('IMPORTANTE — entrega de la propuesta:')
+  lines.push('Cuando tengas la info mínima, debes ENTREGAR el JSON escribiendo dos archivos en disco con tu herramienta Write:')
+  const ppExample = '/tmp/poweragent-proposal/task-<sessionId>/'
+  lines.push('  a) ' + ppExample + 'task.json  → contenido EXACTO del JSON arriba.')
+  lines.push('  b) ' + ppExample + 'READY      → archivo VACÍO. Solo después del JSON.')
+  lines.push('(La aplicación te dirá la ruta exacta en el próximo mensaje del sistema.)')
+  lines.push('')
+  lines.push('Tras escribir los archivos, di al usuario una sola frase: "Listo. Pulsa el botón verde de arriba para guardar la tarea."')
+  lines.push('')
+  if (mode === 'iterate') {
+    lines.push('AHORA: pregunta al usuario qué quiere ajustar de la tarea actual.')
+  } else {
+    lines.push('AHORA: empieza con: "¿Qué quieres que haga esta tarea?"')
+  }
+  return lines.join('\n')
+}
+
+function startTaskAgentPty(session) {
+  if (!session) throw new Error('Sesión agente tarea no disponible')
+  if (session.pty) return session.pty
+  const cliCheck = ensureCliAvailable(session.activeCli)
+  if (!cliCheck.ok) {
+    if (session.win && !session.win.isDestroyed()) {
+      session.win.webContents.send('task-agent-pty:error', { error: cliCheck.error })
+    }
+    throw new Error(cliCheck.error)
+  }
+
+  let args = []
+  if (session.mode === 'resume' && session.resumeSessionId) {
+    args = ['--resume', session.resumeSessionId]
+  }
+
+  let proc
+  try {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, args)], {
+      name: 'xterm-256color',
+      cols: session.cols || 120,
+      rows: session.rows || 35,
+      cwd: session.cwd || os.homedir(),
+      env: cliCheck.env
+    })
+  } catch (err) {
+    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
+    if (session.win && !session.win.isDestroyed()) {
+      session.win.webContents.send('task-agent-pty:error', { error: msg })
+    }
+    throw new Error(msg)
+  }
+
+  proc._alive = true
+  session.pty = proc
+  session.buffer = ''
+  session.lastProposal = null
+  session.detectFromOffset = session.bootstrapPrompt ? null : 0
+  const myWcId = session.wcId
+
+  // Polling filesystem (modo create/iterate)
+  if (session.mode !== 'resume') {
+    if (session.proposalPollId) { try { clearInterval(session.proposalPollId) } catch {} }
+    session.proposalPollId = setInterval(() => {
+      const s = taskAgentSessions.get(myWcId)
+      if (!s || !s.win || s.win.isDestroyed()) return
+      const found = readTaskProposalFromDisk(s.sessionId)
+      if (!found) return
+      if (taskBlocksEqual(found, s.lastProposal)) return
+      s.lastProposal = found
+      try { s.win.webContents.send('task-agent-pty:proposal-detected', { proposal: found }) } catch {}
+    }, AGENT_PROPOSAL_POLL_MS)
+  }
+
+  proc.onData((data) => {
+    if (!proc._alive) return
+    const s = taskAgentSessions.get(myWcId)
+    if (!s || !s.win || s.win.isDestroyed()) return
+    const text = typeof data === 'string' ? data : data.toString('utf8')
+    s.win.webContents.send('task-agent-pty:data', text)
+    s.buffer = (s.buffer + text).slice(-AGENT_BUFFER_MAX)
+    if (s.mode === 'resume') return
+    if (s.detectFromOffset == null) return
+    const tail = s.buffer.length > s.detectFromOffset ? s.buffer.slice(s.detectFromOffset) : ''
+    const blocks = extractTaskBlock(tail)
+    if (blocks && !taskBlocksEqual(blocks, s.lastProposal)) {
+      s.lastProposal = blocks
+      try { s.win.webContents.send('task-agent-pty:proposal-detected', { proposal: blocks }) } catch {}
+    }
+  })
+
+  proc.onExit(() => {
+    if (proc._alive) {
+      const s = taskAgentSessions.get(myWcId)
+      if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('task-agent-pty:exit')
+    }
+    const s = taskAgentSessions.get(myWcId)
+    if (s && s.pty === proc) s.pty = null
+  })
+
+  if (session.bootstrapPrompt && !session.bootstrapInjected) {
+    session.bootstrapInjected = true
+    // Reemplaza <sessionId> placeholder en el bootstrap con la sessionId real.
+    const concretePrompt = session.bootstrapPrompt
+      .replace(/task-<sessionId>/g, 'task-' + session.sessionId)
+    setTimeout(() => {
+      if (!proc._alive) return
+      try {
+        const BP_START = '\x1b[200~'
+        const BP_END = '\x1b[201~'
+        proc.write(BP_START + concretePrompt + BP_END)
+        setTimeout(() => { if (proc._alive) { try { proc.write('\r') } catch {} } }, 150)
+        setTimeout(() => {
+          const s = taskAgentSessions.get(myWcId)
+          if (s) s.detectFromOffset = s.buffer.length
+        }, 4500)
+      } catch {}
+    }, AGENT_BOOT_DELAY_MS)
+  }
+
+  return proc
+}
+
+function killTaskAgentPty(session) {
+  if (!session) return
+  if (session.proposalPollId) {
+    try { clearInterval(session.proposalPollId) } catch {}
+    session.proposalPollId = null
+  }
+  if (!session.pty) return
+  session.pty._alive = false
+  try { session.pty.kill() } catch {}
+  session.pty = null
+}
+
+async function openTaskAgentPtyWindow({ mode = 'create', taskId = null } = {}) {
+  const useMode = mode === 'iterate' ? 'iterate' : mode === 'resume' ? 'resume' : 'create'
+  let task = null
+  let resumeSessionId = null
+  if ((useMode === 'iterate' || useMode === 'resume') && taskId && tasksScheduler) {
+    try { task = await tasksScheduler.persistence.getTask(taskId) } catch {}
+    if (!task) return null
+    if (useMode === 'resume') {
+      if (!task.sessionId) {
+        // Sin sessionId aún → cae a iterate (chatear sobre la tarea sin reanudar)
+        return openTaskAgentPtyWindow({ mode: 'iterate', taskId })
+      }
+      resumeSessionId = task.sessionId
+    }
+  }
+
+  // Generar sessionId para uso del agente (filesystem proposal dir)
+  const sessionId = require('crypto').randomBytes(6).toString('hex')
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  let title
+  if (useMode === 'resume') title = 'Sesión — ' + (task?.name || 'tarea')
+  else if (useMode === 'iterate') title = 'Agente — ' + (task?.name || 'tarea')
+  else title = 'Agente — Crear tarea programada'
+
+  // Backend (modo create/iterate) prepara el directorio de propuestas.
+  if (useMode !== 'resume') ensureTaskProposalDir(sessionId)
+
+  const win = new BrowserWindow({
+    width: 880,
+    height: 640,
+    minWidth: 560,
+    minHeight: 380,
+    title,
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'task-agent-pty-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--task-agent-session=${sessionId}`]
+    }
+  })
+
+  const wcId = win.webContents.id
+  const session = {
+    win,
+    wcId,
+    sessionId,
+    mode: useMode,
+    taskId: taskId || null,
+    resumeSessionId,
+    activeCli: (task && task.cli === 'codex') ? 'codex' : (appConfig.cli.defaultCli === 'codex' ? 'codex' : 'claude'),
+    cols: 120,
+    rows: 35,
+    cwd: (task && task.cwd) || os.homedir(),
+    pty: null,
+    buffer: '',
+    lastProposal: null,
+    bootstrapPrompt: useMode === 'resume' ? null : buildTaskAgentBootstrapPrompt({ mode: useMode, task }),
+    bootstrapInjected: false
+  }
+  taskAgentSessions.set(wcId, session)
+
+  win.loadFile('task-agent-pty.html', { query: { theme: initialTheme, sid: sessionId, mode: useMode } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    const s = taskAgentSessions.get(wcId)
+    if (s) {
+      killTaskAgentPty(s)
+      if (useMode !== 'resume') {
+        try { clearTaskProposalFromDisk(s.sessionId) } catch {}
+      }
+    }
+    taskAgentSessions.delete(wcId)
+  })
+  return win
 }
 
 async function openAutomationPtyWindow(automationId) {
@@ -2054,61 +2339,6 @@ async function persistTaskSessionIdRotation(originalSessionId, newSessionId) {
       console.warn('[task-session] updateTask falló para', t.id, err?.message || err)
     }
   }
-}
-
-// ── Task chat (AI assistant que ayuda a crear nuevas tareas) ──
-async function openTaskChatWindow({ threadId } = {}) {
-  const tid = (typeof threadId === 'string' && threadId.trim()) || TASK_CHAT_DEFAULT_THREAD_ID
-
-  const existing = taskChatWindows.get(tid)
-  if (existing && !existing.isDestroyed()) {
-    if (existing.isMinimized()) existing.restore()
-    existing.show()
-    existing.focus()
-    return existing
-  }
-
-  let initialTheme = ''
-  try {
-    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-    if (primary && !primary.isDestroyed()) {
-      const t = await primary.webContents.executeJavaScript(
-        `localStorage.getItem('claude-electron-theme') || ''`, true
-      )
-      if (t === 'light' || t === 'dark') initialTheme = t
-    }
-  } catch {}
-  if (initialTheme !== 'light' && initialTheme !== 'dark') {
-    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-
-  const win = new BrowserWindow({
-    width: 880,
-    height: 640,
-    minWidth: 520,
-    minHeight: 460,
-    title: 'Asistente — Crear tarea',
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'task-chat-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      additionalArguments: [`--task-thread-id=${tid}`]
-    }
-  })
-  taskChatWindows.set(tid, win)
-  const wcId = win.webContents.id
-  taskChatWcToThread.set(wcId, tid)
-  win.loadFile('task-chat.html', { query: { theme: initialTheme, tid } })
-  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
-  win.on('closed', () => {
-    if (taskChatWindows.get(tid) === win) taskChatWindows.delete(tid)
-    taskChatWcToThread.delete(wcId)
-  })
-  return win
 }
 
 // ── Bridge wiring (one global bridge) ──
@@ -2483,20 +2713,6 @@ app.whenReady().then(async () => {
       console.error('[automation-chat] init failed:', e)
       automationChat = null
     }
-  }
-
-  // ── Task creation chat (asistente de creación de tareas programadas) ──
-  try {
-    taskChat = createTaskChat({
-      runClaudeHeadless,
-      runCodexHeadless,
-      getScheduler: () => tasksScheduler,
-      broadcast: broadcastTaskChat,
-      userDataDir: app.getPath('userData')
-    })
-  } catch (e) {
-    console.error('[task-chat] init failed:', e)
-    taskChat = null
   }
 
   // ── WhatsApp bridge client ──
@@ -3207,6 +3423,22 @@ registerAutomationsIpc({
   getChatWindows: () => chatWindows
 })
 
+// ── Task Agent IPC (creación de tareas vía PTY conversacional) ──
+registerTaskAgentIpc({
+  ipcMain,
+  BrowserWindow,
+  getTaskAgentSessions: () => taskAgentSessions,
+  startTaskAgentPty,
+  killTaskAgentPty,
+  ensureTaskProposalDir,
+  clearTaskProposalFromDisk,
+  readTaskProposalFromDisk,
+  getScheduler: () => tasksScheduler,
+  ensureCliAvailable,
+  openTaskAgentPtyWindow,
+  broadcast: (channel, payload) => broadcastToAllWindows(channel, payload)
+})
+
 // ── Automation chat IPC ──
 // El handler "automation-chat:open" ahora abre la ventana PTY (agente CLI vivo).
 // La antigua ventana de burbujas queda accesible solo si se llamara directamente
@@ -3547,23 +3779,6 @@ registerAutomationChatIpc({
   BrowserWindow,
   getAutomationChat: () => automationChat,
   getChatWcToAutomation: () => chatWcToAutomation
-})
-
-// ── Task chat (asistente de creación de tareas programadas) ──
-registerTaskChatIpc({
-  ipcMain,
-  BrowserWindow,
-  getTaskChat: () => taskChat,
-  getTaskChatWcToThread: () => taskChatWcToThread
-})
-
-ipcMain.handle('task-chat:open', async (_e, { threadId } = {}) => {
-  try {
-    const win = await openTaskChatWindow({ threadId })
-    return win ? { ok: true } : { ok: false, error: 'No se pudo abrir el asistente' }
-  } catch (err) {
-    return { ok: false, error: err && err.message ? err.message : String(err) }
-  }
 })
 
 // ── WhatsApp IPC ──

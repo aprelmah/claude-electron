@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('tasksAPI', {
   onRunProgress:  listener('tasks:run-progress'),
   onRunFinished:  listener('tasks:run-finished'),
 
+  // ---------- Task Agent (creación / iteración / resume) ----------
+  // mode: 'create' (nueva tarea), 'iterate' (chatear sobre tarea existente,
+  // emite propuesta para update), 'resume' (abre PTY con --resume sessionId
+  // sin detección de propuesta — para "Hablar con el agente" en tareas que
+  // ya tienen sesión Claude viva).
+  taskAgentOpen: (payload) => ipcRenderer.invoke('task-agent:open', payload || {}),
+
   // ---------- Automations (system-level) ----------
   automationsList:           ()        => ipcRenderer.invoke('automations:list'),
   automationsGet:            (id)      => ipcRenderer.invoke('automations:get', { id }),
@@ -56,7 +63,6 @@ contextBridge.exposeInMainWorld('tasksAPI', {
   automationsShellcheckStatus: ()      => ipcRenderer.invoke('automations:shellcheck-status'),
   automationsLint:           (payload) => ipcRenderer.invoke('automations:lint', payload),
   openAutomationChat:        (payload) => ipcRenderer.invoke('automation-chat:open', payload),
-  openTaskChat:              (payload) => ipcRenderer.invoke('task-chat:open', payload || {}),
   revealInFinder:            (path)    => ipcRenderer.invoke('shell:reveal-in-finder', { path }),
 
   onAutomationsListChanged:  listener('automations:list-changed'),
