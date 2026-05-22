@@ -4399,7 +4399,8 @@ cliSelector.addEventListener('change', async (e) => {
             const res = await api.openTaskSession({
               sessionId: item.sessionId,
               cwd: item.cwd,
-              cli: item.cli
+              cli: item.cli,
+              taskName: item.taskName
             })
             if (!res?.ok) {
               const msg = res?.error || 'No pude abrir la sesión'

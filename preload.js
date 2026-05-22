@@ -113,14 +113,13 @@ contextBridge.exposeInMainWorld('api', {
       const h = (_e, payload) => cb(payload)
       ipcRenderer.on('tasks:inbox-updated', h)
       return () => ipcRenderer.removeListener('tasks:inbox-updated', h)
-    },
-    onRequestOpenSession: (cb) => {
-      const h = (_e, payload) => cb(payload)
-      ipcRenderer.on('app:request-open-session', h)
-      return () => ipcRenderer.removeListener('app:request-open-session', h)
     }
   },
   tasksSessionLinks: (sessionId) => ipcRenderer.invoke('tasks:session-links', { sessionId }),
+  taskSession: {
+    open: ({ sessionId, cwd, cli, taskName } = {}) =>
+      ipcRenderer.invoke('app:open-task-session', { sessionId, cwd, cli, taskName })
+  },
   openBitacoraWindow: () => ipcRenderer.invoke('bitacora:open'),
   onTaskRunStarted: (cb) => {
     const h = (_e, p) => cb(p)
