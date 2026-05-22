@@ -101,17 +101,38 @@ function saveConfig(next) {
   return merged
 }
 
+function jidServer(jid) {
+  if (!jid) return ''
+  const idx = String(jid).indexOf('@')
+  if (idx < 0) return ''
+  return String(jid).slice(idx + 1).toLowerCase()
+}
+
+function isGroupJid(jid) {
+  return jidServer(jid) === 'g.us'
+}
+
+function isLidJid(jid) {
+  const server = jidServer(jid)
+  return server === 'lid' || server === 'hosted.lid'
+}
+
+function isPnJid(jid) {
+  const server = jidServer(jid)
+  return server === 's.whatsapp.net' || server === 'c.us'
+}
+
 function jidToNumber(jid) {
   if (!jid) return ''
-  const s = String(jid)
-  // @lid es un identificador enmascarado de WhatsApp, no teléfono real.
-  if (s.endsWith('@lid')) return ''
-  return s.split('@')[0].replace(/\D/g, '')
+  if (!isPnJid(jid)) return ''
+  const local = (String(jid).split('@')[0] || '').split(':')[0]
+  const digits = local.replace(/\D/g, '')
+  return digits || ''
 }
 
 function jidLocalId(jid) {
   if (!jid) return ''
-  return String(jid).split('@')[0] || ''
+  return (String(jid).split('@')[0] || '').split(':')[0]
 }
 
 function digitsOnly(v) {
@@ -121,11 +142,22 @@ function digitsOnly(v) {
 function sanitizePhoneForJid(jid, phone) {
   const s = String(phone || '').trim()
   if (!s) return ''
-  if (String(jid || '').endsWith('@lid')) {
+  if (isGroupJid(jid)) return ''
+  if (isLidJid(jid)) {
     const local = digitsOnly(jidLocalId(jid))
     if (local && digitsOnly(s) === local) return ''
   }
+  if (!isLidJid(jid) && !isPnJid(jid)) return ''
   return s
+}
+
+function deriveDisplayNumber(jid, currentDisplayNumber) {
+  if (isGroupJid(jid)) return jidLocalId(jid) || String(currentDisplayNumber || '').trim() || String(jid || '')
+  const fromJid = jidToNumber(jid)
+  if (fromJid) return fromJid
+  const fromStored = String(currentDisplayNumber || '').trim()
+  if (fromStored) return fromStored
+  return jidLocalId(jid) || String(jid || '')
 }
 
 function normalizeForModeration(text) {
@@ -406,12 +438,18 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
     const data = safeRead(STATE_PATH)
     chats = new Map()
     if (!data || !Array.isArray(data.chats)) return
+    let normalized = false
     for (const c of data.chats) {
       if (!c || !c.jid) continue
+      const isGroup = typeof c.isGroup === 'boolean' ? c.isGroup : isGroupJid(c.jid)
       const safePhone = sanitizePhoneForJid(c.jid, c.phoneNumber)
+      const displayNumber = deriveDisplayNumber(c.jid, c.displayNumber)
+      if (safePhone !== (c.phoneNumber || '') || displayNumber !== (c.displayNumber || '') || isGroup !== Boolean(c.isGroup)) {
+        normalized = true
+      }
       chats.set(c.jid, {
         jid: c.jid,
-        displayNumber: c.displayNumber || jidToNumber(c.jid) || jidLocalId(c.jid),
+        displayNumber,
         // Identidad mejorada: nombre del contacto / pushName y número real (si se pudo resolver).
         displayName: typeof c.displayName === 'string' ? c.displayName : '',
         phoneNumber: safePhone,
@@ -423,9 +461,10 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
         // Origen del manual. Migración: chats antiguos sin flag → 'user' (más seguro,
         // así no revertimos chats que Luismi puso manual a propósito antes del fix).
         escalationReason: c.escalationReason === 'media' || c.escalationReason === 'user' ? c.escalationReason : (c.mode === 'manual' ? 'user' : null),
-        isGroup: typeof c.isGroup === 'boolean' ? c.isGroup : String(c.jid).endsWith('@g.us')
+        isGroup
       })
     }
+    if (normalized) markDirty()
   }
 
   function persistState() {
@@ -443,7 +482,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
     if (!c) {
       c = {
         jid,
-        displayNumber: jidToNumber(jid) || jidLocalId(jid),
+        displayNumber: deriveDisplayNumber(jid, ''),
         displayName: '',
         phoneNumber: '',
         mode: 'auto',
@@ -452,7 +491,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
         lastActivity: 0,
         escalatedUntil: 0,
         escalationReason: null,
-        isGroup: jid.endsWith('@g.us')
+        isGroup: isGroupJid(jid)
       }
       chats.set(jid, c)
     }
@@ -463,7 +502,7 @@ function isAuthorized(jid) {
     // Grupos: los JIDs `@g.us` no tienen número de teléfono asociado y no caben
     // en la allowlist individual. Si Luismi quiere bloquear un grupo concreto lo
     // hará por otra vía (mute, salir del grupo).
-    if (jid && String(jid).endsWith('@g.us')) return true
+    if (isGroupJid(jid)) return true
     if (!config.authorizedNumbers || !config.authorizedNumbers.length) return true
     const num = jidToNumber(jid)
     const lidDigits = digitsOnly(jidLocalId(jid))
@@ -568,10 +607,12 @@ function isAuthorized(jid) {
     const chat = ensureChat(jid)
     // Enriquecer identidad si el bridge nos pasa nombre/numero.
     // Orden de preferencia para mostrar: displayName → phoneNumber → displayNumber/JID.
-    // Para grupos, raw.displayName viene del participante, no del grupo — no sobreescribir.
-    if (raw.displayName && raw.displayName !== chat.displayName && !jid.endsWith('@g.us')) { chat.displayName = String(raw.displayName); markDirty() }
+    // Para grupos, raw.displayName viene del bridge como alias de chat (subject si está
+    // disponible), mientras participantName identifica al autor del mensaje.
+    if (raw.displayName && raw.displayName !== chat.displayName) { chat.displayName = String(raw.displayName); markDirty() }
     const safeIncomingPhone = sanitizePhoneForJid(jid, raw.phoneNumber)
     if (safeIncomingPhone && safeIncomingPhone !== chat.phoneNumber) { chat.phoneNumber = safeIncomingPhone; markDirty() }
+    if (!safeIncomingPhone && chat.phoneNumber && isGroupJid(jid)) { chat.phoneNumber = ''; markDirty() }
     const msg = {
       id: raw.id,
       from: jid,
@@ -589,7 +630,7 @@ function isAuthorized(jid) {
 
     // Grupos: nunca auto-reply, siempre manual. Persistimos historial y emitimos
     // pero no entramos en la lógica de hand-over ni de auto-reply.
-    if (jid.endsWith('@g.us')) {
+    if (isGroupJid(jid)) {
       if (msg.fromMe) {
         const added = pushHistory(chat, msg)
         if (added) emitNewMessage(jid, msg)
@@ -1100,5 +1141,15 @@ module.exports = {
   MEDIA_PROTOCOL,
   BRIDGE_DIR,
   CONFIG_PATH,
-  STATE_PATH
+  STATE_PATH,
+  __private: {
+    jidServer,
+    isGroupJid,
+    isLidJid,
+    isPnJid,
+    jidToNumber,
+    jidLocalId,
+    sanitizePhoneForJid,
+    deriveDisplayNumber
+  }
 }

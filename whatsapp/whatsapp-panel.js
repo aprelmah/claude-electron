@@ -194,6 +194,43 @@
     return String(value || '').replace(/\D/g, '')
   }
 
+  function jidServer(jid) {
+    const s = String(jid || '')
+    const at = s.indexOf('@')
+    if (at < 0) return ''
+    return s.slice(at + 1).toLowerCase()
+  }
+
+  function isGroupJid(jid) {
+    return jidServer(jid) === 'g.us'
+  }
+
+  function isLidJid(jid) {
+    const server = jidServer(jid)
+    return server === 'lid' || server === 'hosted.lid'
+  }
+
+  function isPnJid(jid) {
+    const server = jidServer(jid)
+    return server === 's.whatsapp.net' || server === 'c.us'
+  }
+
+  function groupIdPreview(jid) {
+    const local = (String(jid || '').split('@')[0] || '').split(':')[0]
+    if (!local) return 'sin-id'
+    const compact = local.replace(/[^0-9A-Za-z-]/g, '')
+    if (!compact) return local
+    const parts = compact.split('-')
+    if (parts.length === 2) {
+      const left = parts[0] || ''
+      const right = parts[1] || ''
+      const shortLeft = left.length > 4 ? left.slice(-4) : left
+      const shortRight = right.length > 4 ? right.slice(-4) : right
+      return `${shortLeft}-${shortRight}`
+    }
+    return compact.length > 8 ? compact.slice(-8) : compact
+  }
+
   function formatPhone(value) {
     const d = normalizeDigits(value)
     if (!d) return ''
@@ -206,11 +243,12 @@
 
   function chatPhone(c) {
     if (!c) return ''
+    const jid = String(c.jid || '')
+    if (isGroupJid(jid)) return ''
     const fromField = normalizeDigits(c.phoneNumber)
     if (fromField) return formatPhone(fromField)
-    const jid = String(c.jid || '')
-    if (jid.endsWith('@lid')) return ''
-    if (jid.endsWith('@s.whatsapp.net')) return formatPhone(jid.split('@')[0])
+    if (isLidJid(jid)) return ''
+    if (isPnJid(jid)) return formatPhone(jid.split('@')[0])
     const fromDisplay = normalizeDigits(c.displayNumber)
     if (fromDisplay.length >= 8 && fromDisplay.length <= 15) return formatPhone(fromDisplay)
     return ''
@@ -221,21 +259,40 @@
   // Para @lid nunca usamos displayNumber como "teléfono" porque es un identificador privado.
   function chatLabel(c) {
     if (!c) return ''
+    const jid = String(c.jid || '')
     if (c.displayName && c.displayName.trim()) return c.displayName.trim()
+    if (isGroupJid(jid)) return `Grupo ${groupIdPreview(jid)}`
     const phone = chatPhone(c)
     if (phone) return phone
-    const jid = String(c.jid || '')
-    if (jid.endsWith('@lid')) return 'Contacto privado'
+    if (isLidJid(jid)) return 'Contacto privado'
     return c.displayNumber || c.jid || ''
   }
 
   function chatSubLabel(c) {
     if (!c) return ''
+    const jid = String(c.jid || '')
+    if (isGroupJid(jid)) return `ID grupo: ${jid}`
     const phone = chatPhone(c)
     if (phone && c.displayName && c.displayName.trim()) return phone
-    const jid = String(c.jid || '')
-    if (jid.endsWith('@lid')) return 'ID privado (@lid)'
+    if (isLidJid(jid)) return 'ID privado (@lid)'
     return jid || ''
+  }
+
+  function participantLabel(message) {
+    if (!message) return ''
+    const explicit = String(message.participantName || '').trim()
+    if (explicit) return explicit
+    const jid = String(message.participant || '').trim()
+    if (!jid) return ''
+    const local = (jid.split('@')[0] || '').split(':')[0]
+    if (!local) return ''
+    if (isLidJid(jid)) {
+      const short = local.length > 6 ? local.slice(-6) : local
+      return `Miembro ${short}`
+    }
+    const digits = normalizeDigits(local)
+    if (digits.length >= 8 && digits.length <= 15) return formatPhone(digits)
+    return local
   }
 
   function avatarInitials(c) {
@@ -569,7 +626,7 @@
         <div class="wa-chat-avatar"><span>${escapeHtml(avatarInitials(c))}</span></div>
         <div class="wa-chat-main">
           <div class="wa-chat-top">
-            <span class="wa-chat-name">${c.jid && c.jid.endsWith('@g.us') ? '<span class="wa-group-icon">👥 </span>' : ''}${escapeHtml(chatLabel(c))}</span>
+            <span class="wa-chat-name">${isGroupJid(c.jid) ? '<span class="wa-group-icon">👥 </span>' : ''}${escapeHtml(chatLabel(c))}</span>
             <span class="wa-chat-time">${escapeHtml(last ? fmtRelative(last.timestamp) : '')}</span>
           </div>
           <div class="wa-chat-bottom">
@@ -764,10 +821,10 @@
 
     // Nombre del participante en grupos (solo mensajes ajenos)
     const chatForBubble = chats.find(c => c.jid === currentJid)
-    const isGroupChat = chatForBubble?.isGroup || (currentJid && currentJid.endsWith('@g.us'))
+    const isGroupChat = chatForBubble?.isGroup || isGroupJid(currentJid)
     if (!m.fromMe && isGroupChat && (m.participantName || m.participant)) {
-      const name = m.participantName || (m.participant ? m.participant.split('@')[0] : '')
-      bubble.appendChild(el('div', { cls: 'wa-bubble-participant', text: name }))
+      const name = participantLabel(m)
+      if (name) bubble.appendChild(el('div', { cls: 'wa-bubble-participant', text: name }))
     }
 
     // Identificación Luismi vs Claude en burbujas fromMe
