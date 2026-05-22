@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
     saveMediaAs: (mediaUrl, suggestedName) => ipcRenderer.invoke('whatsapp:save-media-as', mediaUrl, suggestedName || ''),
     requestPhone: (jid) => ipcRenderer.invoke('whatsapp:request-phone', jid),
     setMode: (jid, mode) => ipcRenderer.invoke('whatsapp:set-mode', jid, mode),
+    setAllAuto: () => ipcRenderer.invoke('whatsapp:set-mode-all-auto'),
     markRead: (jid) => ipcRenderer.invoke('whatsapp:mark-read', jid),
     getConfig: () => ipcRenderer.invoke('whatsapp:get-config'),
     saveConfig: (cfg) => ipcRenderer.invoke('whatsapp:save-config', cfg || {}),

@@ -61,11 +61,14 @@
   let pollTimerId = null
   let bridgeControlBtnEl = null
   let bridgeControlBusy = false
+  let allAutoBtnEl = null
+  let allAutoBusy = false
   let bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: '' }
   let qrPollTimerId = null
   let qrLoadBusy = false
   let viewerMediaUrl = ''
   let viewerMediaName = ''
+  let headerNoticeTimer = null
 
   // ── Utilidades ──
   function $(sel, root = document) { return root.querySelector(sel) }
@@ -143,8 +146,27 @@
     return !!(wa && typeof wa.bridgeStatus === 'function' && typeof wa.bridgeControl === 'function')
   }
 
+  function canSetAllAuto() {
+    return !!(wa && typeof wa.setAllAuto === 'function')
+  }
+
   function isAutoReplyEnabled() {
     return status && status.autoReply !== false
+  }
+
+  function showHeaderNotice(text, ms = 2600) {
+    if (!panelEl) return
+    const sub = $('#wa-header-sub', panelEl)
+    if (!sub) return
+    if (headerNoticeTimer) {
+      clearTimeout(headerNoticeTimer)
+      headerNoticeTimer = null
+    }
+    sub.textContent = String(text || '')
+    headerNoticeTimer = setTimeout(() => {
+      headerNoticeTimer = null
+      updateStatusUI()
+    }, Math.max(400, Number(ms) || 2600))
   }
 
   function waitMs(ms) {
@@ -387,6 +409,11 @@
 .wa-bubble-row.me .wa-bubble.wa-bubble-claude { background: #1a6b3a; }
 .wa-bubble-participant { font-size: 11px; font-weight: 600; color: #53bdeb; margin-bottom: 2px; }
 .wa-group-icon { margin-right: 2px; opacity: .85; }
+.wa-mode-switch[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 .wa-bubble-row { position: relative; }
 .wa-reply-btn {
   display: none; position: absolute; top: 4px; right: 4px;
@@ -467,6 +494,29 @@
   opacity: 0.75;
   cursor: wait;
 }
+.wa-auto-all-btn {
+  width: auto !important;
+  min-width: 74px;
+  height: 22px !important;
+  padding: 0 8px !important;
+  border: 1px solid rgba(0,168,132,0.45);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #8ff1cf;
+  background: rgba(0,168,132,0.12);
+}
+.wa-auto-all-btn.is-busy {
+  opacity: 0.75;
+  cursor: wait;
+}
+.wa-auto-all-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .wa-qr-render.wa-qr-empty {
   background: rgba(255,255,255,0.1);
   color: #dbe2e8;
@@ -540,6 +590,9 @@
         </button>
         <button class="icon-btn small wa-header-btn wa-bridge-toggle" id="wa-btn-bridge-toggle" title="Parar bridge WhatsApp (emergencia)" aria-label="Parar bridge WhatsApp">
           <span class="wa-bridge-pill">STOP</span>
+        </button>
+        <button class="icon-btn small wa-header-btn wa-auto-all-btn" id="wa-btn-all-auto" title="Forzar AUTO en todos los chats individuales" aria-label="Forzar AUTO en todos los chats individuales">
+          AUTO TODO
         </button>
         <button class="icon-btn small wa-header-btn" id="wa-btn-close" title="Cerrar panel" aria-label="Cerrar">
           <svg viewBox="0 0 24 24" width="14" height="14"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
@@ -808,7 +861,7 @@
     $('.wa-convo-jid', inner).textContent = chatSubLabel(chat)
     updateRequestPhoneButton(chat)
 
-    updateModeSwitch(chat.mode)
+    updateModeSwitch(chat.mode, chat)
     renderMessages()
     bindFooter(chat)
     bindModeSwitch(chat)
@@ -822,14 +875,23 @@
     }
   }
 
-  function updateModeSwitch(mode) {
+  function updateModeSwitch(mode, chatRef = null) {
     if (!modeSwitchEl) return
+    const lockedGroup = !!(chatRef && (chatRef.isGroup || isGroupJid(chatRef.jid)))
     modeSwitchEl.classList.toggle('manual', mode === 'manual')
+    modeSwitchEl.classList.toggle('disabled', lockedGroup)
     modeSwitchEl.setAttribute('aria-checked', mode === 'auto' ? 'true' : 'false')
+    modeSwitchEl.setAttribute('aria-disabled', lockedGroup ? 'true' : 'false')
+    modeSwitchEl.tabIndex = lockedGroup ? -1 : 0
+    modeSwitchEl.title = lockedGroup
+      ? 'En grupos el modo es siempre MANUAL'
+      : (mode === 'auto' ? 'Chat en AUTO' : 'Chat en MANUAL')
     if (modeNoteEl) {
-      modeNoteEl.textContent = mode === 'auto'
-        ? 'Claude responde automáticamente como asistente de Luismi'
-        : 'Solo tú respondes — Claude está silenciado'
+      modeNoteEl.textContent = lockedGroup
+        ? 'Grupo: siempre MANUAL (Claude no auto-responde en grupos)'
+        : (mode === 'auto'
+            ? 'Claude responde automáticamente como asistente de Luismi'
+            : 'Solo tú respondes — Claude está silenciado')
       modeNoteEl.classList.toggle('manual', mode === 'manual')
     }
   }
@@ -1266,6 +1328,48 @@
     bridgeControlBtnEl.setAttribute('aria-label', 'Arrancar bridge WhatsApp')
   }
 
+  function updateAllAutoButtonUI() {
+    if (!allAutoBtnEl) return
+    const supported = canSetAllAuto()
+    allAutoBtnEl.classList.toggle('is-busy', allAutoBusy)
+    allAutoBtnEl.disabled = allAutoBusy || !supported
+    allAutoBtnEl.textContent = allAutoBusy ? 'APLICANDO…' : 'AUTO TODO'
+    allAutoBtnEl.title = supported
+      ? 'Forzar AUTO en todos los chats individuales'
+      : 'No disponible'
+    allAutoBtnEl.setAttribute(
+      'aria-label',
+      supported ? 'Forzar AUTO en todos los chats individuales' : 'No disponible'
+    )
+  }
+
+  async function forceAllIndividualAuto() {
+    if (!wa || typeof wa.setAllAuto !== 'function' || allAutoBusy) return
+    allAutoBusy = true
+    updateAllAutoButtonUI()
+    try {
+      const res = await wa.setAllAuto()
+      if (!res || !res.ok) {
+        showInputError((res && res.error) || 'No se pudo forzar AUTO en todos los chats')
+        return
+      }
+      await refreshChats()
+      if (currentJid) {
+        const chat = chats.find(c => c && c.jid === currentJid)
+        if (chat) updateModeSwitch(chat.mode, chat)
+      }
+      const changed = Number(res.changed) || 0
+      const total = Number(res.totalIndividual) || 0
+      if (changed > 0) showHeaderNotice(`AUTO aplicado en ${changed}/${total} chats individuales`)
+      else showHeaderNotice(`AUTO ya activo en ${total} chats individuales`)
+    } catch (e) {
+      showInputError(e && e.message ? e.message : 'No se pudo forzar AUTO en todos los chats')
+    } finally {
+      allAutoBusy = false
+      updateAllAutoButtonUI()
+    }
+  }
+
   async function toggleBridgeControl() {
     if (!canBridgeControl() || bridgeControlBusy) return
     bridgeControlBusy = true
@@ -1338,6 +1442,7 @@
     const qrBtn = $('#wa-btn-qr', panelEl)
     if (qrBtn) qrBtn.classList.toggle('attention', !!status.qrPresent && !status.connected)
     updateBridgeControlUI()
+    updateAllAutoButtonUI()
   }
 
   function updateUnreadBadge() {
@@ -1426,7 +1531,7 @@
         currentMessages = dedupeMessages(Array.isArray(msgs) ? msgs : currentMessages)
         renderMessages()
         const chat = chats.find(c => c.jid === currentJid)
-        if (chat) updateModeSwitch(chat.mode)
+        if (chat) updateModeSwitch(chat.mode, chat)
       } else {
         showInputError(res && res.error || 'Error enviando')
       }
@@ -1585,12 +1690,18 @@
   function bindModeSwitch(chat) {
     const fire = async () => {
       if (!wa) return
+      if (chat && (chat.isGroup || isGroupJid(chat.jid))) {
+        chat.mode = 'manual'
+        updateModeSwitch('manual', chat)
+        return
+      }
       const next = (chat.mode === 'auto') ? 'manual' : 'auto'
       try {
         const r = await wa.setMode(chat.jid, next)
         if (r && r.ok) {
-          chat.mode = next
-          updateModeSwitch(next)
+          const applied = r.mode === 'manual' ? 'manual' : 'auto'
+          chat.mode = applied
+          updateModeSwitch(applied, chat)
           renderChatList()
         }
       } catch (e) { console.warn('[wa] setMode error', e) }
@@ -2016,7 +2127,7 @@
         updateUnreadBadge()
         renderChatList()
         if (chat.jid === currentJid) {
-          updateModeSwitch(chat.mode)
+          updateModeSwitch(chat.mode, chat)
           // Refrescar cabecera (nombre/número) sin reconstruir conversación entera.
           if (convoHeaderEl) {
             const nameEl = $('.wa-convo-name', convoHeaderEl)
@@ -2108,6 +2219,7 @@
     convoEl = $('.wa-convo', panelEl)
     statusDotEl = $('.wa-status-dot', panelEl)
     bridgeControlBtnEl = $('#wa-btn-bridge-toggle', panelEl)
+    allAutoBtnEl = $('#wa-btn-all-auto', panelEl)
     searchInputEl = $('#wa-search-input', panelEl)
 
     // 3. Modales
@@ -2134,6 +2246,7 @@
     $('#wa-btn-qr', panelEl).addEventListener('click', openQrModal)
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
     if (bridgeControlBtnEl) bridgeControlBtnEl.addEventListener('click', toggleBridgeControl)
+    if (allAutoBtnEl) allAutoBtnEl.addEventListener('click', forceAllIndividualAuto)
     const qrRefreshBtn = $('#wa-qr-refresh', qrModalEl)
     if (qrRefreshBtn) qrRefreshBtn.addEventListener('click', () => { refreshQrModal() })
     const imgDownloadBtn = $('#wa-img-download', imgViewerEl)

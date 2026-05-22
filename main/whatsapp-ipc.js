@@ -318,6 +318,11 @@ function registerWhatsappIpc({
     catch (err) { return { ok: false, error: err?.message || String(err) } }
   })
 
+  ipcMain.handle('whatsapp:set-mode-all-auto', () => {
+    try { return requireWhatsapp().setAllIndividualChatsAuto() }
+    catch (err) { return { ok: false, error: err?.message || String(err) } }
+  })
+
   ipcMain.handle('whatsapp:mark-read', (_e, jid) => {
     try { return requireWhatsapp().markRead(jid) }
     catch (err) { return { ok: false, error: err?.message || String(err) } }

@@ -445,7 +445,22 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
       const isGroup = typeof c.isGroup === 'boolean' ? c.isGroup : isGroupJid(c.jid)
       const safePhone = sanitizePhoneForJid(c.jid, c.phoneNumber)
       const displayNumber = deriveDisplayNumber(c.jid, c.displayNumber)
-      if (safePhone !== (c.phoneNumber || '') || displayNumber !== (c.displayNumber || '') || isGroup !== Boolean(c.isGroup)) {
+      const persistedMode = c.mode === 'manual' ? 'manual' : 'auto'
+      const persistedEscalatedUntil = Number(c.escalatedUntil) || 0
+      const persistedEscalationReason = c.escalationReason === 'media' || c.escalationReason === 'user'
+        ? c.escalationReason
+        : (persistedMode === 'manual' ? 'user' : null)
+      const nextMode = isGroup ? 'manual' : persistedMode
+      const nextEscalatedUntil = isGroup ? 0 : persistedEscalatedUntil
+      const nextEscalationReason = isGroup ? 'user' : persistedEscalationReason
+      if (
+        safePhone !== (c.phoneNumber || '') ||
+        displayNumber !== (c.displayNumber || '') ||
+        isGroup !== Boolean(c.isGroup) ||
+        nextMode !== persistedMode ||
+        nextEscalatedUntil !== persistedEscalatedUntil ||
+        nextEscalationReason !== persistedEscalationReason
+      ) {
         normalized = true
       }
       chats.set(c.jid, {
@@ -454,14 +469,14 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
         // Identidad mejorada: nombre del contacto / pushName y número real (si se pudo resolver).
         displayName: typeof c.displayName === 'string' ? c.displayName : '',
         phoneNumber: safePhone,
-        mode: c.mode === 'manual' ? 'manual' : 'auto',
+        mode: nextMode,
         unread: Number(c.unread) || 0,
         history: Array.isArray(c.history) ? c.history.slice(-HISTORY_MAX) : [],
         lastActivity: Number(c.lastActivity) || 0,
-        escalatedUntil: Number(c.escalatedUntil) || 0,
+        escalatedUntil: nextEscalatedUntil,
         // Origen del manual. Migración: chats antiguos sin flag → 'user' (más seguro,
         // así no revertimos chats que Luismi puso manual a propósito antes del fix).
-        escalationReason: c.escalationReason === 'media' || c.escalationReason === 'user' ? c.escalationReason : (c.mode === 'manual' ? 'user' : null),
+        escalationReason: nextEscalationReason,
         isGroup
       })
     }
@@ -481,18 +496,19 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
   function ensureChat(jid) {
     let c = chats.get(jid)
     if (!c) {
+      const groupChat = isGroupJid(jid)
       c = {
         jid,
         displayNumber: deriveDisplayNumber(jid, ''),
         displayName: '',
         phoneNumber: '',
-        mode: 'auto',
+        mode: groupChat ? 'manual' : 'auto',
         unread: 0,
         history: [],
         lastActivity: 0,
         escalatedUntil: 0,
-        escalationReason: null,
-        isGroup: isGroupJid(jid)
+        escalationReason: groupChat ? 'user' : null,
+        isGroup: groupChat
       }
       chats.set(jid, c)
     }
@@ -633,13 +649,23 @@ function isAuthorized(jid) {
     // Grupos: nunca auto-reply, siempre manual. Persistimos historial y emitimos
     // pero no entramos en la lógica de hand-over ni de auto-reply.
     if (isGroupJid(jid)) {
+      let modeFixed = false
+      if (chat.mode !== 'manual') { chat.mode = 'manual'; modeFixed = true }
+      if (chat.escalatedUntil) { chat.escalatedUntil = 0; modeFixed = true }
+      if (chat.escalationReason !== 'user') { chat.escalationReason = 'user'; modeFixed = true }
+      if (modeFixed) markDirty()
+
       if (msg.fromMe) {
         const added = pushHistory(chat, msg)
         if (added) emitNewMessage(jid, msg)
+        else if (modeFixed) emitter.emit('chat-updated', summarizeChat(jid))
         return
       }
       const added = pushHistory(chat, msg)
-      if (!added) return
+      if (!added) {
+        if (modeFixed) emitter.emit('chat-updated', summarizeChat(jid))
+        return
+      }
       chat.unread = (chat.unread || 0) + 1
       emitNewMessage(jid, msg)
       return
@@ -961,6 +987,17 @@ function isAuthorized(jid) {
   function setMode(jid, mode) {
     const targetJid = numberToJid(jid)
     const chat = ensureChat(targetJid)
+
+    if (isGroupJid(targetJid)) {
+      const changed = chat.mode !== 'manual' || chat.escalatedUntil !== 0 || chat.escalationReason !== 'user'
+      chat.mode = 'manual'
+      chat.escalatedUntil = 0
+      chat.escalationReason = 'user'
+      if (changed) markDirty()
+      emitter.emit('chat-updated', summarizeChat(targetJid))
+      return { ok: true, mode: 'manual', fixed: true }
+    }
+
     chat.mode = mode === 'manual' ? 'manual' : 'auto'
     if (chat.mode === 'auto') {
       chat.escalatedUntil = 0
@@ -972,6 +1009,38 @@ function isAuthorized(jid) {
     markDirty()
     emitter.emit('chat-updated', summarizeChat(targetJid))
     return { ok: true, mode: chat.mode }
+  }
+
+  function setAllIndividualChatsAuto() {
+    let changed = 0
+    let totalIndividual = 0
+    for (const chat of chats.values()) {
+      if (!chat || !chat.jid) continue
+
+      if (isGroupJid(chat.jid)) {
+        const groupChanged = chat.mode !== 'manual' || chat.escalatedUntil !== 0 || chat.escalationReason !== 'user'
+        if (groupChanged) {
+          chat.mode = 'manual'
+          chat.escalatedUntil = 0
+          chat.escalationReason = 'user'
+          markDirty()
+          emitter.emit('chat-updated', summarizeChat(chat.jid))
+        }
+        continue
+      }
+
+      totalIndividual += 1
+      const chatChanged = chat.mode !== 'auto' || chat.escalatedUntil !== 0 || chat.escalationReason !== null
+      if (!chatChanged) continue
+
+      chat.mode = 'auto'
+      chat.escalatedUntil = 0
+      chat.escalationReason = null
+      markDirty()
+      changed += 1
+      emitter.emit('chat-updated', summarizeChat(chat.jid))
+    }
+    return { ok: true, changed, totalIndividual }
   }
 
   function markRead(jid) {
@@ -1145,6 +1214,7 @@ function isAuthorized(jid) {
     sendMedia,
     requestPhone,
     setMode,
+    setAllIndividualChatsAuto,
     markRead,
     getConfig,
     updateConfig,
