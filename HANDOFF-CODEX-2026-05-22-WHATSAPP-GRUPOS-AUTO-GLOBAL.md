@@ -64,3 +64,10 @@ npm run deploy
 ## Riesgos conocidos
 - No se añadieron tests unitarios específicos del nuevo endpoint bulk (`setAllIndividualChatsAuto`) por acoplamiento de estado en `createWhatsAppClient`; validación hecha vía smoke + tests globales.
 
+## Pendiente (modo empresa)
+- Definir e implementar modelo de políticas jerárquicas para auto-respuesta orientado a operación empresarial:
+  - Kill switch global (ON/OFF) con prioridad máxima.
+  - Política por tipo de chat (individual/grupo) y segmentos (VIP, incidencias, etc.).
+  - Override por chat con trazabilidad y expiración opcional.
+  - `AUTO TODO` acotado por política y no por fuerza bruta sobre todo.
+  - Auditoría de cambios (quién/cuándo/por qué) para soporte y cumplimiento.
