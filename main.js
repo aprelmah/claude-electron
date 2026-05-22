@@ -70,6 +70,7 @@ const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
 const { registerAutomationChatIpc } = require('./main/automation-chat-ipc')
+const { registerTaskChatIpc } = require('./main/task-chat-ipc')
 const { createClaudeSessionCache } = require('./main/claude-session-cache')
 const { registerTelegramSessionLinkIpc } = require('./main/telegram-session-link-ipc')
 const { createRelayTranscriptHelpers } = require('./main/relay-transcript-helpers')
@@ -107,6 +108,7 @@ const { createSessionLinks } = require('./main/session-links')
 const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
+const { createTaskChat, DEFAULT_THREAD_ID: TASK_CHAT_DEFAULT_THREAD_ID } = require('./tasks/chat')
 const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
 let createWhatsAppClient = null
 let WA_MEDIA_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'media')
@@ -1397,10 +1399,14 @@ let tasksInbox = null
 let sessionLinks = null
 let automationManager = null
 let automationChat = null
+let taskChat = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
 const chatWcToAutomation = new Map() // wcId → automationId
+// Ventanas del asistente de tareas. Una global por ahora (thread id fijo).
+const taskChatWindows = new Map() // threadId → BrowserWindow
+const taskChatWcToThread = new Map() // wcId → threadId
 
 const windowFactory = createWindowFactory({
   BrowserWindow,
@@ -1437,6 +1443,15 @@ function broadcastAutomationChat(channel, payload) {
   const id = payload && payload.automationId
   if (!id) return
   const win = chatWindows.get(id)
+  if (!win || win.isDestroyed()) return
+  try { win.webContents.send(channel, payload) } catch {}
+}
+
+// Emite eventos del task-chat a la ventana del threadId correspondiente.
+function broadcastTaskChat(channel, payload) {
+  const tid = payload && payload.threadId
+  if (!tid) return
+  const win = taskChatWindows.get(tid)
   if (!win || win.isDestroyed()) return
   try { win.webContents.send(channel, payload) } catch {}
 }
@@ -1823,7 +1838,6 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
   if (candidate) {
     try { if (fs.statSync(candidate).isDirectory()) return candidate } catch {}
   }
-  // Buscar el sessionId.jsonl en ~/.claude/projects/*/ y extraer cwd de la primera línea.
   try {
     const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
     if (!fs.existsSync(projectsRoot)) return os.homedir()
@@ -1834,7 +1848,6 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
       const file = path.join(projectsRoot, dir, `${sessionId}.jsonl`)
       if (!fs.existsSync(file)) continue
       try {
-        // Primera línea JSON suele tener `cwd`.
         const raw = fs.readFileSync(file, 'utf8')
         const nl = raw.indexOf('\n')
         const firstLine = nl >= 0 ? raw.slice(0, nl) : raw
@@ -1844,7 +1857,6 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
           try { if (fs.statSync(cwd).isDirectory()) return cwd } catch {}
         }
       } catch {}
-      // Si no se pudo extraer cwd pero el archivo existe, sigue intentando.
     }
   } catch {}
   return os.homedir()
@@ -1922,7 +1934,6 @@ async function openTaskSessionWindow({ sessionId, cwd, cli, taskName } = {}) {
     const s = taskSessionStateByWc.get(wcId)
     if (s) killTaskSessionPty(s)
     taskSessionStateByWc.delete(wcId)
-    // Limpia tanto el sessionId inicial como el actualizado (si cambió).
     if (taskSessionWindowsBySessionId.get(taskState.initialSessionId) === win) {
       taskSessionWindowsBySessionId.delete(taskState.initialSessionId)
     }
@@ -1957,7 +1968,6 @@ function startTaskSessionPty(s) {
     ? ['resume', s.sessionId]
     : ['--resume', s.sessionId]
 
-  // Snapshot ANTES del spawn solo si es claude — para capturar el sessionId rotado.
   s.sessionFilesSnapshot = s.cli === 'claude'
     ? snapshotClaudeSessions(s.cwd)
     : null
@@ -1983,9 +1993,6 @@ function startTaskSessionPty(s) {
   s.pty = proc
   const myWcId = s.wcId
 
-  // Poll continuo para capturar el NUEVO sessionId que claude crea al hacer --resume.
-  // Claude rota el sessionId en cada resume. Cuando lo detectamos, lo notificamos a la
-  // ventana y actualizamos scheduled-tasks.json para que el cron siguiente continúe.
   if (s.cli === 'claude' && s.sessionFilesSnapshot) {
     const detect = setInterval(() => {
       const st = taskSessionStateByWc.get(myWcId)
@@ -1995,13 +2002,10 @@ function startTaskSessionPty(s) {
         const prev = st.sessionId
         st.sessionId = sid
         try { st.win?.webContents.send('task-session:session-id-updated', { sessionId: sid, previous: prev }) } catch {}
-        // Reindexa el lookup por sessionId.
         if (taskSessionWindowsBySessionId.get(prev) === st.win) {
           taskSessionWindowsBySessionId.delete(prev)
         }
         taskSessionWindowsBySessionId.set(sid, st.win)
-        // Persistir en scheduled-tasks.json: localizamos cualquier tarea cuyo sessionId
-        // coincida con el original (initialSessionId) y la actualizamos al nuevo.
         persistTaskSessionIdRotation(st.initialSessionId, sid).catch((err) => {
           console.warn('[task-session] no se pudo persistir nuevo sessionId:', err?.message || err)
         })
@@ -2050,6 +2054,61 @@ async function persistTaskSessionIdRotation(originalSessionId, newSessionId) {
       console.warn('[task-session] updateTask falló para', t.id, err?.message || err)
     }
   }
+}
+
+// ── Task chat (AI assistant que ayuda a crear nuevas tareas) ──
+async function openTaskChatWindow({ threadId } = {}) {
+  const tid = (typeof threadId === 'string' && threadId.trim()) || TASK_CHAT_DEFAULT_THREAD_ID
+
+  const existing = taskChatWindows.get(tid)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  const win = new BrowserWindow({
+    width: 880,
+    height: 640,
+    minWidth: 520,
+    minHeight: 460,
+    title: 'Asistente — Crear tarea',
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'task-chat-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--task-thread-id=${tid}`]
+    }
+  })
+  taskChatWindows.set(tid, win)
+  const wcId = win.webContents.id
+  taskChatWcToThread.set(wcId, tid)
+  win.loadFile('task-chat.html', { query: { theme: initialTheme, tid } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    if (taskChatWindows.get(tid) === win) taskChatWindows.delete(tid)
+    taskChatWcToThread.delete(wcId)
+  })
+  return win
 }
 
 // ── Bridge wiring (one global bridge) ──
@@ -2424,6 +2483,20 @@ app.whenReady().then(async () => {
       console.error('[automation-chat] init failed:', e)
       automationChat = null
     }
+  }
+
+  // ── Task creation chat (asistente de creación de tareas programadas) ──
+  try {
+    taskChat = createTaskChat({
+      runClaudeHeadless,
+      runCodexHeadless,
+      getScheduler: () => tasksScheduler,
+      broadcast: broadcastTaskChat,
+      userDataDir: app.getPath('userData')
+    })
+  } catch (e) {
+    console.error('[task-chat] init failed:', e)
+    taskChat = null
   }
 
   // ── WhatsApp bridge client ──
@@ -3474,6 +3547,23 @@ registerAutomationChatIpc({
   BrowserWindow,
   getAutomationChat: () => automationChat,
   getChatWcToAutomation: () => chatWcToAutomation
+})
+
+// ── Task chat (asistente de creación de tareas programadas) ──
+registerTaskChatIpc({
+  ipcMain,
+  BrowserWindow,
+  getTaskChat: () => taskChat,
+  getTaskChatWcToThread: () => taskChatWcToThread
+})
+
+ipcMain.handle('task-chat:open', async (_e, { threadId } = {}) => {
+  try {
+    const win = await openTaskChatWindow({ threadId })
+    return win ? { ok: true } : { ok: false, error: 'No se pudo abrir el asistente' }
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) }
+  }
 })
 
 // ── WhatsApp IPC ──

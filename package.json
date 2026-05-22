@@ -82,8 +82,12 @@
       "task-session.html",
       "task-session-renderer.js",
       "task-session-preload.js",
+      "task-chat.html",
+      "task-chat-renderer.js",
+      "task-chat-preload.js",
       "scheduler/**/*",
       "automations/**/*",
+      "tasks/**/*",
       "main/**/*",
       "node_modules/**/*"
     ],

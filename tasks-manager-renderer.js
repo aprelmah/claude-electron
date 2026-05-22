@@ -968,16 +968,6 @@ async function loadAutomations() {
     state.automations = [];
   }
   renderAutomationsList();
-  // Aviso (una sola vez por sesión) si shellcheck falta.
-  if (!state.__shellcheckChecked && api.automationsShellcheckStatus) {
-    state.__shellcheckChecked = true;
-    try {
-      const st = await api.automationsShellcheckStatus();
-      if (st && st.available === false) {
-        toast('shellcheck no instalado · brew install shellcheck para validación automática', 'error');
-      }
-    } catch (e) {}
-  }
 
   // Reposicionar selección si el item sigue existiendo
   if (state.selectedAutomationId) {
@@ -1900,6 +1890,21 @@ async function refreshAutoLog() {
 
 function wireEvents() {
   $('#btn-new').addEventListener('click', newTask);
+  const btnNewWithAi = $('#btn-new-with-ai');
+  if (btnNewWithAi) {
+    btnNewWithAi.addEventListener('click', async () => {
+      if (!api.openTaskChat) {
+        toast('Asistente no disponible en este build', 'error');
+        return;
+      }
+      try {
+        const r = await api.openTaskChat();
+        if (r && r.ok === false) toast(r.error || 'No se pudo abrir el asistente', 'error');
+      } catch (e) {
+        toast('Error: ' + (e && e.message ? e.message : e), 'error');
+      }
+    });
+  }
   $('#btn-close').addEventListener('click', () => api.close());
   $('#btn-minimize').addEventListener('click', () => api.minimize());
   $('#btn-save').addEventListener('click', saveTask);

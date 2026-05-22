@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('tasksAPI', {
   automationsShellcheckStatus: ()      => ipcRenderer.invoke('automations:shellcheck-status'),
   automationsLint:           (payload) => ipcRenderer.invoke('automations:lint', payload),
   openAutomationChat:        (payload) => ipcRenderer.invoke('automation-chat:open', payload),
+  openTaskChat:              (payload) => ipcRenderer.invoke('task-chat:open', payload || {}),
   revealInFinder:            (path)    => ipcRenderer.invoke('shell:reveal-in-finder', { path }),
 
   onAutomationsListChanged:  listener('automations:list-changed'),
