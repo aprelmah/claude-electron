@@ -100,8 +100,10 @@ const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
 const TaskScheduler = require('./scheduler')
 const { createExecutor } = require('./scheduler/executor')
-const { createSinks } = require('./scheduler/sinks')
+const { createSinks, createInboxSink } = require('./scheduler/sinks')
 const { createPersistence } = require('./scheduler/persistence')
+const { createInbox } = require('./main/tasks-inbox')
+const { createSessionLinks } = require('./main/session-links')
 const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
@@ -1391,6 +1393,8 @@ function createWindow() {
 
 // ── Tasks Manager (singleton) ──
 let tasksScheduler = null
+let tasksInbox = null
+let sessionLinks = null
 let automationManager = null
 let automationChat = null
 let cwdHistoryCache = []
@@ -2115,13 +2119,32 @@ app.whenReady().then(async () => {
   try {
     const persistence = createPersistence({ userDataDir: app.getPath('userData') })
     const executor = createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig })
-    const sinks = createSinks({ telegramBridge, broadcastToAllWindows })
+    tasksInbox = createInbox({ userDataDir: app.getPath('userData') })
+    const broadcastInbox = (channel, payload) => {
+      try {
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (w && !w.isDestroyed()) {
+            try { w.webContents.send(channel, payload) } catch {}
+          }
+        }
+      } catch {}
+    }
+    const baseSinks = createSinks({ telegramBridge, broadcastToAllWindows })
+    const inboxSink = createInboxSink({ inbox: tasksInbox, broadcast: broadcastInbox })
+    const sinks = { ...baseSinks, inbox: inboxSink }
     tasksScheduler = new TaskScheduler({ executor, sinks, persistence, broadcast: broadcastToAllWindows })
     tasksScheduler.persistence = persistence
     await tasksScheduler.init()
+    sessionLinks = createSessionLinks({
+      userDataDir: app.getPath('userData'),
+      getTelegramSessionsByChat: null,
+      getWhatsAppLinks: null
+    })
   } catch (err) {
     console.error('[tasks] scheduler init failed:', err?.message || err)
     tasksScheduler = null
+    tasksInbox = null
+    sessionLinks = null
   }
 
   try {
@@ -2854,7 +2877,9 @@ registerTasksIpc({
   getAppConfig: () => appConfig,
   getSessions: () => sessions,
   getTasksManagerWin: () => windowFactory.getTasksManagerWin(),
-  openTasksManager
+  openTasksManager,
+  getInbox: () => tasksInbox,
+  getSessionLinks: () => sessionLinks
 })
 
 registerAutomationsIpc({
