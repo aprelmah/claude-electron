@@ -2018,6 +2018,12 @@ function wireBroadcast() {
     await refreshRuns();
     renderRuns();
     await refreshTasks();
+    if (p && p.taskId && state.selectedId === p.taskId) {
+      try {
+        const fresh = await api.get(state.selectedId);
+        if (fresh) fillForm(fresh);
+      } catch {}
+    }
   });
 
   if (api.onAutomationsListChanged) {
