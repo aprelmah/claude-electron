@@ -43,6 +43,38 @@ const {
 } = require('./main/session-helpers')
 const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
+const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
+const { createWindowFactory } = require('./main/window-factory')
+const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
+const { registerTasksIpc } = require('./main/tasks-ipc')
+const { registerProfilesEnterpriseIpc } = require('./main/profiles-enterprise-ipc')
+const { registerAutomationsIpc } = require('./main/automations-ipc')
+const { registerBitacoraIpc } = require('./main/bitacora-ipc')
+const { createHealthCollectors } = require('./main/health-collectors')
+const { createSessionListing } = require('./main/claude-session-listing')
+const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
+const {
+  buildLanSessionLegacyRoots,
+  createLanPermissionNormalizer,
+  sanitizeLanRequestedModel,
+  sanitizeLanRequestedCli,
+  sanitizeLanRequestedEffort,
+  buildLanCliArgs,
+  resolveLanRemoteContextInput,
+  resolveLanRemoteIp,
+  LAN_CLAUDE_EFFORT_LEVELS: _LAN_CLAUDE_EFFORT_LEVELS,
+  LAN_CODEX_EFFORT_LEVELS: _LAN_CODEX_EFFORT_LEVELS
+} = require('./main/lan-helpers')
+const { createTelegramRelayBindings } = require('./main/telegram-relay-bindings')
+const { registerProposalIpc } = require('./main/proposal-ipc')
+const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
+const { registerWsServerIpc } = require('./main/ws-server-ipc')
+const { registerAutomationChatIpc } = require('./main/automation-chat-ipc')
+const { createClaudeSessionCache } = require('./main/claude-session-cache')
+const { registerTelegramSessionLinkIpc } = require('./main/telegram-session-link-ipc')
+const { createRelayTranscriptHelpers } = require('./main/relay-transcript-helpers')
+const { createConfigCrud } = require('./main/config-crud')
+const { createLanAudit } = require('./main/lan-audit')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -141,8 +173,8 @@ const DEFAULT_LAN_ROLE_PERMISSIONS = Object.freeze({
   'viewer.open': true,
   'automations.manage': true
 })
-const LAN_CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
-const LAN_CODEX_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
+const LAN_CLAUDE_EFFORT_LEVELS = _LAN_CLAUDE_EFFORT_LEVELS
+const LAN_CODEX_EFFORT_LEVELS = _LAN_CODEX_EFFORT_LEVELS
 
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
@@ -174,7 +206,6 @@ const GRAPH_REFRESH_MIN_MS_BUSY = 1800
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
 const telegramRelayByChat = new Map() // chatId(string) -> wcId(number)
-const viewerWindows = new Set()
 let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
@@ -282,25 +313,6 @@ const { normalizeAppConfig, normalizeLanServerConfig } = createConfigNormalizers
   defaultEnterpriseRoleId: DEFAULT_ENTERPRISE_ROLE_ID
 })
 
-function getProfileById(profileId, config = appConfig) {
-  const id = sanitizeProfileId(profileId, '')
-  if (!id) return null
-  const profiles = Array.isArray(config?.profiles) ? config.profiles : []
-  return profiles.find((p) => p.id === id) || null
-}
-
-function getActiveProfile(config = appConfig) {
-  const activeId = resolveActiveProfileId(Array.isArray(config?.profiles) ? config.profiles : [], config?.activeProfile)
-  return getProfileById(activeId, config) || getProfileById(DEFAULT_PROFILE_ID, config) || {
-    id: DEFAULT_PROFILE_ID,
-    name: 'Personal',
-    claudeMdPath: '',
-    mcpServers: [],
-    cwd: '',
-    personaPrompt: ''
-  }
-}
-
 function configFilePath() {
   return path.join(app.getPath('userData'), CONFIG_FILENAME)
 }
@@ -317,226 +329,37 @@ function saveAppConfig(nextConfig) {
   return normalized
 }
 
-function listProfilesPayload(config = appConfig) {
-  const normalized = normalizeAppConfig(config)
-  return {
-    profiles: normalized.profiles.map((p) => ({
-      ...p,
-      mcpServers: [...p.mcpServers],
-      personaPrompt: sanitizePersonaPrompt(p.personaPrompt)
-    })),
-    activeProfile: normalized.activeProfile
-  }
-}
-
-function createProfile(profileInput) {
-  const current = listProfilesPayload()
-  const existing = new Set(current.profiles.map((p) => p.id))
-  const name = String(profileInput?.name || '').trim() || 'Nuevo perfil'
-  const generatedId = makeProfileIdFromName(name, existing)
-  const base = normalizeProfileEntry(profileInput, generatedId)
-  const nextProfile = { ...base, id: generatedId, name }
-  const merged = normalizeAppConfig({
-    ...appConfig,
-    profiles: [...current.profiles, nextProfile]
-  })
-  saveAppConfig(merged)
-  return { profile: nextProfile, ...listProfilesPayload() }
-}
-
-function updateProfile(profileId, profileInput) {
-  const id = sanitizeProfileId(profileId, '')
-  if (!id) throw new Error('Perfil inválido')
-  const current = listProfilesPayload()
-  const idx = current.profiles.findIndex((p) => p.id === id)
-  if (idx < 0) throw new Error('Perfil no encontrado')
-  const prev = current.profiles[idx]
-  const draft = normalizeProfileEntry({
-    ...prev,
-    ...profileInput,
-    id
-  }, id)
-  if (id === DEFAULT_PROFILE_ID) draft.name = 'Personal'
-  current.profiles[idx] = draft
-  const merged = normalizeAppConfig({
-    ...appConfig,
-    profiles: current.profiles
-  })
-  saveAppConfig(merged)
-  return { profile: draft, ...listProfilesPayload() }
-}
-
-function deleteProfile(profileId) {
-  const id = sanitizeProfileId(profileId, '')
-  if (!id) throw new Error('Perfil inválido')
-  if (id === DEFAULT_PROFILE_ID) throw new Error('El perfil Personal no se puede borrar')
-  const current = listProfilesPayload()
-  const exists = current.profiles.some((p) => p.id === id)
-  if (!exists) throw new Error('Perfil no encontrado')
-  const profiles = current.profiles.filter((p) => p.id !== id)
-  const merged = normalizeAppConfig({
-    ...appConfig,
-    profiles,
-    activeProfile: current.activeProfile === id ? DEFAULT_PROFILE_ID : current.activeProfile
-  })
-  saveAppConfig(merged)
-  return listProfilesPayload()
-}
-
-function setActiveProfile(profileId) {
-  const id = sanitizeProfileId(profileId, '')
-  const current = listProfilesPayload()
-  if (!current.profiles.some((p) => p.id === id)) throw new Error('Perfil no encontrado')
-  const merged = normalizeAppConfig({
-    ...appConfig,
-    activeProfile: id
-  })
-  saveAppConfig(merged)
-  return listProfilesPayload()
-}
-
-function makeEnterpriseEntityIdFromName(name, existingIds = new Set(), fallbackPrefix = 'entity') {
-  const baseSeed = sanitizeEnterpriseId(name, fallbackPrefix) || fallbackPrefix
-  const base = sanitizeEnterpriseId(baseSeed, fallbackPrefix) || fallbackPrefix
-  if (!existingIds.has(base)) return base
-  let n = 2
-  while (existingIds.has(`${base}-${n}`)) n += 1
-  return `${base}-${n}`
-}
-
-function listEnterprisePayload(config = appConfig) {
-  const normalized = normalizeAppConfig(config)
-  const enterprise = normalized.enterprise || normalizeEnterpriseConfig({}, {
-    profileIds: normalized.profiles.map((p) => p.id),
-    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
-  })
-  return {
-    enterprise: {
-      version: Number(enterprise.version || 1),
-      enabled: Boolean(enterprise.enabled),
-      roles: (enterprise.roles || []).map((role) => ({
-        ...role,
-        permissions: { ...(role.permissions || {}) },
-        allowedRoots: Array.isArray(role.allowedRoots) ? [...role.allowedRoots] : [],
-        readOnlyRoots: Array.isArray(role.readOnlyRoots) ? [...role.readOnlyRoots] : [],
-        allowedMcpServers: Array.isArray(role.allowedMcpServers) ? [...role.allowedMcpServers] : []
-      })),
-      operators: (enterprise.operators || []).map((operator) => ({
-        ...operator,
-        enabled: operator?.enabled !== false
-      }))
-    },
-    profiles: normalized.profiles.map((profile) => ({
-      id: profile.id,
-      name: profile.name,
-      mcpServers: Array.isArray(profile.mcpServers) ? [...profile.mcpServers] : [],
-      personaPrompt: sanitizePersonaPrompt(profile.personaPrompt)
-    })),
-    activeProfile: normalized.activeProfile
-  }
-}
-
-function saveEnterpriseConfig(enterpriseInput) {
-  const merged = normalizeAppConfig({
-    ...appConfig,
-    enterprise: enterpriseInput
-  })
-  saveAppConfig(merged)
-  return listEnterprisePayload()
-}
-
-function createEnterpriseRole(roleInput = {}) {
-  const current = listEnterprisePayload()
-  const roles = Array.isArray(current.enterprise.roles) ? [...current.enterprise.roles] : []
-  const existingIds = new Set(roles.map((role) => role.id))
-  const requestedId = sanitizeEnterpriseId(roleInput?.id, '')
-  const roleId = requestedId && !existingIds.has(requestedId)
-    ? requestedId
-    : makeEnterpriseEntityIdFromName(roleInput?.name || requestedId || 'rol', existingIds, 'role')
-  const draft = { ...roleInput, id: roleId }
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    roles: [...roles, draft]
-  })
-}
-
-function updateEnterpriseRole(roleId, patch = {}) {
-  const id = sanitizeEnterpriseId(roleId, '')
-  if (!id) throw new Error('Rol inválido')
-  const current = listEnterprisePayload()
-  const roles = Array.isArray(current.enterprise.roles) ? [...current.enterprise.roles] : []
-  const idx = roles.findIndex((role) => role.id === id)
-  if (idx < 0) throw new Error('Rol no encontrado')
-  roles[idx] = { ...roles[idx], ...patch, id }
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    roles
-  })
-}
-
-function deleteEnterpriseRole(roleId) {
-  const id = sanitizeEnterpriseId(roleId, '')
-  if (!id) throw new Error('Rol inválido')
-  if (id === DEFAULT_ENTERPRISE_ROLE_ID) throw new Error('No se puede borrar el rol por defecto')
-  const current = listEnterprisePayload()
-  const roles = Array.isArray(current.enterprise.roles) ? current.enterprise.roles.filter((role) => role.id !== id) : []
-  if (roles.length === current.enterprise.roles.length) throw new Error('Rol no encontrado')
-  const operators = Array.isArray(current.enterprise.operators)
-    ? current.enterprise.operators.map((operator) => (
-      operator.roleId === id
-        ? { ...operator, roleId: DEFAULT_ENTERPRISE_ROLE_ID }
-        : operator
-    ))
-    : []
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    roles,
-    operators
-  })
-}
-
-function createEnterpriseOperator(operatorInput = {}) {
-  const current = listEnterprisePayload()
-  const operators = Array.isArray(current.enterprise.operators) ? [...current.enterprise.operators] : []
-  const existingIds = new Set(operators.map((operator) => operator.id))
-  const requestedId = sanitizeEnterpriseId(operatorInput?.id, '')
-  const operatorId = requestedId && !existingIds.has(requestedId)
-    ? requestedId
-    : makeEnterpriseEntityIdFromName(operatorInput?.name || operatorInput?.username || 'operador', existingIds, 'operator')
-  const draft = { ...operatorInput, id: operatorId }
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    operators: [...operators, draft]
-  })
-}
-
-function updateEnterpriseOperator(operatorId, patch = {}) {
-  const id = sanitizeEnterpriseId(operatorId, '')
-  if (!id) throw new Error('Operador inválido')
-  const current = listEnterprisePayload()
-  const operators = Array.isArray(current.enterprise.operators) ? [...current.enterprise.operators] : []
-  const idx = operators.findIndex((operator) => operator.id === id)
-  if (idx < 0) throw new Error('Operador no encontrado')
-  operators[idx] = { ...operators[idx], ...patch, id }
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    operators
-  })
-}
-
-function deleteEnterpriseOperator(operatorId) {
-  const id = sanitizeEnterpriseId(operatorId, '')
-  if (!id) throw new Error('Operador inválido')
-  const current = listEnterprisePayload()
-  const operators = Array.isArray(current.enterprise.operators)
-    ? current.enterprise.operators.filter((operator) => operator.id !== id)
-    : []
-  if (operators.length === current.enterprise.operators.length) throw new Error('Operador no encontrado')
-  return saveEnterpriseConfig({
-    ...current.enterprise,
-    operators
-  })
-}
+const _configCrud = createConfigCrud({
+  getAppConfig: () => appConfig,
+  saveAppConfig,
+  normalizeAppConfig,
+  normalizeEnterpriseConfig,
+  normalizeProfileEntry,
+  sanitizeProfileId,
+  sanitizeEnterpriseId,
+  sanitizePersonaPrompt,
+  makeProfileIdFromName,
+  resolveActiveProfileId,
+  DEFAULT_PROFILE_ID,
+  DEFAULT_ENTERPRISE_ROLE_ID
+})
+const {
+  getProfileById,
+  getActiveProfile,
+  listProfilesPayload,
+  createProfile,
+  updateProfile,
+  deleteProfile,
+  setActiveProfile,
+  listEnterprisePayload,
+  saveEnterpriseConfig,
+  createEnterpriseRole,
+  updateEnterpriseRole,
+  deleteEnterpriseRole,
+  createEnterpriseOperator,
+  updateEnterpriseOperator,
+  deleteEnterpriseOperator
+} = _configCrud
 
 const cliResolver = createCliResolver(() => appConfig)
 const { getConfiguredBin, getConfiguredWhisperBin, buildRuntimeEnv, cliMeta, ensureCliAvailable } = cliResolver
@@ -641,228 +464,24 @@ function getLanClientHtmlPath() {
   return path.join(__dirname, 'lan-client.html')
 }
 
-function buildLanSessionLegacyRoots(baseCwd) {
-  const roots = new Set()
-  if (baseCwd) roots.add(baseCwd)
-  roots.add(os.homedir())
-  return Array.from(roots).map((item) => path.resolve(item))
-}
+const normalizeLanPermissionMap = createLanPermissionNormalizer({
+  LAN_PERMISSION_KEYS,
+  DEFAULT_LAN_ROLE_PERMISSIONS
+})
 
-function normalizeLanPermissionMap(rawPermissions) {
-  const src = rawPermissions && typeof rawPermissions === 'object' ? rawPermissions : {}
-  const out = {}
-  for (const key of LAN_PERMISSION_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(src, key)) out[key] = Boolean(src[key])
-    else out[key] = Boolean(DEFAULT_LAN_ROLE_PERMISSIONS[key])
-  }
-  return out
-}
-
-function sanitizeLanRequestedModel(raw, maxLen = 120) {
-  const text = String(raw || '').trim()
-  if (!text) return ''
-  const clipped = text.length > maxLen ? text.slice(0, maxLen) : text
-  if (!/^[a-zA-Z0-9._:/-]+$/.test(clipped)) return ''
-  return clipped
-}
-
-function sanitizeLanRequestedCli(raw) {
-  const text = String(raw || '').trim().toLowerCase()
-  if (!text) return ''
-  if (text === 'claude' || text === 'codex') return text
-  return ''
-}
-
-function sanitizeLanRequestedEffort(raw, cli = '') {
-  const text = String(raw || '').trim().toLowerCase()
-  if (!text) return ''
-  if (cli === 'codex') return LAN_CODEX_EFFORT_LEVELS.has(text) ? text : ''
-  if (cli === 'claude') return LAN_CLAUDE_EFFORT_LEVELS.has(text) ? text : ''
-  if (LAN_CLAUDE_EFFORT_LEVELS.has(text) || LAN_CODEX_EFFORT_LEVELS.has(text)) return text
-  return ''
-}
-
-function buildLanCliArgs(cli, { model = '', effort = '' } = {}) {
-  const args = []
-  if (cli === 'codex') {
-    args.push('--no-alt-screen')
-    if (model) args.push('-m', model)
-    if (effort) args.push('-c', `model_reasoning_effort=${effort}`)
-    return args
-  }
-  if (model) args.push('--model', model)
-  if (effort) args.push('--effort', effort)
-  return args
-}
-
-function resolveLanRemoteContextInput(remoteMeta = {}) {
-  if (remoteMeta && typeof remoteMeta === 'object' && remoteMeta.requestedContext && typeof remoteMeta.requestedContext === 'object') {
-    return remoteMeta.requestedContext
-  }
-  return remoteMeta
-}
-
-function resolveLanRemoteIp(remoteMeta = {}) {
-  if (remoteMeta && typeof remoteMeta === 'object') {
-    if (typeof remoteMeta.ip === 'string' && remoteMeta.ip.trim()) return remoteMeta.ip.trim()
-    const reqIp = remoteMeta.req?.socket?.remoteAddress
-    if (typeof reqIp === 'string' && reqIp.trim()) return reqIp.trim()
-  }
-  return ''
-}
-
-function resolveLanEnterpriseContext(remoteContext, activeProfile, fallbackCwd) {
-  const legacyRoots = buildLanSessionLegacyRoots(fallbackCwd)
-  const resolved = resolveEffectiveSessionContext({
-    enterprise: appConfig?.enterprise,
-    profiles: appConfig?.profiles,
-    activeProfileId: activeProfile?.id || appConfig?.activeProfile || DEFAULT_PROFILE_ID,
-    remoteContext,
-    legacyAllowedRoots: legacyRoots,
-    preferLegacyWhenNoRemoteContext: true,
-    defaultRoleId: DEFAULT_ENTERPRISE_ROLE_ID
-  })
-  const activeProfileId = sanitizeProfileId(activeProfile?.id || appConfig?.activeProfile, DEFAULT_PROFILE_ID)
-  if (!resolved.enterpriseApplied) {
-    return {
-      ...resolved,
-      profileId: resolved.profileId || activeProfileId || DEFAULT_PROFILE_ID,
-      allowedRoots: Array.isArray(resolved.allowedRoots) && resolved.allowedRoots.length
-        ? resolved.allowedRoots
-        : legacyRoots
-    }
-  }
-  return {
-    ...resolved,
-    profileId: sanitizeProfileId(resolved.profileId, activeProfileId || DEFAULT_PROFILE_ID),
-    allowedRoots: Array.isArray(resolved.allowedRoots) && resolved.allowedRoots.length
-      ? resolved.allowedRoots
-      : legacyRoots
-  }
-}
-
-function logEnterpriseSessionSemantic(ctx, meta = {}) {
-  if (!ctx || !ctx.enterpriseApplied) return
-  const remoteIp = typeof meta?.ip === 'string' ? meta.ip.trim() : ''
-  const fallbackLabel = Array.isArray(ctx.fallbackReasons) && ctx.fallbackReasons.length
-    ? ` fallback=${ctx.fallbackReasons.join('|')}`
-    : ''
-  if (ctx.operatorId) {
-    logSemantic('empresa_login_operador', {
-      detail: `operator=${ctx.operatorId} role=${ctx.roleId || '-'} ip=${remoteIp || '-'}`
-    })
-  }
-  logSemantic('empresa_sesion_iniciada', {
-    detail: `operator=${ctx.operatorId || '-'} role=${ctx.roleId || '-'} profile=${ctx.profileId || '-'} ip=${remoteIp || '-'}${fallbackLabel}`
-  })
-  logSemantic('empresa_perfil_aplicado', {
-    detail: `profile=${ctx.profileId || '-'} operator=${ctx.operatorId || '-'}`
-  })
-  if (ctx.personaResolved) {
-    logSemantic('empresa_persona_aplicada', {
-      detail: `source=${ctx.personaSource || 'unknown'} operator=${ctx.operatorId || '-'} profile=${ctx.profileId || '-'}`
-    })
-  }
-  logSemantic('empresa_mcp_policy_aplicada', {
-    detail: `operator=${ctx.operatorId || '-'} role=${ctx.roleId || '-'} mcp_count=${Array.isArray(ctx.allowedMcpServers) ? ctx.allowedMcpServers.length : 0}`
-  })
-}
-
-function logLanAuditSemantic(event = {}) {
-  const action = String(event?.action || '').trim()
-  if (!action) return
-  const safe = (value, max = 240) => {
-    const text = String(value == null ? '' : value).trim()
-    if (!text) return '-'
-    return text.length > max ? text.slice(0, max) : text
-  }
-
-  let parts = null
-  if (action === 'empresa_permiso_denegado_fs') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `operator=${safe(event?.operatorId, 120)}`,
-      `role=${safe(event?.roleId, 120)}`,
-      `profile=${safe(event?.profileId, 120)}`,
-      `op=${safe(event?.op, 60)}`,
-      `path=${safe(event?.path, 320)}`,
-      `code=${safe(event?.code, 80)}`,
-      `msg=${safe(event?.message, 320)}`
-    ]
-  } else if (action === 'empresa_upload_remoto') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `operator=${safe(event?.operatorId, 120)}`,
-      `role=${safe(event?.roleId, 120)}`,
-      `profile=${safe(event?.profileId, 120)}`,
-      `path=${safe(event?.path, 320)}`,
-      `size=${Number(event?.size || 0)}`,
-      `mime=${safe(event?.mime, 120)}`,
-      `ext=${safe(event?.ext, 40)}`
-    ]
-  } else if (action === 'empresa_upload_remoto_denegado') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `operator=${safe(event?.operatorId, 120)}`,
-      `role=${safe(event?.roleId, 120)}`,
-      `profile=${safe(event?.profileId, 120)}`,
-      `name=${safe(event?.name, 140)}`,
-      `mime=${safe(event?.mime, 120)}`,
-      `code=${safe(event?.code, 80)}`,
-      `msg=${safe(event?.message, 320)}`
-    ]
-  } else if (action === 'empresa_handshake_contexto_actualizado') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `source=${safe(event?.source, 80)}`,
-      `changed=${safe(event?.changed, 120)}`,
-      `requested_operator=${safe(event?.requestedOperatorId, 120)}`,
-      `requested_role=${safe(event?.requestedRoleId, 120)}`,
-      `requested_profile=${safe(event?.requestedProfileId, 120)}`,
-      `username_provided=${event?.usernameProvided ? '1' : '0'}`,
-      `requested_cli=${safe(event?.requestedCli, 80)}`,
-      `requested_model=${safe(event?.requestedModel, 120)}`,
-      `requested_effort=${safe(event?.requestedEffort, 80)}`,
-      `late=${event?.late ? '1' : '0'}`
-    ]
-  } else if (action === 'empresa_contexto_resuelto') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `request_source=${safe(event?.requestSource, 80)}`,
-      `requested_operator=${safe(event?.requestedOperatorId, 120)}`,
-      `requested_role=${safe(event?.requestedRoleId, 120)}`,
-      `requested_profile=${safe(event?.requestedProfileId, 120)}`,
-      `username_provided=${event?.usernameProvided ? '1' : '0'}`,
-      `requested_cli=${safe(event?.requestedCli, 80)}`,
-      `requested_model=${safe(event?.requestedModel, 120)}`,
-      `requested_effort=${safe(event?.requestedEffort, 80)}`,
-      `mode=${safe(event?.mode, 40)}`,
-      `enterprise=${event?.enterpriseEnabled ? '1' : '0'}`,
-      `applied_operator=${safe(event?.appliedOperatorId, 120)}`,
-      `applied_role=${safe(event?.appliedRoleId, 120)}`,
-      `applied_profile=${safe(event?.appliedProfileId, 120)}`,
-      `applied_cli=${safe(event?.appliedCli, 80)}`,
-      `applied_model=${safe(event?.appliedModel, 120)}`,
-      `applied_effort=${safe(event?.appliedEffort, 80)}`
-    ]
-  } else if (action === 'empresa_fs_watch_iniciado' || action === 'empresa_fs_watch_detenido' || action === 'empresa_fs_watch_error') {
-    parts = [
-      `session=${safe(event?.sessionId, 120)}`,
-      `operator=${safe(event?.operatorId, 120)}`,
-      `role=${safe(event?.roleId, 120)}`,
-      `profile=${safe(event?.profileId, 120)}`,
-      `watch=${safe(event?.watchId, 120)}`,
-      `path=${safe(event?.path, 320)}`,
-      `reason=${safe(event?.reason || event?.fallback || '', 260)}`,
-      `code=${safe(event?.code, 80)}`,
-      `msg=${safe(event?.message, 320)}`,
-      `auto=${event?.auto ? '1' : '0'}`
-    ]
-  }
-
-  if (!parts || !parts.length) return
-  logSemantic(action, { detail: parts.join(' ') })
-}
+const _lanAudit = createLanAudit({
+  getAppConfig: () => appConfig,
+  resolveEffectiveSessionContext,
+  sanitizeProfileId,
+  logSemantic: (action, payload) => logSemantic(action, payload),
+  DEFAULT_PROFILE_ID,
+  DEFAULT_ENTERPRISE_ROLE_ID
+})
+const {
+  resolveLanEnterpriseContext,
+  logEnterpriseSessionSemantic,
+  logLanAuditSemantic
+} = _lanAudit
 
 function resolveLanSessionConfig(remoteMeta = {}) {
   const rawRemoteContext = resolveLanRemoteContextInput(remoteMeta)
@@ -1052,212 +671,23 @@ function getLanServerStatus() {
   }
 }
 
-function countConfiguredTelegramUsers(value) {
-  if (Array.isArray(value)) return value.map((v) => String(v || '').trim()).filter(Boolean).length
-  if (typeof value === 'string') {
-    return value
-      .split(/[,\s]+/g)
-      .map((v) => v.trim())
-      .filter(Boolean)
-      .length
-  }
-  return 0
-}
-
-function inferWhatsappBridgeState(payload) {
-  if (!payload || typeof payload !== 'object') return 'disconnected'
-  const rawState = String(payload.state || payload.status || '').toLowerCase()
-  if (payload.error) return 'error'
-  if (
-    payload.ready === true ||
-    payload.connected === true ||
-    rawState === 'ready' ||
-    rawState === 'connected' ||
-    rawState === 'open' ||
-    rawState.includes('ready') ||
-    rawState.includes('connect')
-  ) {
-    return 'ready'
-  }
-  if (
-    payload.connected === false ||
-    rawState === 'disconnected' ||
-    rawState === 'closed' ||
-    rawState.includes('disconnect') ||
-    rawState.includes('close')
-  ) {
-    return 'disconnected'
-  }
-  return 'disconnected'
-}
-
-function httpGetJson(url, timeoutMs = 2000, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const req = http.get(url, { timeout: timeoutMs, headers }, (res) => {
-      const chunks = []
-      res.on('data', (chunk) => chunks.push(chunk))
-      res.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8')
-        let json = null
-        if (body.trim()) {
-          try { json = JSON.parse(body) } catch {}
-        }
-        resolve({ statusCode: Number(res.statusCode || 0), json, raw: body })
-      })
-    })
-    req.on('timeout', () => req.destroy(new Error('timeout')))
-    req.on('error', reject)
-  })
-}
-
-async function collectWhatsappBridgeHealth() {
-  try {
-    const headers = {}
-    try {
-      const waAuth = require('./whatsapp/whatsapp-auth')
-      const token = waAuth.readToken(waAuth.defaultTokenPath())
-      if (token) headers[waAuth.HEADER_NAME] = token
-    } catch {}
-    const { statusCode, json, raw } = await httpGetJson('http://127.0.0.1:3031/status', 2000, headers)
-    if (statusCode >= 400) {
-      return {
-        state: 'error',
-        statusCode,
-        detail: `HTTP ${statusCode}${raw ? ` · ${raw.slice(0, 120)}` : ''}`
-      }
-    }
-    const state = inferWhatsappBridgeState(json)
-    const detail = json?.message || json?.status || json?.state || (state === 'ready' ? 'ready' : 'disconnected')
-    return { state, statusCode, detail: String(detail || '').slice(0, 180) }
-  } catch (err) {
-    const code = String(err?.code || '')
-    const message = err?.message || String(err)
-    if (code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ECONNRESET') {
-      return { state: 'disconnected', statusCode: 0, detail: message }
-    }
-    return { state: 'error', statusCode: 0, detail: message }
-  }
-}
-
-function collectLaunchdHealth() {
-  try {
-    const run = spawnSync('launchctl', ['list'], { encoding: 'utf8' })
-    if (run.error) {
-      return { state: 'error', count: 0, detail: run.error.message || 'launchctl error' }
-    }
-    const stdout = String(run.stdout || '')
-    const stderr = String(run.stderr || '').trim()
-    if (run.status !== 0) {
-      return {
-        state: 'error',
-        count: 0,
-        detail: `launchctl exit ${run.status}${stderr ? ` · ${stderr.slice(0, 140)}` : ''}`
-      }
-    }
-    const count = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => /\bcom\.luismi([.\-]|$)/.test(line))
-      .length
-    return { state: 'ok', count, detail: count > 0 ? `${count} jobs activos` : 'Sin jobs com.luismi activos' }
-  } catch (err) {
-    return { state: 'error', count: 0, detail: err?.message || String(err) }
-  }
-}
-
-function collectSchedulerHealth() {
-  if (!tasksScheduler) {
-    return { state: 'error', activeJobs: 0, runningJobs: 0, detail: 'TaskScheduler no inicializado' }
-  }
-  const activeJobs = Number(tasksScheduler.jobs?.size || 0)
-  const runningJobs = Number(tasksScheduler.activeRuns?.size || 0)
-  return {
-    state: 'ok',
-    activeJobs,
-    runningJobs,
-    detail: runningJobs > 0
-      ? `${activeJobs} jobs activos · ${runningJobs} ejecutándose`
-      : `${activeJobs} jobs activos`
-  }
-}
-
-function collectPtyHealth(session) {
-  const current = session || (primaryWcId != null ? sessions.get(primaryWcId) : null)
-  const cli = current?.activeCli === 'codex' ? 'codex' : 'claude'
-  const cliCheck = ensureCliAvailable(cli)
-  if (!cliCheck.ok) {
-    return { state: 'error', cli, detail: cliCheck.error }
-  }
-  if (!current) return { state: 'stopped', cli, detail: 'Sin sesión activa' }
-  if (current.pty) return { state: 'active', cli, detail: 'PTY en ejecución' }
-  return { state: 'stopped', cli, detail: 'PTY detenido' }
-}
-
-function collectTelegramHealth() {
-  const cfg = appConfig?.telegram || {}
-  const enabled = !!cfg.enabled
-  const hasToken = typeof cfg.botToken === 'string' && cfg.botToken.trim().length > 0
-  const usersCount = countConfiguredTelegramUsers(cfg.allowedUsers)
-  const status = telegramBridge?.getStatus() || null
-  if (!enabled || !hasToken || usersCount === 0) {
-    return {
-      state: 'unconfigured',
-      running: false,
-      detail: 'Sin configurar',
-      botUsername: status?.botUsername || '',
-      activeChats: Number(status?.activeChats?.length || 0)
-    }
-  }
-  if (status?.lastError) {
-    return {
-      state: status.running ? 'linked' : 'error',
-      running: !!status.running,
-      detail: status.lastError,
-      botUsername: status?.botUsername || '',
-      activeChats: Number(status?.activeChats?.length || 0)
-    }
-  }
-  if (status?.running) {
-    return {
-      state: 'linked',
-      running: true,
-      detail: status?.lastInfo || 'Telegram activo',
-      botUsername: status?.botUsername || '',
-      activeChats: Number(status?.activeChats?.length || 0)
-    }
-  }
-  return {
-    state: 'disconnected',
-    running: false,
-    detail: status?.lastInfo || 'Bridge detenido',
-    botUsername: status?.botUsername || '',
-    activeChats: Number(status?.activeChats?.length || 0)
-  }
-}
-
-async function collectHealthSnapshot(session) {
-  const pty = collectPtyHealth(session)
-  const telegram = collectTelegramHealth()
-  const whatsapp = await collectWhatsappBridgeHealth()
-  const launchd = collectLaunchdHealth()
-  const scheduler = collectSchedulerHealth()
-  const hasError = (
-    pty.state === 'error' ||
-    telegram.state === 'error' ||
-    whatsapp.state === 'error' ||
-    launchd.state === 'error' ||
-    scheduler.state === 'error'
-  )
-  return {
-    ts: Date.now(),
-    global: { state: hasError ? 'error' : 'ok' },
-    pty,
-    telegram,
-    whatsapp,
-    launchd,
-    scheduler
-  }
-}
+const _healthCollectors = createHealthCollectors({
+  getTasksScheduler: () => tasksScheduler,
+  getPrimarySession: () => primaryWcId != null ? sessions.get(primaryWcId) : null,
+  getSessions: () => sessions,
+  ensureCliAvailable,
+  getAppConfig: () => appConfig,
+  getTelegramBridge: () => telegramBridge
+})
+const {
+  countConfiguredTelegramUsers,
+  collectWhatsappBridgeHealth,
+  collectLaunchdHealth,
+  collectSchedulerHealth,
+  collectPtyHealth,
+  collectTelegramHealth,
+  collectHealthSnapshot
+} = _healthCollectors
 
 function semanticCli(cliHint) {
   const cli = cliHint || getActiveCliSync() || 'claude'
@@ -1424,158 +854,22 @@ function resolveClaudeProjectDir(cwd) {
 // Claude Code v2 crea un fichero ~/.claude/projects/<cwd-codificado>/<sessionId>.jsonl
 // al iniciar (o al primer mensaje). Tomamos snapshot del directorio antes del spawn
 // y miramos qué fichero nuevo/tocado apareció después.
-function claudeProjectSessionsDir(cwd) {
-  if (!cwd) return null
-  // Resolver con compatibilidad para variaciones históricas del codificado.
-  return resolveClaudeProjectDir(cwd)
-}
-
-function listClaudeSessionFilesWithMtime(cwd) {
-  const dir = claudeProjectSessionsDir(cwd)
-  if (!dir) return []
-  try {
-    return fs.readdirSync(dir)
-      .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => {
-        const p = path.join(dir, f)
-        let mtimeMs = 0
-        try { mtimeMs = fs.statSync(p).mtimeMs } catch {}
-        return { file: f, sessionId: f.replace(/\.jsonl$/, ''), mtimeMs }
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs)
-  } catch {
-    return []
-  }
-}
-
-function snapshotClaudeSessions(cwd) {
-  const snap = new Map()
-  for (const row of listClaudeSessionFilesWithMtime(cwd)) snap.set(row.file, row.mtimeMs)
-  return snap
-}
-
-function findUpdatedOrNewClaudeSessionId(cwd, snapshotBefore) {
-  if (!snapshotBefore) return null
-  const rows = listClaudeSessionFilesWithMtime(cwd)
-  for (const row of rows) {
-    const prevMtime = snapshotBefore.get(row.file)
-    if (prevMtime == null) return row.sessionId
-    if (row.mtimeMs > prevMtime) return row.sessionId
-  }
-  return null
-}
-
-function snapshotClaudeSessionMeta(cwd) {
-  const dir = claudeProjectSessionsDir(cwd)
-  const snap = new Map()
-  if (!dir) return snap
-  try {
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.endsWith('.jsonl')) continue
-      const p = path.join(dir, file)
-      try {
-        const st = fs.statSync(p)
-        snap.set(file, { size: st.size, mtimeMs: st.mtimeMs })
-      } catch {}
-    }
-  } catch {}
-  return snap
-}
-
-function pickRelayTranscriptCandidate(cwd, beforeMeta, preferredSessionId) {
-  const dir = claudeProjectSessionsDir(cwd)
-  if (!dir) return null
-  const rows = listClaudeSessionFilesWithMtime(cwd)
-  if (rows.length === 0) return null
-
-  const preferredFile = preferredSessionId ? `${preferredSessionId}.jsonl` : null
-  const isChanged = (row) => {
-    const before = beforeMeta.get(row.file)
-    return !before || row.mtimeMs > before.mtimeMs
-  }
-
-  if (preferredFile) {
-    const changedPreferred = rows.find((r) => r.file === preferredFile && isChanged(r))
-    if (changedPreferred) {
-      return { ...changedPreferred, filePath: path.join(dir, changedPreferred.file), before: beforeMeta.get(changedPreferred.file) || null }
-    }
-  }
-
-  const changedAny = rows.find((r) => isChanged(r))
-  if (changedAny) {
-    return { ...changedAny, filePath: path.join(dir, changedAny.file), before: beforeMeta.get(changedAny.file) || null }
-  }
-
-  if (preferredFile) {
-    const preferred = rows.find((r) => r.file === preferredFile)
-    if (preferred) {
-      return { ...preferred, filePath: path.join(dir, preferred.file), before: beforeMeta.get(preferred.file) || null }
-    }
-  }
-
-  const latest = rows[0]
-  return latest ? { ...latest, filePath: path.join(dir, latest.file), before: beforeMeta.get(latest.file) || null } : null
-}
-
-function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0) {
-  try {
-    const rawBuf = fs.readFileSync(transcriptPath)
-    if (!rawBuf || rawBuf.length === 0) return { text: '', sawAssistant: false, sawEndTurn: false }
-
-    const start = Math.max(0, Math.min(offsetBytes || 0, rawBuf.length))
-    let slice = rawBuf.slice(start).toString('utf8')
-    if (start > 0) {
-      // Si arrancamos en mitad de línea JSON, descarta hasta el siguiente \n.
-      const firstNl = slice.indexOf('\n')
-      slice = firstNl === -1 ? '' : slice.slice(firstNl + 1)
-    }
-    if (!slice.trim()) return { text: '', sawAssistant: false, sawEndTurn: false }
-
-    let lastAssistantText = ''
-    let sawAssistant = false
-    let sawEndTurn = false
-    const lines = slice.split('\n')
-    for (const raw of lines) {
-      const line = raw.trim()
-      if (!line) continue
-      let obj
-      try { obj = JSON.parse(line) } catch { continue }
-      if (obj?.type !== 'assistant') continue
-      sawAssistant = true
-      const text = extractTurnText(obj)
-      if (text) lastAssistantText = text
-      if (obj?.message?.stop_reason === 'end_turn') sawEndTurn = true
-    }
-    return { text: lastAssistantText, sawAssistant, sawEndTurn }
-  } catch {
-    return { text: '', sawAssistant: false, sawEndTurn: false }
-  }
-}
-
-function cleanRelayFallbackText(raw, cli = 'claude') {
-  const clean = flattenTerminal(stripAnsi(String(raw || '')))
-  if (!clean) return ''
-  return clean
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter((line) => {
-      const t = line.trim()
-      if (!t) return false
-      if (/^(\*+\s*(Brewed|Sauteed|Cogitated)\b)/i.test(t)) return false
-      if (/^bypass permissions on\b/i.test(t)) return false
-      if (/^\$0\.0000\b/.test(t)) return false
-      if (/^\/model\b/i.test(t)) return false
-      if (/^Claude Code v/i.test(t)) return false
-      if (/^Haiku\b/i.test(t)) return false
-      if (cli === 'codex' && /^OpenAI Codex\b/i.test(t)) return false
-      if (cli === 'codex' && /^model:\s*/i.test(t)) return false
-      if (/^\s*[›>]\s*$/.test(t)) return false
-      return true
-    })
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
+const _relayTranscriptHelpers = createRelayTranscriptHelpers({
+  resolveClaudeProjectDir,
+  extractTurnText,
+  flattenTerminal,
+  stripAnsi
+})
+const {
+  claudeProjectSessionsDir,
+  listClaudeSessionFilesWithMtime,
+  snapshotClaudeSessions,
+  findUpdatedOrNewClaudeSessionId,
+  snapshotClaudeSessionMeta,
+  pickRelayTranscriptCandidate,
+  extractAssistantTextFromTranscript,
+  cleanRelayFallbackText
+} = _relayTranscriptHelpers
 
 async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   if (!session?.pty || !session?.cwd) return null
@@ -1776,128 +1070,28 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   })
 }
 
-function canRelayTelegramToPty(session, expectedCli = null) {
-  if (!session?.pty) return false
-  if (expectedCli && session.activeCli !== expectedCli) return false
-  if (!expectedCli && session.activeCli !== 'claude' && session.activeCli !== 'codex') return false
-  if (session.relayActive) return false
-  return true
-}
-
-function normalizeTelegramChatKey(chatId) {
-  if (chatId == null) return ''
-  const key = String(chatId).trim()
-  return key || ''
-}
-
-function getRelayBindingForChat(chatId) {
-  const key = normalizeTelegramChatKey(chatId)
-  if (!key) return { chatId: '', bound: false, wcId: null, session: null }
-  const wcId = telegramRelayByChat.get(key)
-  if (wcId == null) return { chatId: key, bound: false, wcId: null, session: null }
-  const session = sessions.get(wcId) || null
-  if (!session) {
-    telegramRelayByChat.delete(key)
-    return { chatId: key, bound: false, wcId: null, session: null }
-  }
-  return { chatId: key, bound: true, wcId, session }
-}
-
-function getRelayBindingForSession(session, preferredChatId = null) {
-  if (!session?.wcId) return { linked: false, chatId: null }
-  const preferredKey = normalizeTelegramChatKey(preferredChatId)
-  if (preferredKey && telegramRelayByChat.get(preferredKey) === session.wcId) {
-    return { linked: true, chatId: preferredKey }
-  }
-  for (const [chatId, boundWcId] of telegramRelayByChat.entries()) {
-    if (boundWcId === session.wcId) return { linked: true, chatId: String(chatId) }
-  }
-  return { linked: false, chatId: null }
-}
-
-function describeRelayUnavailable(session, requiredCli = null) {
-  if (!session) return 'la ventana enlazada ya no existe'
-  if (!session.pty) return 'el PTY de esa ventana no está iniciado'
-  if (requiredCli && session.activeCli !== requiredCli) {
-    return `esa ventana está en ${session.activeCli}, no en ${requiredCli}`
-  }
-  if (session.activeCli !== 'claude' && session.activeCli !== 'codex') {
-    return `esa ventana usa un CLI no soportado (${session.activeCli})`
-  }
-  if (session.relayActive) return 'esa ventana está ocupada con otra petición'
-  return 'falló la lectura de respuesta del PTY'
-}
-
-function pickRelaySession(expectedCli = null) {
-  const primary = primaryWcId != null ? sessions.get(primaryWcId) : null
-  if (canRelayTelegramToPty(primary, expectedCli)) return primary
-  for (const s of sessions.values()) {
-    if (canRelayTelegramToPty(s, expectedCli)) return s
-  }
-  return null
-}
-
-function bindRelaySessionToTelegramChat(chatId, session) {
-  const key = normalizeTelegramChatKey(chatId)
-  if (!key || !session?.wcId) return
-  unbindRelaySessionsByWcId(session.wcId)
-  telegramRelayByChat.set(key, session.wcId)
-}
-
-function unbindRelaySessionForTelegramChat(chatId) {
-  const key = normalizeTelegramChatKey(chatId)
-  if (!key) return false
-  return telegramRelayByChat.delete(key)
-}
-
-function unbindRelaySessionsByWcId(wcId) {
-  for (const [chatId, boundWcId] of telegramRelayByChat.entries()) {
-    if (boundWcId === wcId) telegramRelayByChat.delete(chatId)
-  }
-}
-
-function pickRelaySessionForChat(chatId, allowFallback = true, expectedCli = null) {
-  const binding = getRelayBindingForChat(chatId)
-  if (binding.bound) {
-    if (canRelayTelegramToPty(binding.session, expectedCli)) return binding.session
-    return allowFallback ? pickRelaySession(expectedCli) : null
-  }
-  return allowFallback ? pickRelaySession(expectedCli) : null
-}
-
-async function syncSessionContextAfterTelegramDetach(session, chatId, cliHint = null) {
-  if (!session) return { ok: false, refreshed: false, reason: 'no-session' }
-  const targetCli = (cliHint === 'codex' || cliHint === 'claude')
-    ? cliHint
-    : (session.activeCli === 'codex' ? 'codex' : 'claude')
-  const key = normalizeTelegramChatKey(chatId)
-
-  if (targetCli === 'codex') {
-    const codexSessionId = telegramBridge?.getSessionId?.(key, 'codex') || null
-    if (!codexSessionId) {
-      return { ok: true, refreshed: false, mode: 'codex', reason: 'no-session-id' }
-    }
-    try {
-      killPty(session)
-      await new Promise((resolve) => setTimeout(resolve, 180))
-      startPty(session, session.cols, session.rows, session.cwd, ['resume', codexSessionId])
-      if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
-      return { ok: true, refreshed: true, mode: 'codex', sessionId: codexSessionId }
-    } catch (err) {
-      return {
-        ok: false,
-        refreshed: false,
-        mode: 'codex',
-        sessionId: codexSessionId,
-        error: err?.message || String(err)
-      }
-    }
-  }
-
-  const claudeSid = session.claudeSessionId || telegramBridge?.getSessionId?.(key, 'claude') || null
-  if (!session.claudeSessionId && claudeSid) session.claudeSessionId = claudeSid
-  return { ok: true, refreshed: !!claudeSid, mode: 'claude', sessionId: claudeSid || null }
-}
+const _relayBindings = createTelegramRelayBindings({
+  telegramRelayByChat,
+  getSessions: () => sessions,
+  getPrimaryWcId: () => primaryWcId,
+  getTelegramBridge: () => telegramBridge,
+  killPty: (s) => killPty(s),
+  startPty: (s, cols, rows, cwd, args) => startPty(s, cols, rows, cwd, args),
+  updatePrimarySnapshot: () => updatePrimarySnapshot()
+})
+const {
+  canRelayTelegramToPty,
+  normalizeTelegramChatKey,
+  getRelayBindingForChat,
+  getRelayBindingForSession,
+  describeRelayUnavailable,
+  pickRelaySession,
+  bindRelaySessionToTelegramChat,
+  unbindRelaySessionForTelegramChat,
+  unbindRelaySessionsByWcId,
+  pickRelaySessionForChat,
+  syncSessionContextAfterTelegramDetach
+} = _relayBindings
 
 function resolveExistingDir(inputPath) {
   const value = typeof inputPath === 'string' ? inputPath.trim() : ''
@@ -2195,156 +1389,25 @@ function createWindow() {
   return win
 }
 
-function openViewerWindow(filePath, hint) {
-  const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-  let bounds = { width: 700, height: 600, x: undefined, y: undefined }
-  if (primary && !primary.isDestroyed()) {
-    const b = primary.getBounds()
-    const offset = viewerWindows.size * 24
-    if (hint && Number.isFinite(hint.x) && Number.isFinite(hint.y) && hint.width > 0 && hint.height > 0) {
-      const inset = 6
-      bounds = {
-        width: Math.max(380, Math.round(hint.width) - inset * 2),
-        height: Math.max(280, Math.round(hint.height) - inset * 2),
-        x: b.x + Math.round(hint.x) + inset + offset,
-        y: b.y + Math.round(hint.y) + inset + offset
-      }
-    } else {
-      const inset = 50
-      bounds = {
-        width: Math.max(420, b.width - inset * 2),
-        height: Math.max(320, b.height - inset * 2),
-        x: b.x + inset + offset,
-        y: b.y + inset + offset
-      }
-    }
-  }
-  const win = new BrowserWindow({
-    width: bounds.width,
-    height: bounds.height,
-    x: bounds.x,
-    y: bounds.y,
-    frame: false,
-    resizable: true,
-    minimizable: true,
-    alwaysOnTop: false,
-    title: path.basename(filePath),
-    webPreferences: {
-      preload: path.join(__dirname, 'viewer-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  viewerWindows.add(win)
-  win.on('closed', () => viewerWindows.delete(win))
-  win.loadFile('viewer.html')
-  win.webContents.once('did-finish-load', () => {
-    if (!win.isDestroyed()) win.webContents.send('viewer-init', { path: filePath })
-  })
-  return win
-}
-
 // ── Tasks Manager (singleton) ──
 let tasksScheduler = null
 let automationManager = null
 let automationChat = null
-let tasksManagerWin = null
-let bitacoraWin = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
 const chatWcToAutomation = new Map() // wcId → automationId
 
-async function openTasksManager() {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) {
-    if (tasksManagerWin.isMinimized()) tasksManagerWin.restore()
-    tasksManagerWin.show()
-    tasksManagerWin.focus()
-    return tasksManagerWin
-  }
-
-  // Hereda el tema actual de la ventana principal (localStorage 'claude-electron-theme').
-  let initialTheme = ''
-  try {
-    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-    if (primary && !primary.isDestroyed()) {
-      const t = await primary.webContents.executeJavaScript(
-        `localStorage.getItem('claude-electron-theme') || ''`, true
-      )
-      if (t === 'light' || t === 'dark') initialTheme = t
-    }
-  } catch {}
-  if (initialTheme !== 'light' && initialTheme !== 'dark') {
-    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-
-  tasksManagerWin = new BrowserWindow({
-    width: 1000,
-    height: 720,
-    minWidth: 760,
-    minHeight: 520,
-    title: 'POWER-AGENT — Tareas programadas',
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: initialTheme === 'light' ? '#fafafd' : '#111',
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'tasks-manager-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  tasksManagerWin.loadFile('tasks-manager.html', { query: { theme: initialTheme } })
-  tasksManagerWin.once('ready-to-show', () => {
-    if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.show()
-  })
-  tasksManagerWin.on('closed', () => { tasksManagerWin = null })
-  return tasksManagerWin
-}
-
-async function openBitacoraWindow() {
-  if (bitacoraWin && !bitacoraWin.isDestroyed()) {
-    if (bitacoraWin.isMinimized()) bitacoraWin.restore()
-    bitacoraWin.show()
-    bitacoraWin.focus()
-    return bitacoraWin
-  }
-
-  let initialTheme = ''
-  try {
-    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
-    if (primary && !primary.isDestroyed()) {
-      const t = await primary.webContents.executeJavaScript(
-        `localStorage.getItem('claude-electron-theme') || ''`, true
-      )
-      if (t === 'light' || t === 'dark') initialTheme = t
-    }
-  } catch {}
-  if (initialTheme !== 'light' && initialTheme !== 'dark') {
-    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-
-  bitacoraWin = new BrowserWindow({
-    width: 1040,
-    height: 720,
-    minWidth: 780,
-    minHeight: 500,
-    title: 'POWER-AGENT — Bitácora',
-    show: false,
-    backgroundColor: initialTheme === 'light' ? '#f7f7fb' : '#13131a',
-    webPreferences: {
-      preload: path.join(__dirname, 'bitacora-window-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  bitacoraWin.loadFile('bitacora-window.html', { query: { theme: initialTheme } })
-  bitacoraWin.once('ready-to-show', () => {
-    if (bitacoraWin && !bitacoraWin.isDestroyed()) bitacoraWin.show()
-  })
-  bitacoraWin.on('closed', () => { bitacoraWin = null })
-  return bitacoraWin
-}
+const windowFactory = createWindowFactory({
+  BrowserWindow,
+  nativeTheme,
+  app,
+  getPrimaryWin: () => primaryWcId != null ? sessions.get(primaryWcId)?.win : null,
+  getRootDir: () => __dirname
+})
+const openViewerWindow = windowFactory.openViewerWindow
+const openTasksManager = windowFactory.openTasksManager
+const openBitacoraWindow = windowFactory.openBitacoraWindow
 
 function broadcastToAllWindows(channel, payload) {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -2844,11 +1907,6 @@ function initTelegramBridge() {
 const TG_HISTORY_THRESHOLD = 30
 const TG_HISTORY_KEEP = 20
 
-const CLAUDE_TITLE_CACHE_MAX = 600
-const claudeSessionTitleCache = new Map()
-const SESSION_META_CACHE_MAX = 300
-const currentSessionMetaCache = new Map()
-
 const codexSessionReader = createCodexSessionReader({
   historyPath: CODEX_HISTORY_PATH,
   sessionIndexPath: CODEX_SESSION_INDEX_PATH,
@@ -2862,164 +1920,26 @@ const {
   fileCacheKey
 } = codexSessionReader
 
-function rememberClaudeSessionTitle(filePath, entry) {
-  if (!filePath || !entry) return
-  if (claudeSessionTitleCache.has(filePath)) claudeSessionTitleCache.delete(filePath)
-  claudeSessionTitleCache.set(filePath, entry)
-  if (claudeSessionTitleCache.size > CLAUDE_TITLE_CACHE_MAX) {
-    const oldest = claudeSessionTitleCache.keys().next().value
-    if (oldest) claudeSessionTitleCache.delete(oldest)
-  }
-}
-
-function forgetClaudeSessionTitle(filePath) {
-  if (!filePath) return
-  claudeSessionTitleCache.delete(filePath)
-}
-
-function rememberSessionMeta(cacheKey, entry) {
-  if (!cacheKey || !entry) return
-  if (currentSessionMetaCache.has(cacheKey)) currentSessionMetaCache.delete(cacheKey)
-  currentSessionMetaCache.set(cacheKey, entry)
-  if (currentSessionMetaCache.size > SESSION_META_CACHE_MAX) {
-    const oldest = currentSessionMetaCache.keys().next().value
-    if (oldest) currentSessionMetaCache.delete(oldest)
-  }
-}
-
-
-function readClaudeSessionTitle(cwd, sessionId) {
-  const _perfT0 = PERF ? Date.now() : 0
-  const sid = String(sessionId || '').trim()
-  if (!sid) return { title: '', path: null, statKey: '' }
-  const dir = resolveClaudeProjectDir(cwd)
-  const file = dir ? path.join(dir, `${sid}.jsonl`) : null
-  if (!file) {
-    return { title: '', path: null, statKey: '' }
-  }
-
-  const stat = safeStat(file)
-  if (!stat) {
-    if (file) forgetClaudeSessionTitle(file)
-    return { title: '', path: file, statKey: '' }
-  }
-
-  const nextStatKey = statCacheKey(stat)
-  const cached = claudeSessionTitleCache.get(file)
-  if (cached && cached.statKey === nextStatKey) {
-    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-stat)`) }
-    return { title: cached.title || '', path: file, statKey: nextStatKey }
-  }
-  // El título viene del primer turno de usuario y suele ser estable.
-  // Si el archivo solo crece (append), evitamos releer todo el JSONL.
-  if (cached && cached.title && Number(stat.size || 0) > Number(cached.size || 0)) {
-    rememberClaudeSessionTitle(file, {
-      title: cached.title,
-      statKey: nextStatKey,
-      mtimeMs: Number(stat.mtimeMs || 0),
-      size: Number(stat.size || 0)
-    })
-    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (cached-append)`) }
-    return { title: cached.title || '', path: file, statKey: nextStatKey }
-  }
-
-  let title = ''
-  try {
-    const raw = fs.readFileSync(file, 'utf-8')
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const obj = JSON.parse(line)
-        if (obj?.type !== 'user') continue
-        const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
-        if (text && !text.startsWith('Caveat:')) {
-          title = clipText(text)
-          break
-        }
-      } catch {}
-    }
-  } catch {}
-  rememberClaudeSessionTitle(file, {
-    title,
-    statKey: nextStatKey,
-    mtimeMs: Number(stat?.mtimeMs || 0),
-    size: Number(stat?.size || 0)
-  })
-  if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] readClaudeSessionTitle=${dt}ms (read size=${Number(stat?.size || 0)})`) }
-  return { title, path: file, statKey: nextStatKey }
-}
-
-function buildCurrentSessionMeta(session) {
-  const _perfT0 = PERF ? Date.now() : 0
-  const cli = session?.activeCli === 'codex' ? 'codex' : 'claude'
-  const cwd = session?.cwd || os.homedir()
-  const wcId = Number(session?.wcId || 0)
-
-  if (cli === 'claude') {
-    let sessionId = session?.claudeSessionId || null
-    if (!sessionId) {
-      const latest = listClaudeSessionFilesWithMtime(cwd)[0]
-      if (latest?.sessionId) {
-        sessionId = latest.sessionId
-        session.claudeSessionId = sessionId
-      }
-    }
-    const info = readClaudeSessionTitle(cwd, sessionId)
-    const cacheKey = `${wcId}|claude|${cwd}|${sessionId || ''}`
-    const sourceKey = `${info.statKey || ''}|${sessionId || ''}`
-    const cachedMeta = currentSessionMetaCache.get(cacheKey)
-    if (cachedMeta && cachedMeta.sourceKey === sourceKey) {
-      if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(claude)=${dt}ms (cache-hit)`) }
-      return cachedMeta.meta
-    }
-    const nextMeta = {
-      cli,
-      cwd,
-      sessionId: sessionId || null,
-      title: info.title || '(sin título)',
-      path: info.path || null
-    }
-    rememberSessionMeta(cacheKey, { sourceKey, meta: nextMeta })
-    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(claude)=${dt}ms`) }
-    return nextMeta
-  }
-
-  let sessionId = session?.codexSessionId || null
-  let fallbackTitle = ''
-  if (!sessionId) {
-    const guess = guessCodexSessionFromHistory(session)
-    if (guess?.sessionId) {
-      sessionId = guess.sessionId
-      session.codexSessionId = sessionId
-      fallbackTitle = guess.text || ''
-    }
-  }
-
-  const historyKey = fileCacheKey(CODEX_HISTORY_PATH)
-  const indexKey = fileCacheKey(CODEX_SESSION_INDEX_PATH)
-  const stateDbKey = fileCacheKey(CODEX_STATE_DB_PATH)
-  const cacheKey = `${wcId}|codex|${cwd}|${sessionId || ''}`
-  const sourceKey = `${historyKey}|${indexKey}|${stateDbKey}|${sessionId || ''}`
-  const cachedMeta = currentSessionMetaCache.get(cacheKey)
-  if (cachedMeta && cachedMeta.sourceKey === sourceKey) {
-    if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(codex)=${dt}ms (cache-hit)`) }
-    return cachedMeta.meta
-  }
-
-  const stateMeta = sessionId ? readCodexStateThreadMeta(sessionId) : null
-  const indexTitle = sessionId ? (loadCodexSessionIndexMap().get(sessionId) || '') : ''
-  const title = clipText(stateMeta?.title || indexTitle || fallbackTitle, 160) || '(sin título)'
-  const nextMeta = {
-    cli,
-    cwd,
-    sessionId: sessionId || null,
-    title,
-    path: null
-  }
-  rememberSessionMeta(cacheKey, { sourceKey, meta: nextMeta })
-  if (PERF) { const dt = Date.now() - _perfT0; if (dt > 5) console.log(`[PERF meta] buildCurrentSessionMeta(codex)=${dt}ms`) }
-  return nextMeta
-}
+const _sessionCache = createClaudeSessionCache({
+  resolveClaudeProjectDir,
+  listClaudeSessionFilesWithMtime,
+  extractTurnText,
+  clipText,
+  safeStat,
+  statCacheKey,
+  codexSessionReader,
+  CODEX_HISTORY_PATH,
+  CODEX_SESSION_INDEX_PATH,
+  CODEX_STATE_DB_PATH,
+  PERF
+})
+const {
+  currentSessionMetaCache,
+  rememberClaudeSessionTitle,
+  forgetClaudeSessionTitle,
+  readClaudeSessionTitle,
+  buildCurrentSessionMeta
+} = _sessionCache
 
 function resolveSessionIdForRelay(session) {
   if (!session) return null
@@ -3290,8 +2210,9 @@ app.whenReady().then(async () => {
       try {
         const message = payload && (payload.message || payload)
         if (!message || message.fromMe === true) return
-        const mainFocused = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w !== whatsappWindow && w.isFocused())
-        const waFocused = !!(whatsappWindow && !whatsappWindow.isDestroyed() && whatsappWindow.isFocused())
+        const mainFocused = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w !== windowFactory.getWhatsappWindow() && w.isFocused())
+        const _waWin = windowFactory.getWhatsappWindow()
+        const waFocused = !!(_waWin && !_waWin.isDestroyed() && _waWin.isFocused())
         if (waFocused || mainFocused) return
         const jid = (payload && payload.jid) || message.from || ''
         let chat = payload && payload.chat
@@ -3496,48 +2417,14 @@ ipcMain.handle('transcribe-audio', async (event, arrayBuffer) => {
 })
 
 // ── Image picker ──
-ipcMain.handle('pick-image', async (event) => {
-  const result = await dialog.showOpenDialog(winFromEvent(event), {
-    properties: ['openFile', 'multiSelections'],
-    filters: [
-      { name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
-      { name: 'Todos', extensions: ['*'] }
-    ]
-  })
-  if (result.canceled) return []
-  return result.filePaths
+registerFilesystemIpc({
+  ipcMain,
+  dialog,
+  safeIpcHandle,
+  winFromEvent,
+  assertSafeFsPath,
+  markGraphCacheDirtyByPath
 })
-
-// ── File picker (cualquier archivo) ──
-ipcMain.handle('pick-file', async (event) => {
-  const result = await dialog.showOpenDialog(winFromEvent(event), {
-    properties: ['openFile', 'multiSelections']
-  })
-  if (result.canceled) return []
-  return result.filePaths
-})
-
-// ── Filesystem (sidebar) ──
-const IGNORE_NAMES = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache', '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode'])
-
-safeIpcHandle('fs-read-dir', async (event, dirPath) => {
-  assertSafeFsPath(dirPath)
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true })
-  const result = entries
-    .filter(e => !IGNORE_NAMES.has(e.name) && !e.name.startsWith('._'))
-    .map(e => {
-      const full = path.join(dirPath, e.name)
-      let size = 0
-      try { if (e.isFile()) size = fs.statSync(full).size } catch {}
-      return { name: e.name, path: full, isDir: e.isDirectory(), size }
-    })
-    .sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-      return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })
-    })
-  return { ok: true, entries: result }
-})
-
 
 function computeProjectGraphForSession(session, rootPath) {
   const root = normalizeGraphRootPath(rootPath)
@@ -3570,16 +2457,6 @@ ipcMain.handle('sidebar:get-graph', (event, rootPath) => {
   const s = getSessionByEvent(event)
   return computeProjectGraphForSession(s, rootPath)
 })
-
-ipcMain.handle('fs-pick-folder', async (event) => {
-  const result = await dialog.showOpenDialog(winFromEvent(event), {
-    properties: ['openDirectory']
-  })
-  if (result.canceled) return null
-  return result.filePaths[0]
-})
-
-ipcMain.handle('fs-home', () => os.homedir())
 
 ipcMain.handle('fs-watch-dir', (event, dirPath) => {
   const s = getSessionByEvent(event)
@@ -3656,283 +2533,17 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
   }
 })
 
-// ── Viewer de archivos ──
-const TEXT_EXTS = new Set([
-  'md','txt','json','yaml','yml','js','ts','tsx','jsx','py','sh','bash','zsh',
-  'html','htm','css','scss','sass','less','xml','svg','csv','tsv','log','ini',
-  'toml','env','gitignore','rs','go','java','c','cpp','h','hpp','rb','php','lua',
-  'sql','vue','svelte','dockerfile','makefile','conf','plist'
-])
-const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','svg'])
-
-function fileKind(p) {
-  const base = path.basename(p).toLowerCase()
-  const ext = base.includes('.') ? base.split('.').pop() : base
-  if (IMAGE_EXTS.has(ext)) return 'image'
-  if (TEXT_EXTS.has(ext)) return 'text'
-  try {
-    const fd = fs.openSync(p, 'r')
-    const buf = Buffer.alloc(4096)
-    const n = fs.readSync(fd, buf, 0, 4096, 0)
-    fs.closeSync(fd)
-    for (let i = 0; i < n; i++) if (buf[i] === 0) return 'binary'
-    return 'text'
-  } catch {
-    return 'binary'
-  }
-}
-
-safeIpcHandle('file-info', async (event, p) => {
-  assertSafeFsPath(p)
-  const stat = fs.statSync(p)
-  if (stat.isDirectory()) return { ok: false, error: 'es una carpeta' }
-  return {
-    ok: true,
-    path: p,
-    size: stat.size,
-    mtime: stat.mtime.getTime(),
-    kind: fileKind(p),
-    name: path.basename(p)
-  }
-})
-
-safeIpcHandle('file-read', async (event, p) => {
-  assertSafeFsPath(p)
-  const kind = fileKind(p)
-  if (kind === 'image' || kind === 'binary') {
-    const data = fs.readFileSync(p)
-    return { ok: true, kind, base64: data.toString('base64'), size: data.length }
-  }
-  const stat = fs.statSync(p)
-  if (stat.size > 5 * 1024 * 1024) return { ok: false, error: 'Archivo demasiado grande (>5MB)' }
-  const text = fs.readFileSync(p, 'utf-8')
-  return { ok: true, kind, text }
-})
-
-safeIpcHandle('file-write', async (event, { path: p, text }) => {
-  assertSafeFsPath(p)
-  if (typeof text !== 'string') throw new Error('text must be string')
-  atomicWriteFileSync(p, text, 'utf-8')
-  markGraphCacheDirtyByPath(p)
-  event.sender.send('graph:file-active', p)
-  return { ok: true }
-})
-
 // ── Sesiones de Claude ──
-function encodeProjectPath(p) {
-  return p.replace(/\/$/, '').replace(/[\/\s]/g, '-')
-}
-
-function projectDirFor(cwd) {
-  return path.join(os.homedir(), '.claude', 'projects', encodeProjectPath(cwd))
-}
-
-function isReusableClaudeSessionId(raw) {
-  const id = String(raw || '').trim()
-  return !!id && /^[a-zA-Z0-9._:-]+$/.test(id)
-}
-
-function listClaudeSessionsForCwd(cwd, options = {}) {
-  const dir = resolveClaudeProjectDir(cwd)
-  if (!dir || !fs.existsSync(dir)) return []
-  let files = []
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-  } catch {
-    return []
-  }
-
-  const rows = files.map((f) => {
-    const id = f.replace(/\.jsonl$/, '')
-    if (!isReusableClaudeSessionId(id)) return null
-    const fullPath = path.join(dir, f)
-    let mtime = 0
-    let size = 0
-    let preview = ''
-    let msgCount = 0
-    try {
-      const stat = fs.statSync(fullPath)
-      mtime = stat.mtime.getTime()
-      size = stat.size
-      const content = fs.readFileSync(fullPath, 'utf-8')
-      const lines = content.split('\n').filter((l) => l.trim())
-      msgCount = lines.length
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line)
-          if (obj.type === 'user') {
-            const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
-            if (text && !text.startsWith('Caveat:')) {
-              preview = text.slice(0, 160)
-              break
-            }
-          }
-        } catch {}
-      }
-    } catch {}
-    return {
-      id,
-      mtime,
-      size,
-      preview: preview || '(sin contenido)',
-      msgCount,
-      path: fullPath
-    }
-  })
-    .filter(Boolean)
-    .sort((a, b) => b.mtime - a.mtime)
-
-  const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
-  return rows.slice(0, limit)
-}
-
-function isReusableCodexSessionId(raw) {
-  const id = String(raw || '').trim()
-  return !!id && /^[a-zA-Z0-9._:-]+$/.test(id)
-}
-
-function listCodexSessionFiles() {
-  const root = path.join(os.homedir(), '.codex', 'sessions')
-  if (!fs.existsSync(root)) return []
-  const out = []
-  let years = []
-  try { years = fs.readdirSync(root).filter((y) => /^\d{4}$/.test(y)) } catch { return [] }
-  for (const year of years) {
-    const yearDir = path.join(root, year)
-    let months = []
-    try { months = fs.readdirSync(yearDir).filter((m) => /^\d{2}$/.test(m)) } catch { continue }
-    for (const month of months) {
-      const monthDir = path.join(yearDir, month)
-      let days = []
-      try { days = fs.readdirSync(monthDir).filter((d) => /^\d{2}$/.test(d)) } catch { continue }
-      for (const day of days) {
-        const dayDir = path.join(monthDir, day)
-        let files = []
-        try { files = fs.readdirSync(dayDir).filter((f) => /^rollout-.+\.jsonl$/i.test(f)) } catch { continue }
-        for (const f of files) out.push(path.join(dayDir, f))
-      }
-    }
-  }
-  return out
-}
-
-function readFirstNonEmptyLine(filePath, maxBytes = 64 * 1024) {
-  let fd = -1
-  try {
-    fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(maxBytes)
-    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
-    if (read <= 0) return ''
-    const slice = buf.slice(0, read).toString('utf-8')
-    const idx = slice.indexOf('\n')
-    return (idx >= 0 ? slice.slice(0, idx) : slice).trim()
-  } catch {
-    return ''
-  } finally {
-    if (fd >= 0) {
-      try { fs.closeSync(fd) } catch {}
-    }
-  }
-}
-
-function extractCodexSessionFirstPrompt(filePath, maxBytes = 64 * 1024) {
-  let fd = -1
-  try {
-    fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(maxBytes)
-    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
-    if (read <= 0) return ''
-    const slice = buf.slice(0, read).toString('utf-8')
-    const lines = slice.split('\n')
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let obj = null
-      try { obj = JSON.parse(trimmed) } catch { continue }
-      if (!obj || typeof obj !== 'object') continue
-      const type = String(obj.type || '')
-      const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : null
-      if (type === 'event' || type === 'event_msg' || type === 'response_item' || type === 'item') {
-        const role = String(payload?.role || payload?.author?.role || '')
-        if (role && role !== 'user') continue
-        const content = payload?.content
-        let text = ''
-        if (typeof content === 'string') text = content
-        else if (Array.isArray(content)) {
-          for (const part of content) {
-            if (!part) continue
-            if (typeof part.text === 'string' && part.text.trim()) { text = part.text; break }
-            if (typeof part === 'string' && part.trim()) { text = part; break }
-          }
-        }
-        text = String(text || '').replace(/\s+/g, ' ').trim()
-        if (text) return text.slice(0, 160)
-      }
-      if (type === 'user_input' || type === 'user_message' || type === 'turn') {
-        const text = String(payload?.text || payload?.prompt || '').replace(/\s+/g, ' ').trim()
-        if (text) return text.slice(0, 160)
-      }
-    }
-  } catch {} finally {
-    if (fd >= 0) {
-      try { fs.closeSync(fd) } catch {}
-    }
-  }
-  return ''
-}
-
-function listCodexSessionsForCwd(cwd, options = {}) {
-  const targetCwd = resolveExistingDir(cwd) || String(cwd || '').trim()
-  if (!targetCwd) return []
-  const files = listCodexSessionFiles()
-  if (!files.length) return []
-  const rows = []
-  for (const fullPath of files) {
-    const firstLine = readFirstNonEmptyLine(fullPath)
-    if (!firstLine) continue
-    let obj = null
-    try { obj = JSON.parse(firstLine) } catch { continue }
-    if (!obj || typeof obj !== 'object') continue
-    if (String(obj.type || '') !== 'session_meta') continue
-    const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : {}
-    const id = String(payload.id || '').trim()
-    if (!isReusableCodexSessionId(id)) continue
-    const sessionCwd = String(payload.cwd || '').trim()
-    if (!sessionCwd || sessionCwd !== targetCwd) continue
-    let mtime = 0
-    let size = 0
-    try {
-      const stat = fs.statSync(fullPath)
-      mtime = stat.mtime.getTime()
-      size = stat.size
-    } catch {}
-    const preview = extractCodexSessionFirstPrompt(fullPath) || '(sin contenido)'
-    rows.push({
-      id,
-      mtime,
-      size,
-      preview,
-      msgCount: 0,
-      path: fullPath,
-      cli: 'codex'
-    })
-  }
-  rows.sort((a, b) => b.mtime - a.mtime)
-  const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
-  return rows.slice(0, limit)
-}
-
-function listLanReusableSessions(meta = {}) {
-  const cli = String(meta?.cli || '').trim().toLowerCase()
-  const cwd = resolveExistingDir(meta?.cwd)
-  if (!cwd) return []
-  if (cli === 'codex') {
-    return listCodexSessionsForCwd(cwd, { limit: 300 })
-  }
-  if (cli && cli !== 'claude') return []
-  const rows = listClaudeSessionsForCwd(cwd, { limit: 300 })
-  return rows.map((row) => ({ ...row, cli: 'claude' }))
-}
+const _sessionListing = createSessionListing({
+  resolveClaudeProjectDir,
+  resolveExistingDir,
+  extractTurnText
+})
+const {
+  listClaudeSessionsForCwd,
+  listCodexSessionsForCwd,
+  listLanReusableSessions
+} = _sessionListing
 
 ipcMain.handle('list-sessions', async (event, cwd) => {
   return listClaudeSessionsForCwd(cwd, { limit: 1000 })
@@ -4079,132 +2690,16 @@ ipcMain.handle('set-active-cli', (event, cli) => {
 
 ipcMain.handle('get-app-config', () => JSON.parse(JSON.stringify(appConfig)))
 
-ipcMain.handle('profiles:list', () => listProfilesPayload())
-
-ipcMain.handle('profiles:create', (_event, profileInput) => {
-  try {
-    return { ok: true, ...createProfile(profileInput) }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
+registerProfilesEnterpriseIpc({
+  ipcMain,
+  dialog,
+  winFromEvent,
+  profilesApi: { listProfilesPayload, createProfile, updateProfile, deleteProfile, setActiveProfile },
+  enterpriseApi: {
+    listEnterprisePayload, saveEnterpriseConfig,
+    createEnterpriseRole, updateEnterpriseRole, deleteEnterpriseRole,
+    createEnterpriseOperator, updateEnterpriseOperator, deleteEnterpriseOperator
   }
-})
-
-ipcMain.handle('profiles:update', (_event, { id, patch } = {}) => {
-  try {
-    return { ok: true, ...updateProfile(id, patch || {}) }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('profiles:delete', (_event, id) => {
-  try {
-    return { ok: true, ...deleteProfile(id) }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('profiles:set-active', (_event, id) => {
-  try {
-    const payload = setActiveProfile(id)
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:get-config', () => {
-  const payload = listEnterprisePayload()
-  return { ok: true, ...payload }
-})
-
-ipcMain.handle('enterprise:list', () => {
-  const payload = listEnterprisePayload()
-  return { ok: true, ...payload }
-})
-
-ipcMain.handle('enterprise:save-config', (_event, enterpriseInput = {}) => {
-  try {
-    const payload = saveEnterpriseConfig(enterpriseInput || {})
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:roles:create', (_event, roleInput = {}) => {
-  try {
-    const payload = createEnterpriseRole(roleInput || {})
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:roles:update', (_event, { id, patch } = {}) => {
-  try {
-    const payload = updateEnterpriseRole(id, patch || {})
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:roles:delete', (_event, id) => {
-  try {
-    const payload = deleteEnterpriseRole(id)
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:operators:create', (_event, operatorInput = {}) => {
-  try {
-    const payload = createEnterpriseOperator(operatorInput || {})
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:operators:update', (_event, { id, patch } = {}) => {
-  try {
-    const payload = updateEnterpriseOperator(id, patch || {})
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('enterprise:operators:delete', (_event, id) => {
-  try {
-    const payload = deleteEnterpriseOperator(id)
-    return { ok: true, ...payload }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('profiles:pick-claude-md', async (event) => {
-  const result = await dialog.showOpenDialog(winFromEvent(event), {
-    properties: ['openFile'],
-    filters: [
-      { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
-      { name: 'Todos', extensions: ['*'] }
-    ]
-  })
-  if (result.canceled || !result.filePaths.length) return ''
-  return result.filePaths[0]
-})
-
-ipcMain.handle('profiles:pick-cwd', async (event) => {
-  const result = await dialog.showOpenDialog(winFromEvent(event), {
-    properties: ['openDirectory', 'createDirectory']
-  })
-  if (result.canceled || !result.filePaths.length) return ''
-  return result.filePaths[0]
 })
 
 ipcMain.handle('save-app-config', async (event, partialConfig) => {
@@ -4266,102 +2761,29 @@ ipcMain.handle('health:get', async (event) => {
   return collectHealthSnapshot(s)
 })
 
-ipcMain.handle('ws-server:start', async (_event, payload = {}) => {
-  try {
-    const port = clampLanPort(payload?.port ?? appConfig?.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
-    const result = await startLanServer({ port, persist: true })
-    return { ok: true, ...result }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
-  }
+registerWsServerIpc({
+  ipcMain,
+  startLanServer,
+  stopLanServer,
+  getLanServerStatus,
+  getLanWsServer: () => lanWsServer,
+  clampLanPort,
+  getAppConfig: () => appConfig,
+  DEFAULT_LAN_WS_PORT
 })
 
-ipcMain.handle('ws-server:stop', async () => {
-  try {
-    const result = await stopLanServer({ persist: true })
-    return { ok: true, ...result }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
-  }
-})
-
-ipcMain.handle('ws-server:sessions', async () => {
-  const status = getLanServerStatus()
-  return { ok: true, ...status, sessions: Array.isArray(status.sessions) ? status.sessions : [] }
-})
-
-ipcMain.handle('ws-server:close-session', async (_event, payload = {}) => {
-  const sessionId = String(payload?.id || '').trim()
-  if (!sessionId) return { ok: false, error: 'Falta id de sesión', ...getLanServerStatus() }
-  if (!lanWsServer || !lanWsServer.isRunning()) {
-    return { ok: false, error: 'Servidor LAN detenido', ...getLanServerStatus() }
-  }
-  const closed = lanWsServer.closeSession(sessionId, 'closed-by-operator')
-  if (!closed) return { ok: false, error: 'Sesión no encontrada', ...getLanServerStatus() }
-  return { ok: true, ...getLanServerStatus() }
-})
-
-ipcMain.handle('proposal:get-pending', () => {
-  return { pending: serializePendingProposalForRenderer(agentProposalWatcher.getPending()) }
-})
-
-ipcMain.handle('proposal:approve', (event, payload = {}) => {
-  const pending = agentProposalWatcher.getPending()
-  if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
-  const requestedId = String(payload?.id || '').trim()
-  if (requestedId && requestedId !== pending.id) {
-    return { ok: false, error: 'La propuesta pendiente cambió. Vuelve a abrir el modal.' }
-  }
-  const command = String(pending.command || '').trim()
-  if (!command) return { ok: false, error: 'La propuesta no tiene command ejecutable' }
-
-  const target = resolveProposalExecutionSession(event)
-  if (!target || !target.pty) return { ok: false, error: 'No hay PTY activo para ejecutar la propuesta' }
-  if (target.relayActive) return { ok: false, error: 'La sesión PTY está en uso por relay Telegram' }
-
-  try {
-    target.pty.write(command.endsWith('\n') || command.endsWith('\r') ? command : `${command}\r`)
-  } catch (err) {
-    return { ok: false, error: `No se pudo enviar el comando al PTY: ${err?.message || err}` }
-  }
-
-  const done = finalizePendingProposal('approved')
-  logProposalApprovedStub({
-    session: semanticSessionId(target, target.activeCli),
-    cli: target.activeCli || getActiveCliSync(),
-    detail: `id=${pending.id} command=${command}`,
-    ok: true
-  })
-  return {
-    ok: true,
-    id: pending.id,
-    command,
-    markerPath: done.markerPath || '',
-    cli: target.activeCli || 'claude',
-    cwd: target.cwd || ''
-  }
-})
-
-ipcMain.handle('proposal:reject', (event, payload = {}) => {
-  const pending = agentProposalWatcher.getPending()
-  if (!pending) return { ok: false, error: 'No hay propuesta pendiente' }
-  const requestedId = String(payload?.id || '').trim()
-  if (requestedId && requestedId !== pending.id) {
-    return { ok: false, error: 'La propuesta pendiente cambió. Vuelve a abrir el modal.' }
-  }
-  const sourceSession = getSessionByEvent(event) || getPrimaryWindowSession()
-  const done = finalizePendingProposal('rejected')
-  logProposalRejectedStub({
-    session: semanticSessionId(sourceSession, sourceSession?.activeCli),
-    cli: sourceSession?.activeCli || getActiveCliSync(),
-    detail: `id=${pending.id}`,
-    ok: true
-  })
-  return {
-    ok: true,
-    id: pending.id,
-    markerPath: done.markerPath || ''
-  }
+registerProposalIpc({
+  ipcMain,
+  agentProposalWatcher,
+  resolveProposalExecutionSession,
+  getSessionByEvent,
+  getPrimaryWindowSession,
+  finalizePendingProposal,
+  serializePendingProposalForRenderer,
+  logProposalApprovedStub,
+  logProposalRejectedStub,
+  semanticSessionId,
+  getActiveCliSync
 })
 
 ipcMain.handle('update:install', async () => {
@@ -4375,688 +2797,73 @@ ipcMain.handle('update:install', async () => {
 })
 
 // ── Transferir sesión activa de la ventana a Telegram ──
-ipcMain.handle('app:can-send-to-telegram', (event) => {
-  const s = sessions.get(event.sender.id)
-  if (!s) return { ok: false, reason: 'no-session', linked: false, chatId: null, relayActive: false }
-  const preferredChatId = telegramBridge?.getFirstAllowedUserId?.() || null
-  const binding = getRelayBindingForSession(s, preferredChatId)
-  const linkedChatId = binding.chatId || (preferredChatId == null ? null : String(preferredChatId))
-  const withLink = (payload) => ({ ...payload, linked: binding.linked, chatId: linkedChatId, relayActive: !!s.relayActive, cli: s.activeCli })
-
-  if (s.activeCli !== 'claude' && s.activeCli !== 'codex') return withLink({ ok: false, reason: 'not-supported-cli' })
-  const sessionId = resolveSessionIdForRelay(s)
-  if (s.activeCli === 'claude' && !sessionId) return withLink({ ok: false, reason: 'no-session-id' })
-  if (!telegramBridge) return withLink({ ok: false, reason: 'bridge-not-init' })
-  const status = telegramBridge.getStatus()
-  if (!status.running) return withLink({ ok: false, reason: 'bridge-not-running' })
-  if (!preferredChatId) return withLink({ ok: false, reason: 'no-allowed-user' })
-  return withLink({ ok: true, sessionId: sessionId || null, cwd: s.cwd })
+registerTelegramSessionLinkIpc({
+  ipcMain,
+  getSessions: () => sessions,
+  getTelegramBridge: () => telegramBridge,
+  getTelegramRelayByChat: () => telegramRelayByChat,
+  resolveSessionIdForRelay,
+  getRelayBindingForSession,
+  bindRelaySessionToTelegramChat,
+  unbindRelaySessionForTelegramChat,
+  unbindRelaySessionsByWcId,
+  broadcastTelegramStatus,
+  syncSessionContextAfterTelegramDetach
 })
 
-ipcMain.handle('app:send-session-to-telegram', async (event) => {
-  const s = sessions.get(event.sender.id)
-  if (!s) return { ok: false, error: 'No hay sesión asociada a esta ventana' }
-  if (s.activeCli !== 'claude' && s.activeCli !== 'codex') {
-    return { ok: false, error: 'CLI no soportado para relay Telegram (usa claude o codex).' }
-  }
-  const resolvedSessionId = resolveSessionIdForRelay(s)
-  if (s.activeCli === 'claude' && !resolvedSessionId) {
-    return { ok: false, error: 'No se detectó el sessionId de claude. Habla con él al menos un mensaje y vuelve a intentarlo.' }
-  }
-  if (!telegramBridge) return { ok: false, error: 'Telegram bridge no inicializado' }
-  const status = telegramBridge.getStatus()
-  if (!status.running) return { ok: false, error: 'Telegram bridge no está corriendo (actívalo en Configuración).' }
-  const chatId = telegramBridge.getFirstAllowedUserId()
-  if (!chatId) return { ok: false, error: 'No hay usuarios autorizados en Telegram (configúralos en Configuración).' }
-  const currentSessionId = resolvedSessionId || null
-
-  try {
-    if (s.activeCli === 'claude' && s.claudeSessionId) {
-      telegramBridge.adoptSession(chatId, 'claude', s.claudeSessionId)
-    } else if (s.activeCli === 'codex' && currentSessionId) {
-      s.codexSessionId = currentSessionId
-      telegramBridge.adoptSession(chatId, 'codex', currentSessionId)
-    }
-    bindRelaySessionToTelegramChat(chatId, s)
-    broadcastTelegramStatus()
-    const cwdShort = path.basename(s.cwd || os.homedir())
-    const cliLabel = s.activeCli === 'codex' ? 'Codex' : 'Claude'
-    const lines = [
-      `📱 Sesión de ${cliLabel} conectada a Telegram`,
-      `📂 Carpeta: ${cwdShort}`,
-    ]
-    if (currentSessionId) {
-      lines.push(`🆔 ${String(currentSessionId).slice(0, 8)}…`)
-    }
-    lines.push('', 'Desde ahora, cuando escribas al bot, usará esta sesión viva del PTY.')
-    const text = lines.join('\n')
-    await telegramBridge.sendMessageTo(chatId, text)
-    // Mantener PTY vivo: Telegram usa relay directo sobre esta sesión (sin --resume por turno).
-    try { s.win?.webContents.send('pty-transferred-to-telegram', { sessionId: currentSessionId, chatId }) } catch {}
-    return { ok: true, sessionId: currentSessionId, chatId: String(chatId), linked: true, cli: s.activeCli }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+registerWindowControlsIpc({
+  ipcMain,
+  winFromEvent,
+  getSessions: () => sessions,
+  createWindow
 })
 
-ipcMain.handle('app:disconnect-session-from-telegram', async (event) => {
-  const s = sessions.get(event.sender.id)
-  if (!s) return { ok: false, error: 'No hay sesión asociada a esta ventana', linked: false }
-
-  const preferredChatId = telegramBridge?.getFirstAllowedUserId?.() || null
-  const binding = getRelayBindingForSession(s, preferredChatId)
-  if (!binding.linked) return { ok: false, error: 'Esta ventana no está enlazada a Telegram.', linked: false }
-
-  const chatId = binding.chatId || (preferredChatId == null ? null : String(preferredChatId))
-  let detached = false
-  if (chatId) detached = unbindRelaySessionForTelegramChat(chatId)
-  if (!detached) {
-    const before = telegramRelayByChat.size
-    unbindRelaySessionsByWcId(s.wcId)
-    detached = telegramRelayByChat.size !== before
-  }
-
-  if (detached) {
-    broadcastTelegramStatus()
-    const sync = await syncSessionContextAfterTelegramDetach(s, chatId, s.activeCli)
-    if (chatId && telegramBridge?.getStatus()?.running) {
-      const cliLabel = s.activeCli === 'codex' ? 'Codex' : 'Claude'
-      try { await telegramBridge.sendMessageTo(chatId, `🔌 Sesión de ${cliLabel} desconectada del relay PTY.`) } catch {}
-    }
-    return {
-      ok: true,
-      linked: false,
-      detached: true,
-      chatId: chatId || null,
-      cli: s.activeCli,
-      sync
-    }
-  }
-
-  return {
-    ok: true,
-    linked: false,
-    detached: false,
-    chatId: chatId || null,
-    cli: s.activeCli,
-    sync: { ok: true, refreshed: false, reason: 'already-detached' }
-  }
+registerBitacoraIpc({
+  ipcMain,
+  dialog,
+  semanticLogger,
+  winFromEvent,
+  getBitacoraWin: () => windowFactory.getBitacoraWin(),
+  openBitacoraWindow
 })
 
-ipcMain.on('window-close', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  // decision: hide solo si es la única ventana (preserva comportamiento previo); con múltiples, close.
-  if (sessions.size > 1) w.close()
-  else w.hide()
-})
-
-ipcMain.on('window-minimize', (event) => {
-  winFromEvent(event)?.minimize()
-})
-
-ipcMain.on('window-toggle-maximize', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  w.isMaximized() ? w.unmaximize() : w.maximize()
-})
-
-ipcMain.on('window-toggle-pin', (event) => {
-  const w = winFromEvent(event)
-  if (!w) return
-  w.setAlwaysOnTop(!w.isAlwaysOnTop())
-})
-
-ipcMain.handle('is-pinned', (event) => {
-  return winFromEvent(event)?.isAlwaysOnTop() ?? false
-})
-
-ipcMain.on('window-new', () => {
-  createWindow()
-})
-
-ipcMain.handle('bitacora:open', async () => {
-  const win = await openBitacoraWindow()
-  return { ok: !!win }
-})
-
-ipcMain.handle('bitacora:list', (_event, payload = {}) => {
-  const limit = Number(payload?.limit) || 500
-  const entries = semanticLogger.readRecent({ limit: Math.max(1, Math.min(limit, 5000)) })
-  return { ok: true, entries, filePath: semanticLogger.filePath }
-})
-
-ipcMain.handle('bitacora:export-csv', async (event, payload = {}) => {
-  try {
-    const fallbackEntries = semanticLogger.readRecent({ limit: 500 })
-    const entries = Array.isArray(payload?.entries) ? payload.entries : fallbackEntries
-    const csv = semanticLogger.toCsv(entries)
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-    const suggested = payload?.name ? String(payload.name) : `power-agent-log-${stamp}.csv`
-    const parent = winFromEvent(event) || bitacoraWin || undefined
-    const save = await dialog.showSaveDialog(parent, {
-      title: 'Exportar Bitácora CSV',
-      defaultPath: path.join(os.homedir(), suggested),
-      filters: [{ name: 'CSV', extensions: ['csv'] }]
-    })
-    if (save.canceled || !save.filePath) return { ok: false, cancelled: true }
-    fs.writeFileSync(save.filePath, csv, 'utf-8')
-    return { ok: true, path: save.filePath, count: entries.length }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-let graphWindowData = null
-
-ipcMain.handle('graph-window:open', (event, payload = {}) => {
-  const {
-    nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes,
-    selfFetch, rootPath
-  } = payload || {}
-  let cwd = null
-  const payloadRoot = (typeof rootPath === 'string' && rootPath.trim()) ? rootPath.trim() : null
-  if (payloadRoot) {
-    cwd = payloadRoot
-  } else {
-    try {
-      const s = getSessionByEvent(event)
-      cwd = s ? s.cwd : null
-    } catch { cwd = null }
-    if (!cwd) cwd = getCwdSync() || os.homedir()
-  }
-  try {
-    if (!cwd || !fs.existsSync(cwd)) cwd = getCwdSync() || os.homedir()
-  } catch {
-    cwd = getCwdSync() || os.homedir()
-  }
-  if (selfFetch) {
-    // La ventana standalone se autosirve: no precargamos nodos/edges.
-    graphWindowData = {
-      nodes: [],
-      edges: [],
-      dirs: [],
-      mode: mode || 'refs',
-      activeTypes: activeTypes || null,
-      structureActiveTypes: structureActiveTypes || null,
-      forces: forces || null,
-      ui: ui || null,
-      cwd: cwd || '',
-      selfFetch: true
-    }
-  } else {
-    graphWindowData = {
-      nodes: nodes || [],
-      edges: edges || [],
-      dirs: dirs || [],
-      mode: mode || 'refs',
-      activeTypes: activeTypes || null,
-      structureActiveTypes: structureActiveTypes || null,
-      forces: forces || null,
-      ui: ui || null,
-      cwd: cwd || '',
-      selfFetch: false
-    }
-  }
-  const win = new BrowserWindow({
-    width: 1200, height: 800,
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 13 },
-    backgroundColor: '#1a1a1f',
-    resizable: true, minimizable: true,
-    title: 'POWER-AGENT — Grafo',
-    webPreferences: {
-      preload: path.join(__dirname, 'graph-window-preload.js'),
-      contextIsolation: true, nodeIntegration: false
-    }
-  })
-  win.loadFile('graph-window.html')
-  win.on('closed', () => { graphWindowData = null })
-  return true
-})
-
-ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
-
-// Ventana WhatsApp independiente. Si ya existe, la trae al frente.
-let whatsappWindow = null
-const WA_WIN_BOUNDS_FILE = path.join(app.getPath('userData'), 'whatsapp-window-bounds.json')
-
-function loadWhatsappBounds() {
-  try {
-    const raw = fs.readFileSync(WA_WIN_BOUNDS_FILE, 'utf-8')
-    const b = JSON.parse(raw)
-    if (b && Number.isFinite(b.width) && Number.isFinite(b.height)) return b
-  } catch {}
-  return null
-}
-
-function saveWhatsappBounds(win) {
-  if (!win || win.isDestroyed()) return
-  try {
-    const b = win.getBounds()
-    atomicWriteJsonSync(WA_WIN_BOUNDS_FILE, { x: b.x, y: b.y, width: b.width, height: b.height })
-  } catch {}
-}
-
-ipcMain.handle('whatsapp-window:open', () => {
-  if (whatsappWindow && !whatsappWindow.isDestroyed()) {
-    if (whatsappWindow.isMinimized()) whatsappWindow.restore()
-    whatsappWindow.show()
-    whatsappWindow.focus()
-    return { ok: true, reused: true }
-  }
-  const saved = loadWhatsappBounds()
-  const opts = {
-    width: (saved && saved.width) || 980,
-    height: (saved && saved.height) || 720,
-    minWidth: 640,
-    minHeight: 480,
-    resizable: true,
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 13 },
-    title: 'POWER-AGENT — WhatsApp',
-    backgroundColor: '#1a1a1f',
-    webPreferences: {
-      preload: path.join(__dirname, 'whatsapp-window-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  }
-  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-    opts.x = saved.x
-    opts.y = saved.y
-  }
-  whatsappWindow = new BrowserWindow(opts)
-  whatsappWindow.loadFile('whatsapp-window.html')
-  const flush = () => saveWhatsappBounds(whatsappWindow)
-  whatsappWindow.on('resize', flush)
-  whatsappWindow.on('move', flush)
-  whatsappWindow.on('close', flush)
-  whatsappWindow.on('closed', () => { whatsappWindow = null })
-  return { ok: true, reused: false }
-})
+ipcMain.handle('whatsapp-window:open', () => windowFactory.openWhatsappWindow())
 
 global.__openWhatsappWindow = () => {
-  try {
-    if (whatsappWindow && !whatsappWindow.isDestroyed()) {
-      if (whatsappWindow.isMinimized()) whatsappWindow.restore()
-      whatsappWindow.show()
-      whatsappWindow.focus()
-      return
-    }
-    const saved = loadWhatsappBounds()
-    const opts = {
-      width: (saved && saved.width) || 980,
-      height: (saved && saved.height) || 720,
-      minWidth: 640,
-      minHeight: 480,
-      resizable: true,
-      frame: false,
-      titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 12, y: 13 },
-      title: 'POWER-AGENT — WhatsApp',
-      backgroundColor: '#1a1a1f',
-      webPreferences: {
-        preload: path.join(__dirname, 'whatsapp-window-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    }
-    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-      opts.x = saved.x
-      opts.y = saved.y
-    }
-    whatsappWindow = new BrowserWindow(opts)
-    whatsappWindow.loadFile('whatsapp-window.html')
-    const flush = () => saveWhatsappBounds(whatsappWindow)
-    whatsappWindow.on('resize', flush)
-    whatsappWindow.on('move', flush)
-    whatsappWindow.on('close', flush)
-    whatsappWindow.on('closed', () => { whatsappWindow = null })
-  } catch (err) {
-    console.warn('[whatsapp] open from notification failed:', err?.message || err)
-  }
+  try { windowFactory.openWhatsappWindow() }
+  catch (err) { console.warn('[whatsapp] open from notification failed:', err?.message || err) }
 }
 
-ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
-  let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
-  if (!root) root = getCwdSync() || null
-  if (!root) return { ok: false, error: 'No hay carpeta activa para calcular el grafo' }
-  try {
-    if (!fs.existsSync(root)) return { ok: false, error: `La ruta no existe: ${root}` }
-  } catch (err) { return { ok: false, error: err.message } }
-  try {
-    const result = computeProjectGraph(root)
-    if (result && result.ok) result.cwd = root
-    return result
-  } catch (err) {
-    return { ok: false, error: err.message }
-  }
+registerViewerGraphIpc({
+  ipcMain,
+  BrowserWindow,
+  rootDir: __dirname,
+  getSessionByEvent,
+  getCwdSync,
+  getPrimaryWin: () => primaryWcId != null ? sessions.get(primaryWcId)?.win : null,
+  getAllowedFsRoots: allowedFsRoots,
+  openViewerWindow
 })
 
-ipcMain.handle('viewer-open', (_event, arg) => {
-  const filePath = typeof arg === 'string' ? arg : arg?.path
-  const hint = (arg && typeof arg === 'object') ? arg.hint : null
-  if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'Invalid path' }
-  if (!isPathSafe(filePath, allowedFsRoots())) return { ok: false, error: 'Path not allowed' }
-  openViewerWindow(filePath, hint)
-  return { ok: true }
+registerTasksIpc({
+  ipcMain,
+  BrowserWindow,
+  dialog,
+  nativeTheme,
+  getScheduler: () => tasksScheduler,
+  getAppConfig: () => appConfig,
+  getSessions: () => sessions,
+  getTasksManagerWin: () => windowFactory.getTasksManagerWin(),
+  openTasksManager
 })
 
-ipcMain.on('viewer-inject-to-active', (_event, filePath) => {
-  if (typeof filePath !== 'string' || !filePath) return
-  if (primaryWcId == null) return
-  const s = sessions.get(primaryWcId)
-  if (!s || !s.win || s.win.isDestroyed()) return
-  s.win.webContents.send('inject-path', filePath)
-})
-
-ipcMain.on('viewer-close-self', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.close()
-})
-
-ipcMain.on('viewer-minimize-self', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.minimize()
-})
-
-// ── Tasks Manager IPC ──
-ipcMain.handle('tasks-manager:open', async () => {
-  await openTasksManager()
-  return { ok: true }
-})
-
-function assertScheduler() {
-  if (!tasksScheduler) throw new Error('Scheduler no inicializado')
-  return tasksScheduler
-}
-
-ipcMain.handle('tasks:list', async () => {
-  if (!tasksScheduler) return []
-  return tasksScheduler.persistence.loadTasks()
-})
-
-ipcMain.handle('tasks:get', async (_event, { id }) => {
-  if (!tasksScheduler) return null
-  return tasksScheduler.persistence.getTask(id)
-})
-
-ipcMain.handle('tasks:create', async (_event, data) => {
-  return assertScheduler().upsertTask(data)
-})
-
-ipcMain.handle('tasks:update', async (_event, { id, patch }) => {
-  const sched = assertScheduler()
-  const current = await sched.persistence.getTask(id)
-  if (!current) throw new Error('Tarea no encontrada')
-  return sched.upsertTask({ ...current, ...patch, id })
-})
-
-ipcMain.handle('tasks:delete', async (_event, { id }) => {
-  await assertScheduler().deleteTask(id)
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:toggle', async (_event, { id, enabled }) => {
-  return assertScheduler().toggle(id, enabled)
-})
-
-ipcMain.handle('tasks:run-now', async (_event, { id }) => {
-  const sched = assertScheduler()
-  const runId = require('crypto').randomUUID()
-  // disparar en background; no esperar a que termine
-  Promise.resolve().then(() => sched.runNow(id)).catch((err) => {
-    console.error('[tasks:run-now] error:', err?.message || err)
-  })
-  return { ok: true, runId }
-})
-
-ipcMain.handle('tasks:cancel', async (_event, { id }) => {
-  assertScheduler().cancel(id)
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:get-runs', async (_event, payload = {}) => {
-  if (!tasksScheduler) return []
-  const { taskId, limit = 100 } = payload
-  return tasksScheduler.persistence.getRuns({ taskId, limit })
-})
-
-ipcMain.handle('tasks:validate-cron', async (_event, { expr }) => {
-  if (!tasksScheduler) return { ok: false, error: 'Scheduler no listo' }
-  return tasksScheduler.validateCron(expr)
-})
-
-ipcMain.handle('tasks:list-cwds', async () => {
-  let history = []
-  try {
-    if (tasksScheduler) history = await tasksScheduler.persistence.loadCwdHistory()
-  } catch {}
-  const liveCwds = []
-  for (const s of sessions.values()) {
-    if (s?.cwd) liveCwds.push(s.cwd)
-  }
-  const all = Array.from(new Set([...(Array.isArray(history) ? history : []), ...liveCwds]))
-  if (!all.length) return [os.homedir()]
-  return all
-})
-
-ipcMain.handle('tasks:get-cron-presets', () => cronPresets)
-
-ipcMain.handle('tasks:pick-folder', async (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender) || tasksManagerWin
-  const result = await dialog.showOpenDialog(win, {
-    properties: ['openDirectory']
-  })
-  if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
-  return { path: result.filePaths[0], canceled: false }
-})
-
-ipcMain.handle('tasks:get-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
-
-ipcMain.handle('tasks:get-telegram-configured', () => {
-  const tg = appConfig?.telegram || {}
-  return !!(tg.botToken && Array.isArray(tg.allowedUsers) && tg.allowedUsers.length)
-})
-
-ipcMain.handle('tasks:get-default-model-effort', () => {
-  const tg = appConfig?.telegram || {}
-  return {
-    claude: { model: tg.claudeModel || '', effort: tg.claudeEffort || '' },
-    codex: { model: tg.codexModel || '', effort: tg.codexEffort || '' }
-  }
-})
-
-ipcMain.handle('tasks:window-close', () => {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.close()
-  return { ok: true }
-})
-
-ipcMain.handle('tasks:window-minimize', () => {
-  if (tasksManagerWin && !tasksManagerWin.isDestroyed()) tasksManagerWin.minimize()
-  return { ok: true }
-})
-
-// ── Automations IPC ──
-function automationsNotReady() {
-  return { ok: false, error: 'AutomationManager no inicializado' }
-}
-
-ipcMain.handle('automations:list', async () => {
-  try {
-    if (!automationManager) return []
-    return await automationManager.list()
-  } catch (err) {
-    console.error('[automations:list] error:', err?.message || err)
-    return []
-  }
-})
-
-ipcMain.handle('automations:get', async (_e, { id } = {}) => {
-  try {
-    if (!automationManager) return null
-    return await automationManager.get(id)
-  } catch (err) {
-    console.error('[automations:get] error:', err?.message || err)
-    return null
-  }
-})
-
-ipcMain.handle('automations:generate-draft', async (_e, payload = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.generateDraft(payload)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:regenerate', async (_e, { id, patch } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.regenerate(id, patch || {})
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:update-draft', async (_e, { id, scriptText, plistText } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.updateDraft(id, { scriptText, plistText })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:install', async (_e, { id, force } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.install(id, { force: !!force })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:shellcheck-status', async () => {
-  if (!automationManager) return { available: false, path: null, installHint: 'brew install shellcheck' }
-  try {
-    return await automationManager.getShellcheckStatus()
-  } catch {
-    return { available: false, path: null, installHint: 'brew install shellcheck' }
-  }
-})
-
-ipcMain.handle('automations:lint', async (_e, { id } = {}) => {
-  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado' }
-  try {
-    return await automationManager.lintAutomation(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:uninstall', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.uninstall(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:run-once', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.runOnce(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:read-log', async (_e, { id, opts } = {}) => {
-  if (!automationManager) return { ok: false, error: 'AutomationManager no inicializado', content: '' }
-  try {
-    const content = await automationManager.readLog(id, opts || {})
-    return { ok: true, content }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), content: '' }
-  }
-})
-
-ipcMain.handle('automations:create-draft-shell', async (_e, payload = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.createDraftShell(payload || {})
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:remove', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    const res = await automationManager.remove(id)
-    // Limpieza: ventana PTY + ventana chat + persistencia de chat.
-    const pw = agentPtyWindowByAutomation.get(id)
-    if (pw && !pw.isDestroyed()) { try { pw.close() } catch {} }
-    const w = chatWindows.get(id)
-    if (w && !w.isDestroyed()) { try { w.close() } catch {} }
-    if (automationChat) { try { await automationChat.deleteChat(id) } catch {} }
-    return res
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:pause', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.pause(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:resume', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.resume(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automations:get-running', async () => {
-  if (!automationManager) return []
-  try {
-    return await automationManager.getRunningIds()
-  } catch (err) {
-    console.error('[automations:get-running] error:', err?.message || err)
-    return []
-  }
-})
-
-ipcMain.handle('automations:stop-run', async (_e, { id } = {}) => {
-  if (!automationManager) return automationsNotReady()
-  try {
-    return await automationManager.stopRun(id)
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('shell:reveal-in-finder', async (_e, { path: target } = {}) => {
-  try {
-    if (!target) return { ok: false, error: 'path requerido' }
-    shell.showItemInFolder(target)
-    return { ok: true }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+registerAutomationsIpc({
+  ipcMain,
+  shell,
+  getAutomationManager: () => automationManager,
+  getAutomationChat: () => automationChat,
+  getAgentPtyWindowByAutomation: () => agentPtyWindowByAutomation,
+  getChatWindows: () => chatWindows
 })
 
 // ── Automation chat IPC ──
@@ -5326,291 +3133,23 @@ ipcMain.handle('automation-pty:apply-blocks', async (_event, { automationId, blo
   }
 })
 
-ipcMain.handle('automation-chat:init', (event) => {
-  const aid = chatWcToAutomation.get(event.sender.id) || null
-  return { automationId: aid }
-})
-
-ipcMain.handle('automation-chat:get-history', async (_e, { automationId, provider } = {}) => {
-  if (!automationChat || !automationId) return []
-  try { return await automationChat.getHistory(automationId, { provider }) }
-  catch (err) { console.error('[automation-chat:get-history]', err?.message || err); return [] }
-})
-
-ipcMain.handle('automation-chat:send', async (_e, { automationId, content, opts } = {}) => {
-  if (!automationChat) return { ok: false, error: 'Chat no inicializado' }
-  try {
-    const safeOpts = (opts && typeof opts === 'object') ? { ...opts } : {}
-    if (typeof safeOpts.provider !== 'string') safeOpts.provider = ''
-    if (typeof safeOpts.model !== 'string') safeOpts.model = ''
-    if (typeof safeOpts.effort !== 'string') safeOpts.effort = ''
-    const res = await automationChat.sendMessage(automationId, content, safeOpts)
-    if (res && res.ok === false) {
-      return { ok: false, error: res.error, providerError: true, provider: res.provider, messageId: res.messageId }
-    }
-    return { ok: true, messageId: res.messageId, provider: res.provider }
-  } catch (err) {
-    // Salvaguarda: no relanzar al renderer, devolver providerError.
-    return { ok: false, providerError: true, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:switch-provider', async (_e, { automationId, toProvider, withSummary } = {}) => {
-  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
-  try {
-    const res = await automationChat.switchProvider(automationId, { toProvider, withSummary: !!withSummary })
-    return res
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:clear-thread', async (_e, { automationId, provider } = {}) => {
-  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
-  try {
-    return await automationChat.clearThread(automationId, { provider })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:retry-last', async (_e, { automationId, opts } = {}) => {
-  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
-  try {
-    const prefs = await automationChat.getPreferences(automationId)
-    const last = await automationChat.getLastUserMessage(automationId, { provider: prefs.provider })
-    if (!last) return { ok: false, error: 'Sin mensaje previo del usuario para reintentar' }
-    const safeOpts = (opts && typeof opts === 'object') ? { ...opts } : {}
-    safeOpts.provider = prefs.provider
-    if (typeof safeOpts.model !== 'string') safeOpts.model = prefs.model || ''
-    if (typeof safeOpts.effort !== 'string') safeOpts.effort = prefs.effort || ''
-    const res = await automationChat.sendMessage(automationId, last, safeOpts)
-    if (res && res.ok === false) {
-      return { ok: false, error: res.error, providerError: true, provider: res.provider, messageId: res.messageId }
-    }
-    return { ok: true, messageId: res.messageId, provider: res.provider }
-  } catch (err) {
-    return { ok: false, providerError: true, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:get-preferences', async (_e, { automationId } = {}) => {
-  if (!automationChat || !automationId) return { provider: 'claude', model: '', effort: '' }
-  try { return await automationChat.getPreferences(automationId) }
-  catch (err) {
-    console.error('[automation-chat:get-preferences]', err?.message || err)
-    return { provider: 'claude', model: '', effort: '' }
-  }
-})
-
-ipcMain.handle('automation-chat:set-preferences', async (_e, { automationId, provider, model, effort } = {}) => {
-  if (!automationChat || !automationId) return { ok: false, error: 'Chat no inicializado' }
-  try {
-    const res = await automationChat.setPreferences(automationId, { provider, model, effort })
-    return { ok: true, ...res }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:apply-changes', async (_e, payload = {}) => {
-  if (!automationChat) return { ok: false, error: 'Chat no inicializado' }
-  const { automationId, script, plist, alsoReinstall } = payload
-  try {
-    if (alsoReinstall) {
-      return await automationChat.applyAndReinstall(automationId, { script, plist })
-    }
-    return await automationChat.applyProposedChanges(automationId, { script, plist })
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('automation-chat:window-close', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.close()
-  return { ok: true }
-})
-
-ipcMain.handle('automation-chat:window-minimize', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.minimize()
-  return { ok: true }
+registerAutomationChatIpc({
+  ipcMain,
+  BrowserWindow,
+  getAutomationChat: () => automationChat,
+  getChatWcToAutomation: () => chatWcToAutomation
 })
 
 // ── WhatsApp IPC ──
-function requireWhatsapp() {
-  if (!whatsappClient) {
-    const detail = whatsappModuleLoadError?.message
-      ? ` (${whatsappModuleLoadError.message})`
-      : ''
-    throw new Error(`WhatsApp client no inicializado${detail}`)
-  }
-  return whatsappClient
-}
-
-ipcMain.handle('whatsapp:status', async () => {
-  if (!whatsappClient) {
-    return {
-      connected: false,
-      qrPresent: false,
-      reachable: false,
-      ownerNumber: '',
-      authorizedNumbers: [],
-      autoReply: false,
-      error: whatsappModuleLoadError?.message || null
-    }
-  }
-  try {
-    const s = await whatsappClient.getStatus()
-    return { ...s, reachable: whatsappReachable }
-  } catch (err) {
-    return { connected: false, qrPresent: false, reachable: false, error: err?.message }
-  }
-})
-
-ipcMain.handle('whatsapp:get-qr', async () => {
-  if (!whatsappClient) return { qr: null }
-  try { return await whatsappClient.getQr() } catch (err) { return { qr: null, error: err?.message } }
-})
-
-ipcMain.handle('whatsapp:get-chats', () => {
-  if (!whatsappClient) return []
-  try { return whatsappClient.getChats() } catch { return [] }
-})
-
-ipcMain.handle('whatsapp:get-history', (_e, jid, opts = {}) => {
-  if (!whatsappClient) return []
-  try { return whatsappClient.getHistory(jid, opts || {}) } catch { return [] }
-})
-
-ipcMain.handle('whatsapp:send-text', async (_e, jid, text, opts) => {
-  try { return await requireWhatsapp().sendText(jid, text, opts || {}) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-// Sandbox para envío de media: aceptamos data URL inline (base64 puro, no
-// toca FS) o filePath dentro de roots permitidos. Sin esto, un XSS podría
-// hacer "whatsapp:send-image('victima', '~/.ssh/id_rsa')".
-function isMediaInputSafe(input) {
-  if (typeof input !== 'string' || !input) return false
-  if (input.startsWith('data:')) return true
-  return isPathSafe(input, allowedFsRoots())
-}
-
-ipcMain.handle('whatsapp:send-image', async (_e, jid, filePath, caption) => {
-  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
-  try { return await requireWhatsapp().sendMedia(jid, filePath, 'image', { caption: caption || '' }) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:send-audio', async (_e, jid, filePath, ptt) => {
-  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
-  try { return await requireWhatsapp().sendMedia(jid, filePath, 'audio', { ptt: ptt !== false }) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:send-document', async (_e, jid, filePath, caption) => {
-  if (!isMediaInputSafe(filePath)) return { ok: false, error: 'Path not allowed' }
-  try { return await requireWhatsapp().sendMedia(jid, filePath, 'document', { caption: caption || '' }) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:request-phone', async (_e, jid) => {
-  try { return await requireWhatsapp().requestPhone(jid, { changeModeToManual: true }) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:set-mode', (_e, jid, mode) => {
-  try { return requireWhatsapp().setMode(jid, mode) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:mark-read', (_e, jid) => {
-  try { return requireWhatsapp().markRead(jid) }
-  catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:get-config', () => {
-  try { return requireWhatsapp().getConfig() }
-  catch { try { return JSON.parse(fs.readFileSync(WA_CONFIG_PATH, 'utf-8')) } catch { return {} } }
-})
-
-// Whitelist: solo campos seguros editables desde el renderer. claudePath/personaPath
-// quedan fijados por el bridge para evitar RCE vía override desde un XSS.
-const WA_SAFE_CONFIG_FIELDS = new Set([
-  'autoReply',
-  'authorizedNumbers',
-  'ownerNumber',
-  'maxHistory',
-  'model',
-  'effort',
-  'handoverOnFromMe'
-])
-
-ipcMain.handle('whatsapp:save-config', (_e, partial) => {
-  try {
-    const sanitized = {}
-    if (partial && typeof partial === 'object') {
-      for (const k of Object.keys(partial)) {
-        if (WA_SAFE_CONFIG_FIELDS.has(k)) sanitized[k] = partial[k]
-      }
-    }
-    return { ok: true, config: requireWhatsapp().updateConfig(sanitized) }
-  } catch (err) { return { ok: false, error: err?.message || String(err) } }
-})
-
-ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
-  if (!mediaPath || !fs.existsSync(mediaPath)) return { ok: false, error: 'archivo no existe' }
-  if (!isPathSafe(mediaPath, [WA_MEDIA_DIR, TMP_DIR])) return { ok: false, error: 'Path not allowed' }
-  try {
-    const text = await transcribeAudioFile(mediaPath, buildRuntimeEnv())
-    return { ok: true, text }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
-})
-
-ipcMain.handle('whatsapp:get-persona', () => {
-  const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
-  const personaRoot = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
-  try {
-    let resolved = personaPath
-    try {
-      const cfg = whatsappClient?.getConfig?.()
-      if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
-        const candidate = cfg.personaPath.trim()
-        if (isPathSafe(candidate, [personaRoot])) resolved = candidate
-      }
-    } catch {}
-    if (!fs.existsSync(resolved)) {
-      return { ok: false, error: `No existe: ${resolved}`, path: resolved }
-    }
-    const text = fs.readFileSync(resolved, 'utf-8')
-    const stat = fs.statSync(resolved)
-    return { ok: true, text, path: resolved, mtime: stat.mtimeMs }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), path: personaPath }
-  }
-})
-
-ipcMain.handle('whatsapp:save-persona', (_e, text) => {
-  const personaPath = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'persona.md')
-  const personaRoot = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
-  try {
-    let resolved = personaPath
-    try {
-      const cfg = whatsappClient?.getConfig?.()
-      if (cfg && typeof cfg.personaPath === 'string' && cfg.personaPath.trim()) {
-        const candidate = cfg.personaPath.trim()
-        if (isPathSafe(candidate, [personaRoot])) resolved = candidate
-      }
-    } catch {}
-    if (typeof text !== 'string') return { ok: false, error: 'Texto inválido' }
-    atomicWriteFileSync(resolved, text, 'utf-8')
-    const stat = fs.statSync(resolved)
-    return { ok: true, path: resolved, mtime: stat.mtimeMs }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), path: personaPath }
-  }
+registerWhatsappIpc({
+  ipcMain,
+  getClient: () => whatsappClient,
+  getClientLoadError: () => whatsappModuleLoadError,
+  getReachable: () => whatsappReachable,
+  getAllowedFsRoots: allowedFsRoots,
+  transcribeAudioFile,
+  buildRuntimeEnv,
+  WA_CONFIG_PATH,
+  WA_MEDIA_DIR,
+  TMP_DIR
 })
