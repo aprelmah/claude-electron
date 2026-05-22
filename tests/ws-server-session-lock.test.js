@@ -14,41 +14,60 @@ function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
 }
 
+function attachMessageBuffer(ws) {
+  if (ws.__msgBuffer) return ws.__msgBuffer
+  const buffer = []
+  const waiters = []
+  function flushWaiters() {
+    if (!waiters.length || !buffer.length) return
+    for (let i = waiters.length - 1; i >= 0; i -= 1) {
+      const waiter = waiters[i]
+      const idx = buffer.findIndex((msg) => {
+        try { return waiter.predicate(msg) } catch { return false }
+      })
+      if (idx >= 0) {
+        const [match] = buffer.splice(idx, 1)
+        waiters.splice(i, 1)
+        clearTimeout(waiter.timer)
+        waiter.resolve(match)
+      }
+    }
+  }
+  ws.on('message', (raw) => {
+    let msg = null
+    try { msg = JSON.parse(String(raw || '')) } catch { return }
+    buffer.push(msg)
+    flushWaiters()
+  })
+  ws.on('close', () => {
+    while (waiters.length) {
+      const waiter = waiters.pop()
+      clearTimeout(waiter.timer)
+      waiter.reject(new Error('Socket cerrado antes de recibir mensaje esperado'))
+    }
+  })
+  ws.on('error', (err) => {
+    while (waiters.length) {
+      const waiter = waiters.pop()
+      clearTimeout(waiter.timer)
+      waiter.reject(err)
+    }
+  })
+  ws.__msgBuffer = { buffer, waiters, flushWaiters }
+  return ws.__msgBuffer
+}
+
 function waitForMessage(ws, predicate, timeoutMs = 15000, label = '') {
+  const ctx = attachMessageBuffer(ws)
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
+    const waiter = { predicate, resolve, reject, timer: null }
+    waiter.timer = setTimeout(() => {
+      const idx = ctx.waiters.indexOf(waiter)
+      if (idx >= 0) ctx.waiters.splice(idx, 1)
       reject(new Error(`Timeout esperando mensaje WS${label ? ` (${label})` : ''}`))
     }, timeoutMs)
-
-    function cleanup() {
-      clearTimeout(timer)
-      ws.off('message', onMessage)
-      ws.off('error', onError)
-      ws.off('close', onClose)
-    }
-
-    function onError(err) {
-      cleanup()
-      reject(err)
-    }
-
-    function onClose() {
-      cleanup()
-      reject(new Error('Socket cerrado antes de recibir mensaje esperado'))
-    }
-
-    function onMessage(raw) {
-      let msg = null
-      try { msg = JSON.parse(String(raw || '')) } catch { return }
-      if (!predicate(msg)) return
-      cleanup()
-      resolve(msg)
-    }
-
-    ws.on('message', onMessage)
-    ws.on('error', onError)
-    ws.on('close', onClose)
+    ctx.waiters.push(waiter)
+    ctx.flushWaiters()
   })
 }
 
@@ -58,6 +77,7 @@ async function openWs(url) {
     ws.once('open', resolve)
     ws.once('error', reject)
   })
+  attachMessageBuffer(ws)
   return ws
 }
 

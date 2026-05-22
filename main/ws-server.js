@@ -357,10 +357,17 @@ function sanitizeResumeSessionId(raw) {
   return text
 }
 
-function normalizeSessionListRows(rows) {
+function sanitizeSessionRowCli(raw, fallback = 'claude') {
+  const text = trimToString(raw, 40).toLowerCase()
+  if (text === 'claude' || text === 'codex') return text
+  return fallback === 'codex' ? 'codex' : 'claude'
+}
+
+function normalizeSessionListRows(rows, options = {}) {
   if (!Array.isArray(rows)) return []
   const out = []
   const seen = new Set()
+  const cliFallback = sanitizeSessionRowCli(options?.cli || 'claude', 'claude')
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue
     const id = sanitizeResumeSessionId(row.id || row.sessionId)
@@ -368,6 +375,7 @@ function normalizeSessionListRows(rows) {
     seen.add(id)
     out.push({
       id,
+      cli: sanitizeSessionRowCli(row.cli, cliFallback),
       mtime: Number(row.mtime || row.mtimeMs || 0),
       size: Number(row.size || 0),
       msgCount: Number(row.msgCount || row.messages || 0),
@@ -1111,18 +1119,20 @@ function createLanWsServer(options = {}) {
     return { ok: true, acquired: true, sessionId: safeSessionId }
   }
 
-  async function listReusableSessionsForConnection(session, resolvedConfig) {
+  async function listReusableSessionsForConnection(session, resolvedConfig, options = {}) {
     const resolved = resolvedConfig && typeof resolvedConfig === 'object' ? resolvedConfig : session.preparedResolvedConfig
     const cwd = resolveExistingDir(resolved?.cwd || session.cwd) || ''
+    const requestedCli = sanitizeCliChoice(options?.cli)
+    const cli = requestedCli || resolved?.cli || session.cli || 'claude'
     if (!cwd) {
-      return { cwd: '', sessions: [] }
+      return { cwd: '', sessions: [], cli }
     }
 
     let rows = []
     try {
       rows = await listReusableSessions({
         cwd,
-        cli: resolved?.cli || session.cli || 'claude',
+        cli,
         context: resolved?.context || session.context || {},
         requestedContext: session.requestedContext || {},
         connectionId: session.id,
@@ -1133,7 +1143,7 @@ function createLanWsServer(options = {}) {
       throw err
     }
 
-    const normalized = normalizeSessionListRows(rows)
+    const normalized = normalizeSessionListRows(rows, { cli })
     pruneStaleSessionLocks(Date.now())
     const merged = normalized.map((row) => {
       const key = sessionLockKey(cwd, row.id)
@@ -1154,7 +1164,7 @@ function createLanWsServer(options = {}) {
       }
     })
 
-    return { cwd, sessions: merged }
+    return { cwd, sessions: merged, cli }
   }
 
   function buildSessionCapabilities(session) {
@@ -2206,14 +2216,16 @@ function createLanWsServer(options = {}) {
 
   async function sendReusableSessionList(session, payload = {}) {
     const requestId = trimToString(payload?.requestId || payload?.id, 200)
+    const requestedCli = sanitizeCliChoice(payload?.cli)
     try {
       const resolved = await ensureSessionPrepared(session, session.req, { force: payload?.forceRefresh === true })
-      const listed = await listReusableSessionsForConnection(session, resolved)
+      const listed = await listReusableSessionsForConnection(session, resolved, { cli: requestedCli })
       safeSend(session.ws, {
         type: 'session:list',
         ok: true,
         requestId: requestId || null,
         cwd: listed.cwd,
+        cli: listed.cli || requestedCli || resolved?.cli || session.cli || 'claude',
         sessions: listed.sessions,
         selectedSessionId: session.selectedResumeSessionId || ''
       })
@@ -2223,6 +2235,7 @@ function createLanWsServer(options = {}) {
         type: 'session:list',
         ok: false,
         requestId: requestId || null,
+        cli: requestedCli || session.cli || 'claude',
         error: {
           code: trimToString(err?.code, 120) || 'SESSION_LIST_FAILED',
           message: err?.message || String(err || 'No se pudieron listar sesiones')
@@ -2235,14 +2248,44 @@ function createLanWsServer(options = {}) {
 
   async function handleSessionStartRequest(session, payload = {}) {
     const requestId = trimToString(payload?.requestId || payload?.id, 200)
-    if (session.initialized || session.initInFlight) {
+    const requestedCli = sanitizeCliChoice(payload?.cli)
+    const requestedMode = trimToString(payload?.mode, 40).toLowerCase()
+    const isHotSwitch = requestedMode === 'hot'
+
+    if (session.initInFlight) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: 'INIT_IN_FLIGHT',
+          message: 'Iniciando sesión en curso. Espera un momento.'
+        }
+      })
+      return
+    }
+
+    if (session.initialized && !isHotSwitch) {
       safeSend(session.ws, {
         type: 'session:start',
         ok: false,
         requestId: requestId || null,
         error: {
           code: 'ALREADY_CONNECTED',
-          message: 'Ya hay una sesión conectada. Usa reconectar para cambiar.'
+          message: 'Ya hay una sesión conectada. Usa modo "hot" para cambiar sin reconectar.'
+        }
+      })
+      return
+    }
+
+    if (isHotSwitch && !session.initialized) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: 'HOT_SWITCH_NOT_INITIALIZED',
+          message: 'No hay sesión activa que cambiar en caliente.'
         }
       })
       return
@@ -2250,7 +2293,7 @@ function createLanWsServer(options = {}) {
 
     const startSessionId = sanitizeResumeSessionId(payload?.sessionId || payload?.resumeSessionId || payload?.resume || '')
     const prepared = await ensureSessionPrepared(session, session.req)
-    const listed = await listReusableSessionsForConnection(session, prepared)
+    const listed = await listReusableSessionsForConnection(session, prepared, { cli: requestedCli })
 
     if (startSessionId && !listed.sessions.some((row) => row.id === startSessionId)) {
       safeSend(session.ws, {
@@ -2262,7 +2305,17 @@ function createLanWsServer(options = {}) {
           message: `La sesión ${startSessionId} no existe en esta carpeta.`
         }
       })
-      await sendReusableSessionList(session, { requestId: requestId || null })
+      await sendReusableSessionList(session, { requestId: requestId || null, cli: requestedCli })
+      return
+    }
+
+    if (isHotSwitch) {
+      await runHotSessionSwitch(session, {
+        requestId,
+        prepared,
+        listed,
+        startSessionId
+      })
       return
     }
 
@@ -2285,7 +2338,7 @@ function createLanWsServer(options = {}) {
         message: lockResult.message || 'No se pudo bloquear la sesión seleccionada.',
         sessionId: session.id
       })
-      await sendReusableSessionList(session, { requestId: requestId || null })
+      await sendReusableSessionList(session, { requestId: requestId || null, cli: requestedCli })
       return
     }
 
@@ -2293,11 +2346,166 @@ function createLanWsServer(options = {}) {
       type: 'session:start',
       ok: true,
       requestId: requestId || null,
-      sessionId: startSessionId || null
+      sessionId: startSessionId || null,
+      mode: 'fresh'
     })
     await initializeSession(session, session.req, {
       resolved: prepared,
       resumeSessionId: startSessionId || ''
+    })
+  }
+
+  async function runHotSessionSwitch(session, { requestId, prepared, listed, startSessionId }) {
+    const previousLockKey = trimToString(session.sessionLockKey, 4000)
+    const previousResumeSessionId = sanitizeResumeSessionId(session.resumeSessionId || session.selectedResumeSessionId || '')
+
+    const targetCwd = listed.cwd || prepared.cwd
+    const targetKey = startSessionId ? sessionLockKey(targetCwd, startSessionId) : ''
+
+    if (startSessionId && targetKey && targetKey !== previousLockKey) {
+      const existing = sessionLocks.get(targetKey)
+      if (existing && existing.ownerSessionId !== session.id) {
+        safeSend(session.ws, {
+          type: 'session:start',
+          ok: false,
+          requestId: requestId || null,
+          error: {
+            code: 'SESSION_LOCKED',
+            message: `La sesión está ocupada por ${existing.ownerLabel || 'otro cliente'}.`
+          },
+          sessionId: startSessionId
+        })
+        await sendReusableSessionList(session, { requestId: requestId || null })
+        return
+      }
+    }
+
+    const lockResult = acquireSessionLock(session, targetCwd, startSessionId)
+    if (!lockResult.ok) {
+      safeSend(session.ws, {
+        type: 'session:start',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: lockResult.code || 'SESSION_LOCK_FAILED',
+          message: lockResult.message || 'No se pudo bloquear la sesión seleccionada.'
+        },
+        sessionId: startSessionId || null
+      })
+      await sendReusableSessionList(session, { requestId: requestId || null })
+      return
+    }
+
+    const oldPty = session.ptyProcess
+    session.ptyProcess = null
+    if (oldPty) {
+      try { oldPty._alive = false } catch {}
+      try { oldPty.kill('SIGTERM') } catch {}
+      const oldRef = oldPty
+      setTimeout(() => {
+        try {
+          if (oldRef && oldRef._exited !== true) oldRef.kill('SIGKILL')
+        } catch {}
+      }, 2000)
+    }
+
+    let nextPty = null
+    if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
+      try {
+        nextPty = createPtyForSession(session, prepared, { resumeSessionId: startSessionId })
+      } catch (err) {
+        if (previousLockKey && previousLockKey !== session.sessionLockKey) {
+          releaseSessionLock(session, 'hot-switch-pty-failed')
+        }
+        safeSend(session.ws, {
+          type: 'session:start',
+          ok: false,
+          requestId: requestId || null,
+          error: {
+            code: 'PTY_START_FAILED',
+            message: `no se pudo iniciar PTY remoto: ${err?.message || err}`
+          },
+          sessionId: startSessionId || null
+        })
+        safeSend(session.ws, {
+          type: 'status',
+          state: 'pty-exit',
+          sessionId: session.id,
+          previousResumeSessionId: previousResumeSessionId || null,
+          reason: 'hot-switch-failed'
+        })
+        return
+      }
+    }
+
+    session.ptyProcess = nextPty
+    if (nextPty) {
+      try { nextPty._alive = true } catch {}
+    }
+    session.resumeSessionId = startSessionId || ''
+    session.selectedResumeSessionId = startSessionId || ''
+    touchSessionLock(session, Date.now())
+
+    safeSend(session.ws, {
+      type: 'session:start',
+      ok: true,
+      requestId: requestId || null,
+      sessionId: startSessionId || null,
+      mode: 'hot',
+      previousResumeSessionId: previousResumeSessionId || null
+    })
+
+    safeSend(session.ws, {
+      type: 'status',
+      state: 'connected',
+      sessionId: session.id,
+      cli: session.cli,
+      cwd: session.cwd,
+      connectedAt: session.connectedAt,
+      resumeSessionId: session.resumeSessionId || null,
+      mode: 'hot',
+      previousResumeSessionId: previousResumeSessionId || null,
+      context: buildPublicSessionContext(session),
+      capabilities: buildSessionCapabilities(session)
+    })
+
+    if (nextPty) {
+      nextPty.onData((data) => {
+        if (!nextPty._alive) return
+        safeSend(session.ws, { type: 'output', data: String(data), sessionId: session.id })
+      })
+
+      nextPty.onExit(({ exitCode, signal }) => {
+        try { nextPty._exited = true } catch {}
+        safeSend(session.ws, {
+          type: 'status',
+          state: 'pty-exit',
+          sessionId: session.id,
+          exitCode,
+          signal
+        })
+        if (sessions.get(session.id)?.ptyProcess === nextPty) {
+          sessions.get(session.id).ptyProcess = null
+        }
+      })
+
+      const bootstrap = trimToString(prepared.bootstrapMessage || '', 50000)
+      if (bootstrap) {
+        setTimeout(() => {
+          if (!nextPty?._alive) return
+          if (sessions.get(session.id)?.ptyProcess !== nextPty) return
+          const payload = bootstrap.endsWith('\n') ? bootstrap : `${bootstrap}\n`
+          try { nextPty.write(payload) } catch {}
+        }, 550)
+      }
+    }
+
+    emitAudit('lan_session_hot_switched', {
+      sessionId: session.id,
+      previousResumeSessionId: previousResumeSessionId || null,
+      nextResumeSessionId: startSessionId || null,
+      cwd: targetCwd || null,
+      cli: session.cli || null
     })
   }
 
