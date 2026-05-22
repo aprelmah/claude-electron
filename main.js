@@ -2691,13 +2691,35 @@ ipcMain.handle('app:open-task-session', async (_event, payload = {}) => {
     if (!uuidRe.test(sessionId)) {
       return { ok: false, error: 'sessionId inválido' }
     }
-    if (!cwd) return { ok: false, error: 'cwd requerido' }
 
+    let resolvedCwd = cwd
     if (cli === 'claude') {
-      const jsonlPath = path.join(projectDirFor(cwd), `${sessionId}.jsonl`)
+      let jsonlPath = resolvedCwd ? path.join(projectDirFor(resolvedCwd), `${sessionId}.jsonl`) : ''
+      if (!resolvedCwd || !fs.existsSync(jsonlPath)) {
+        const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
+        try {
+          const found = fs.readdirSync(projectsRoot).find((dir) => {
+            try { return fs.existsSync(path.join(projectsRoot, dir, `${sessionId}.jsonl`)) } catch { return false }
+          })
+          if (found) {
+            jsonlPath = path.join(projectsRoot, found, `${sessionId}.jsonl`)
+            try {
+              const firstLine = fs.readFileSync(jsonlPath, 'utf8').split('\n').find((l) => l.trim())
+              if (firstLine) {
+                const obj = JSON.parse(firstLine)
+                if (obj && typeof obj.cwd === 'string' && obj.cwd) resolvedCwd = obj.cwd
+              }
+            } catch {}
+            if (!resolvedCwd) resolvedCwd = os.homedir()
+          }
+        } catch {}
+      }
+      if (!resolvedCwd) return { ok: false, error: 'cwd no resoluble' }
       if (!fs.existsSync(jsonlPath)) {
         return { ok: false, error: 'Sesión no encontrada en disco' }
       }
+    } else if (!resolvedCwd) {
+      resolvedCwd = os.homedir()
     }
 
     const target = primaryWcId != null ? sessions.get(primaryWcId) : null
@@ -2713,7 +2735,7 @@ ipcMain.handle('app:open-task-session', async (_event, payload = {}) => {
     } catch {}
 
     try {
-      fallback.win.webContents.send('app:request-open-session', { sessionId, cwd, cli })
+      fallback.win.webContents.send('app:request-open-session', { sessionId, cwd: resolvedCwd, cli })
     } catch (err) {
       return { ok: false, error: err?.message || String(err) }
     }
