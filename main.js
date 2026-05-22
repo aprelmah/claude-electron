@@ -68,6 +68,7 @@ const {
 const { createTelegramRelayBindings } = require('./main/telegram-relay-bindings')
 const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
+const { registerWsServerIpc } = require('./main/ws-server-ipc')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -3365,39 +3366,15 @@ ipcMain.handle('health:get', async (event) => {
   return collectHealthSnapshot(s)
 })
 
-ipcMain.handle('ws-server:start', async (_event, payload = {}) => {
-  try {
-    const port = clampLanPort(payload?.port ?? appConfig?.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
-    const result = await startLanServer({ port, persist: true })
-    return { ok: true, ...result }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
-  }
-})
-
-ipcMain.handle('ws-server:stop', async () => {
-  try {
-    const result = await stopLanServer({ persist: true })
-    return { ok: true, ...result }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
-  }
-})
-
-ipcMain.handle('ws-server:sessions', async () => {
-  const status = getLanServerStatus()
-  return { ok: true, ...status, sessions: Array.isArray(status.sessions) ? status.sessions : [] }
-})
-
-ipcMain.handle('ws-server:close-session', async (_event, payload = {}) => {
-  const sessionId = String(payload?.id || '').trim()
-  if (!sessionId) return { ok: false, error: 'Falta id de sesión', ...getLanServerStatus() }
-  if (!lanWsServer || !lanWsServer.isRunning()) {
-    return { ok: false, error: 'Servidor LAN detenido', ...getLanServerStatus() }
-  }
-  const closed = lanWsServer.closeSession(sessionId, 'closed-by-operator')
-  if (!closed) return { ok: false, error: 'Sesión no encontrada', ...getLanServerStatus() }
-  return { ok: true, ...getLanServerStatus() }
+registerWsServerIpc({
+  ipcMain,
+  startLanServer,
+  stopLanServer,
+  getLanServerStatus,
+  getLanWsServer: () => lanWsServer,
+  clampLanPort,
+  getAppConfig: () => appConfig,
+  DEFAULT_LAN_WS_PORT
 })
 
 registerProposalIpc({
