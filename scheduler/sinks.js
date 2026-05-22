@@ -18,21 +18,33 @@ function createSinks({ telegramBridge, broadcastToAllWindows }) {
     },
 
     telegram: async ({ task, run }) => {
+      const log = (msg) => {
+        try { require('fs').appendFileSync('/tmp/poweragent-tg-sink.log', `[${new Date().toISOString()}] ${msg}\n`) } catch {}
+      }
       try {
         const bridge = telegramBridge
-        if (!bridge || !bridge.running) return
+        if (!bridge) { log(`task=${task.name}: bridge=null`); return }
+        if (!bridge.running) { log(`task=${task.name}: bridge.running=false`); return }
         const cfg = bridge.config || {}
-        const chatId = cfg.defaultChatId
-          || (Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers[0] : null)
-        if (!chatId) return
+        const users = cfg.allowedUsers
+        let firstUser = null
+        if (users instanceof Set) firstUser = [...users][0]
+        else if (Array.isArray(users)) firstUser = users[0]
+        else if (users && typeof users === 'object') firstUser = Object.values(users)[0]
+        const chatId = cfg.defaultChatId || firstUser
+        if (!chatId) { log(`task=${task.name}: no chatId (defaultChatId=${cfg.defaultChatId} usersType=${users?.constructor?.name})`); return }
         const send = bridge.sendMessageTo || bridge.sendMessage
-        if (typeof send !== 'function') return
+        if (typeof send !== 'function') { log(`task=${task.name}: no send fn (typeof sendMessageTo=${typeof bridge.sendMessageTo} sendMessage=${typeof bridge.sendMessage})`); return }
         const head = `⏰ ${task.name} — ${run.status === 'ok' ? 'OK' : 'ERROR'}`
         const body = run.status === 'ok'
           ? ((run.output && run.output.slice(0, 3500)) || '(sin salida)')
           : (run.error || '(error desconocido)')
-        await send.call(bridge, chatId, `${head}\n\n${body}`)
-      } catch {}
+        log(`task=${task.name}: sending to chatId=${chatId} (length=${head.length + body.length + 2})`)
+        const result = await send.call(bridge, chatId, `${head}\n\n${body}`)
+        log(`task=${task.name}: send OK result=${JSON.stringify(result).slice(0,200)}`)
+      } catch (err) {
+        log(`task=${task.name}: EXCEPTION ${err && err.stack ? err.stack : (err && err.message) || String(err)}`)
+      }
     },
 
     logApp: () => {
