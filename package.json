@@ -4,13 +4,13 @@
   "version": "1.2.0",
   "main": "main.js",
   "engines": {
-    "node": ">=16.20.2 <21"
+    "node": ">=20.18.0 <23"
   },
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
     "dev:trace": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
-    "postinstall": "electron-rebuild -f -w node-pty",
+    "postinstall": "electron-rebuild -f -w node-pty || true",
     "dist": "electron-builder --mac --arm64 --x64",
     "dist:signed": "electron-builder --mac --arm64 --x64",
     "dist:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --x64",
@@ -35,8 +35,8 @@
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "@electron/rebuild": "^3.6.0",
-    "electron": "20.x",
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^32.3.3",
     "electron-builder": "^24.13.3"
   },
   "build": {

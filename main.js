@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, Notification } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, net, Notification } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -89,6 +89,19 @@ try {
 } catch (err) {
   whatsappModuleLoadError = err
   console.error('[whatsapp] module load failed:', err?.message || err)
+}
+
+// Electron 25+: protocol.handle requiere registrar el scheme antes de app.ready
+// para que se comporte como standard (igual que el legacy registerFileProtocol).
+try {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: WA_MEDIA_PROTOCOL,
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true }
+    }
+  ])
+} catch (err) {
+  console.error('[whatsapp] registerSchemesAsPrivileged failed:', err?.message || err)
 }
 
 const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi', 'automation-builder', 'patterns.md')
@@ -3234,14 +3247,16 @@ app.whenReady().then(async () => {
   if (createWhatsAppClient) {
     try {
       fs.mkdirSync(WA_MEDIA_DIR, { recursive: true })
-      protocol.registerFileProtocol(WA_MEDIA_PROTOCOL, (request, callback) => {
+      // Electron 25+: protocol.registerFileProtocol está deprecated → usar protocol.handle.
+      protocol.handle(WA_MEDIA_PROTOCOL, (request) => {
         try {
           const u = new URL(request.url)
           const name = decodeURIComponent(u.hostname || u.pathname.replace(/^\/+/, ''))
           const safe = path.basename(name)
-          callback({ path: path.join(WA_MEDIA_DIR, safe) })
+          const filePath = path.join(WA_MEDIA_DIR, safe)
+          return net.fetch('file://' + filePath)
         } catch {
-          callback({ error: -6 })
+          return new Response(null, { status: 404 })
         }
       })
     } catch (err) {
