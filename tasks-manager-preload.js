@@ -37,13 +37,6 @@ contextBridge.exposeInMainWorld('tasksAPI', {
   onRunProgress:  listener('tasks:run-progress'),
   onRunFinished:  listener('tasks:run-finished'),
 
-  // ---------- Task Agent (creación / iteración / resume) ----------
-  // mode: 'create' (nueva tarea), 'iterate' (chatear sobre tarea existente,
-  // emite propuesta para update), 'resume' (abre PTY con --resume sessionId
-  // sin detección de propuesta — para "Hablar con el agente" en tareas que
-  // ya tienen sesión Claude viva).
-  taskAgentOpen: (payload) => ipcRenderer.invoke('task-agent:open', payload || {}),
-
   // ---------- Automations (system-level) ----------
   automationsList:           ()        => ipcRenderer.invoke('automations:list'),
   automationsGet:            (id)      => ipcRenderer.invoke('automations:get', { id }),

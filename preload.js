@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('api', {
   onGraphFileActive: (cb) => ipcRenderer.on('graph:file-active', (_, p) => cb(p)),
 
   openTasksManager: () => ipcRenderer.invoke('tasks-manager:open'),
+  tasksCreateFromPrompt: (payload) => ipcRenderer.invoke('tasks:create-from-prompt', payload || {}),
   tasksInbox: {
     get: (opts) => ipcRenderer.invoke('tasks:get-inbox', opts || {}),
     markRead: (runId) => ipcRenderer.invoke('tasks:mark-inbox-read', { runId }),
