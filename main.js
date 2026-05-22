@@ -10,6 +10,19 @@ const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
 const {
+  createCliResolver,
+  resolveCommand,
+  commandExists,
+  USER_LOCAL_BIN,
+  PYTHON39_BIN,
+  HOMEBREW_BIN,
+  LATEST_NVM_NODE_BIN,
+  FALLBACK_CLAUDE_BIN,
+  FALLBACK_CODEX_BIN,
+  FALLBACK_WHISPER_BIN,
+  FFMPEG_BIN
+} = require('./main/cli-resolver')
+const {
   DEFAULT_ROLE_ID: DEFAULT_ENTERPRISE_ROLE_ID,
   normalizeEnterpriseConfig,
   normalizeRemoteContext,
@@ -49,9 +62,6 @@ const AGENT_PATTERNS_PATH = path.join(os.homedir(), '.claude', 'skills', 'luismi
 const oldUserData = path.join(app.getPath('appData'), 'CLAUDE-NOVAK')
 app.setPath('userData', oldUserData)
 
-const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
-const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
-const HOMEBREW_BIN = '/usr/local/bin'
 const TMP_DIR = '/tmp/claude-electron'
 const AGENT_PROPOSAL_BASE = '/tmp/poweragent-proposal'
 const AGENT_PROPOSAL_POLL_MS = 1500
@@ -63,12 +73,6 @@ const CODEX_HISTORY_PATH = path.join(CODEX_HOME_DIR, 'history.jsonl')
 const CODEX_SESSION_INDEX_PATH = path.join(CODEX_HOME_DIR, 'session_index.jsonl')
 const CODEX_STATE_DB_PATH = path.join(CODEX_HOME_DIR, 'state_5.sqlite')
 const WHISPER_CPP_MODEL = process.env.WHISPER_CPP_MODEL || path.join(os.homedir(), '.cache/whisper-cpp/ggml-base-q5_1.bin')
-const FFMPEG_BIN = resolveCommand([
-  process.env.FFMPEG_BIN,
-  path.join(PYTHON39_BIN, 'ffmpeg'),
-  path.join(HOMEBREW_BIN, 'ffmpeg'),
-  'ffmpeg'
-])
 const CONFIG_FILENAME = 'claude-novak.config.json'
 const DEFAULT_PROFILE_ID = 'default'
 const LAN_PERMISSION_KEYS = Object.freeze([
@@ -226,53 +230,6 @@ const DEFAULT_CONFIG = Object.freeze({
 
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
 const semanticLogger = createSemanticLogger()
-
-function resolveCommand(candidates) {
-  for (const cmd of candidates) {
-    if (!cmd) continue
-    if (!cmd.includes('/')) return cmd
-    if (fs.existsSync(cmd)) return cmd
-  }
-  return candidates.find(Boolean) || ''
-}
-
-function resolveLatestNvmNodeBinDir() {
-  const root = path.join(os.homedir(), '.nvm', 'versions', 'node')
-  try {
-    const versions = fs.readdirSync(root, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^v\d+/.test(d.name))
-      .map((d) => d.name)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
-    if (!versions.length) return ''
-    const binDir = path.join(root, versions[versions.length - 1], 'bin')
-    return fs.existsSync(binDir) ? binDir : ''
-  } catch {
-    return ''
-  }
-}
-
-const LATEST_NVM_NODE_BIN = resolveLatestNvmNodeBinDir()
-const LATEST_NVM_CODEX_BIN = LATEST_NVM_NODE_BIN ? path.join(LATEST_NVM_NODE_BIN, 'codex') : ''
-
-const FALLBACK_CLAUDE_BIN = resolveCommand([
-  process.env.CLAUDE_BIN,
-  path.join(USER_LOCAL_BIN, 'claude'),
-  'claude'
-])
-
-const FALLBACK_CODEX_BIN = resolveCommand([
-  process.env.CODEX_BIN,
-  LATEST_NVM_CODEX_BIN,
-  path.join(USER_LOCAL_BIN, 'codex'),
-  path.join(os.homedir(), '.nvm/versions/node/v24.15.0/bin/codex'),
-  'codex'
-])
-
-const FALLBACK_WHISPER_BIN = resolveCommand([
-  process.env.WHISPER_BIN,
-  path.join(HOMEBREW_BIN, 'whisper-cli'),
-  'whisper-cli'
-])
 
 const WHISPER_HALLUCINATIONS = [
   /iglesia de jesucristo/i,
@@ -738,14 +695,8 @@ function deleteEnterpriseOperator(operatorId) {
   })
 }
 
-function getConfiguredBin(cli) {
-  if (cli === 'codex') return appConfig.cli.codexBin || FALLBACK_CODEX_BIN
-  return appConfig.cli.claudeBin || FALLBACK_CLAUDE_BIN
-}
-
-function getConfiguredWhisperBin() {
-  return appConfig.cli.whisperBin || FALLBACK_WHISPER_BIN
-}
+const cliResolver = createCliResolver(() => appConfig)
+const { getConfiguredBin, getConfiguredWhisperBin, buildRuntimeEnv, cliMeta, ensureCliAvailable } = cliResolver
 
 function shellQuote(s) {
   return `'${String(s).replace(/'/g, "'\\''")}'`
@@ -755,56 +706,6 @@ function buildFdLimitCommand(bin, args = []) {
   const parts = [shellQuote(bin), ...args.map(shellQuote)]
   const log = '/tmp/claude-novak-fd.log'
   return `echo "[$(date +%H:%M:%S)] before ulimit=$(ulimit -n) hard=$(ulimit -Hn) bin=${shellQuote(bin)}" >> ${log} 2>/dev/null; ulimit -n 65536 2>/dev/null || true; echo "[$(date +%H:%M:%S)] after  ulimit=$(ulimit -n)" >> ${log} 2>/dev/null; exec ${parts.join(' ')}`
-}
-
-function buildRuntimeEnv() {
-  const baseEnv = { ...process.env }
-  // Forzamos color en los CLI embebidos aunque la app herede NO_COLOR del entorno.
-  delete baseEnv.NO_COLOR
-  if (baseEnv.CLICOLOR === '0') delete baseEnv.CLICOLOR
-  if (baseEnv.CLICOLOR_FORCE === '0') delete baseEnv.CLICOLOR_FORCE
-  if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
-
-  const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
-  if (LATEST_NVM_NODE_BIN) extraPaths.push(LATEST_NVM_NODE_BIN)
-  for (const candidate of [appConfig.cli.claudeBin, appConfig.cli.codexBin, appConfig.cli.whisperBin]) {
-    if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
-  }
-  const mergedPath = Array.from(new Set([...extraPaths, process.env.PATH || ''])).join(':')
-  return {
-    ...baseEnv,
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
-    CLICOLOR: '1',
-    CLICOLOR_FORCE: '1',
-    FORCE_COLOR: '1',
-    LANG: process.env.LANG || 'en_US.UTF-8',
-    PATH: mergedPath
-  }
-}
-
-function commandExists(command, env) {
-  if (!command) return false
-  if (command.includes('/')) return fs.existsSync(command)
-  const probe = spawnSync('/bin/bash', ['-lc', `command -v ${JSON.stringify(command)} >/dev/null 2>&1`], { env })
-  return probe.status === 0
-}
-
-function cliMeta(cli) {
-  if (cli === 'codex') return { name: 'Codex', bin: getConfiguredBin('codex'), envVar: 'CODEX_BIN' }
-  return { name: 'Claude', bin: getConfiguredBin('claude'), envVar: 'CLAUDE_BIN' }
-}
-
-function ensureCliAvailable(cli) {
-  const meta = cliMeta(cli)
-  const env = buildRuntimeEnv()
-  if (!commandExists(meta.bin, env)) {
-    return {
-      ok: false,
-      error: `${meta.name} no está disponible (${meta.bin}). Ajusta ${meta.envVar} o instala el comando en PATH.`
-    }
-  }
-  return { ok: true, ...meta, env }
 }
 
 // ── Session helpers ──
