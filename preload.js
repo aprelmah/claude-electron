@@ -1,6 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
+  getPathForFile: (file) => {
+    try { return webUtils?.getPathForFile?.(file) || '' } catch { return '' }
+  },
   startPty: (cols, rows, cwd) => ipcRenderer.invoke('pty-start', { cols, rows, cwd }),
   writePty: (data) => ipcRenderer.send('pty-input', data),
   resizePty: (cols, rows) => ipcRenderer.send('pty-resize', { cols, rows }),

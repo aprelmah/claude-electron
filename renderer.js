@@ -2583,8 +2583,12 @@ window.addEventListener('drop', (e) => {
   dropOverlay.classList.add('hidden')
   const files = Array.from(e.dataTransfer.files)
   if (!files.length) return
-  const paths = files.map(f => `@${f.path}`).join(' ') + ' '
-  injectToPty(paths)
+  const paths = files
+    .map(f => window.api?.getPathForFile ? window.api.getPathForFile(f) : (f.path || ''))
+    .filter(Boolean)
+    .map(p => `@${p}`)
+    .join(' ') + ' '
+  if (paths.trim()) injectToPty(paths)
 })
 
 // ── Micro de dictado ──
