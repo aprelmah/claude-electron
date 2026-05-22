@@ -4,17 +4,18 @@ Punto de entrada para cualquier agente CLI (Claude Code, Codex, otros) que llegu
 
 ## Lo primero que tienes que hacer
 
-1. **Leer `HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md` ENTERO**. Es el handoff de la última sesión (release 1.3.0). Incluye estado, reglas duras, comandos clave, rollback y pendientes.
-2. Leer `CLAUDE.md` (runbook del proyecto: despliegue, regla crítica WhatsApp, scripts).
-3. Si vas a tocar WhatsApp → leer `HARDENING-WA-AUTH.md`.
-4. Si vas a tocar APIs de Electron → leer `ELECTRON-32-UPGRADE-NOTES.md`.
-5. Si vas a tocar firma/distribución → leer `SIGNING-NOTARIZE-SETUP.md`.
+1. **Leer `HANDOFF-CODEX-2026-05-22-WHATSAPP-PANEL-CONTINUIDAD-FINAL.md` ENTERO**. Es la continuidad final más reciente de WhatsApp (race autoReply OFF, STOP/START bridge, QR live refresh, descarga media) y contiene estado operativo real al cierre.
+2. **Leer `HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md` ENTERO**. Es el handoff base del release 1.3.0 (estado global, reglas duras, rollback, arquitectura).
+3. Leer `CLAUDE.md` (runbook del proyecto: despliegue, regla crítica WhatsApp, scripts).
+4. Si vas a tocar WhatsApp → leer `HARDENING-WA-AUTH.md`.
+5. Si vas a tocar APIs de Electron → leer `ELECTRON-32-UPGRADE-NOTES.md`.
+6. Si vas a tocar firma/distribución → leer `SIGNING-NOTARIZE-SETUP.md`.
 
 ## Estado actual (snapshot 2026-05-22)
 
 - **Versión**: 1.3.0
 - **Electron**: 32.3.3 LTS (Chromium 128, Node 20.18.0)
-- **`main.js`**: 3155 LOC, modularizado en 34 archivos en `main/`
+- **`main.js`**: 3157 LOC, modularizado en 34 archivos en `main/`
 - **Branch**: `main` (limpio, push al día)
 - **Tag release**: `release-1.3.0-2026-05-22`
 - **App desplegada**: `/Applications/POWER-AGENT.app`
@@ -43,7 +44,7 @@ npm install && npm run deploy
 ## Comandos clave
 
 ```bash
-npm test                # 101/95/0/6 esperado
+npm test                # 107/94/0/13 esperado
 npm run dev             # arranca sin compilar (necesita osascript para WindowServer)
 npm run deploy          # build x64 + /Applications + xattr -cr + abre
 npm run doctor          # diagnostics

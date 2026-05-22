@@ -1,6 +1,7 @@
 # POWER-AGENT Runbook
 
 ## Latest Handoff
+- **`HANDOFF-CODEX-2026-05-22-WHATSAPP-PANEL-CONTINUIDAD-FINAL.md`** — continuidad final WhatsApp (STOP/START bridge estable sin refresh manual, QR modal con polling+reintento, descarga de media desde visor y fix de race: auto-reply global OFF invalida colas pendientes + apaga typing UI).
 - **`HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md`** — RELEASE ACTUAL (1.3.0). Ola 1 + Ola 2 + post-fixes: Electron 32 LTS, main.js modularizado a 34 módulos en `main/`, WhatsApp bridge con auth token, sesiones Codex en LAN, hot session switch, drag&drop con webUtils. Tag `release-1.3.0-2026-05-22`. Empezar SIEMPRE por este archivo.
 - `HANDOFF-CODEX-2026-05-21-REMOTE-SESSION-CONTINUIDAD-CHAT-FIRST.md` (continuidad final de sesión remota LAN: flujo cámara/archivo chat-first, fixes de ACL read-only, despliegue y pendientes de rediseño/refactor UX).
 - `HANDOFF-CODEX-2026-05-21-CONTINUIDAD-POST-PRUEBAS.md` (continuidad exacta tras modo empresa: estado, commits, incidencias reales de Luis, backlog móvil/visor/upload y prompt para nuevo Codex).
@@ -9,12 +10,13 @@
 - `HANDOFF-CLAUDE-2026-05-18-FINAL-REACTOR.md` (estado final actual: root reactor x3, despliegue limpio de una sola app).
 
 ## Para CUALQUIER agente nuevo (Claude o Codex)
-1. Leer **`HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md` ENTERO** antes de tocar código.
-2. Leer también `HARDENING-WA-AUTH.md` si vas a tocar WhatsApp.
-3. Leer `ELECTRON-32-UPGRADE-NOTES.md` si vas a tocar APIs de Electron o `protocol.*`.
-4. Leer `SIGNING-NOTARIZE-SETUP.md` solo si tocas firma/distribución.
-5. Versión actual: **1.3.0**. Electron 32.3.3 LTS. Node 20.18.0. `main.js` ya modularizado en 34 archivos `main/*.js`.
-6. Rollback de emergencia: `git reset --hard pre-ola2-2026-05-22` (vuelve a 1.2.0/Electron 20).
+1. Leer **`HANDOFF-CODEX-2026-05-22-WHATSAPP-PANEL-CONTINUIDAD-FINAL.md` ENTERO** antes de tocar WhatsApp/panel bridge.
+2. Leer **`HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md` ENTERO** antes de tocar arquitectura general.
+3. Leer también `HARDENING-WA-AUTH.md` si vas a tocar WhatsApp.
+4. Leer `ELECTRON-32-UPGRADE-NOTES.md` si vas a tocar APIs de Electron o `protocol.*`.
+5. Leer `SIGNING-NOTARIZE-SETUP.md` solo si tocas firma/distribución.
+6. Versión actual: **1.3.0**. Electron 32.3.3 LTS. Node 20.18.0. `main.js` ya modularizado en 34 archivos `main/*.js`.
+7. Rollback de emergencia: `git reset --hard pre-ola2-2026-05-22` (vuelve a 1.2.0/Electron 20).
 
 ## Scope
 - Project path: `/Users/isabel/Desktop/claude-electron`
