@@ -1808,6 +1808,246 @@ async function openAutomationChatWindow(automationId) {
   return win
 }
 
+// ── Task session popup (claude/codex --resume <sessionId> en ventana propia) ──
+// Una ventana por sessionId. Si ya hay ventana abierta para ese sessionId, focus.
+const taskSessionWindowsBySessionId = new Map() // sessionId → BrowserWindow
+const taskSessionStateByWc = new Map()          // wcId → TaskSessionState
+
+function resolveTaskSessionCwd(sessionId, providedCwd) {
+  const safe = (p) => (typeof p === 'string' && p.trim()) ? p.trim() : ''
+  const candidate = safe(providedCwd)
+  if (candidate) {
+    try { if (fs.statSync(candidate).isDirectory()) return candidate } catch {}
+  }
+  // Buscar el sessionId.jsonl en ~/.claude/projects/*/ y extraer cwd de la primera línea.
+  try {
+    const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
+    if (!fs.existsSync(projectsRoot)) return os.homedir()
+    const dirs = fs.readdirSync(projectsRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name)
+    for (const dir of dirs) {
+      const file = path.join(projectsRoot, dir, `${sessionId}.jsonl`)
+      if (!fs.existsSync(file)) continue
+      try {
+        // Primera línea JSON suele tener `cwd`.
+        const raw = fs.readFileSync(file, 'utf8')
+        const nl = raw.indexOf('\n')
+        const firstLine = nl >= 0 ? raw.slice(0, nl) : raw
+        const obj = JSON.parse(firstLine)
+        const cwd = safe(obj?.cwd)
+        if (cwd) {
+          try { if (fs.statSync(cwd).isDirectory()) return cwd } catch {}
+        }
+      } catch {}
+      // Si no se pudo extraer cwd pero el archivo existe, sigue intentando.
+    }
+  } catch {}
+  return os.homedir()
+}
+
+async function openTaskSessionWindow({ sessionId, cwd, cli, taskName } = {}) {
+  if (!sessionId || typeof sessionId !== 'string') return null
+  if (!isValidSessionId(sessionId)) return null
+
+  const existing = taskSessionWindowsBySessionId.get(sessionId)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  const targetCli = cli === 'codex' ? 'codex' : 'claude'
+  const targetCwd = resolveTaskSessionCwd(sessionId, cwd)
+  const targetTaskName = typeof taskName === 'string' ? taskName : ''
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  const win = new BrowserWindow({
+    width: 880,
+    height: 640,
+    minWidth: 560,
+    minHeight: 380,
+    title: targetTaskName ? `Sesión — ${targetTaskName}` : 'Sesión — POWER-AGENT',
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'task-session-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  const wcId = win.webContents.id
+  const taskState = {
+    win,
+    wcId,
+    sessionId,
+    initialSessionId: sessionId,
+    cwd: targetCwd,
+    cli: targetCli,
+    taskName: targetTaskName,
+    theme: initialTheme,
+    cols: 120,
+    rows: 35,
+    pty: null,
+    detectIntervalId: null,
+    sessionFilesSnapshot: null
+  }
+  taskSessionStateByWc.set(wcId, taskState)
+  taskSessionWindowsBySessionId.set(sessionId, win)
+
+  win.loadFile('task-session.html', { query: { theme: initialTheme, sid: sessionId } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    const s = taskSessionStateByWc.get(wcId)
+    if (s) killTaskSessionPty(s)
+    taskSessionStateByWc.delete(wcId)
+    // Limpia tanto el sessionId inicial como el actualizado (si cambió).
+    if (taskSessionWindowsBySessionId.get(taskState.initialSessionId) === win) {
+      taskSessionWindowsBySessionId.delete(taskState.initialSessionId)
+    }
+    if (taskSessionWindowsBySessionId.get(taskState.sessionId) === win) {
+      taskSessionWindowsBySessionId.delete(taskState.sessionId)
+    }
+  })
+  return win
+}
+
+function killTaskSessionPty(s) {
+  if (!s) return
+  if (s.detectIntervalId) { try { clearInterval(s.detectIntervalId) } catch {} ; s.detectIntervalId = null }
+  if (!s.pty) return
+  try { s.pty._alive = false } catch {}
+  try { s.pty.kill() } catch {}
+  s.pty = null
+}
+
+function startTaskSessionPty(s) {
+  if (!s) throw new Error('Sesión no disponible')
+  if (s.pty) return s.pty
+  const cliCheck = ensureCliAvailable(s.cli)
+  if (!cliCheck.ok) {
+    if (s.win && !s.win.isDestroyed()) {
+      s.win.webContents.send('task-session:error', { error: cliCheck.error })
+    }
+    throw new Error(cliCheck.error)
+  }
+
+  const args = s.cli === 'codex'
+    ? ['resume', s.sessionId]
+    : ['--resume', s.sessionId]
+
+  // Snapshot ANTES del spawn solo si es claude — para capturar el sessionId rotado.
+  s.sessionFilesSnapshot = s.cli === 'claude'
+    ? snapshotClaudeSessions(s.cwd)
+    : null
+
+  let proc
+  try {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, args)], {
+      name: 'xterm-256color',
+      cols: s.cols || 120,
+      rows: s.rows || 35,
+      cwd: s.cwd || os.homedir(),
+      env: cliCheck.env
+    })
+  } catch (err) {
+    const msg = `No se pudo iniciar ${cliCheck.name}: ${err.message || err}`
+    if (s.win && !s.win.isDestroyed()) {
+      s.win.webContents.send('task-session:error', { error: msg })
+    }
+    throw new Error(msg)
+  }
+
+  proc._alive = true
+  s.pty = proc
+  const myWcId = s.wcId
+
+  // Poll continuo para capturar el NUEVO sessionId que claude crea al hacer --resume.
+  // Claude rota el sessionId en cada resume. Cuando lo detectamos, lo notificamos a la
+  // ventana y actualizamos scheduled-tasks.json para que el cron siguiente continúe.
+  if (s.cli === 'claude' && s.sessionFilesSnapshot) {
+    const detect = setInterval(() => {
+      const st = taskSessionStateByWc.get(myWcId)
+      if (!st || !st.pty || st.pty !== proc) { clearInterval(detect); return }
+      const sid = findUpdatedOrNewClaudeSessionId(st.cwd, st.sessionFilesSnapshot)
+      if (sid && sid !== st.sessionId) {
+        const prev = st.sessionId
+        st.sessionId = sid
+        try { st.win?.webContents.send('task-session:session-id-updated', { sessionId: sid, previous: prev }) } catch {}
+        // Reindexa el lookup por sessionId.
+        if (taskSessionWindowsBySessionId.get(prev) === st.win) {
+          taskSessionWindowsBySessionId.delete(prev)
+        }
+        taskSessionWindowsBySessionId.set(sid, st.win)
+        // Persistir en scheduled-tasks.json: localizamos cualquier tarea cuyo sessionId
+        // coincida con el original (initialSessionId) y la actualizamos al nuevo.
+        persistTaskSessionIdRotation(st.initialSessionId, sid).catch((err) => {
+          console.warn('[task-session] no se pudo persistir nuevo sessionId:', err?.message || err)
+        })
+        clearInterval(detect)
+        st.detectIntervalId = null
+      }
+    }, 2000)
+    s.detectIntervalId = detect
+  }
+
+  proc.onData((data) => {
+    if (!proc._alive) return
+    const st = taskSessionStateByWc.get(myWcId)
+    if (!st || !st.win || st.win.isDestroyed()) return
+    const text = typeof data === 'string' ? data : data.toString('utf8')
+    st.win.webContents.send('task-session:data', text)
+  })
+
+  proc.onExit(() => {
+    if (proc._alive) {
+      const st = taskSessionStateByWc.get(myWcId)
+      if (st && st.win && !st.win.isDestroyed()) st.win.webContents.send('task-session:exit')
+    }
+    const st = taskSessionStateByWc.get(myWcId)
+    if (st && st.pty === proc) {
+      st.pty = null
+      if (st.detectIntervalId) { try { clearInterval(st.detectIntervalId) } catch {} ; st.detectIntervalId = null }
+    }
+  })
+
+  return proc
+}
+
+async function persistTaskSessionIdRotation(originalSessionId, newSessionId) {
+  if (!tasksScheduler || !originalSessionId || !newSessionId) return
+  if (originalSessionId === newSessionId) return
+  let tasks = []
+  try { tasks = await tasksScheduler.persistence.loadTasks() } catch { return }
+  if (!Array.isArray(tasks)) return
+  const matches = tasks.filter(t => t && t.sessionId === originalSessionId)
+  if (!matches.length) return
+  for (const t of matches) {
+    try {
+      await tasksScheduler.persistence.updateTask(t.id, { sessionId: newSessionId })
+    } catch (err) {
+      console.warn('[task-session] updateTask falló para', t.id, err?.message || err)
+    }
+  }
+}
+
 // ── Bridge wiring (one global bridge) ──
 function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
@@ -2967,6 +3207,74 @@ ipcMain.handle('automation-pty:set-cli', (event, { cli } = {}) => {
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }
+})
+
+// ── Task session popup IPC ──
+function getTaskSessionByEvent(event) {
+  return taskSessionStateByWc.get(event.sender.id) || null
+}
+
+ipcMain.handle('app:open-task-session', async (_event, payload = {}) => {
+  const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : ''
+  if (!sessionId || !isValidSessionId(sessionId)) {
+    return { ok: false, error: 'sessionId inválido' }
+  }
+  const cli = payload?.cli === 'codex' ? 'codex' : 'claude'
+  const cwd = typeof payload?.cwd === 'string' ? payload.cwd : ''
+  const taskName = typeof payload?.taskName === 'string' ? payload.taskName : ''
+  try {
+    const win = await openTaskSessionWindow({ sessionId, cwd, cli, taskName })
+    return win ? { ok: true } : { ok: false, error: 'No se pudo abrir la ventana de sesión' }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('task-session:init', async (event) => {
+  const s = getTaskSessionByEvent(event)
+  if (!s) return { sessionId: null }
+  return {
+    sessionId: s.sessionId,
+    cwd: s.cwd,
+    cli: s.cli,
+    taskName: s.taskName,
+    theme: s.theme
+  }
+})
+
+ipcMain.handle('task-session:start', (event, { cols, rows } = {}) => {
+  const s = getTaskSessionByEvent(event)
+  if (!s) return { ok: false, error: 'No task session' }
+  if (cols && rows) { s.cols = cols; s.rows = rows }
+  try {
+    startTaskSessionPty(s)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.on('task-session:write', (event, data) => {
+  const s = getTaskSessionByEvent(event)
+  if (!s || !s.pty) return
+  try { s.pty.write(data) } catch {}
+})
+
+ipcMain.on('task-session:resize', (event, { cols, rows } = {}) => {
+  const s = getTaskSessionByEvent(event)
+  if (!s) return
+  if (cols && rows) { s.cols = cols; s.rows = rows }
+  try { s.pty?.resize(cols, rows) } catch {}
+})
+
+ipcMain.on('task-session:close-self', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender)
+  if (w && !w.isDestroyed()) w.close()
+})
+
+ipcMain.on('task-session:minimize-self', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender)
+  if (w && !w.isDestroyed()) w.minimize()
 })
 
 function buildExtractPrompt(transcript) {

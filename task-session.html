@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Sesión — POWER-AGENT</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
+  <style>
+    :root {
+      --bg: #1a1a1d;
+      --bg-elev: #232327;
+      --bg-elev-2: #2c2c30;
+      --fg: #e8e8ea;
+      --fg-muted: #9a9aa0;
+      --border: #34343a;
+      --accent: #4a8cf7;
+      --accent-fg: #fff;
+      --danger: #e57373;
+      --ok: #6abf69;
+      --warn: #d8a96a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    body.theme-light {
+      --bg: #f7f7fa;
+      --bg-elev: #fff;
+      --bg-elev-2: #ececef;
+      --fg: #1a1a1d;
+      --fg-muted: #6a6a70;
+      --border: #d0d0d6;
+      --accent: #2563eb;
+      --accent-fg: #fff;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif;
+      font-size: 13px;
+      color: var(--fg);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .header {
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px 8px 84px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+      user-select: none;
+      min-height: 32px;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 420px;
+    }
+    .header .sub {
+      font-size: 11px;
+      color: var(--fg-muted);
+      margin-top: 1px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border);
+      color: var(--fg-muted);
+      font-family: var(--mono);
+    }
+
+    .header-actions {
+      -webkit-app-region: no-drag;
+      display: flex;
+      gap: 4px;
+    }
+    .header-btn {
+      width: 26px;
+      height: 24px;
+      border: 1px solid var(--border);
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0;
+    }
+    .header-btn:hover { border-color: var(--accent); }
+
+    #terminal-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+      position: relative;
+      background: var(--bg);
+      padding: 6px 8px 0 8px;
+    }
+    #terminal {
+      width: 100%;
+      height: 100%;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-elev-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 99;
+      max-width: 80%;
+    }
+    .toast.show { opacity: 1; }
+    .toast.ok { border-color: var(--ok); color: var(--ok); }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .toast.warn { border-color: var(--warn); color: var(--warn); }
+
+    :focus-visible {
+      outline: 2px solid var(--accent, #7c6af7);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    :focus:not(:focus-visible) {
+      outline: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1 id="title">Sesión</h1>
+      <div class="sub">
+        <span id="subtitle">Cargando…</span>
+        <span class="badge" id="sid-badge" title="sessionId actual"></span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="header-btn" id="btn-min" title="Minimizar" aria-label="Minimizar ventana">−</button>
+      <button class="header-btn" id="btn-close" title="Cerrar" aria-label="Cerrar ventana">×</button>
+    </div>
+  </div>
+
+  <div id="terminal-wrap">
+    <div id="terminal"></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="task-session-renderer.js"></script>
+</body>
+</html>

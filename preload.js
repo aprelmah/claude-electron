@@ -104,6 +104,10 @@ contextBridge.exposeInMainWorld('api', {
   onGraphFileActive: (cb) => ipcRenderer.on('graph:file-active', (_, p) => cb(p)),
 
   openTasksManager: () => ipcRenderer.invoke('tasks-manager:open'),
+  taskSession: {
+    open: ({ sessionId, cwd, cli, taskName } = {}) =>
+      ipcRenderer.invoke('app:open-task-session', { sessionId, cwd, cli, taskName })
+  },
   openBitacoraWindow: () => ipcRenderer.invoke('bitacora:open'),
   onTaskRunStarted: (cb) => {
     const h = (_e, p) => cb(p)
