@@ -45,6 +45,7 @@ const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
 const { createWindowFactory } = require('./main/window-factory')
+const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
 const {
   CONFIG_FILENAME,
   DEFAULT_PROFILE_ID,
@@ -4403,77 +4404,6 @@ ipcMain.handle('bitacora:export-csv', async (event, payload = {}) => {
   }
 })
 
-let graphWindowData = null
-
-ipcMain.handle('graph-window:open', (event, payload = {}) => {
-  const {
-    nodes, edges, dirs, mode, activeTypes, forces, ui, structureActiveTypes,
-    selfFetch, rootPath
-  } = payload || {}
-  let cwd = null
-  const payloadRoot = (typeof rootPath === 'string' && rootPath.trim()) ? rootPath.trim() : null
-  if (payloadRoot) {
-    cwd = payloadRoot
-  } else {
-    try {
-      const s = getSessionByEvent(event)
-      cwd = s ? s.cwd : null
-    } catch { cwd = null }
-    if (!cwd) cwd = getCwdSync() || os.homedir()
-  }
-  try {
-    if (!cwd || !fs.existsSync(cwd)) cwd = getCwdSync() || os.homedir()
-  } catch {
-    cwd = getCwdSync() || os.homedir()
-  }
-  if (selfFetch) {
-    // La ventana standalone se autosirve: no precargamos nodos/edges.
-    graphWindowData = {
-      nodes: [],
-      edges: [],
-      dirs: [],
-      mode: mode || 'refs',
-      activeTypes: activeTypes || null,
-      structureActiveTypes: structureActiveTypes || null,
-      forces: forces || null,
-      ui: ui || null,
-      cwd: cwd || '',
-      selfFetch: true
-    }
-  } else {
-    graphWindowData = {
-      nodes: nodes || [],
-      edges: edges || [],
-      dirs: dirs || [],
-      mode: mode || 'refs',
-      activeTypes: activeTypes || null,
-      structureActiveTypes: structureActiveTypes || null,
-      forces: forces || null,
-      ui: ui || null,
-      cwd: cwd || '',
-      selfFetch: false
-    }
-  }
-  const win = new BrowserWindow({
-    width: 1200, height: 800,
-    frame: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 13 },
-    backgroundColor: '#1a1a1f',
-    resizable: true, minimizable: true,
-    title: 'POWER-AGENT — Grafo',
-    webPreferences: {
-      preload: path.join(__dirname, 'graph-window-preload.js'),
-      contextIsolation: true, nodeIntegration: false
-    }
-  })
-  win.loadFile('graph-window.html')
-  win.on('closed', () => { graphWindowData = null })
-  return true
-})
-
-ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
-
 ipcMain.handle('whatsapp-window:open', () => windowFactory.openWhatsappWindow())
 
 global.__openWhatsappWindow = () => {
@@ -4481,47 +4411,15 @@ global.__openWhatsappWindow = () => {
   catch (err) { console.warn('[whatsapp] open from notification failed:', err?.message || err) }
 }
 
-ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
-  let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
-  if (!root) root = getCwdSync() || null
-  if (!root) return { ok: false, error: 'No hay carpeta activa para calcular el grafo' }
-  try {
-    if (!fs.existsSync(root)) return { ok: false, error: `La ruta no existe: ${root}` }
-  } catch (err) { return { ok: false, error: err.message } }
-  try {
-    const result = computeProjectGraph(root)
-    if (result && result.ok) result.cwd = root
-    return result
-  } catch (err) {
-    return { ok: false, error: err.message }
-  }
-})
-
-ipcMain.handle('viewer-open', (_event, arg) => {
-  const filePath = typeof arg === 'string' ? arg : arg?.path
-  const hint = (arg && typeof arg === 'object') ? arg.hint : null
-  if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'Invalid path' }
-  if (!isPathSafe(filePath, allowedFsRoots())) return { ok: false, error: 'Path not allowed' }
-  openViewerWindow(filePath, hint)
-  return { ok: true }
-})
-
-ipcMain.on('viewer-inject-to-active', (_event, filePath) => {
-  if (typeof filePath !== 'string' || !filePath) return
-  if (primaryWcId == null) return
-  const s = sessions.get(primaryWcId)
-  if (!s || !s.win || s.win.isDestroyed()) return
-  s.win.webContents.send('inject-path', filePath)
-})
-
-ipcMain.on('viewer-close-self', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.close()
-})
-
-ipcMain.on('viewer-minimize-self', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && !win.isDestroyed()) win.minimize()
+registerViewerGraphIpc({
+  ipcMain,
+  BrowserWindow,
+  rootDir: __dirname,
+  getSessionByEvent,
+  getCwdSync,
+  getPrimaryWin: () => primaryWcId != null ? sessions.get(primaryWcId)?.win : null,
+  getAllowedFsRoots: allowedFsRoots,
+  openViewerWindow
 })
 
 // ── Tasks Manager IPC ──
