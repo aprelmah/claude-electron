@@ -12,6 +12,8 @@
     "dev:trace": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "electron-builder --mac --arm64 --x64",
+    "dist:signed": "electron-builder --mac --arm64 --x64",
+    "dist:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --x64",
     "build:zip": "electron-builder --mac zip --arm64 --x64",
     "build:dmg": "electron-builder --mac dmg --arm64 --x64",
     "doctor": "bash ./scripts/doctor.sh",
@@ -32,6 +34,7 @@
     "ws": "^8.20.1"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "@electron/rebuild": "^3.6.0",
     "electron": "20.x",
     "electron-builder": "^24.13.3"
@@ -39,6 +42,7 @@
   "build": {
     "appId": "com.luismi.claude-novak",
     "productName": "POWER-AGENT",
+    "afterSign": "build/notarize.js",
     "asar": true,
     "asarUnpack": [
       "node_modules/node-pty/**/*"
@@ -98,9 +102,11 @@
           ]
         }
       ],
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "identity": null,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Dictado por voz con Whisper local.",
         "NSApplicationSupportsSecureRestorableState": true
