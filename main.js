@@ -70,6 +70,7 @@ const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
 const { registerAutomationChatIpc } = require('./main/automation-chat-ipc')
+const { registerTaskChatIpc } = require('./main/task-chat-ipc')
 const { createClaudeSessionCache } = require('./main/claude-session-cache')
 const { registerTelegramSessionLinkIpc } = require('./main/telegram-session-link-ipc')
 const { createRelayTranscriptHelpers } = require('./main/relay-transcript-helpers')
@@ -105,6 +106,7 @@ const { createPersistence } = require('./scheduler/persistence')
 const cronPresets = require('./scheduler/cron-presets')
 const { createAutomationManager } = require('./automations')
 const { createAutomationChat } = require('./automations/chat')
+const { createTaskChat, DEFAULT_THREAD_ID: TASK_CHAT_DEFAULT_THREAD_ID } = require('./tasks/chat')
 const { buildSystemPrompt: buildAutomationSystemPrompt } = require('./automations/system-prompt')
 let createWhatsAppClient = null
 let WA_MEDIA_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'media')
@@ -1393,10 +1395,14 @@ function createWindow() {
 let tasksScheduler = null
 let automationManager = null
 let automationChat = null
+let taskChat = null
 let cwdHistoryCache = []
 // Una ventana de chat por automation.
 const chatWindows = new Map() // automationId → BrowserWindow
 const chatWcToAutomation = new Map() // wcId → automationId
+// Ventanas del asistente de tareas. Una global por ahora (thread id fijo).
+const taskChatWindows = new Map() // threadId → BrowserWindow
+const taskChatWcToThread = new Map() // wcId → threadId
 
 const windowFactory = createWindowFactory({
   BrowserWindow,
@@ -1433,6 +1439,15 @@ function broadcastAutomationChat(channel, payload) {
   const id = payload && payload.automationId
   if (!id) return
   const win = chatWindows.get(id)
+  if (!win || win.isDestroyed()) return
+  try { win.webContents.send(channel, payload) } catch {}
+}
+
+// Emite eventos del task-chat a la ventana del threadId correspondiente.
+function broadcastTaskChat(channel, payload) {
+  const tid = payload && payload.threadId
+  if (!tid) return
+  const win = taskChatWindows.get(tid)
   if (!win || win.isDestroyed()) return
   try { win.webContents.send(channel, payload) } catch {}
 }
@@ -1808,6 +1823,60 @@ async function openAutomationChatWindow(automationId) {
   return win
 }
 
+async function openTaskChatWindow({ threadId } = {}) {
+  const tid = (typeof threadId === 'string' && threadId.trim()) || TASK_CHAT_DEFAULT_THREAD_ID
+
+  const existing = taskChatWindows.get(tid)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  let initialTheme = ''
+  try {
+    const primary = primaryWcId != null ? sessions.get(primaryWcId)?.win : null
+    if (primary && !primary.isDestroyed()) {
+      const t = await primary.webContents.executeJavaScript(
+        `localStorage.getItem('claude-electron-theme') || ''`, true
+      )
+      if (t === 'light' || t === 'dark') initialTheme = t
+    }
+  } catch {}
+  if (initialTheme !== 'light' && initialTheme !== 'dark') {
+    initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+
+  const win = new BrowserWindow({
+    width: 880,
+    height: 640,
+    minWidth: 520,
+    minHeight: 460,
+    title: 'Asistente — Crear tarea',
+    frame: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: initialTheme === 'light' ? '#f7f7fa' : '#1a1a1d',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'task-chat-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: [`--task-thread-id=${tid}`]
+    }
+  })
+  taskChatWindows.set(tid, win)
+  const wcId = win.webContents.id
+  taskChatWcToThread.set(wcId, tid)
+  win.loadFile('task-chat.html', { query: { theme: initialTheme, tid } })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => {
+    if (taskChatWindows.get(tid) === win) taskChatWindows.delete(tid)
+    taskChatWcToThread.delete(wcId)
+  })
+  return win
+}
+
 // ── Bridge wiring (one global bridge) ──
 function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
@@ -2161,6 +2230,20 @@ app.whenReady().then(async () => {
       console.error('[automation-chat] init failed:', e)
       automationChat = null
     }
+  }
+
+  // ── Task creation chat (asistente de creación de tareas programadas) ──
+  try {
+    taskChat = createTaskChat({
+      runClaudeHeadless,
+      runCodexHeadless,
+      getScheduler: () => tasksScheduler,
+      broadcast: broadcastTaskChat,
+      userDataDir: app.getPath('userData')
+    })
+  } catch (e) {
+    console.error('[task-chat] init failed:', e)
+    taskChat = null
   }
 
   // ── WhatsApp bridge client ──
@@ -3138,6 +3221,23 @@ registerAutomationChatIpc({
   BrowserWindow,
   getAutomationChat: () => automationChat,
   getChatWcToAutomation: () => chatWcToAutomation
+})
+
+// ── Task chat (asistente de creación de tareas programadas) ──
+registerTaskChatIpc({
+  ipcMain,
+  BrowserWindow,
+  getTaskChat: () => taskChat,
+  getTaskChatWcToThread: () => taskChatWcToThread
+})
+
+ipcMain.handle('task-chat:open', async (_e, { threadId } = {}) => {
+  try {
+    const win = await openTaskChatWindow({ threadId })
+    return win ? { ok: true } : { ok: false, error: 'No se pudo abrir el asistente' }
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) }
+  }
 })
 
 // ── WhatsApp IPC ──

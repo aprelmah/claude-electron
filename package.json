@@ -79,8 +79,12 @@
       "automation-pty.html",
       "automation-pty-renderer.js",
       "automation-pty-preload.js",
+      "task-chat.html",
+      "task-chat-renderer.js",
+      "task-chat-preload.js",
       "scheduler/**/*",
       "automations/**/*",
+      "tasks/**/*",
       "main/**/*",
       "node_modules/**/*"
     ],

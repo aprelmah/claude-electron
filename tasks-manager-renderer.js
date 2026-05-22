@@ -1821,6 +1821,21 @@ async function refreshAutoLog() {
 
 function wireEvents() {
   $('#btn-new').addEventListener('click', newTask);
+  const btnNewWithAi = $('#btn-new-with-ai');
+  if (btnNewWithAi) {
+    btnNewWithAi.addEventListener('click', async () => {
+      if (!api.openTaskChat) {
+        toast('Asistente no disponible en este build', 'error');
+        return;
+      }
+      try {
+        const r = await api.openTaskChat();
+        if (r && r.ok === false) toast(r.error || 'No se pudo abrir el asistente', 'error');
+      } catch (e) {
+        toast('Error: ' + (e && e.message ? e.message : e), 'error');
+      }
+    });
+  }
   $('#btn-close').addEventListener('click', () => api.close());
   $('#btn-minimize').addEventListener('click', () => api.minimize());
   $('#btn-save').addEventListener('click', saveTask);
