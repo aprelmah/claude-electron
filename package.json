@@ -52,6 +52,7 @@
       "telegram-bridge.js",
       "preload.js",
       "renderer.js",
+      "project-picker.js",
       "index.html",
       "lan-client.html",
       "styles.css",
