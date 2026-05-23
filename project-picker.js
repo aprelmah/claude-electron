@@ -115,7 +115,11 @@
       return
     }
 
-    for (const row of rows) {
+    const PAGE_SIZE = 50
+    let rendered = 0
+    let loadMoreLi = null
+
+    const appendRow = (row) => {
       const li = document.createElement('li')
       li.setAttribute('role', 'button')
       li.setAttribute('tabindex', '0')
@@ -137,6 +141,26 @@
       })
       sessionsListEl.appendChild(li)
     }
+
+    const renderNextPage = () => {
+      if (loadMoreLi) { loadMoreLi.remove(); loadMoreLi = null }
+      const end = Math.min(rendered + PAGE_SIZE, rows.length)
+      for (let i = rendered; i < end; i++) appendRow(rows[i])
+      rendered = end
+      if (rendered < rows.length) {
+        loadMoreLi = document.createElement('li')
+        loadMoreLi.className = 'picker-load-more'
+        loadMoreLi.textContent = `Ver más (${rows.length - rendered} restantes)`
+        loadMoreLi.setAttribute('role', 'button')
+        loadMoreLi.setAttribute('tabindex', '0')
+        loadMoreLi.addEventListener('click', renderNextPage)
+        loadMoreLi.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); renderNextPage() }
+        })
+        sessionsListEl.appendChild(loadMoreLi)
+      }
+    }
+    renderNextPage()
   }
 
   async function selectCwd(cwd) {

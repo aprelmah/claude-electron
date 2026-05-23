@@ -3874,7 +3874,11 @@ async function openSessions() {
     return
   }
 
-  for (const s of sessions) {
+  const PAGE_SIZE = 50
+  let rendered = 0
+  let loadMoreBtn = null
+
+  const appendSessionRow = (s) => {
     const row = document.createElement('div')
     row.className = 'session-row'
     row.innerHTML = `
@@ -3996,11 +4000,27 @@ async function openSessions() {
       await window.api.deleteSession(cwd, s.id)
       sessionLinksCache.delete(s.id)
       row.remove()
-      if (!sessionsList.children.length) sessionsEmpty.classList.remove('hidden')
+      if (!sessionsList.querySelector('.session-row')) sessionsEmpty.classList.remove('hidden')
     })
 
     sessionsList.appendChild(row)
   }
+
+  const renderPage = () => {
+    if (loadMoreBtn) { loadMoreBtn.remove(); loadMoreBtn = null }
+    const end = Math.min(rendered + PAGE_SIZE, sessions.length)
+    for (let i = rendered; i < end; i++) appendSessionRow(sessions[i])
+    rendered = end
+    if (rendered < sessions.length) {
+      loadMoreBtn = document.createElement('button')
+      loadMoreBtn.className = 'session-load-more'
+      loadMoreBtn.type = 'button'
+      loadMoreBtn.textContent = `Ver más (${sessions.length - rendered} restantes)`
+      loadMoreBtn.addEventListener('click', renderPage)
+      sessionsList.appendChild(loadMoreBtn)
+    }
+  }
+  renderPage()
 }
 
 btnSessions.addEventListener('click', openSessions)
