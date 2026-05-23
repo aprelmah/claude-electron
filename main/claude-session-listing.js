@@ -112,7 +112,93 @@ function extractCodexSessionFirstPrompt(filePath, maxBytes = 64 * 1024) {
   return ''
 }
 
-function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, extractTurnText }) {
+function streamFirstUserPreview(filePath, extractTurnText, chunkSize = 64 * 1024, maxBytes = 4 * 1024 * 1024) {
+  let fd = -1
+  try {
+    fd = fs.openSync(filePath, 'r')
+  } catch {
+    return ''
+  }
+  try {
+    const buf = Buffer.alloc(chunkSize)
+    let leftover = ''
+    let pos = 0
+    let totalRead = 0
+    while (totalRead < maxBytes) {
+      const read = fs.readSync(fd, buf, 0, chunkSize, pos)
+      if (read <= 0) break
+      pos += read
+      totalRead += read
+      const chunk = buf.slice(0, read).toString('utf-8')
+      const combined = leftover + chunk
+      const lines = combined.split('\n')
+      leftover = lines.pop() || ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let obj = null
+        try { obj = JSON.parse(trimmed) } catch { continue }
+        if (obj?.type !== 'user') continue
+        const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
+        if (text && !text.startsWith('Caveat:')) {
+          return text.slice(0, 160)
+        }
+      }
+      if (read < chunkSize) break
+    }
+    if (leftover.trim()) {
+      try {
+        const obj = JSON.parse(leftover.trim())
+        if (obj?.type === 'user') {
+          const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
+          if (text && !text.startsWith('Caveat:')) return text.slice(0, 160)
+        }
+      } catch {}
+    }
+  } finally {
+    try { fs.closeSync(fd) } catch {}
+  }
+  return ''
+}
+
+function streamCountLines(filePath, chunkSize = 64 * 1024) {
+  let fd = -1
+  try {
+    fd = fs.openSync(filePath, 'r')
+  } catch {
+    return 0
+  }
+  try {
+    const buf = Buffer.alloc(chunkSize)
+    let pos = 0
+    let count = 0
+    let lastByte = -1
+    while (true) {
+      const read = fs.readSync(fd, buf, 0, chunkSize, pos)
+      if (read <= 0) break
+      pos += read
+      for (let i = 0; i < read; i++) {
+        if (buf[i] === 0x0a) count++
+        lastByte = buf[i]
+      }
+      if (read < chunkSize) break
+    }
+    if (lastByte !== -1 && lastByte !== 0x0a) count++
+    return count
+  } finally {
+    try { fs.closeSync(fd) } catch {}
+  }
+}
+
+function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, extractTurnText, claudeIndex = null }) {
+  function resolveIndex() {
+    if (!claudeIndex) return null
+    if (typeof claudeIndex === 'function') {
+      try { return claudeIndex() || null } catch { return null }
+    }
+    return claudeIndex
+  }
+
   function listClaudeSessionsForCwd(cwd, options = {}) {
     const dir = resolveClaudeProjectDir(cwd)
     if (!dir || !fs.existsSync(dir)) return []
@@ -123,34 +209,55 @@ function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, ext
       return []
     }
 
+    const idx = resolveIndex()
+    const cwdKey = String(cwd || '').trim()
+    const cachedMap = idx && cwdKey ? idx.getForCwd(cwdKey) : {}
+    const seenIds = new Set()
+
     const rows = files.map((f) => {
       const id = f.replace(/\.jsonl$/, '')
       if (!isReusableClaudeSessionId(id)) return null
+      seenIds.add(id)
       const fullPath = path.join(dir, f)
       let mtime = 0
       let size = 0
-      let preview = ''
-      let msgCount = 0
+      let stat = null
       try {
-        const stat = fs.statSync(fullPath)
+        stat = fs.statSync(fullPath)
         mtime = stat.mtime.getTime()
         size = stat.size
-        const content = fs.readFileSync(fullPath, 'utf-8')
-        const lines = content.split('\n').filter((l) => l.trim())
-        msgCount = lines.length
-        for (const line of lines) {
-          try {
-            const obj = JSON.parse(line)
-            if (obj.type === 'user') {
-              const text = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
-              if (text && !text.startsWith('Caveat:')) {
-                preview = text.slice(0, 160)
-                break
-              }
-            }
-          } catch {}
+      } catch {
+        return {
+          id,
+          mtime: 0,
+          size: 0,
+          preview: '(sin contenido)',
+          msgCount: 0,
+          path: fullPath
         }
-      } catch {}
+      }
+
+      const cached = cachedMap[id]
+      if (cached && cached.mtime === mtime && cached.size === size) {
+        return {
+          id,
+          mtime,
+          size,
+          preview: cached.preview || '(sin contenido)',
+          msgCount: Number.isFinite(cached.msgCount) ? cached.msgCount : 0,
+          path: fullPath
+        }
+      }
+
+      const preview = streamFirstUserPreview(fullPath, extractTurnText)
+      const msgCount = streamCountLines(fullPath)
+
+      if (idx && cwdKey) {
+        try {
+          idx.set(cwdKey, id, { preview, msgCount, mtime, size })
+        } catch {}
+      }
+
       return {
         id,
         mtime,
@@ -162,6 +269,14 @@ function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, ext
     })
       .filter(Boolean)
       .sort((a, b) => b.mtime - a.mtime)
+
+    if (idx && cwdKey) {
+      for (const sid of Object.keys(cachedMap)) {
+        if (!seenIds.has(sid)) {
+          try { idx.removeSession(cwdKey, sid) } catch {}
+        }
+      }
+    }
 
     const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
     return rows.slice(0, limit)
@@ -235,5 +350,7 @@ module.exports = {
   listCodexSessionFiles,
   readFirstNonEmptyLine,
   extractCodexSessionFirstPrompt,
+  streamFirstUserPreview,
+  streamCountLines,
   createSessionListing
 }

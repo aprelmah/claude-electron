@@ -44,6 +44,7 @@ const {
 } = require('./main/session-helpers')
 const { createRecentCwds } = require('./main/recent-cwds')
 const { createLastContext } = require('./main/last-context')
+const { createClaudeSessionsIndex } = require('./main/claude-sessions-index')
 const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
@@ -1400,6 +1401,7 @@ let tasksInbox = null
 let sessionLinks = null
 let recentCwds = null
 let lastContext = null
+let claudeSessionsIndex = null
 let automationManager = null
 let automationChat = null
 let cwdHistoryCache = []
@@ -2377,6 +2379,12 @@ app.whenReady().then(async () => {
     })
     recentCwds = createRecentCwds({ userDataDir: app.getPath('userData') })
     lastContext = createLastContext({ userDataDir: app.getPath('userData') })
+    try {
+      claudeSessionsIndex = createClaudeSessionsIndex({ userDataDir: app.getPath('userData') })
+    } catch (err) {
+      console.error('[claude-sessions-index] init failed:', err?.message || err)
+      claudeSessionsIndex = null
+    }
   } catch (err) {
     console.error('[tasks] scheduler init failed:', err?.message || err)
     tasksScheduler = null
@@ -2853,7 +2861,8 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
 const _sessionListing = createSessionListing({
   resolveClaudeProjectDir,
   resolveExistingDir,
-  extractTurnText
+  extractTurnText,
+  claudeIndex: () => claudeSessionsIndex
 })
 const {
   listClaudeSessionsForCwd,
@@ -2879,6 +2888,7 @@ ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
   if (fs.existsSync(file)) {
     fs.unlinkSync(file)
     forgetClaudeSessionTitle(file)
+    try { if (claudeSessionsIndex) claudeSessionsIndex.removeSession(cwd, sessionId) } catch {}
     return true
   }
   return false
