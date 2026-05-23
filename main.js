@@ -2068,6 +2068,18 @@ function initTelegramBridge() {
         ? boundCli
         : (opts?.cli === 'codex' ? 'codex' : 'claude')
 
+      // Regla: si el chat tiene sessionId persistida y NO hay binding explícito de relay PTY,
+      // ir directo a headless --resume con esa sesión. Esto cubre tareas programadas y
+      // cualquier comunicación Mac→Telegram que haya enlazado una sesión al chat.
+      const hasExplicitSid = !binding.bound && typeof opts?.sessionId === 'string' && opts.sessionId.length > 0
+      if (hasExplicitSid && targetCli === 'codex') {
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+      }
+      if (hasExplicitSid && targetCli === 'claude') {
+        const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd })
+        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+      }
+
       if (targetCli === 'codex') {
         // Codex por Telegram se mantiene en ruta headless estable (resume por thread_id).
         // El relay PTY en Codex puede no delimitar fin de turno de forma consistente y provocar latencia/doble respuesta.
@@ -2143,6 +2155,22 @@ function initTelegramBridge() {
           : `chat=${chatId || ''}`,
         ok: ok !== false
       })
+    },
+    onOpenTaskSession: async ({ sessionId, cli, cwd, taskName }) => {
+      try {
+        if (!sessionId || !isValidSessionId(sessionId)) {
+          return { ok: false, error: 'sessionId inválido' }
+        }
+        const win = await openTaskSessionWindow({
+          sessionId,
+          cwd: cwd || '',
+          cli: cli === 'codex' ? 'codex' : 'claude',
+          taskName: taskName || ''
+        })
+        return win ? { ok: true } : { ok: false, error: 'No se pudo abrir la ventana' }
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err) }
+      }
     }
   })
 }

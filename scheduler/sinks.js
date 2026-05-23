@@ -39,8 +39,21 @@ function createSinks({ telegramBridge, broadcastToAllWindows }) {
         const body = run.status === 'ok'
           ? ((run.output && run.output.slice(0, 3500)) || '(sin salida)')
           : (run.error || '(error desconocido)')
-        log(`task=${task.name}: sending to chatId=${chatId} (length=${head.length + body.length + 2})`)
-        const result = await send.call(bridge, chatId, `${head}\n\n${body}`)
+        const sessionId = (run && run.sessionId) || (task && task.sessionId) || null
+        if (sessionId && typeof bridge.rememberRunForChat === 'function') {
+          try {
+            bridge.rememberRunForChat(chatId, {
+              sessionId,
+              cli: task.cli || 'claude',
+              cwd: (run && run.cwd) || (task && task.cwd) || '',
+              taskName: task.name || '',
+              runId: run.runId
+            })
+          } catch {}
+        }
+        const hint = (run.status === 'ok' && sessionId) ? '\n\nResponde /abrir para continuar esta sesión en el Mac.' : ''
+        log(`task=${task.name}: sending to chatId=${chatId} (length=${head.length + body.length + hint.length + 2})`)
+        const result = await send.call(bridge, chatId, `${head}\n\n${body}${hint}`)
         log(`task=${task.name}: send OK result=${JSON.stringify(result).slice(0,200)}`)
       } catch (err) {
         log(`task=${task.name}: EXCEPTION ${err && err.stack ? err.stack : (err && err.message) || String(err)}`)

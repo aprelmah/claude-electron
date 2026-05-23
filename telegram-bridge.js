@@ -172,7 +172,8 @@ class TelegramBridge {
     onUnlinkRelay,
     onStatus,
     onSemanticInput,
-    onSemanticOutput
+    onSemanticOutput,
+    onOpenTaskSession
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -185,6 +186,8 @@ class TelegramBridge {
     this.onStatus = onStatus
     this.onSemanticInput = onSemanticInput
     this.onSemanticOutput = onSemanticOutput
+    this.onOpenTaskSession = onOpenTaskSession
+    this.lastRunByChat = new Map()
 
     this.config = null
     this.running = false
@@ -645,6 +648,7 @@ class TelegramBridge {
         '/salir   -> desconectar este chat del relay PTY',
         '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
+        '/abrir   -> abrir en el Mac la sesión del último run programado',
         '',
         'Manda texto normal o una nota de voz para hablar con el CLI activo.'
       ].join('\n'))
@@ -726,6 +730,52 @@ class TelegramBridge {
       return
     }
 
+    if (lower === '/abrir' || lower === '/sesion' || lower === '/sesión' || lower === '/continuar') {
+      const last = this.lastRunByChat.get(String(chatId))
+      if (!last || !last.sessionId) {
+        await this._sendMessage(chatId, 'No hay sesión reciente para abrir. Espera a que termine una tarea programada.')
+        return
+      }
+      const targetCli = last.cli === 'codex' ? 'codex' : 'claude'
+      const notes = []
+      try {
+        const unlinkRes = await this.onUnlinkRelay?.(String(chatId))
+        if (unlinkRes?.detached) notes.push('relay PTY anterior desenlazado')
+      } catch {}
+      try {
+        const activeCli = await this.onGetActiveCli?.()
+        if (activeCli && activeCli !== targetCli) {
+          const switchRes = await this.onSetCli?.(targetCli)
+          if (switchRes?.ok) notes.push(`CLI cambiado a ${targetCli}`)
+          else notes.push(`atención: CLI activo es ${activeCli}, la sesión usa ${targetCli}`)
+        }
+      } catch {}
+      this._setSessionId(chatId, targetCli, last.sessionId)
+      let openErr = null
+      try {
+        const result = await this.onOpenTaskSession?.({
+          sessionId: last.sessionId,
+          cli: targetCli,
+          cwd: last.cwd || '',
+          taskName: last.taskName || '',
+          chatId: String(chatId)
+        })
+        if (!result?.ok) openErr = result?.error || 'desconocido'
+      } catch (err) {
+        openErr = err?.message || String(err)
+      }
+      const label = last.taskName || `${last.sessionId.slice(0, 8)}…`
+      const lines = [
+        `Enlazado a la sesión "${label}".`,
+        'Tus próximos mensajes continúan esta conversación.'
+      ]
+      if (notes.length) lines.push(`(${notes.join(' · ')})`)
+      if (openErr) lines.push(`No abrí ventana local: ${openErr}`)
+      else lines.push('Ventana abierta en el Mac.')
+      await this._sendMessage(chatId, lines.join('\n'))
+      return
+    }
+
     await this._sendMessage(chatId, 'Comando no reconocido. Usa /help.')
   }
 
@@ -790,6 +840,23 @@ class TelegramBridge {
       req.write(body)
       req.end()
     })
+  }
+
+  rememberRunForChat(chatId, runInfo) {
+    if (!chatId || !runInfo || !runInfo.sessionId) return
+    const key = String(chatId)
+    this.lastRunByChat.set(key, {
+      sessionId: String(runInfo.sessionId),
+      cli: runInfo.cli === 'codex' ? 'codex' : 'claude',
+      cwd: typeof runInfo.cwd === 'string' ? runInfo.cwd : '',
+      taskName: typeof runInfo.taskName === 'string' ? runInfo.taskName : '',
+      runId: typeof runInfo.runId === 'string' ? runInfo.runId : '',
+      ts: Date.now()
+    })
+    if (this.lastRunByChat.size > 64) {
+      const oldestKey = this.lastRunByChat.keys().next().value
+      if (oldestKey) this.lastRunByChat.delete(oldestKey)
+    }
   }
 
   async _sendMessage(chatId, text) {

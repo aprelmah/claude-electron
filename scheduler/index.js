@@ -80,6 +80,7 @@ class TaskScheduler {
     let output = ''
     let error = null
     let status = 'ok'
+    let runSessionId = null
     const t0 = Date.now()
 
     try {
@@ -95,8 +96,11 @@ class TaskScheduler {
         }
       })
       if (result && typeof result.output === 'string') output = result.output
-      if (task.resume && result && result.sessionId && result.sessionId !== task.sessionId) {
-        try { await this.persistence.updateTask(taskId, { sessionId: result.sessionId }) } catch {}
+      if (result && typeof result.sessionId === 'string' && result.sessionId) {
+        runSessionId = result.sessionId
+      }
+      if (task.resume && runSessionId && runSessionId !== task.sessionId) {
+        try { await this.persistence.updateTask(taskId, { sessionId: runSessionId }) } catch {}
       }
     } catch (e) {
       if (e && (e.name === 'AbortError' || /cancel/i.test(e.message || ''))) {
@@ -118,6 +122,8 @@ class TaskScheduler {
       taskId,
       taskName: task.name,
       cli: task.cli,
+      cwd: task.cwd || '',
+      sessionId: runSessionId,
       startedAt,
       finishedAt,
       durationMs,

@@ -381,7 +381,11 @@ function buildRunItem(run, isLive) {
   const status = isLive ? 'running' : (run.status || 'ok');
   const pill = el('span', { class: 'run-status-pill ' + status }, isLive ? 'live' : status);
   const when = el('div', { class: 'run-when' }, isLive ? 'Ejecutando ahora' : fmtAbs(run.startedAt || run.finishedAt));
-  const top = el('div', { class: 'run-top' }, pill, when);
+  const topChildren = [pill, when];
+  if (!isLive && run && run.sessionId) {
+    topChildren.push(el('span', { class: 'run-session-chip', title: 'Sesión disponible — clic para abrir' }, '▶ sesión'));
+  }
+  const top = el('div', { class: 'run-top' }, ...topChildren);
   const metaParts = [];
   if (!isLive) metaParts.push(fmtDuration(run.durationMs));
   if (!state.selectedId && run.taskName) metaParts.push(run.taskName);
@@ -409,6 +413,32 @@ function showRunModal(run) {
       toast('Error al copiar', 'error');
     }
   };
+  const btnOpen = $('#btn-modal-open-session');
+  if (btnOpen) {
+    if (run && run.sessionId && api.openSession) {
+      btnOpen.style.display = '';
+      btnOpen.onclick = async () => {
+        try {
+          const res = await api.openSession({
+            sessionId: run.sessionId,
+            cwd: run.cwd || '',
+            cli: run.cli || 'claude',
+            taskName: run.taskName || ''
+          });
+          if (res && res.ok === false) {
+            toast(res.error || 'No se pudo abrir la sesión', 'error');
+          } else {
+            hideModal();
+          }
+        } catch (e) {
+          toast(`Error al abrir sesión: ${e?.message || e}`, 'error');
+        }
+      };
+    } else {
+      btnOpen.style.display = 'none';
+      btnOpen.onclick = null;
+    }
+  }
 }
 
 function hideModal() {
