@@ -4,7 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   getPathForFile: (file) => {
     try { return webUtils?.getPathForFile?.(file) || '' } catch { return '' }
   },
-  startPty: (cols, rows, cwd) => ipcRenderer.invoke('pty-start', { cols, rows, cwd }),
+  startPty: (cols, rows, cwd, opts) => ipcRenderer.invoke('pty-start', { cols, rows, cwd, cli: opts?.cli, sessionId: opts?.sessionId }),
   writePty: (data) => ipcRenderer.send('pty-input', data),
   resizePty: (cols, rows) => ipcRenderer.send('pty-resize', { cols, rows }),
   restartPty: (cwd, cols, rows) => ipcRenderer.invoke('pty-restart', { cwd, cols, rows }),
@@ -20,14 +20,26 @@ contextBridge.exposeInMainWorld('api', {
 
   readDir: (path) => ipcRenderer.invoke('fs-read-dir', path),
   pickFolder: () => ipcRenderer.invoke('fs-pick-folder'),
+  isDir: (p) => ipcRenderer.invoke('fs:is-dir', p),
   homeDir: () => ipcRenderer.invoke('fs-home'),
   watchDir: (p) => ipcRenderer.invoke('fs-watch-dir', p),
   onTreeChanged: (cb) => ipcRenderer.on('tree-changed', (_, reason) => cb(reason)),
 
-  listSessions: (cwd) => ipcRenderer.invoke('list-sessions', cwd),
+  listSessions: (cwd, cli) => ipcRenderer.invoke('list-sessions', cwd, cli),
   deleteSession: (cwd, sessionId) => ipcRenderer.invoke('delete-session', { cwd, sessionId }),
   updateSessionTitle: (cwd, sessionId, title) => ipcRenderer.invoke('update-session-title', { cwd, sessionId, title }),
-  resumeSession: (sessionId, cwd, cols, rows) => ipcRenderer.invoke('resume-session', { sessionId, cwd, cols, rows }),
+  resumeSession: (sessionId, cwd, cols, rows, cli) => ipcRenderer.invoke('resume-session', { sessionId, cwd, cols, rows, cli }),
+
+  recentCwds: {
+    list: () => ipcRenderer.invoke('recent-cwds:list'),
+    push: (cwd) => ipcRenderer.invoke('recent-cwds:push', cwd),
+    remove: (cwd) => ipcRenderer.invoke('recent-cwds:remove', cwd)
+  },
+  lastContext: {
+    get: () => ipcRenderer.invoke('last-context:get'),
+    mostRecent: () => ipcRenderer.invoke('last-context:most-recent'),
+    clear: () => ipcRenderer.invoke('last-context:clear')
+  },
 
   fileInfo: (p) => ipcRenderer.invoke('file-info', p),
   fileRead: (p) => ipcRenderer.invoke('file-read', p),

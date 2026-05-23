@@ -39,8 +39,11 @@ const {
   escapeSqlLiteral,
   escapeForCompactedPrompt,
   extractCodexResumeId,
-  extractClaudeResumeId
+  extractClaudeResumeId,
+  buildResumeArgs
 } = require('./main/session-helpers')
+const { createRecentCwds } = require('./main/recent-cwds')
+const { createLastContext } = require('./main/last-context')
 const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
 const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-ipc')
@@ -1395,6 +1398,8 @@ function createWindow() {
 let tasksScheduler = null
 let tasksInbox = null
 let sessionLinks = null
+let recentCwds = null
+let lastContext = null
 let automationManager = null
 let automationChat = null
 let cwdHistoryCache = []
@@ -2370,6 +2375,8 @@ app.whenReady().then(async () => {
       getTelegramSessionsByChat: null,
       getWhatsAppLinks: null
     })
+    recentCwds = createRecentCwds({ userDataDir: app.getPath('userData') })
+    lastContext = createLastContext({ userDataDir: app.getPath('userData') })
   } catch (err) {
     console.error('[tasks] scheduler init failed:', err?.message || err)
     tasksScheduler = null
@@ -2598,11 +2605,27 @@ app.on('before-quit', () => {
 })
 
 // ── PTY IPC ──
-ipcMain.handle('pty-start', (event, { cols, rows, cwd }) => {
+ipcMain.handle('pty-start', (event, { cols, rows, cwd, cli, sessionId } = {}) => {
   const s = getSessionByEvent(event)
   if (!s) return null
-  startPty(s, cols, rows, cwd)
+  if (cli && (cli === 'claude' || cli === 'codex') && s.activeCli !== cli) {
+    const switchResult = setActiveCli(s, cli)
+    if (!switchResult.ok) {
+      notifyPtyError(s, switchResult.error || 'No se pudo cambiar de CLI')
+      throw new Error(switchResult.error || 'No se pudo cambiar de CLI')
+    }
+  }
+  const args = sessionId ? buildResumeArgs(s.activeCli, sessionId) : []
+  startPty(s, cols, rows, cwd, args)
   if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+  try {
+    if (recentCwds && s.cwd) recentCwds.push(s.cwd)
+    if (lastContext) lastContext.set(s.wcId, {
+      cwd: s.cwd,
+      cli: s.activeCli,
+      sessionId: sessionId || null
+    })
+  } catch {}
   return s.cwd
 })
 
@@ -2633,6 +2656,42 @@ ipcMain.on('pty-resize', (event, { cols, rows }) => {
     s.rows = rows
   }
   try { s.pty?.resize(cols, rows) } catch {}
+})
+
+// ── Recent cwds + last context (flujo arranque cwd-first) ──
+ipcMain.handle('fs:is-dir', (_event, p) => {
+  try {
+    const target = String(p || '').trim()
+    if (!target) return false
+    if (!isPathSafe(target, allowedFsRoots())) return false
+    return fs.statSync(target).isDirectory()
+  } catch { return false }
+})
+ipcMain.handle('recent-cwds:list', () => {
+  try { return recentCwds ? recentCwds.list() : [] } catch { return [] }
+})
+ipcMain.handle('recent-cwds:push', (_event, cwd) => {
+  try { return recentCwds ? recentCwds.push(cwd) : [] } catch { return [] }
+})
+ipcMain.handle('recent-cwds:remove', (_event, cwd) => {
+  try { return recentCwds ? recentCwds.remove(cwd) : [] } catch { return [] }
+})
+ipcMain.handle('last-context:get', (event) => {
+  try {
+    const s = getSessionByEvent(event)
+    if (!s || !lastContext) return null
+    return lastContext.get(s.wcId)
+  } catch { return null }
+})
+ipcMain.handle('last-context:most-recent', () => {
+  try { return lastContext ? lastContext.mostRecent() : null } catch { return null }
+})
+ipcMain.handle('last-context:clear', (event) => {
+  try {
+    const s = getSessionByEvent(event)
+    if (!s || !lastContext) return
+    lastContext.remove(s.wcId)
+  } catch {}
 })
 
 ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
@@ -2798,7 +2857,10 @@ const {
   listLanReusableSessions
 } = _sessionListing
 
-ipcMain.handle('list-sessions', async (event, cwd) => {
+ipcMain.handle('list-sessions', async (event, cwd, cli) => {
+  if (cli === 'codex') {
+    return listCodexSessionsForCwd(cwd, { limit: 1000 })
+  }
   return listClaudeSessionsForCwd(cwd, { limit: 1000 })
 })
 
@@ -2891,15 +2953,30 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
   }
 })
 
-ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows }) => {
+ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows, cli } = {}) => {
   const s = getSessionByEvent(event)
   if (!s) return null
+  if (cli && (cli === 'claude' || cli === 'codex') && s.activeCli !== cli) {
+    const switchResult = setActiveCli(s, cli)
+    if (!switchResult.ok) {
+      notifyPtyError(s, switchResult.error || 'No se pudo cambiar de CLI')
+      throw new Error(switchResult.error || 'No se pudo cambiar de CLI')
+    }
+  }
   killPty(s)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(s, cols, rows, cwd, ['--resume', sessionId])
+        startPty(s, cols, rows, cwd, buildResumeArgs(s.activeCli, sessionId))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
+        try {
+          if (recentCwds && s.cwd) recentCwds.push(s.cwd)
+          if (lastContext) lastContext.set(s.wcId, {
+            cwd: s.cwd,
+            cli: s.activeCli,
+            sessionId: sessionId || null
+          })
+        } catch {}
         resolve(s.cwd)
       } catch (err) {
         reject(err)
