@@ -43,6 +43,7 @@ const {
   buildResumeArgs
 } = require('./main/session-helpers')
 const { createRecentCwds } = require('./main/recent-cwds')
+const { createCodexSessionsIndex } = require('./main/codex-sessions-index')
 const { createLastContext } = require('./main/last-context')
 const { createCodexSessionReader } = require('./main/codex-session-reader')
 const { createAgentProposalWatcher } = require('./main/agent-proposal-watcher')
@@ -1400,6 +1401,7 @@ let tasksInbox = null
 let sessionLinks = null
 let recentCwds = null
 let lastContext = null
+let codexSessionsIndex = null
 let automationManager = null
 let automationChat = null
 let cwdHistoryCache = []
@@ -2377,6 +2379,18 @@ app.whenReady().then(async () => {
     })
     recentCwds = createRecentCwds({ userDataDir: app.getPath('userData') })
     lastContext = createLastContext({ userDataDir: app.getPath('userData') })
+    try {
+      codexSessionsIndex = createCodexSessionsIndex({ userDataDir: app.getPath('userData') })
+      if (codexSessionsIndex.isEmpty()) {
+        codexSessionsIndex.bootstrap().catch((err) => {
+          console.warn('[codex-index] bootstrap failed:', err?.message || err)
+        })
+      }
+      codexSessionsIndex.startWatcher()
+    } catch (e) {
+      console.warn('[codex-index] init failed:', e?.message || e)
+      codexSessionsIndex = null
+    }
   } catch (err) {
     console.error('[tasks] scheduler init failed:', err?.message || err)
     tasksScheduler = null
@@ -2602,6 +2616,7 @@ app.on('before-quit', () => {
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
   try { if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0) } catch {}
   try { tasksScheduler?.destroy() } catch {}
+  try { codexSessionsIndex?.stopWatcher() } catch {}
 })
 
 // ── PTY IPC ──
@@ -2853,7 +2868,8 @@ ipcMain.handle('fs-watch-dir', (event, dirPath) => {
 const _sessionListing = createSessionListing({
   resolveClaudeProjectDir,
   resolveExistingDir,
-  extractTurnText
+  extractTurnText,
+  get codexIndex() { return codexSessionsIndex }
 })
 const {
   listClaudeSessionsForCwd,

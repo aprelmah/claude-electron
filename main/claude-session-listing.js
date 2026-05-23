@@ -22,8 +22,8 @@ function isReusableCodexSessionId(raw) {
   return !!id && /^[a-zA-Z0-9._:-]+$/.test(id)
 }
 
-function listCodexSessionFiles() {
-  const root = path.join(os.homedir(), '.codex', 'sessions')
+function listCodexSessionFiles(sessionsRoot) {
+  const root = sessionsRoot || path.join(os.homedir(), '.codex', 'sessions')
   if (!fs.existsSync(root)) return []
   const out = []
   let years = []
@@ -112,7 +112,13 @@ function extractCodexSessionFirstPrompt(filePath, maxBytes = 64 * 1024) {
   return ''
 }
 
-function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, extractTurnText }) {
+function createSessionListing(opts = {}) {
+  const { resolveClaudeProjectDir, resolveExistingDir, extractTurnText } = opts
+  // codexIndex puede pasarse como valor directo o como getter en el objeto opts
+  // (necesario en main.js porque se instancia después que createSessionListing).
+  function getCodexIndex() {
+    return opts.codexIndex || null
+  }
   function listClaudeSessionsForCwd(cwd, options = {}) {
     const dir = resolveClaudeProjectDir(cwd)
     if (!dir || !fs.existsSync(dir)) return []
@@ -170,6 +176,24 @@ function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, ext
   function listCodexSessionsForCwd(cwd, options = {}) {
     const targetCwd = resolveExistingDir(cwd) || String(cwd || '').trim()
     if (!targetCwd) return []
+    const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
+    const idx = getCodexIndex()
+    if (idx && typeof idx.getForCwd === 'function') {
+      const entries = idx.getForCwd(targetCwd)
+      if (entries && entries.length > 0) {
+        return entries.slice(0, limit).map((e) => ({
+          id: e.id,
+          mtime: e.mtime,
+          size: e.size,
+          preview: e.preview || '(sin contenido)',
+          msgCount: 0,
+          path: e.path,
+          cli: 'codex'
+        }))
+      }
+      // Si el índice está vacío para este cwd, caer al walk como red de seguridad
+      // (puede ser que el bootstrap aún no haya completado).
+    }
     const files = listCodexSessionFiles()
     if (!files.length) return []
     const rows = []
@@ -204,7 +228,6 @@ function createSessionListing({ resolveClaudeProjectDir, resolveExistingDir, ext
       })
     }
     rows.sort((a, b) => b.mtime - a.mtime)
-    const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
     return rows.slice(0, limit)
   }
 
