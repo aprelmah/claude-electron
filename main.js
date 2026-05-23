@@ -71,6 +71,7 @@ const {
   LAN_CODEX_EFFORT_LEVELS: _LAN_CODEX_EFFORT_LEVELS
 } = require('./main/lan-helpers')
 const { createTelegramRelayBindings } = require('./main/telegram-relay-bindings')
+const { createTelegramHiddenPtyPool } = require('./main/telegram-hidden-pty-pool')
 const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
@@ -217,6 +218,7 @@ let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
 let telegramBridge = null
+let telegramHiddenPtyPool = null
 let whatsappClient = null
 let whatsappReachable = false
 let whatsappRetryTimer = null
@@ -883,7 +885,25 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   const targetCli = mode || session.activeCli
   if (targetCli !== 'claude' && targetCli !== 'codex') return null
   if (session.activeCli !== targetCli) return null
-  if (session.relayActive) return null
+  // Si hay un turno en vuelo (relayActive), esperar a que se libere (máx 30s)
+  // en vez de devolver null inmediato. Cubre race del bridge bajo carga: la cola
+  // por chat ya serializa, pero un cleanup tardío del turno anterior podría dejar
+  // relayActive=true por unos ms. Sin esto, el segundo turno caía a "PTY enlazado falló".
+  if (session.relayActive) {
+    const RELAY_BUSY_WAIT_MS = 30000
+    const RELAY_BUSY_POLL_MS = 50
+    const waitStart = Date.now()
+    while (session.relayActive && Date.now() - waitStart < RELAY_BUSY_WAIT_MS) {
+      if (signal?.aborted) {
+        const err = new Error('Request aborted')
+        err.name = 'AbortError'
+        throw err
+      }
+      await new Promise((r) => setTimeout(r, RELAY_BUSY_POLL_MS))
+      if (!session?.pty) return null
+    }
+    if (session.relayActive) return null
+  }
   const message = String(prompt || '').trim()
   if (!message) return null
 
@@ -897,15 +917,28 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   session.relayActive = true
 
   return new Promise((resolve, reject) => {
-    const MAX_WAIT_MS = 120000
-    const WAIT_FIRST_OUTPUT_MS = 25000
+    const MAX_WAIT_MS = 180000
+    // WAIT_FIRST_OUTPUT_MS: techo absoluto para "primer signo de vida" tras el write.
+    // Subido a 90s para cubrir modelos pensantes (Sonnet/Opus extended thinking) y
+    // MCPs lentos (Supabase, WebFetch, indexado cwd grande). Con el liveness check
+    // del transcript abajo, en la práctica solo dispara si el PTY está realmente
+    // colgado (claude crasheó, MCP timeout interno, etc.).
+    const WAIT_FIRST_OUTPUT_MS = 90000
+    // LIVENESS_POLL_MS: cada X ms revisamos si el transcript JSONL creció durante
+    // el wait inicial. Claude CLI escribe al JSONL antes de redibujar el TUI cuando
+    // el modelo está razonando o llamando tools. Si crece, el modelo está vivo y
+    // reseteamos firstOutputTimer (sin marcar sawAnyOutput aún — eso es señal de
+    // texto real en el PTY).
+    const LIVENESS_POLL_MS = 2000
     const SILENCE_MS = targetCli === 'codex' ? 3200 : 2200
     const ECHO_SKIP_MS = 700
     const FORCE_FINAL_TEXT_MS = 15000
     const FORCE_END_RELAY_MS = 45000
     const MAX_CAPTURE_CHARS = 180000
 
-    const startedAt = Date.now()
+    // startedAt se reajusta tras el pre-drain para que los timers y el filtro
+    // por timestamp del transcript cuenten desde el momento real del write.
+    let startedAt = Date.now()
     let lastDataAt = startedAt
     let sawAnyOutput = false
     let capture = ''
@@ -913,6 +946,8 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
     let silenceTimer = null
     let firstOutputTimer = null
     let maxTimer = null
+    let livenessTimer = null
+    let livenessBaseline = null
 
     const finishErr = (err) => {
       cleanup()
@@ -947,11 +982,12 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       if (candidate) {
         sid = candidate.sessionId || sid
         const offset = candidate.before?.size || 0
-        fromTranscript = extractAssistantTextFromTranscript(candidate.filePath, offset)
-        if (!fromTranscript.text) {
-          // Rescate: última respuesta del transcript completo.
-          fromTranscript = extractAssistantTextFromTranscript(candidate.filePath, 0)
-        }
+        // Filtrar por timestamp del turno: una respuesta tardía del turno previo
+        // puede escribirse al transcript después del snapshot inicial, lo que
+        // antes provocaba que el turno N+1 devolviera la respuesta del turno N.
+        fromTranscript = extractAssistantTextFromTranscript(candidate.filePath, offset, startedAt)
+        // Nota: no se hace rescate leyendo el transcript desde 0 porque eso reintroduce
+        // respuestas de turnos anteriores y desfasa la conversación en Telegram.
       }
       if (sid) session.claudeSessionId = sid
       return { sid, fromTranscript }
@@ -1022,6 +1058,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       if (silenceTimer) clearTimeout(silenceTimer)
       if (firstOutputTimer) clearTimeout(firstOutputTimer)
       if (maxTimer) clearTimeout(maxTimer)
+      if (livenessTimer) clearInterval(livenessTimer)
       if (signal) signal.removeEventListener('abort', onAbort)
       if (session) {
         session.relayActive = false
@@ -1030,22 +1067,11 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       }
     }
 
-    session.relayListener = (chunk) => {
-      if (finalized) return
-      const raw = typeof chunk === 'string' ? chunk : String(chunk || '')
-      if (!raw) return
-      sawAnyOutput = true
-      lastDataAt = Date.now()
-      if (firstOutputTimer) {
-        clearTimeout(firstOutputTimer)
-        firstOutputTimer = null
-      }
-      if (lastDataAt - startedAt > ECHO_SKIP_MS) {
-        capture += raw
-        if (capture.length > MAX_CAPTURE_CHARS) capture = capture.slice(-MAX_CAPTURE_CHARS)
-      }
-      armSilenceTimer()
-    }
+    const PRE_DRAIN_MS = 250
+    // Listener provisional: absorbe cualquier residuo del turno previo durante PRE_DRAIN_MS
+    // antes de escribir el nuevo prompt. Evita que output tardío del turno N contamine
+    // el capture/timer del turno N+1.
+    session.relayListener = () => {}
 
     session.relayCancel = (err) => {
       if (finalized) return
@@ -1059,21 +1085,97 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    firstOutputTimer = setTimeout(() => {
-      if (finalized || sawAnyOutput) return
-      const err = new Error('Relay no output')
-      err.name = 'RelayNoOutput'
-      finishErr(err)
-    }, WAIT_FIRST_OUTPUT_MS)
+    setTimeout(() => {
+      if (finalized) return
+      if (!session?.pty) {
+        const err = new Error('PTY no disponible')
+        err.name = 'RelayPtyClosed'
+        finishErr(err)
+        return
+      }
+      // Reinstalar snapshot del transcript justo antes de escribir el prompt,
+      // así el offset cubre cualquier escritura tardía del turno anterior.
+      if (targetCli === 'claude') {
+        try {
+          const refreshed = snapshotClaudeSessionMeta(session.cwd)
+          for (const [k, v] of refreshed.entries()) beforeMeta.set(k, v)
+        } catch {}
+      }
 
-    maxTimer = setTimeout(() => {
-      const err = new Error('Relay timeout')
-      err.name = 'RelayTimeout'
-      finishErr(err)
-    }, MAX_WAIT_MS)
+      // Reset reloj: el turno empieza a contar desde aquí (no desde el inicio del Promise).
+      startedAt = Date.now()
+      lastDataAt = startedAt
 
-    armSilenceTimer()
-    try { session.pty.write(message + '\r') } catch (err) { finishErr(err); return }
+      // Listener real: instalado solo después del drenaje.
+      session.relayListener = (chunk) => {
+        if (finalized) return
+        const raw = typeof chunk === 'string' ? chunk : String(chunk || '')
+        if (!raw) return
+        sawAnyOutput = true
+        lastDataAt = Date.now()
+        if (firstOutputTimer) {
+          clearTimeout(firstOutputTimer)
+          firstOutputTimer = null
+        }
+        if (lastDataAt - startedAt > ECHO_SKIP_MS) {
+          capture += raw
+          if (capture.length > MAX_CAPTURE_CHARS) capture = capture.slice(-MAX_CAPTURE_CHARS)
+        }
+        armSilenceTimer()
+      }
+
+      firstOutputTimer = setTimeout(() => {
+        if (finalized || sawAnyOutput) return
+        const err = new Error('Relay no output')
+        err.name = 'RelayNoOutput'
+        finishErr(err)
+      }, WAIT_FIRST_OUTPUT_MS)
+
+      maxTimer = setTimeout(() => {
+        const err = new Error('Relay timeout')
+        err.name = 'RelayTimeout'
+        finishErr(err)
+      }, MAX_WAIT_MS)
+
+      // Liveness check (solo Claude): si el transcript JSONL crece durante el
+      // wait inicial, el modelo está vivo (escribiendo al log antes de redibujar
+      // el TUI). Reseteamos firstOutputTimer para extender la ventana sin pedir
+      // texto del PTY todavía. Cuando llegue texto real al PTY, relayListener
+      // marca sawAnyOutput y este chequeo deja de operar.
+      if (targetCli === 'claude') {
+        livenessBaseline = snapshotClaudeSessionMeta(session.cwd)
+        livenessTimer = setInterval(() => {
+          if (finalized || sawAnyOutput) return
+          if (!session?.pty) return
+          let grew = false
+          try {
+            const current = snapshotClaudeSessionMeta(session.cwd)
+            for (const [file, meta] of current.entries()) {
+              const prev = livenessBaseline.get(file)
+              if (!prev || (meta?.size || 0) > (prev?.size || 0)) {
+                grew = true
+                break
+              }
+            }
+            livenessBaseline = current
+          } catch {}
+          if (grew) {
+            // Modelo respondiendo: refresca el timer de "primer output" para no
+            // matar un turno legítimo que tarda en redibujar el TUI.
+            if (firstOutputTimer) clearTimeout(firstOutputTimer)
+            firstOutputTimer = setTimeout(() => {
+              if (finalized || sawAnyOutput) return
+              const err = new Error('Relay no output')
+              err.name = 'RelayNoOutput'
+              finishErr(err)
+            }, WAIT_FIRST_OUTPUT_MS)
+          }
+        }, LIVENESS_POLL_MS)
+      }
+
+      armSilenceTimer()
+      try { session.pty.write(message + '\r') } catch (err) { finishErr(err); return }
+    }, PRE_DRAIN_MS)
   })
 }
 
@@ -1084,7 +1186,8 @@ const _relayBindings = createTelegramRelayBindings({
   getTelegramBridge: () => telegramBridge,
   killPty: (s) => killPty(s),
   startPty: (s, cols, rows, cwd, args) => startPty(s, cols, rows, cwd, args),
-  updatePrimarySnapshot: () => updatePrimarySnapshot()
+  updatePrimarySnapshot: () => updatePrimarySnapshot(),
+  getTaskSessionByWcId: (wcId) => taskSessionStateByWc.get(wcId) || null
 })
 const {
   canRelayTelegramToPty,
@@ -1857,15 +1960,19 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
   return os.homedir()
 }
 
-async function openTaskSessionWindow({ sessionId, cwd, cli, taskName } = {}) {
+async function openTaskSessionWindow({ sessionId, cwd, cli, taskName, hidden = false } = {}) {
   if (!sessionId || typeof sessionId !== 'string') return null
   if (!isValidSessionId(sessionId)) return null
 
   const existing = taskSessionWindowsBySessionId.get(sessionId)
   if (existing && !existing.isDestroyed()) {
-    if (existing.isMinimized()) existing.restore()
-    existing.show()
-    existing.focus()
+    const existingState = taskSessionStateByWc.get(existing.webContents.id)
+    if (!hidden) {
+      if (existingState) existingState.hidden = false
+      if (existing.isMinimized()) existing.restore()
+      existing.show()
+      existing.focus()
+    }
     return existing
   }
 
@@ -1912,6 +2019,13 @@ async function openTaskSessionWindow({ sessionId, cwd, cli, taskName } = {}) {
     initialSessionId: sessionId,
     cwd: targetCwd,
     cli: targetCli,
+    activeCli: targetCli,
+    claudeSessionId: targetCli === 'claude' ? sessionId : null,
+    codexSessionId: targetCli === 'codex' ? sessionId : null,
+    relayActive: false,
+    relayListener: null,
+    relayCancel: null,
+    hidden: !!hidden,
     taskName: targetTaskName,
     theme: initialTheme,
     cols: 120,
@@ -1924,11 +2038,18 @@ async function openTaskSessionWindow({ sessionId, cwd, cli, taskName } = {}) {
   taskSessionWindowsBySessionId.set(sessionId, win)
 
   win.loadFile('task-session.html', { query: { theme: initialTheme, sid: sessionId } })
-  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.once('ready-to-show', () => {
+    if (win.isDestroyed()) return
+    const s = taskSessionStateByWc.get(wcId)
+    if (s && s.hidden) return
+    win.show()
+  })
   win.on('closed', () => {
     const s = taskSessionStateByWc.get(wcId)
     if (s) killTaskSessionPty(s)
     taskSessionStateByWc.delete(wcId)
+    try { unbindRelaySessionsByWcId(wcId) } catch {}
+    try { telegramHiddenPtyPool?.notifyWindowClosed?.(wcId) } catch {}
     if (taskSessionWindowsBySessionId.get(taskState.initialSessionId) === win) {
       taskSessionWindowsBySessionId.delete(taskState.initialSessionId)
     }
@@ -1996,6 +2117,10 @@ function startTaskSessionPty(s) {
       if (sid && sid !== st.sessionId) {
         const prev = st.sessionId
         st.sessionId = sid
+        // Mantener claudeSessionId sincronizado con la rotación: relayThroughPty
+        // lo usa para localizar el transcript actual y armar preferredSessionId.
+        if (st.activeCli === 'claude' || st.cli === 'claude') st.claudeSessionId = sid
+        try { telegramHiddenPtyPool?.notifySessionRotated?.(myWcId, sid, st.activeCli || st.cli) } catch {}
         try { st.win?.webContents.send('task-session:session-id-updated', { sessionId: sid, previous: prev }) } catch {}
         if (taskSessionWindowsBySessionId.get(prev) === st.win) {
           taskSessionWindowsBySessionId.delete(prev)
@@ -2014,8 +2139,15 @@ function startTaskSessionPty(s) {
   proc.onData((data) => {
     if (!proc._alive) return
     const st = taskSessionStateByWc.get(myWcId)
-    if (!st || !st.win || st.win.isDestroyed()) return
+    if (!st) return
     const text = typeof data === 'string' ? data : data.toString('utf8')
+    // CRÍTICO: alimentar al relay PTY de Telegram cuando este task-session
+    // está enlazado a un chat (pool oculto). Sin esto, relayThroughPty nunca
+    // detecta output ⇒ RelayNoOutput ⇒ "falló la lectura de respuesta del PTY".
+    if (st.relayListener) {
+      try { st.relayListener(text) } catch {}
+    }
+    if (!st.win || st.win.isDestroyed()) return
     st.win.webContents.send('task-session:data', text)
   })
 
@@ -2026,6 +2158,12 @@ function startTaskSessionPty(s) {
     }
     const st = taskSessionStateByWc.get(myWcId)
     if (st && st.pty === proc) {
+      // Cancela relay activo si lo hubiera, para que Telegram no se quede colgado.
+      if (typeof st.relayCancel === 'function') {
+        const err = new Error('PTY cerrado')
+        err.name = 'RelayPtyClosed'
+        try { st.relayCancel(err) } catch {}
+      }
       st.pty = null
       if (st.detectIntervalId) { try { clearInterval(st.detectIntervalId) } catch {} ; st.detectIntervalId = null }
     }
@@ -2097,10 +2235,12 @@ function initTelegramBridge() {
           if (relayResult) return relayResult
         } catch (err) {
           if (err?.name === 'AbortError') throw err
+          const reason = err?.name || err?.message || 'unknown'
+          console.warn('[telegram-relay] PTY relay falló:', reason, binding.bound ? '(bound)' : '(fallback)')
           if (binding.bound) {
-            throw new Error(`Relay PTY enlazado falló: ${describeRelayUnavailable(binding.session, 'claude')}.`)
+            const detail = describeRelayUnavailable(binding.session, 'claude')
+            throw new Error(`Relay PTY enlazado falló (${reason}): ${detail}.`)
           }
-          console.warn('[telegram-relay] PTY relay falló, usando fallback headless:', err?.name || err?.message || err)
         }
       }
       if (binding.bound) {
@@ -2156,18 +2296,35 @@ function initTelegramBridge() {
         ok: ok !== false
       })
     },
-    onOpenTaskSession: async ({ sessionId, cli, cwd, taskName }) => {
+    onOpenTaskSession: async ({ sessionId, cli, cwd, taskName, chatId }) => {
       try {
         if (!sessionId || !isValidSessionId(sessionId)) {
           return { ok: false, error: 'sessionId inválido' }
         }
+        const targetCli = cli === 'codex' ? 'codex' : 'claude'
+        const key = normalizeTelegramChatKey(chatId)
+        if (key && telegramHiddenPtyPool) {
+          const existing = telegramHiddenPtyPool.getHiddenPtyForChat(key)
+          if (existing && existing.sessionId === sessionId && existing.cli === targetCli) {
+            const shown = telegramHiddenPtyPool.showHiddenPty(key)
+            if (shown) {
+              const st = taskSessionStateByWc.get(existing.wcId)
+              if (st) st.hidden = false
+              return { ok: true, fromPool: true }
+            }
+          }
+        }
         const win = await openTaskSessionWindow({
           sessionId,
           cwd: cwd || '',
-          cli: cli === 'codex' ? 'codex' : 'claude',
+          cli: targetCli,
           taskName: taskName || ''
         })
-        return win ? { ok: true } : { ok: false, error: 'No se pudo abrir la ventana' }
+        if (!win) return { ok: false, error: 'No se pudo abrir la ventana' }
+        if (key) {
+          try { telegramRelayByChat.set(key, win.webContents.id) } catch {}
+        }
+        return { ok: true }
       } catch (err) {
         return { ok: false, error: err?.message || String(err) }
       }
@@ -2352,6 +2509,34 @@ app.whenReady().then(async () => {
   }
 
   buildAppMenu()
+  telegramHiddenPtyPool = createTelegramHiddenPtyPool({
+    openWindow: (args) => openTaskSessionWindow(args),
+    startPty: (state) => startTaskSessionPty(state),
+    getTaskState: (wcId) => taskSessionStateByWc.get(wcId) || null,
+    closeWindow: (wcId) => {
+      const st = taskSessionStateByWc.get(wcId)
+      if (!st) return
+      const win = st.win
+      try {
+        if (win && typeof win.isDestroyed === 'function' && !win.isDestroyed()) {
+          win.close()
+        }
+      } catch {}
+    },
+    bindRelay: (chatId, wcId) => { telegramRelayByChat.set(String(chatId), wcId) },
+    unbindRelay: (chatId, wcId) => {
+      const key = String(chatId)
+      const currentWcId = telegramRelayByChat.get(key)
+      if (wcId == null || currentWcId === wcId) {
+        telegramRelayByChat.delete(key)
+      }
+    },
+    log: (event, data) => {
+      if (process.env.POWERAGENT_TG_POOL_DEBUG === '1') {
+        try { console.log('[tg-pool]', event, data) } catch {}
+      }
+    }
+  })
   initTelegramBridge()
 
   createWindow()
@@ -2396,7 +2581,23 @@ app.whenReady().then(async () => {
         }
       } catch {}
     }
-    const baseSinks = createSinks({ telegramBridge, broadcastToAllWindows })
+    const baseSinks = createSinks({
+      telegramBridge,
+      broadcastToAllWindows,
+      onEnsureHiddenPty: async ({ chatId, sessionId, cli, cwd, taskName }) => {
+        if (!telegramHiddenPtyPool) return { ok: false, error: 'pool no inicializado' }
+        // Codex en Telegram se mantiene en headless (resume por thread_id estable).
+        // El pool solo spawnea PTY oculto para Claude.
+        if (cli !== 'claude') return { ok: true, skipped: true, reason: 'cli-not-claude' }
+        const res = await telegramHiddenPtyPool.ensureHiddenPtyForChat({ chatId, sessionId, cli, cwd, taskName })
+        // Red de seguridad: persistir sid en el bridge para que onRunQuery pueda
+        // caer a headless --resume si el PTY oculto se cuelga o cae por TTL.
+        if (res && res.ok && sessionId && telegramBridge && typeof telegramBridge.adoptSession === 'function') {
+          try { telegramBridge.adoptSession(String(chatId), 'claude', sessionId) } catch {}
+        }
+        return res
+      }
+    })
     const inboxSink = createInboxSink({ inbox: tasksInbox, broadcast: broadcastInbox })
     const sinks = { ...baseSinks, inbox: inboxSink }
     tasksScheduler = new TaskScheduler({ executor, sinks, persistence, broadcast: broadcastToAllWindows })
@@ -2647,6 +2848,7 @@ app.on('before-quit', () => {
   try { lanWsServer?.stop() } catch {}
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
+  try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }

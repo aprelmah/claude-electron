@@ -7,8 +7,19 @@ function createTelegramRelayBindings({
   getTelegramBridge,
   killPty,
   startPty,
-  updatePrimarySnapshot
+  updatePrimarySnapshot,
+  getTaskSessionByWcId
 }) {
+  function resolveSessionByWcId(wcId) {
+    if (wcId == null) return null
+    const ses = getSessions().get(wcId)
+    if (ses) return ses
+    if (typeof getTaskSessionByWcId === 'function') {
+      const taskState = getTaskSessionByWcId(wcId)
+      if (taskState) return taskState
+    }
+    return null
+  }
   function canRelayTelegramToPty(session, expectedCli = null) {
     if (!session?.pty) return false
     if (expectedCli && session.activeCli !== expectedCli) return false
@@ -28,7 +39,7 @@ function createTelegramRelayBindings({
     if (!key) return { chatId: '', bound: false, wcId: null, session: null }
     const wcId = telegramRelayByChat.get(key)
     if (wcId == null) return { chatId: key, bound: false, wcId: null, session: null }
-    const session = getSessions().get(wcId) || null
+    const session = resolveSessionByWcId(wcId)
     if (!session) {
       telegramRelayByChat.delete(key)
       return { chatId: key, bound: false, wcId: null, session: null }

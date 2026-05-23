@@ -101,7 +101,14 @@ function createRelayTranscriptHelpers({
     return latest ? { ...latest, filePath: path.join(dir, latest.file), before: beforeMeta.get(latest.file) || null } : null
   }
 
-  function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0) {
+  // Tolerancia para clock drift entre Date.now() del proceso y el timestamp que
+  // escribe el CLI al transcript. Sin esto, una respuesta legítima podía caer
+  // pocos ms antes de startedAt y quedar filtrada ⇒ Relay Empty / "falló la
+  // lectura de respuesta del PTY". Margen humano entre turnos de chat (>1s),
+  // 500ms es seguro y no reabre el bug del desfase de turnos.
+  const DEFAULT_MIN_TS_TOLERANCE_MS = 500
+
+  function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0, minTimestampMs = 0, opts = {}) {
     try {
       const rawBuf = fs.readFileSync(transcriptPath)
       if (!rawBuf || rawBuf.length === 0) return { text: '', sawAssistant: false, sawEndTurn: false }
@@ -115,6 +122,12 @@ function createRelayTranscriptHelpers({
       }
       if (!slice.trim()) return { text: '', sawAssistant: false, sawEndTurn: false }
 
+      const tolerance = Number.isFinite(opts?.toleranceMs) && opts.toleranceMs >= 0
+        ? opts.toleranceMs
+        : DEFAULT_MIN_TS_TOLERANCE_MS
+      const minTs = Number.isFinite(minTimestampMs) && minTimestampMs > 0
+        ? Math.max(0, minTimestampMs - tolerance)
+        : 0
       let lastAssistantText = ''
       let sawAssistant = false
       let sawEndTurn = false
@@ -125,6 +138,12 @@ function createRelayTranscriptHelpers({
         let obj
         try { obj = JSON.parse(line) } catch { continue }
         if (obj?.type !== 'assistant') continue
+        // Si el turno actual marca un tiempo mínimo, descartar respuestas anteriores
+        // (evita devolver la respuesta tardía del turno previo como respuesta al actual).
+        if (minTs > 0 && typeof obj.timestamp === 'string') {
+          const ts = Date.parse(obj.timestamp)
+          if (Number.isFinite(ts) && ts < minTs) continue
+        }
         sawAssistant = true
         const text = extractTurnText(obj)
         if (text) lastAssistantText = text

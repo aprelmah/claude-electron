@@ -1,4 +1,4 @@
-function createSinks({ telegramBridge, broadcastToAllWindows }) {
+function createSinks({ telegramBridge, broadcastToAllWindows, onEnsureHiddenPty }) {
   return {
     notifyMacOS: ({ task, run }) => {
       try {
@@ -51,7 +51,21 @@ function createSinks({ telegramBridge, broadcastToAllWindows }) {
             })
           } catch {}
         }
-        const hint = (run.status === 'ok' && sessionId) ? '\n\nResponde /abrir para continuar esta sesión en el Mac.' : ''
+        if (run.status === 'ok' && sessionId && typeof onEnsureHiddenPty === 'function') {
+          try {
+            const res = await onEnsureHiddenPty({
+              chatId,
+              sessionId,
+              cli: task.cli || 'claude',
+              cwd: (run && run.cwd) || (task && task.cwd) || '',
+              taskName: task.name || ''
+            })
+            if (res && res.ok === false) log(`task=${task.name}: ensureHiddenPty falló: ${res.error || 'unknown'}`)
+          } catch (err) {
+            log(`task=${task.name}: ensureHiddenPty EXCEPTION ${err?.message || err}`)
+          }
+        }
+        const hint = (run.status === 'ok' && sessionId) ? '\n\nResponde directamente en este chat para continuar la sesión, o /abrir para verla en el Mac.' : ''
         log(`task=${task.name}: sending to chatId=${chatId} (length=${head.length + body.length + hint.length + 2})`)
         const result = await send.call(bridge, chatId, `${head}\n\n${body}${hint}`)
         log(`task=${task.name}: send OK result=${JSON.stringify(result).slice(0,200)}`)

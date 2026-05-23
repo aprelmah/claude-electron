@@ -54,7 +54,9 @@ class TelegramStream {
     this.lastEditedText = ''
     this.lastEditAt = 0
     this.flushScheduled = false
+    this.flushTimer = null
     this.editing = false
+    this.editingPromise = null
     this.MIN_INTERVAL = 1500
     this.MIN_CHARS = 80
     this.MAX_LEN = MAX_MESSAGE_LEN
@@ -75,17 +77,28 @@ class TelegramStream {
 
   _maybeFlush(force = false) {
     if (this.flushScheduled) return
+    if (this.closed) return
     const now = Date.now()
     const sinceEdit = now - this.lastEditAt
     const newChars = this.buffer.length - this.lastEditedText.length
     if (force || sinceEdit >= this.MIN_INTERVAL || newChars >= this.MIN_CHARS) {
       this.flushScheduled = true
       const delay = Math.max(0, this.MIN_INTERVAL - sinceEdit)
-      setTimeout(() => {
+      this.flushTimer = setTimeout(() => {
         this.flushScheduled = false
+        this.flushTimer = null
+        if (this.closed) return
         this._flush().catch(() => {})
       }, force ? 0 : delay)
     }
+  }
+
+  _cancelPendingFlush() {
+    if (this.flushTimer) {
+      try { clearTimeout(this.flushTimer) } catch {}
+      this.flushTimer = null
+    }
+    this.flushScheduled = false
   }
 
   async _flush() {
@@ -96,42 +109,54 @@ class TelegramStream {
     if (text === this.lastEditedText) return
 
     this.editing = true
-    try {
-      if (!this.messageId) {
-        const head = text.slice(0, this.MAX_LEN)
-        const sent = await this.bridge._sendMessage(this.chatId, head)
-        this.messageId = sent?.message_id || null
-        this.lastEditedText = head
-      } else if (text.length > this.MAX_LEN) {
-        const head = text.slice(0, this.MAX_LEN)
-        await this.bridge._editMessage(this.chatId, this.messageId, head)
-        const rest = text.slice(this.MAX_LEN)
-        const newMsg = await this.bridge._sendMessage(this.chatId, rest.slice(0, this.MAX_LEN) || '...')
-        this.messageId = newMsg?.message_id || this.messageId
-        this.buffer = rest
-        this.lastEditedText = rest.slice(0, this.MAX_LEN)
-      } else {
-        await this.bridge._editMessage(this.chatId, this.messageId, text)
-        this.lastEditedText = text
+    const work = (async () => {
+      try {
+        if (!this.messageId) {
+          const head = text.slice(0, this.MAX_LEN)
+          const sent = await this.bridge._sendMessage(this.chatId, head)
+          this.messageId = sent?.message_id || null
+          this.lastEditedText = head
+        } else if (text.length > this.MAX_LEN) {
+          const head = text.slice(0, this.MAX_LEN)
+          await this.bridge._editMessage(this.chatId, this.messageId, head)
+          const rest = text.slice(this.MAX_LEN)
+          const newMsg = await this.bridge._sendMessage(this.chatId, rest.slice(0, this.MAX_LEN) || '...')
+          this.messageId = newMsg?.message_id || this.messageId
+          this.buffer = rest
+          this.lastEditedText = rest.slice(0, this.MAX_LEN)
+        } else {
+          await this.bridge._editMessage(this.chatId, this.messageId, text)
+          this.lastEditedText = text
+        }
+        this.lastEditAt = Date.now()
+      } catch (err) {
+        const desc = String(err?.description || err?.message || '')
+        if (/not modified/i.test(desc)) {
+          this.lastEditedText = text
+        } else if (/retry after/i.test(desc) && err?.parameters?.retry_after) {
+          await sleep((err.parameters.retry_after + 0.2) * 1000)
+        } else {
+          // silencioso: no spamear errores
+        }
+      } finally {
+        this.editing = false
+        this.editingPromise = null
       }
-      this.lastEditAt = Date.now()
-    } catch (err) {
-      const desc = String(err?.description || err?.message || '')
-      if (/not modified/i.test(desc)) {
-        this.lastEditedText = text
-      } else if (/retry after/i.test(desc) && err?.parameters?.retry_after) {
-        await sleep((err.parameters.retry_after + 0.2) * 1000)
-      } else {
-        // silencioso: no spamear errores
-      }
-    } finally {
-      this.editing = false
-    }
+    })()
+    this.editingPromise = work
+    return work
   }
 
   async finalize(extra) {
     if (extra) this.buffer += (this.buffer ? '\n\n' : '') + extra
     this.closed = true
+    this._cancelPendingFlush()
+    // Espera a que cualquier _flush en curso termine antes de decidir
+    // si enviar/editar. Sin esto, se produce una race condition donde
+    // _flush y finalize ambos llaman a _sendMessage porque ven messageId=null.
+    if (this.editingPromise) {
+      try { await this.editingPromise } catch {}
+    }
     let text = this.buffer.trim()
     if (!text) text = '(sin respuesta)'
     text = await this.bridge._extractAndSendFiles(this.chatId, text)
