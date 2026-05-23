@@ -2682,14 +2682,22 @@ ipcMain.on('pty-resize', (event, { cols, rows }) => {
 })
 
 // ── Recent cwds + last context (flujo arranque cwd-first) ──
-ipcMain.handle('fs:is-dir', (_event, p) => {
+ipcMain.handle('fs:is-dir', async (_event, p) => {
+  const target = String(p || '').trim()
+  if (!target) return false
   try {
-    const target = String(p || '').trim()
-    if (!target) return false
     if (!isPathSafe(target, allowedFsRoots())) return false
-    return fs.statSync(target).isDirectory()
+  } catch { return false }
+  // fs.promises.stat con timeout 3s. Paths SMB/NAS no responsivos colgaban el
+  // main process con statSync. Si tarda, asumimos que existe (lo dirime el spawn).
+  try {
+    const stat = await Promise.race([
+      fs.promises.stat(target),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('STAT_TIMEOUT')), 3000))
+    ])
+    return stat.isDirectory()
   } catch (err) {
-    // En app empaquetada faltan permisos TCC. Si es EACCES/EPERM asumimos que existe.
+    if (err?.message === 'STAT_TIMEOUT') return true
     if (err && (err.code === 'EACCES' || err.code === 'EPERM')) return true
     return false
   }

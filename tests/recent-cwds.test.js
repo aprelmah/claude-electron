@@ -91,7 +91,7 @@ test('list({pruneMissing:true}) descarta carpetas borradas', () => {
   r.push(projA)
   r.push(projB)
   fs.rmSync(projA, { recursive: true, force: true })
-  const list = r.list()
+  const list = r.list({ pruneMissing: true })
   assert.equal(list.length, 1)
   assert.equal(list[0].cwd, path.resolve(projB))
   fs.rmSync(dir, { recursive: true, force: true })

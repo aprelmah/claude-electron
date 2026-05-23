@@ -37,7 +37,9 @@ function createRecentCwds({ userDataDir }) {
     }
   }
 
-  function list({ pruneMissing = true } = {}) {
+  function list({ pruneMissing = false } = {}) {
+    // pruneMissing por defecto en false: statSync síncrono cuelga el main process
+    // sobre paths SMB/NAS que no responden. La validación dura se delega al spawn.
     let entries = read()
     if (pruneMissing) {
       const filtered = entries.filter((e) => exists(e.cwd))
