@@ -28,7 +28,13 @@ function createRecentCwds({ userDataDir }) {
   }
 
   function exists(cwd) {
-    try { return fs.statSync(cwd).isDirectory() } catch { return false }
+    try { return fs.statSync(cwd).isDirectory() }
+    catch (err) {
+      // En app empaquetada macOS faltan permisos TCC para Desktop/Documents/etc.
+      // statSync da EACCES/EPERM aunque la carpeta exista. No la podamos por eso.
+      if (err && (err.code === 'EACCES' || err.code === 'EPERM')) return true
+      return false
+    }
   }
 
   function list({ pruneMissing = true } = {}) {

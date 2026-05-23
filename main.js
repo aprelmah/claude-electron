@@ -2665,7 +2665,11 @@ ipcMain.handle('fs:is-dir', (_event, p) => {
     if (!target) return false
     if (!isPathSafe(target, allowedFsRoots())) return false
     return fs.statSync(target).isDirectory()
-  } catch { return false }
+  } catch (err) {
+    // En app empaquetada faltan permisos TCC. Si es EACCES/EPERM asumimos que existe.
+    if (err && (err.code === 'EACCES' || err.code === 'EPERM')) return true
+    return false
+  }
 })
 ipcMain.handle('recent-cwds:list', () => {
   try { return recentCwds ? recentCwds.list() : [] } catch { return [] }
