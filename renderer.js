@@ -4148,8 +4148,14 @@ window.api.onGraphFileActive((p) => {
   scheduleGraphRefresh()
 })
 window.api.onPtyExit(() => {
-  term.write('\r\n\x1b[33m[cli terminó — pulsa ↻ para reiniciar]\x1b[0m\r\n')
+  term.write('\r\n\x1b[33m[cli terminó]\x1b[0m\r\n')
   refreshHealth(true)
+  const termWrap = document.getElementById('terminal-wrap')
+  if (termWrap) termWrap.classList.remove('has-pty')
+  if (window.ProjectPicker) {
+    window.ProjectPicker.show()
+    window.ProjectPicker.showProject()
+  }
 })
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
@@ -4243,19 +4249,38 @@ cliSelector.addEventListener('change', async (e) => {
     } catch {}
   }
 
-  try {
-    term.reset()
-    term.clear()
-    await window.api.startPty(term.cols, term.rows, initialRoot)
-    await refreshHealth(true)
-  } catch (err) {
-    showStatus(errorMessage(err), 'error')
-    return
+  // ── Flujo cwd-first: NO arrancamos PTY automáticamente ──
+  // Mostramos el project-picker. El PTY se inicia solo cuando el usuario
+  // confirma cwd + cli + sesión (nueva o reutilizada).
+  const spawnFromPicker = async ({ cwd, cli, sessionId }) => {
+    if (!cwd) throw new Error('Falta cwd')
+    try {
+      term.reset()
+      term.clear()
+      await window.api.startPty(term.cols, term.rows, cwd, { cli, sessionId })
+      await refreshHealth(true)
+      await setRoot(cwd)
+      await updateCwdLabel()
+      await refreshSessionStrip(true)
+      applyView(currentView)
+      if (cli) {
+        cliSelector.value = cli
+        localStorage.setItem(CLI_KEY, cli)
+      }
+      const termWrap = document.getElementById('terminal-wrap')
+      if (termWrap) termWrap.classList.add('has-pty')
+      term.focus()
+    } catch (err) {
+      showStatus(errorMessage(err), 'error', 7000)
+      throw err
+    }
   }
-  await setRoot(initialRoot)
-  await updateCwdLabel()
-  await refreshSessionStrip(true)
-  applyView(currentView)
+
+  if (window.ProjectPicker) {
+    await window.ProjectPicker.start({ onSpawn: spawnFromPicker })
+  } else {
+    showStatus('Picker no disponible. Recarga la app.', 'error', 7000)
+  }
   setInterval(() => { refreshSessionStrip(false) }, 6000)
   setInterval(() => { refreshHealth(false) }, HEALTH_POLL_MS)
   setInterval(() => { refreshLanServerStatus(false) }, 5000)

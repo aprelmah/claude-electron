@@ -391,6 +391,48 @@
   </div>
   </div>
 
+  <div id="project-picker-overlay">
+    <div class="picker-card">
+      <header class="picker-header">
+        <div class="picker-eyebrow">POWER-AGENT</div>
+        <h1 id="picker-title">Elige proyecto</h1>
+        <p id="picker-subtitle" class="picker-sub">Selecciona una carpeta para empezar.</p>
+      </header>
+
+      <section id="picker-view-project" class="picker-view">
+        <div class="picker-actions">
+          <button id="btn-pick-cwd" class="picker-btn picker-btn-primary" type="button">Elegir carpeta…</button>
+          <span class="picker-hint">o arrastra una carpeta · <kbd>⌘O</kbd></span>
+        </div>
+        <div class="picker-recent-wrap">
+          <div class="picker-section-title">Recientes</div>
+          <ul id="picker-recent-list" class="picker-recent"></ul>
+          <div id="picker-recent-empty" class="picker-empty hidden">Sin proyectos recientes.</div>
+        </div>
+      </section>
+
+      <section id="picker-view-session" class="picker-view hidden">
+        <div class="picker-cwd-bar">
+          <span class="picker-label">Proyecto</span>
+          <code id="picker-cwd-value" class="picker-cwd"></code>
+          <button id="btn-picker-change-cwd" class="picker-btn-link" type="button">Cambiar</button>
+        </div>
+        <div class="picker-cli-toggle" role="tablist" aria-label="CLI">
+          <button id="btn-cli-claude" class="cli-toggle-btn active" role="tab" aria-selected="true" data-cli="claude" type="button">Claude</button>
+          <button id="btn-cli-codex" class="cli-toggle-btn" role="tab" aria-selected="false" data-cli="codex" type="button">Codex</button>
+        </div>
+        <div class="picker-sessions-wrap">
+          <ul id="picker-sessions-list" class="picker-sessions"></ul>
+          <div id="picker-sessions-empty" class="picker-empty hidden">Sin sesiones previas.</div>
+          <div id="picker-sessions-loading" class="picker-empty hidden">Cargando sesiones…</div>
+        </div>
+        <div class="picker-footer">
+          <button id="btn-picker-new-session" class="picker-btn picker-btn-primary" type="button">Nueva sesión</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
   <div id="sessions-modal" class="hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-panel">
@@ -739,6 +781,7 @@
   <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="project-picker.js"></script>
   <script src="renderer.js"></script>
   <script src="node_modules/d3/dist/d3.min.js"></script>
   <script src="graph-renderer.js"></script>
