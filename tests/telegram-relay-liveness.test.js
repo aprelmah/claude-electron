@@ -77,8 +77,9 @@ function createRelayWaiter({
   }
 }
 
-test('liveness: si el transcript crece durante el wait, NO dispara RelayNoOutput', async () => {
-  // Snapshot inicial vacío. Modelo "razonando" escribe al JSONL pero no al PTY.
+test('liveness: si el transcript crece durante el wait, NO dispara RelayNoOutput', (t) => {
+  // TEST-H1: anteriormente flaky (2/5 fail) por timing real. Usamos clock fake.
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
   const snap = new Map([['turn.jsonl', { size: 100 }]])
   let timedOut = false
   const waiter = createRelayWaiter({
@@ -88,14 +89,20 @@ test('liveness: si el transcript crece durante el wait, NO dispara RelayNoOutput
     onTimeout: () => { timedOut = true }
   })
 
-  // Simula crecimiento del transcript a los 50ms y 90ms (modelo escribiendo al log).
-  setTimeout(() => { snap.set('turn.jsonl', { size: 250 }) }, 50)
-  setTimeout(() => { snap.set('turn.jsonl', { size: 500 }) }, 90)
+  // Avanza 50ms y hace crecer el transcript (modelo escribe al JSONL).
+  t.mock.timers.tick(50)
+  snap.set('turn.jsonl', { size: 250 })
+  // Avanza otros 20ms (livenessPoll detecta grow → re-arma firstOutputTimer)
+  t.mock.timers.tick(20)
+  // Avanza a 90ms (segundo grow)
+  t.mock.timers.tick(20)
+  snap.set('turn.jsonl', { size: 500 })
+  // Tick hasta 200ms total
+  t.mock.timers.tick(110)
 
-  await new Promise((r) => setTimeout(r, 200))
-  // El timer debería haberse reseteado en cada crecimiento → no dispara timeout.
   assert.equal(timedOut, false, 'liveness no debe disparar RelayNoOutput si transcript crece')
   waiter.finish()
+  t.mock.timers.reset()
 })
 
 test('liveness: si el transcript NO crece y no llega chunk, dispara RelayNoOutput (timeout limpio)', async () => {
@@ -129,8 +136,9 @@ test('liveness: si llega chunk real al PTY (sawAnyOutput), el liveness deja de m
   waiter.finish()
 })
 
-test('liveness: snapshot vacío al inicio + transcript creado nuevo (con crecimiento sostenido) → no dispara', async () => {
-  const snap = new Map() // No hay transcript todavía.
+test('liveness: snapshot vacío al inicio + transcript creado nuevo (con crecimiento sostenido) → no dispara', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const snap = new Map()
   let timedOut = false
   const waiter = createRelayWaiter({
     waitFirstOutputMs: 80,
@@ -139,14 +147,16 @@ test('liveness: snapshot vacío al inicio + transcript creado nuevo (con crecimi
     onTimeout: () => { timedOut = true }
   })
 
-  // Claude crea el archivo y lo sigue ampliando, simulando turno largo razonando.
-  setTimeout(() => { snap.set('nueva.jsonl', { size: 50 }) }, 30)
-  setTimeout(() => { snap.set('nueva.jsonl', { size: 100 }) }, 80)
-  setTimeout(() => { snap.set('nueva.jsonl', { size: 200 }) }, 130)
+  t.mock.timers.tick(30); snap.set('nueva.jsonl', { size: 50 })
+  t.mock.timers.tick(20) // poll detecta nuevo file → re-arma
+  t.mock.timers.tick(30); snap.set('nueva.jsonl', { size: 100 })
+  t.mock.timers.tick(20) // poll detecta grow → re-arma
+  t.mock.timers.tick(30); snap.set('nueva.jsonl', { size: 200 })
+  t.mock.timers.tick(70)
 
-  await new Promise((r) => setTimeout(r, 200))
   assert.equal(timedOut, false, 'crecimiento sostenido del transcript debe mantener vivo el timer')
   waiter.finish()
+  t.mock.timers.reset()
 })
 
 test('liveness: solo aplica a Claude, Codex no usa transcript (timer normal)', async () => {

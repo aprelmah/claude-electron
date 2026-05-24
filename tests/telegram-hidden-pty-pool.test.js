@@ -44,8 +44,8 @@ function makeHarness(opts = {}) {
   }
 
   const pool = createTelegramHiddenPtyPool({
-    openWindow: opts.openWindow || (async ({ sessionId, cli, cwd, taskName, hidden }) => {
-      events.push({ type: 'openWindow', sessionId, cli, cwd, taskName, hidden })
+    openWindow: opts.openWindow || (async ({ sessionId, cli, cwd, taskName, hidden, chatId }) => {
+      events.push({ type: 'openWindow', sessionId, cli, cwd, taskName, hidden, chatId })
       const wcId = nextWcId++
       const win = makeFakeWin(wcId)
       wins.set(wcId, win)
@@ -334,5 +334,40 @@ describe('telegram-hidden-pty-pool: show/close/stats', () => {
     const res = await h.pool.ensureHiddenPtyForChat({ chatId: '3', sessionId: 'sid', cli: 'claude' })
     assert.strictEqual(res.ok, false)
     assert.match(res.error, /pool-destroyed/)
+  })
+
+  test('PTY-H4: openWindow recibe chatId para que opener evite reusar ventana de otro chat', async () => {
+    const h = makeHarness()
+    await h.pool.ensureHiddenPtyForChat({ chatId: 'A', sessionId: 'sid-x', cli: 'claude' })
+    await h.pool.ensureHiddenPtyForChat({ chatId: 'B', sessionId: 'sid-y', cli: 'claude' })
+    const opens = h.events.filter(e => e.type === 'openWindow')
+    assert.strictEqual(opens.length, 2)
+    assert.strictEqual(opens[0].chatId, 'A')
+    assert.strictEqual(opens[1].chatId, 'B')
+  })
+
+  test('PTY-H3: notifyPtyExit limpia binding (PTY muere sin cerrar ventana)', async () => {
+    const h = makeHarness()
+    await h.pool.ensureHiddenPtyForChat({ chatId: 'A', sessionId: 'sid-x', cli: 'claude' })
+    const wcId = h.events.find(e => e.type === 'openWindow').chatId === 'A' ? [...h.states.keys()][0] : null
+    assert.ok(wcId != null)
+    assert.strictEqual(h.pool.getStats().count, 1)
+    const removed = h.pool.notifyPtyExit(wcId)
+    assert.strictEqual(removed, true)
+    assert.strictEqual(h.pool.getStats().count, 0)
+    assert.ok(h.unbinds.some(u => u.chatId === 'A' && u.wcId === wcId), 'unbindRelay debió llamarse')
+  })
+
+  test('PTY-H1: touchHiddenPty resetea ts → TTL no caduca con tráfico', async () => {
+    const h = makeHarness({ ttlMs: 1000 })
+    await h.pool.ensureHiddenPtyForChat({ chatId: 'A', sessionId: 'sid', cli: 'claude' })
+    h.fakeNow.value += 800
+    h.pool.touchHiddenPty('A')
+    h.fakeNow.value += 800
+    h.pool.sweep()
+    assert.strictEqual(h.pool.getStats().count, 1, 'touch debe mantener viva la entry')
+    h.fakeNow.value += 1500
+    h.pool.sweep()
+    assert.strictEqual(h.pool.getStats().count, 0, 'sin touch nuevo, sweep evicta')
   })
 })

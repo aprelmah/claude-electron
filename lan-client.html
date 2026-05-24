@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <link rel="stylesheet" href="vendor/xterm/css/xterm.css" />
   <style>
     :root {
       --r-xs: 6px;
@@ -1660,8 +1660,8 @@
     </div>
   </aside>
 
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <script src="vendor/xterm/lib/xterm.js"></script>
+  <script src="vendor/xterm/lib/addon-fit.js"></script>
   <script>
     const refs = {
       body: document.body,
@@ -2576,6 +2576,10 @@
       if (ctx.cli) base.searchParams.set('cli', ctx.cli)
       if (ctx.model) base.searchParams.set('model', ctx.model)
       if (ctx.effort) base.searchParams.set('effort', ctx.effort)
+      // SEC-C1: propagar token Bearer al WS si está presente en la URL del cliente.
+      const pageQ = new URLSearchParams(window.location.search)
+      const token = pageQ.get('token') || pageQ.get('auth')
+      if (token) base.searchParams.set('token', token)
       return base.toString()
     }
     function sendMessage(payload) {

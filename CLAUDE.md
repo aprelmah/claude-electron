@@ -190,3 +190,36 @@ Este Mac es Intel → el script usa x64.
 - Apple Silicon app: `dist/mac-arm64/POWER-AGENT.app`
 - Intel DMG: `dist/POWER-AGENT-1.0.0.dmg`
 - ARM64 DMG: `dist/POWER-AGENT-1.0.0-arm64.dmg`
+
+## CI/CD
+
+### Tests en local
+```bash
+node --test tests/*.test.js
+```
+- Atajo equivalente: `npm test`.
+- Requiere Node `20.18.0` (rango `>=20.18.0 <23` declarado en `package.json` engines).
+- El Mac de Luismi tiene Node 24 como sistema → antes de `npm install` / `npm test`:
+  ```bash
+  nvm use 20.18.0
+  ```
+  Si no está instalada: `nvm install 20.18.0`. El `.nvmrc` del repo ayuda a fijarla.
+
+### Pre-commit hook
+```bash
+scripts/install-git-hooks.sh
+```
+- Copia symlink relativo a `.git/hooks/pre-commit` apuntando a `scripts/pre-commit.sh`.
+- En cada commit corre:
+  - `node --check` sobre los `.js` staged (excluye `node_modules/`, `dist/`, `build/`, `out/`, `automations/`).
+  - `node --test tests/*.test.js` (timeout 5min, override con `PRE_COMMIT_TEST_TIMEOUT=secs`).
+- Bypass puntual: `git commit --no-verify`.
+- Desinstalar: `rm .git/hooks/pre-commit`.
+
+### CI (GitHub Actions)
+- Workflow: `.github/workflows/test.yml`.
+- Triggers: push a `main` y PRs hacia `main`.
+- Runner: `macos-latest` (la app es Mac-only).
+- Node: `20.18.0` (cache npm).
+- Steps: `npm ci` + `node --test tests/*.test.js`.
+- Timeout: 10min. Permisos: `contents: read` (solo lectura, sin deploys ni releases).

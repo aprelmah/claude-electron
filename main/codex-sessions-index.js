@@ -15,6 +15,11 @@ const {
 const INDEX_VERSION = 1
 const DEBOUNCE_MS = 500
 const POLL_FALLBACK_MS = 60_000
+// PERF-H1: debounce de writes. Antes hacíamos un atomicWrite sync por cada addOrUpdate/removeByPath,
+// lo que provoca cascada en bootstrap y en ráfagas del watcher (1000+ writes). Ahora batch 250ms.
+const PERSIST_DEBOUNCE_MS = 250
+// PERF-H2: yield al event loop cada N entries durante bootstrap async para no bloquear cold start.
+const BOOTSTRAP_YIELD_EVERY = 50
 
 function safeStat(p) {
   try { return fs.statSync(p) } catch { return null }
@@ -44,6 +49,9 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
   let watcher = null
   let pollTimer = null
   const debounceTimers = new Map() // path -> Timeout
+  // PERF-H1: estado del debounce-global de persist.
+  let dirty = false
+  let persistTimer = null
 
   function loadFromDisk() {
     try {
@@ -64,8 +72,26 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
     }
   }
 
-  function persist() {
+  function persistNow() {
     try { atomicWriteJsonSync(indexPath, state) } catch {}
+    dirty = false
+  }
+
+  function persist() {
+    dirty = true
+    if (persistTimer) return
+    persistTimer = setTimeout(() => {
+      persistTimer = null
+      if (dirty) persistNow()
+    }, PERSIST_DEBOUNCE_MS)
+    if (typeof persistTimer.unref === 'function') {
+      try { persistTimer.unref() } catch {}
+    }
+  }
+
+  function flush() {
+    if (persistTimer) { try { clearTimeout(persistTimer) } catch {} ; persistTimer = null }
+    if (dirty) persistNow()
   }
 
   function isEmpty() {
@@ -132,27 +158,64 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
     return true
   }
 
+  function yieldToEventLoop() {
+    return new Promise((resolve) => setImmediate(resolve))
+  }
+
+  async function listCodexSessionFilesAsync(sessionsRoot) {
+    if (!fs.existsSync(sessionsRoot)) return []
+    const out = []
+    let years = []
+    try { years = (await fs.promises.readdir(sessionsRoot)).filter((y) => /^\d{4}$/.test(y)) } catch { return [] }
+    for (const year of years) {
+      const yearDir = path.join(sessionsRoot, year)
+      let months = []
+      try { months = (await fs.promises.readdir(yearDir)).filter((m) => /^\d{2}$/.test(m)) } catch { continue }
+      for (const month of months) {
+        const monthDir = path.join(yearDir, month)
+        let days = []
+        try { days = (await fs.promises.readdir(monthDir)).filter((d) => /^\d{2}$/.test(d)) } catch { continue }
+        for (const day of days) {
+          const dayDir = path.join(monthDir, day)
+          let files = []
+          try { files = (await fs.promises.readdir(dayDir)).filter((f) => /^rollout-.+\.jsonl$/i.test(f)) } catch { continue }
+          for (const f of files) out.push(path.join(dayDir, f))
+        }
+      }
+    }
+    return out
+  }
+
   async function bootstrap() {
-    const files = listCodexSessionFiles(root)
+    // PERF-H2: lectura del árbol con fs.promises (async real) y yield al event loop cada N entries
+    // para no bloquear el cold start. Antes era 100% síncrono pese a estar marcado async.
+    const files = await listCodexSessionFilesAsync(root)
     const newByCwd = {}
     let filesScanned = 0
-    for (const filePath of files) {
+    for (let i = 0; i < files.length; i++) {
+      const filePath = files[i]
       filesScanned++
       const meta = parseSessionMeta(filePath)
-      if (!meta) continue
-      const stat = safeStat(filePath)
-      if (!stat) continue
-      const preview = extractCodexSessionFirstPrompt(filePath) || '(sin contenido)'
-      const entry = {
-        id: meta.id,
-        path: filePath,
-        mtime: stat.mtime.getTime(),
-        size: stat.size,
-        preview,
-        indexedAt: Date.now()
+      if (meta) {
+        const stat = safeStat(filePath)
+        if (stat) {
+          const preview = extractCodexSessionFirstPrompt(filePath) || '(sin contenido)'
+          const entry = {
+            id: meta.id,
+            path: filePath,
+            mtime: stat.mtime.getTime(),
+            size: stat.size,
+            preview,
+            indexedAt: Date.now()
+          }
+          if (!newByCwd[meta.cwd]) newByCwd[meta.cwd] = []
+          newByCwd[meta.cwd].push(entry)
+        }
       }
-      if (!newByCwd[meta.cwd]) newByCwd[meta.cwd] = []
-      newByCwd[meta.cwd].push(entry)
+      // Yield al event loop cada BOOTSTRAP_YIELD_EVERY entries para que UI/IPC no se bloqueen.
+      if ((i + 1) % BOOTSTRAP_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
     }
     for (const cwd of Object.keys(newByCwd)) {
       newByCwd[cwd].sort((a, b) => b.mtime - a.mtime)
@@ -162,7 +225,8 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
       lastFullScanAt: Date.now(),
       byCwd: newByCwd
     }
-    persist()
+    // Bootstrap persiste inmediato (no debounce) porque es el resultado final del scan.
+    persistNow()
     return { filesScanned, byCwdCount: Object.keys(newByCwd).length }
   }
 
@@ -269,6 +333,7 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
     getForCwd,
     startWatcher,
     stopWatcher,
+    flush,
     isEmpty,
     indexPath,
     sessionsRoot: root

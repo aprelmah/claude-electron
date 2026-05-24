@@ -37,10 +37,11 @@ test('set persiste y get recupera', () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('persistencia entre instancias del índice', () => {
+test('persistencia entre instancias del índice (flush)', () => {
   const dir = tmpUserData()
   const idx1 = createClaudeSessionsIndex({ userDataDir: dir })
   idx1.set('/proj/a', 'sid-1', { preview: 'p1', msgCount: 3, mtime: 11, size: 22 })
+  idx1.flush() // PERF-H7: persist es ahora debounced, flush para forzar write inmediato
 
   const idx2 = createClaudeSessionsIndex({ userDataDir: dir })
   const entry = idx2.get('/proj/a', 'sid-1')
@@ -127,9 +128,26 @@ test('escritura es atómica (no deja .tmp huérfanos)', () => {
   const dir = tmpUserData()
   const idx = createClaudeSessionsIndex({ userDataDir: dir })
   idx.set('/p', 's', { preview: 'a', msgCount: 1, mtime: 1, size: 1 })
+  idx.flush() // PERF-H7
   const files = fs.readdirSync(dir)
   const tmps = files.filter((f) => f.includes('.tmp.'))
   assert.equal(tmps.length, 0)
   assert.ok(files.includes('claude-sessions-index.json'))
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('PERF-H7: muchos set() consecutivos hacen un único write (debounce)', async () => {
+  const dir = tmpUserData()
+  const idx = createClaudeSessionsIndex({ userDataDir: dir })
+  for (let i = 0; i < 100; i++) {
+    idx.set('/p', `s${i}`, { preview: `p${i}`, msgCount: i, mtime: i, size: i })
+  }
+  // Antes del flush, el archivo puede no existir todavía (debounce 250ms).
+  // Tras flush, debe estar.
+  idx.flush()
+  const files = fs.readdirSync(dir)
+  assert.ok(files.includes('claude-sessions-index.json'))
+  const data = JSON.parse(fs.readFileSync(require('path').join(dir, 'claude-sessions-index.json'), 'utf-8'))
+  assert.equal(Object.keys(data['/p']).length, 100)
   fs.rmSync(dir, { recursive: true, force: true })
 })

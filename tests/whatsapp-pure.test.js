@@ -50,17 +50,25 @@ describe('buildPrompt — escapado XML del contenido del cliente', () => {
     assert.match(out, /<mensaje_cliente_actual>&lt;a&gt;hola&lt;\/a&gt;<\/mensaje_cliente_actual>/)
   })
 
-  test('NO escapa & (decisión actual del código; documentado)', () => {
-    // `escapeForXmlData` reemplaza solo < y >. Bloqueo principal: cierre de
-    // etiqueta. Si más adelante quieren escapar también &, este test fallará
-    // y será la señal de que cambió el contrato.
+  test('TEST-H3: escapa & como &amp; (coherente con escapeForCompactedPrompt)', () => {
     const out = buildPrompt({
       displayNumber: '34666123456',
       history: [],
       body: 'a & b',
       maxHistory: 10
     })
-    assert.ok(out.includes('a & b'), 'cuerpo debe pasar tal cual: &')
+    assert.ok(out.includes('a &amp; b'), 'cuerpo debe llevar & escapado a &amp;')
+    assert.equal(out.includes('a & b\n'), false, 'no debe quedar & sin escapar')
+  })
+
+  test('TEST-H3: orden correcto — & se escapa antes que < (no doble escape)', () => {
+    const out = buildPrompt({
+      displayNumber: '34666123456',
+      history: [],
+      body: '<a&b>',
+      maxHistory: 10
+    })
+    assert.ok(out.includes('&lt;a&amp;b&gt;'), 'orden &, <, >: <a&b> → &lt;a&amp;b&gt;')
   })
 
   test('string vacío de body resulta en bloque vacío', () => {

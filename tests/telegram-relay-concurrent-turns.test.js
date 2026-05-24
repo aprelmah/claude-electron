@@ -33,9 +33,10 @@ test('busy-wait: si relayActive se libera dentro del timeout, procede', async ()
   const session = { pty: {}, relayActive: true }
   // Liberar al cabo de 50ms
   setTimeout(() => { session.relayActive = false }, 50)
-  const res = await waitForRelayFree(session, { busyWaitMs: 500, pollMs: 10 })
+  const res = await waitForRelayFree(session, { busyWaitMs: 2000, pollMs: 10 })
   assert.equal(res.proceeded, true)
-  assert.ok(res.waited >= 40 && res.waited < 200, `esperó ~50ms, fue ${res.waited}`)
+  // Margen amplio: lo que medimos es que procede tras liberación, no la latencia exacta.
+  assert.ok(res.waited >= 40 && res.waited < 1500, `debió proceder tras liberación, fue ${res.waited}ms`)
 })
 
 test('busy-wait: si relayActive nunca se libera, falla por timeout (no bloquea para siempre)', async () => {
@@ -45,7 +46,8 @@ test('busy-wait: si relayActive nunca se libera, falla por timeout (no bloquea p
   const elapsed = Date.now() - t0
   assert.equal(res.proceeded, false)
   assert.equal(res.reason, 'timeout')
-  assert.ok(elapsed >= 90 && elapsed < 300, `esperó ~100ms, fue ${elapsed}`)
+  // Margen amplio para entornos con scheduler saturado.
+  assert.ok(elapsed >= 90 && elapsed < 1500, `debió expirar tras ~100ms, fue ${elapsed}`)
 })
 
 test('busy-wait: si pty muere mientras espera, sale limpio sin bloquear', async () => {

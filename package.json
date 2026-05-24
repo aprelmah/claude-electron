@@ -87,6 +87,7 @@
       "automations/**/*",
       "tasks/**/*",
       "main/**/*",
+      "vendor/**/*",
       "node_modules/**/*"
     ],
     "mac": {

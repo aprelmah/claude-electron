@@ -8,10 +8,12 @@ function sleep(ms) {
 }
 
 function _atomicWriteJsonSync(filePath, data) {
+  // SEC-H1: 0o600 — telegram-sessions/state guardan sessionId enlazado a chat.
   const tmp = `${filePath}.tmp`
   const json = JSON.stringify(data, null, 2)
-  fs.writeFileSync(tmp, json, 'utf-8')
+  fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 })
   fs.renameSync(tmp, filePath)
+  try { fs.chmodSync(filePath, 0o600) } catch {}
 }
 
 function splitByLimit(text, limit = 3500) {
