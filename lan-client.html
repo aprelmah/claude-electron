@@ -365,7 +365,11 @@
       display: grid;
       gap: 8px;
     }
-    body:not([data-connected="true"]):not([data-channel-open="true"]) .session-dock { display: none; }
+    /* El selector de sesión/CLI solo en la fase de elegir (canal abierto, sesión aún
+       no activa). Una vez dentro (data-connected) se oculta: para cambiar de CLI/sesión
+       el operador sale y vuelve a entrar. Evita el confuso «Cambiar sesión» en caliente. */
+    body:not([data-channel-open="true"]) .session-dock,
+    body[data-connected="true"] .session-dock { display: none; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
