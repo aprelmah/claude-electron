@@ -3127,27 +3127,10 @@ function createLanWsServer(options = {}) {
     }
     httpServer = http.createServer((req, res) => {
       const u = new URL(req.url || '/', 'http://127.0.0.1')
-      // SEC-C1: todos los endpoints HTTP requieren token cuando getAuthToken() está activo.
-      // El cliente HTML solo se sirve si el visitante ya conoce el token (lo lleva en su URL).
-      if (!isAuthorizedReq(req)) {
-        try { emitAudit('lan-http-auth-rejected', { ip: normalizeRemoteIp(req?.socket?.remoteAddress), path: u.pathname }) } catch {}
-        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer realm="lan"' })
-        res.end('unauthorized')
-        return
-      }
-      if (u.pathname === '/' || u.pathname === '/lan-client.html') {
-        try {
-          const html = fs.readFileSync(clientHtmlPath, 'utf8')
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(html)
-        } catch (err) {
-          res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-          res.end(err?.message || String(err))
-        }
-        return
-      }
-      // SEC-C4: servir vendor/ local (xterm) sin pasar por CDN externo.
-      // Sandbox: solo paths que empiezan por /vendor/, sin traversal.
+      // SEC-C4: assets estáticos públicos de vendor/ (xterm) ANTES del gate de token.
+      // El navegador pide <script src="vendor/..."> sin token (las sub-peticiones no heredan
+      // el ?token= de la página), y son librerías públicas sin secretos. Sandbox: solo
+      // /vendor/, sin traversal, bajo clientDir/vendor.
       if (u.pathname.startsWith('/vendor/')) {
         const safe = u.pathname.replace(/\/+/g, '/')
         if (safe.includes('..')) { res.writeHead(400); res.end('bad'); return }
@@ -3168,6 +3151,25 @@ function createLanWsServer(options = {}) {
           res.end(data)
         } catch {
           res.writeHead(404); res.end('not found')
+        }
+        return
+      }
+      // SEC-C1: todos los endpoints HTTP requieren token cuando getAuthToken() está activo.
+      // El cliente HTML solo se sirve si el visitante ya conoce el token (lo lleva en su URL).
+      if (!isAuthorizedReq(req)) {
+        try { emitAudit('lan-http-auth-rejected', { ip: normalizeRemoteIp(req?.socket?.remoteAddress), path: u.pathname }) } catch {}
+        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer realm="lan"' })
+        res.end('unauthorized')
+        return
+      }
+      if (u.pathname === '/' || u.pathname === '/lan-client.html') {
+        try {
+          const html = fs.readFileSync(clientHtmlPath, 'utf8')
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(html)
+        } catch (err) {
+          res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end(err?.message || String(err))
         }
         return
       }

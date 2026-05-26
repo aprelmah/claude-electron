@@ -98,3 +98,26 @@ describe('SEC-C4: lan-client.html NO referencia cdn.jsdelivr', () => {
     assert.ok(html.includes('vendor/xterm/lib/xterm.js'), 'debe referenciar vendor local')
   })
 })
+
+describe('SEC-C4 regresión: vendor público pese a token (bug conexión LAN 2026-05-26)', () => {
+  test('con token configurado, /vendor/* se sirve SIN token; página y /status siguen gated', async () => {
+    const dir = setupClientDir()
+    const wsPort = await freePort()
+    const server = createLanWsServer({
+      clientHtmlPath: path.join(dir, 'lan-client.html'),
+      getAuthToken: () => 'SECRET-TOKEN-1234'
+    })
+    await server.start({ port: wsPort, clientHtmlPath: path.join(dir, 'lan-client.html') })
+    try {
+      // sub-recurso pedido por el navegador (sin ?token=) → DEBE servirse
+      const js = await get('127.0.0.1', wsPort + 1, '/vendor/xterm/lib/xterm.js')
+      assert.equal(js.status, 200, 'vendor debe servirse sin token')
+      assert.match(js.body, /xterm-stub/)
+      // la página y /status SIGUEN exigiendo token
+      const page = await get('127.0.0.1', wsPort + 1, '/lan-client.html')
+      assert.equal(page.status, 401, 'la página sigue protegida')
+      const status = await get('127.0.0.1', wsPort + 1, '/status')
+      assert.equal(status.status, 401, '/status sigue protegido')
+    } finally { await server.stop() }
+  })
+})
