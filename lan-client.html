@@ -365,7 +365,7 @@
       display: grid;
       gap: 8px;
     }
-    body:not([data-connected="true"]) .session-dock { display: none; }
+    body:not([data-connected="true"]):not([data-channel-open="true"]) .session-dock { display: none; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
@@ -1360,7 +1360,7 @@
     }
   </style>
 </head>
-<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed" data-chat-view="chat" data-focus-chat="false">
+<body class="theme-dark" data-connected="false" data-channel-open="false" data-viewer="closed" data-toast="closed" data-chat-view="chat" data-focus-chat="false">
   <div class="app-shell">
     <header class="topbar" role="banner">
       <div class="brand">
@@ -2445,6 +2445,7 @@
         setStickyResumeForCli(replyCli, selected)
       }
       renderSessionSelector()
+      let autoStarted = false
       if (!appState.pendingSessionStartRequestId && !appState.sessionInfo) {
         if (appState.autoStartMode === 'always') {
           appState.autoStartMode = 'off'
@@ -2453,8 +2454,16 @@
         }
         if (appState.autoStartMode === 'if-empty') {
           appState.autoStartMode = 'off'
-          if (appState.sessionList.length === 0) startSelectedSession({ autoFromList: true })
+          if (appState.sessionList.length === 0) {
+            startSelectedSession({ autoFromList: true })
+            autoStarted = true
+          }
         }
+      }
+      if (!autoStarted && !appState.sessionInfo && !appState.pendingSessionStartRequestId) {
+        setHandshakeStatus('warn', appState.sessionList.length > 0
+          ? 'Elige una sesión o «Nueva sesión» y pulsa «Abrir sesión».'
+          : 'Sin sesiones previas: pulsa «Abrir sesión» para empezar.', 'elige')
       }
     }
 
@@ -3105,6 +3114,7 @@
 
     function connectHandlers(socketUrl) {
       appState.socket.addEventListener('open', () => {
+        refs.body.dataset.channelOpen = 'true'
         refs.btnConnect.textContent = 'Entrar'
         setConnectionStatus('connecting', `Canal abierto · ${socketUrl}`)
         setHandshakeStatus('warn', 'Canal abierto. Enviando identidad y cargando sesiones…', 'pendiente')
@@ -3274,6 +3284,7 @@
       })
 
       appState.socket.addEventListener('close', () => {
+        refs.body.dataset.channelOpen = 'false'
         flushPendingAgentMessage()
         clearPendingFsRequests('Socket cerrado')
         stopMic(true)
