@@ -1408,7 +1408,7 @@
           <div class="advanced-grid">
             <div class="field">
               <label for="ws-url">Servidor</label>
-              <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://192.168.1.10:9999" />
+              <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://…:9999" />
             </div>
             <div class="field">
               <label for="operator-id">ID operador</label>
@@ -3672,6 +3672,7 @@
     })
 
     refs.wsUrlInput.value = inferDefaultWsUrl()
+    refs.wsUrlInput.placeholder = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
     clearFsUi('Conecta primero para ver carpetas.')
     setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
