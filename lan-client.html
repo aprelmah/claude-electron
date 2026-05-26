@@ -361,15 +361,18 @@
     .onboarding { display: grid; gap: 14px; }
     body[data-connected="true"] .onboarding { display: none; }
 
+    /* La fila de sesión reutilizable vive DENTRO del bloque de conexión.
+       Solo aparece en la fase de elegir (canal abierto, sesión aún no activa).
+       Una vez dentro (data-connected) se oculta junto con todo el onboarding:
+       para cambiar de CLI/sesión el operador sale y vuelve a entrar. */
     .session-dock {
-      display: grid;
+      display: none;
       gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
     }
-    /* El selector de sesión/CLI solo en la fase de elegir (canal abierto, sesión aún
-       no activa). Una vez dentro (data-connected) se oculta: para cambiar de CLI/sesión
-       el operador sale y vuelve a entrar. Evita el confuso «Cambiar sesión» en caliente. */
-    body:not([data-channel-open="true"]) .session-dock,
-    body[data-connected="true"] .session-dock { display: none; }
+    body[data-channel-open="true"]:not([data-connected="true"]) .session-dock { display: grid; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
@@ -429,7 +432,13 @@
       background-repeat: no-repeat;
     }
 
-    .row-primary {
+    /* Bloque de conexión: un solo flujo vertical coherente. */
+    #connect-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .engine-grid {
       display: grid;
       grid-template-columns: 1fr;
       gap: 10px;
@@ -437,12 +446,6 @@
     }
 
     .primary-actions { display: grid; gap: 8px; }
-
-    .session-picker {
-      display: grid;
-      gap: 8px;
-      margin-top: 2px;
-    }
 
     .session-picker-row {
       display: grid;
@@ -1321,10 +1324,11 @@
 
     @media (min-width: 720px) {
       body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
-      .row-primary { grid-template-columns: 1fr auto; align-items: end; }
-      .primary-actions { grid-template-columns: auto auto; }
+      .engine-grid { grid-template-columns: minmax(140px, 1fr) 1fr 1fr; align-items: end; }
+      .primary-actions { grid-template-columns: auto auto; justify-content: start; }
+      .primary-actions .btn { min-width: 160px; }
       .session-picker-row { grid-template-columns: 1fr auto; align-items: end; }
-      .session-picker-actions { grid-template-columns: auto; }
+      .session-picker-actions { grid-template-columns: auto auto; }
       .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .attach-actions { grid-template-columns: auto auto; justify-content: start; }
       .attach-actions .btn { min-width: 200px; }
@@ -1392,23 +1396,68 @@
     <section class="card card-pad onboarding" aria-labelledby="onboarding-title">
       <div class="onboarding-head">
         <h1 id="onboarding-title">Conectar al equipo central</h1>
-        <p class="onboarding-lead">Escribe tu nombre, revisa sesiones reutilizables de esta carpeta y pulsa <strong>Entrar</strong>.</p>
+        <p class="onboarding-lead">Define quién eres y qué motor usas, elige sesión y pulsa <strong>Entrar</strong>.</p>
       </div>
 
       <form id="connect-form" novalidate>
-        <div class="row-primary">
-          <div class="field">
-            <label for="username">Usuario</label>
-            <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
-          </div>
-          <div class="primary-actions">
-            <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
-            <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
-          </div>
+        <!-- 1. Usuario -->
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
         </div>
 
+        <!-- 2. CLI · 3. Modelo · Esfuerzo (dependen del CLI, pegados a él) -->
+        <div class="engine-grid">
+          <div class="field">
+            <label for="session-cli">CLI</label>
+            <select id="session-cli" class="control">
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="model-id">Modelo</label>
+            <select id="model-id" class="control"></select>
+          </div>
+          <div class="field">
+            <label for="effort-level">Esfuerzo</label>
+            <select id="effort-level" class="control"></select>
+          </div>
+        </div>
+        <p class="hint">Modelo y esfuerzo dependen del CLI elegido. Se aplican al conectar o reconectar.</p>
+
+        <!-- 4. Sesión reutilizable (aparece cuando el canal está abierto, antes de entrar) -->
+        <div class="session-dock" aria-label="Selector de sesión LAN">
+          <div class="session-picker-row">
+            <div class="field">
+              <label for="session-select">Sesión reutilizable</label>
+              <select id="session-select" class="control">
+                <option value="">Nueva sesión (sin reanudar)</option>
+              </select>
+            </div>
+            <div class="session-picker-actions">
+              <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
+              <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar</button>
+            </div>
+          </div>
+          <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
+        </div>
+
+        <!-- Estado del enlace -->
+        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
+          <span id="handshake-text">Listo para conectar.</span>
+          <span id="handshake-tone" class="handshake-tone">en espera</span>
+        </div>
+
+        <!-- 5. Acción principal + reconexión -->
+        <div class="primary-actions" style="margin-top:12px">
+          <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
+          <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
+        </div>
+
+        <!-- Infraestructura (lo que el operador normal no toca) -->
         <details id="advanced-options" class="advanced" style="margin-top:12px">
-          <summary>Opciones avanzadas (servidor, operador, perfil, proveedor)</summary>
+          <summary>Opciones avanzadas (servidor, operador, perfil)</summary>
           <div class="advanced-grid">
             <div class="field">
               <label for="ws-url">Servidor</label>
@@ -1422,55 +1471,9 @@
               <label for="profile-id">ID perfil</label>
               <input id="profile-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
-            <div class="field">
-              <label for="provider-id">Proveedor</label>
-              <select id="provider-id" class="control">
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="model-id">Modelo</label>
-              <select id="model-id" class="control"></select>
-            </div>
-            <div class="field">
-              <label for="effort-level">Esfuerzo</label>
-              <select id="effort-level" class="control"></select>
-            </div>
           </div>
-          <p class="hint" style="margin-top:8px">Elige proveedor, modelo y esfuerzo desde listas. Se aplican al conectar o reconectar, sin prompts ocultos extra.</p>
         </details>
-
-        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
-          <span id="handshake-text">Listo para conectar.</span>
-          <span id="handshake-tone" class="handshake-tone">en espera</span>
-        </div>
       </form>
-    </section>
-
-    <section class="card card-pad session-dock" aria-label="Selector de sesión LAN">
-      <div class="session-picker">
-        <div class="session-picker-row">
-          <div class="field" style="min-width:140px">
-            <label for="session-cli">CLI</label>
-            <select id="session-cli" class="control">
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="session-select">Sesión reutilizable</label>
-            <select id="session-select" class="control">
-              <option value="">Nueva sesión (sin reanudar)</option>
-            </select>
-          </div>
-          <div class="session-picker-actions">
-            <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
-            <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar sesiones</button>
-          </div>
-        </div>
-        <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
-      </div>
     </section>
 
     <section class="chat-card" aria-labelledby="chat-title">
@@ -1673,7 +1676,10 @@
       wsUrlInput: document.getElementById('ws-url'),
       operatorIdInput: document.getElementById('operator-id'),
       profileIdInput: document.getElementById('profile-id'),
-      providerSelect: document.getElementById('provider-id'),
+      // Selector único de CLI (Claude/Codex). providerSelect y sessionCliSelect
+      // apuntan al MISMO elemento: única fuente de verdad para conexión, listado
+      // de sesiones y arranque. No hay forma de que se contradigan.
+      providerSelect: document.getElementById('session-cli'),
       modelSelect: document.getElementById('model-id'),
       effortSelect: document.getElementById('effort-level'),
       usernameInput: document.getElementById('username'),
@@ -1681,6 +1687,7 @@
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
       btnSessionOpen: document.getElementById('btn-session-open'),
       sessionSelect: document.getElementById('session-select'),
+      // Mismo nodo que providerSelect: el CLI es uno solo en toda la UI.
       sessionCliSelect: document.getElementById('session-cli'),
       btnSessionRefresh: document.getElementById('btn-session-refresh'),
       sessionPickerMeta: document.getElementById('session-picker-meta'),
@@ -3571,11 +3578,17 @@
       }
     })
 
+    // Selector ÚNICO de CLI. Un solo handler: actualiza modelo/esfuerzo dependientes
+    // del CLI y, si hay canal abierto, re-lista las sesiones de ese CLI. Como
+    // providerSelect y sessionCliSelect son el mismo nodo, no puede haber doble disparo
+    // ni estados contradictorios.
     if (refs.sessionCliSelect) {
       refs.sessionCliSelect.addEventListener('change', () => {
+        const nextCli = getSelectedSessionCli()
+        // Modelo/esfuerzo dependientes del CLI (Opciones avanzadas).
+        renderProviderDependentOptions(nextCli)
         const previousCli = appState.sessionListCli || 'claude'
         if (previousCli) setStickyResumeForCli(previousCli, appState.selectedResumeSessionId || '')
-        const nextCli = getSelectedSessionCli()
         appState.sessionListCli = nextCli
         appState.selectedResumeSessionId = getStickyResumeForCli(nextCli)
         appState.stickyResumeSessionId = appState.selectedResumeSessionId
@@ -3587,10 +3600,6 @@
         requestReusableSessions({ forceRefresh: true, silent: false, cli: nextCli })
       })
     }
-
-    refs.providerSelect.addEventListener('change', () => {
-      renderProviderDependentOptions(refs.providerSelect.value)
-    })
 
     refs.btnViewChat.addEventListener('click', () => setChatView('chat'))
     refs.btnViewTerminal.addEventListener('click', () => setChatView('terminal'))
