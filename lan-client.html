@@ -3247,6 +3247,7 @@
         if (state === 'connected') {
           appState.pendingSessionStartRequestId = ''
           appState.autoStartMode = 'off'
+          appState.lastConnectedAt = Date.now()
           const activeResumeSessionId = String(msg?.resumeSessionId || '').trim()
           appState.selectedResumeSessionId = activeResumeSessionId
           appState.stickyResumeSessionId = activeResumeSessionId
@@ -3292,7 +3293,12 @@
           return
         }
         if (state === 'transcribing') { setConnectionStatus('connecting', 'Transcribiendo audio…'); return }
-        if (state === 'pty-exit')     { flushPendingAgentMessage(); finishAgentReplyCapture(); setConnectionStatus('connecting', 'PTY remoto finalizado'); return }
+        if (state === 'pty-exit')     {
+          // Ignorar pty-exit obsoleto del CLI saliente justo tras reconectar (cross-CLI):
+          // la sesión nueva ya conectó y está viva.
+          if (Date.now() - (appState.lastConnectedAt || 0) < 4000) return
+          flushPendingAgentMessage(); finishAgentReplyCapture(); setConnectionStatus('connecting', 'PTY remoto finalizado'); return
+        }
         if (state === 'error') {
           finishAgentReplyCapture()
           const code = String(msg.code || '')
