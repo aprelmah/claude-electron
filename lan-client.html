@@ -1793,7 +1793,7 @@
 
     function sanitizeProvider(raw) {
       const value = String(raw || '').trim().toLowerCase()
-      return value === 'claude' ? 'claude' : 'codex'
+      return value === 'codex' ? 'codex' : 'claude'
     }
 
     function renderProviderDependentOptions(provider, { keepModel = true, keepEffort = true } = {}) {
@@ -1824,7 +1824,7 @@
     }
 
     initTheme()
-    renderProviderDependentOptions('codex', { keepModel: false, keepEffort: false })
+    renderProviderDependentOptions('claude', { keepModel: false, keepEffort: false })
 
     const term = new Terminal({
       convertEol: true,
@@ -2437,6 +2437,14 @@
       }
       appState.sessionList = Array.isArray(msg.sessions) ? msg.sessions : []
       appState.sessionListCwd = String(msg.cwd || '').trim()
+      // Cross-CLI: tras reconectar a otro CLI, reanudar/arrancar la sesión pedida.
+      if (appState.pendingCrossCliResume && appState.pendingCrossCliResume.cli === replyCli) {
+        const want = appState.pendingCrossCliResume.sessionId || ''
+        appState.pendingCrossCliResume = null
+        setStickyResumeForCli(replyCli, want)
+        appState.selectedResumeSessionId = want
+        appState.autoStartMode = 'always'
+      }
       const stickyForCli = getStickyResumeForCli(replyCli)
       const selected = String(msg.selectedSessionId || stickyForCli || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
@@ -2467,6 +2475,19 @@
       }
     }
 
+    function reconnectToSession(cli, sessionId) {
+      const targetCli = cli === 'codex' ? 'codex' : 'claude'
+      appState.manualClose = false
+      if (appState.socket) { try { appState.socket.close() } catch {} }
+      appState.socket = null
+      clearSessionState()
+      appState.pendingCrossCliResume = { cli: targetCli, sessionId: sessionId || '' }
+      if (refs.sessionCliSelect) refs.sessionCliSelect.value = targetCli
+      setHandshakeStatus('warn', `Reconectando a ${targetCli}${sessionId ? ' · ' + sessionId : ' · nueva'}…`, 'reconectando')
+      setConnectionStatus('connecting', 'Reconectando para cambiar de CLI…')
+      window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 200)
+    }
+
     function startSelectedSession(options = {}) {
       if (!isSocketOpen()) {
         setConnectionStatus('error', 'Conecta primero para iniciar sesión')
@@ -2481,6 +2502,12 @@
       const selected = String(refs.sessionSelect.value || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
       const currentCli = getSelectedSessionCli()
+      // Cross-CLI: el server exige modo hot estando conectado, pero el hot-swap entre
+      // CLIs distintos rompe el PTY. Reconexión limpia al CLI/sesión destino.
+      if (hot && appState.sessionInfo && (appState.sessionInfo.cli || 'claude') !== currentCli) {
+        reconnectToSession(currentCli, selected)
+        return true
+      }
       if (selected) {
         appState.stickyResumeSessionId = selected
         setStickyResumeForCli(currentCli, selected)
@@ -2559,7 +2586,7 @@
       refs.operatorIdInput.value = q.get('operatorId') || q.get('operator') || ''
       refs.profileIdInput.value = q.get('profileId') || q.get('profile') || ''
       refs.usernameInput.value = q.get('username') || q.get('user') || ''
-      const provider = q.get('cli') || q.get('provider') || q.get('engine') || 'codex'
+      const provider = q.get('cli') || q.get('provider') || q.get('engine') || 'claude'
       renderProviderDependentOptions(provider, { keepModel: false, keepEffort: false })
       refs.modelSelect.value = q.get('model') || q.get('modelId') || q.get('m') || ''
       const effort = (q.get('effort') || q.get('reasoningEffort') || q.get('reasoning') || q.get('e') || '').toLowerCase()
