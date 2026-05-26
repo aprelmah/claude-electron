@@ -2477,7 +2477,10 @@
 
     function reconnectToSession(cli, sessionId) {
       const targetCli = cli === 'codex' ? 'codex' : 'claude'
-      appState.manualClose = false
+      // manualClose=true evita que el 'close' del socket viejo dispare auto-reconnect
+      // y colisione con el connect() explícito de abajo (connect() lo pone a false).
+      appState.manualClose = true
+      if (appState.reconnectTimer) { clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null }
       if (appState.socket) { try { appState.socket.close() } catch {} }
       appState.socket = null
       clearSessionState()
@@ -3153,6 +3156,9 @@
       })
 
       appState.socket.addEventListener('message', (event) => {
+        // Ignorar mensajes tardíos de un socket anterior (p.ej. pty-exit del CLI saliente
+        // durante una reconexión cross-CLI) que pisarían el estado del socket nuevo.
+        if (event.target !== appState.socket) return
         let msg = null
         try { msg = JSON.parse(String(event.data || '')) } catch {}
         if (!msg || typeof msg !== 'object') return
