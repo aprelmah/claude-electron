@@ -4,9 +4,16 @@ Revisión del `app.asar` instalado (`/Applications/POWER-AGENT.app`) contra los 
 
 ## Estado por riesgo
 
-1. **Lista blanca de remitentes — ⚠️ flojo**
-   - WhatsApp: `~/.claude/whatsapp-bridge/config.json` vacío (`{}`). El bridge NO tiene allowlist de números (`allowedNumbers`/`allowedJids` inexistentes en código).
-   - Telegram: existe campo `telegram.allowedUsers` (default `[]`); la config real vive en la store de la app, no en disco accesible. Verificar en UI que solo contenga el id de Luismi.
+1. **Lista blanca de remitentes — 🔴 FAIL-OPEN (grave)**
+   - WhatsApp SÍ tiene allowlist: campo `authorizedNumbers` en `~/.claude/whatsapp-bridge/config.json`. PERO la lógica es fail-open:
+     ```js
+     if (isGroupJid(jid)) return true                                   // grupos: SIEMPRE autorizados
+     if (!config.authorizedNumbers || !config.authorizedNumbers.length) // lista vacía...
+         return true                                                    // ...autoriza a TODOS
+     ```
+   - **Config real vacía (`{}`)** → `authorizedNumbers` undefined → **autoriza a cualquier remitente**. Y los grupos están siempre autorizados aunque se rellene la lista.
+   - Mitigación: poblar `authorizedNumbers` (con el/los números permitidos) en `config.json` o vía UI. Aun así, ojo grupos.
+   - Telegram: campo `telegram.allowedUsers` (default `[]`); config real en la store de la app. Verificar en UI que solo tenga el id de Luismi.
 
 2. **bypassPermissions — ⚠️ crítico (confirmado)**
    - Cada sesión se lanza con `--permission-mode bypassPermissions`. El agente remoto puede ejecutar cualquier cosa en el Mac sin pedir permiso. La seguridad depende ENTERA de la allowlist (riesgo 1).
