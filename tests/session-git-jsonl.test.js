@@ -118,3 +118,121 @@ test('copySessionsHome sin resolveClaudeProjectDir inyectado -> no-op []', () =>
   const sg = makeSg({})
   assert.deepEqual(sg.copySessionsHome({ realCwd: '/a', workCwd: '/b' }), [])
 })
+
+test('copySessionsHome: un directorio llamado "*.jsonl" se omite (EISDIR), el resto se copia y avisa', () => {
+  const realDir = mkTmp('sg-real-')
+  const workDir = mkTmp('sg-work-')
+  const map = new Map([
+    ['/real/cwd', realDir],
+    ['/work/cwd', workDir]
+  ])
+
+  fs.writeFileSync(path.join(workDir, 'sid-1.jsonl'), '{"turn":"uno"}\n')
+  fs.mkdirSync(path.join(workDir, 'x.jsonl')) // patológico: "sesión" que en realidad es un directorio
+  fs.writeFileSync(path.join(workDir, 'sid-3.jsonl'), '{"turn":"tres"}\n')
+
+  const warnCalls = []
+  const sg = createSessionGit({
+    worktreesRoot: mkTmp('sg-wt-'),
+    looksRemotePath: () => false,
+    isEnabled: () => true,
+    resolveClaudeProjectDir: makeResolver(map),
+    log: { warn: (...args) => warnCalls.push(args.join(' ')) }
+  })
+
+  const copied = sg.copySessionsHome({ realCwd: '/real/cwd', workCwd: '/work/cwd' })
+
+  assert.deepEqual(copied.sort(), ['sid-1', 'sid-3'])
+  assert.equal(fs.readFileSync(path.join(realDir, 'sid-1.jsonl'), 'utf8'), '{"turn":"uno"}\n')
+  assert.equal(fs.readFileSync(path.join(realDir, 'sid-3.jsonl'), 'utf8'), '{"turn":"tres"}\n')
+  assert.ok(!fs.existsSync(path.join(realDir, 'x.jsonl')), 'no debe copiar el directorio')
+  assert.ok(warnCalls.some((m) => m.includes('x.jsonl')), 'debe avisar del elemento omitido')
+})
+
+test('copySessionsHome: fallo de copyFileSync en un fichero no aborta el resto (warn + continue)', (t) => {
+  const realDir = mkTmp('sg-real-')
+  const workDir = mkTmp('sg-work-')
+  const map = new Map([
+    ['/real/cwd', realDir],
+    ['/work/cwd', workDir]
+  ])
+
+  fs.writeFileSync(path.join(workDir, 'sid-1.jsonl'), '{"turn":"uno"}\n')
+  fs.writeFileSync(path.join(workDir, 'sid-2.jsonl'), '{"turn":"dos"}\n')
+  fs.writeFileSync(path.join(workDir, 'sid-3.jsonl'), '{"turn":"tres"}\n')
+
+  const originalCopyFileSync = fs.copyFileSync
+  t.mock.method(fs, 'copyFileSync', (src, dest, ...rest) => {
+    if (String(src).endsWith('sid-2.jsonl')) throw new Error('EACCES simulado')
+    return originalCopyFileSync(src, dest, ...rest)
+  })
+
+  const warnCalls = []
+  const sg = createSessionGit({
+    worktreesRoot: mkTmp('sg-wt-'),
+    looksRemotePath: () => false,
+    isEnabled: () => true,
+    resolveClaudeProjectDir: makeResolver(map),
+    log: { warn: (...args) => warnCalls.push(args.join(' ')) }
+  })
+
+  const copied = sg.copySessionsHome({ realCwd: '/real/cwd', workCwd: '/work/cwd' })
+
+  assert.deepEqual(copied.sort(), ['sid-1', 'sid-3'])
+  assert.equal(fs.readFileSync(path.join(realDir, 'sid-1.jsonl'), 'utf8'), '{"turn":"uno"}\n')
+  assert.equal(fs.readFileSync(path.join(realDir, 'sid-3.jsonl'), 'utf8'), '{"turn":"tres"}\n')
+  assert.ok(!fs.existsSync(path.join(realDir, 'sid-2.jsonl')), 'el fichero que falla no debe quedar copiado')
+  assert.ok(warnCalls.some((m) => m.includes('sid-2')), 'debe avisar del fallo puntual')
+})
+
+test('copySessionToWorktree: si el destino ya es igual o más nuevo que el origen, no lo pisa', () => {
+  const realDir = mkTmp('sg-real-')
+  const workDir = mkTmp('sg-work-')
+  const encodedWork = path.join(workDir, 'encoded-worktree')
+  fs.mkdirSync(encodedWork, { recursive: true })
+  const map = new Map([
+    ['/real/cwd', realDir],
+    ['/work/cwd', encodedWork]
+  ])
+  const sid = 'sid-fresh'
+  const sourceFile = path.join(realDir, `${sid}.jsonl`)
+  const targetFile = path.join(encodedWork, `${sid}.jsonl`)
+  fs.writeFileSync(sourceFile, '{"turn":"viejo-en-real"}\n')
+  fs.writeFileSync(targetFile, '{"turn":"nuevo-en-worktree"}\n')
+
+  const now = Date.now() / 1000
+  fs.utimesSync(sourceFile, now - 100, now - 100) // origen más antiguo
+  fs.utimesSync(targetFile, now, now) // destino más nuevo
+
+  const sg = makeSg({ resolveClaudeProjectDir: makeResolver(map) })
+  const ok = sg.copySessionToWorktree({ claudeSessionId: sid, realCwd: '/real/cwd', workCwd: '/work/cwd' })
+
+  assert.equal(ok, true)
+  assert.equal(fs.readFileSync(targetFile, 'utf8'), '{"turn":"nuevo-en-worktree"}\n', 'no debe pisar una versión más nueva en el worktree')
+})
+
+test('copySessionToWorktree: si el destino es más antiguo que el origen, lo sobrescribe', () => {
+  const realDir = mkTmp('sg-real-')
+  const workDir = mkTmp('sg-work-')
+  const encodedWork = path.join(workDir, 'encoded-worktree')
+  fs.mkdirSync(encodedWork, { recursive: true })
+  const map = new Map([
+    ['/real/cwd', realDir],
+    ['/work/cwd', encodedWork]
+  ])
+  const sid = 'sid-stale'
+  const sourceFile = path.join(realDir, `${sid}.jsonl`)
+  const targetFile = path.join(encodedWork, `${sid}.jsonl`)
+  fs.writeFileSync(targetFile, '{"turn":"viejo-en-worktree"}\n')
+  fs.writeFileSync(sourceFile, '{"turn":"nuevo-en-real"}\n')
+
+  const now = Date.now() / 1000
+  fs.utimesSync(targetFile, now - 100, now - 100) // destino más antiguo
+  fs.utimesSync(sourceFile, now, now) // origen más nuevo
+
+  const sg = makeSg({ resolveClaudeProjectDir: makeResolver(map) })
+  const ok = sg.copySessionToWorktree({ claudeSessionId: sid, realCwd: '/real/cwd', workCwd: '/work/cwd' })
+
+  assert.equal(ok, true)
+  assert.equal(fs.readFileSync(targetFile, 'utf8'), '{"turn":"nuevo-en-real"}\n', 'debe sobrescribir cuando el destino es más antiguo')
+})

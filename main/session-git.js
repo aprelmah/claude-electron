@@ -227,7 +227,18 @@ function createSessionGit({
       const targetDir = resolveClaudeProjectDir(workCwd)
       if (!targetDir) return false
       fs.mkdirSync(targetDir, { recursive: true })
-      fs.copyFileSync(sourceFile, path.join(targetDir, `${claudeSessionId}.jsonl`))
+      const targetFile = path.join(targetDir, `${claudeSessionId}.jsonl`)
+
+      // Si el worktree ya tiene una copia igual o más reciente que el
+      // proyecto real (doble resume, crash a mitad de sesión), no la
+      // pisamos: perderíamos turnos que solo existen ahí.
+      if (fs.existsSync(targetFile)) {
+        const sourceMtime = fs.statSync(sourceFile).mtimeMs
+        const targetMtime = fs.statSync(targetFile).mtimeMs
+        if (targetMtime >= sourceMtime) return true
+      }
+
+      fs.copyFileSync(sourceFile, targetFile)
       return true
     } catch (err) {
       log.warn?.(`[session-git] copySessionToWorktree falló (${claudeSessionId}): ${err?.message || err}`)
@@ -240,6 +251,9 @@ function createSessionGit({
   // el trabajo de la sesión). Se usa al finalizar/mergear el worktree para
   // que el transcript de Claude Code quede sincronizado en el proyecto real.
   // Fail-open: dep no inyectada o dir origen ausente -> [] sin lanzar.
+  // Cada fichero se copia en su propio try/catch: si uno falla (corrupto,
+  // permisos, etc.) no aborta el resto — el array devuelto refleja
+  // exactamente lo que se copió de verdad, nunca menos de lo que hay en disco.
   function copySessionsHome({ realCwd, workCwd }) {
     try {
       if (typeof resolveClaudeProjectDir !== 'function') return []
@@ -252,11 +266,25 @@ function createSessionGit({
       if (!targetDir) return []
       fs.mkdirSync(targetDir, { recursive: true })
 
-      const files = fs.readdirSync(sourceDir).filter((name) => name.endsWith('.jsonl'))
+      // withFileTypes + isFile() para no intentar copiar directorios que por
+      // lo que sea se llamen "*.jsonl" (EISDIR) — se descartan de raíz en el
+      // listado en vez de reventar copyFileSync.
+      const entries = fs.readdirSync(sourceDir, { withFileTypes: true })
+        .filter((entry) => entry.name.endsWith('.jsonl'))
+
       const copiedSessionIds = []
-      for (const file of files) {
-        fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file))
-        copiedSessionIds.push(file.slice(0, -'.jsonl'.length))
+      for (const entry of entries) {
+        const sessionId = entry.name.slice(0, -'.jsonl'.length)
+        if (!entry.isFile()) {
+          log.warn?.(`[session-git] copySessionsHome: '${entry.name}' no es un fichero regular, se omite (${workCwd})`)
+          continue
+        }
+        try {
+          fs.copyFileSync(path.join(sourceDir, entry.name), path.join(targetDir, entry.name))
+          copiedSessionIds.push(sessionId)
+        } catch (err) {
+          log.warn?.(`[session-git] copySessionsHome: fallo copiando '${entry.name}' (${err?.message || err}), se continúa con el resto`)
+        }
       }
       return copiedSessionIds
     } catch (err) {
