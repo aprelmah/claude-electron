@@ -2044,7 +2044,16 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
         const obj = JSON.parse(firstLine)
         const cwd = safe(obj?.cwd)
         if (cwd) {
-          try { if (fs.statSync(cwd).isDirectory()) return cwd } catch {}
+          try {
+            if (fs.statSync(cwd).isDirectory()) return cwd
+          } catch {
+            // cwd no existe en disco (p.ej. worktree borrado tras finalizar
+            // la sesión) — si sabemos a qué cwd real pertenecía, usarlo.
+            try {
+              const entry = sessionGitMap?.lookupByWorktreePath(cwd)
+              if (entry && entry.realCwd) return entry.realCwd
+            } catch {}
+          }
         }
       } catch {}
     }
@@ -3267,7 +3276,19 @@ const _sessionListing = createSessionListing({
   resolveExistingDir,
   extractTurnText,
   claudeIndex: () => claudeSessionsIndex,
-  get codexIndex() { return codexSessionsIndex }
+  get codexIndex() { return codexSessionsIndex },
+  // Late binding: sessionGitMap se crea en onReady, después de este top-level.
+  // Al listar sesiones de un cwd, sumamos las de sus worktrees ACTIVOS —
+  // mientras la sesión sigue en worktree, su .jsonl vive ahí, no en el real.
+  getActiveWorktreeSessionDirs: (cwd) => {
+    try {
+      return (sessionGitMap?.listActiveForCwd(cwd) || [])
+        .map((entry) => resolveClaudeProjectDir(entry.worktreePath))
+        .filter(Boolean)
+    } catch {
+      return []
+    }
+  }
 })
 const {
   listClaudeSessionsForCwd,
