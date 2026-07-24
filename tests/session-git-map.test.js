@@ -192,6 +192,39 @@ test('sweepOrphans: worktree borrado a mano desaparece y rama mergeada se borra;
   assert.ok(branch2.includes(ws2.branch), 'la rama con commit sin mergear debe sobrevivir')
 })
 
+test('sweepOrphans: worktree vivo con rama mergeada sobrevive (no confundir "+" de branch --list con huérfana)', async () => {
+  const repo = initRepo()
+  const warnCalls = []
+  const spyLog = { warn: (msg) => warnCalls.push(msg) }
+  const sg = makeSg({ log: spyLog })
+
+  // ws-viva: worktree se deja en pie (sigue existiendo en disco), su rama
+  // apunta a HEAD del repo real => mergeada, y además está "ocupada" por ese
+  // worktree activo (git branch --list la marcaría con '+', no con '*').
+  const wsViva = await sg.prepareSessionWorkspace({ realCwd: repo })
+  assert.ok(wsViva)
+
+  // ws-huerfana: mismo caso de mergeada, pero su worktree se borra a mano.
+  const wsHuerfana = await sg.prepareSessionWorkspace({ realCwd: repo })
+  assert.ok(wsHuerfana)
+  fs.rmSync(wsHuerfana.worktreePath, { recursive: true, force: true })
+
+  await sg.sweepOrphans({ realCwds: [repo] })
+
+  const worktreeList = execFileSync('git', ['worktree', 'list'], { cwd: repo }).toString()
+  assert.ok(worktreeList.includes(wsViva.worktreePath), 'el worktree vivo debe seguir listado tras el sweep')
+  assert.ok(fs.existsSync(wsViva.worktreePath), 'el directorio del worktree vivo no debe tocarse')
+
+  const branchViva = execFileSync('git', ['branch', '--list', wsViva.branch], { cwd: repo }).toString().trim()
+  assert.ok(branchViva.includes(wsViva.branch), 'la rama del worktree vivo debe sobrevivir aunque esté mergeada')
+
+  const branchHuerfana = execFileSync('git', ['branch', '--list', wsHuerfana.branch], { cwd: repo }).toString().trim()
+  assert.equal(branchHuerfana, '', 'la rama huérfana y mergeada sí debe borrarse')
+
+  const warnedAboutViva = warnCalls.some((msg) => msg.includes(wsViva.branch))
+  assert.equal(warnedAboutViva, false, 'no debe haber log.warn de borrado fallido para la rama viva')
+})
+
 test('sweepOrphans nunca lanza aunque el repo no exista', async () => {
   const sg = makeSg()
   await assert.doesNotReject(sg.sweepOrphans({ realCwds: [mkTmp('sgm-no-repo-')] }))

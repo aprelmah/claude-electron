@@ -164,17 +164,26 @@ function createSessionGit({ worktreesRoot, looksRemotePath, isEnabled, execFileI
           if (m) busyBranches.add(m[1])
         }
 
-        const branchListOut = await git(['branch', '--list', 'poweragent/session-*'], realCwd)
-        const sessionBranches = branchListOut
+        // for-each-ref no decora nombres (ni '*' de rama actual ni '+' de rama
+        // ocupada por otro worktree, que sí añade `git branch --list`), así que
+        // el nombre siempre coincide tal cual con el de `worktree list --porcelain`.
+        const sessionBranchesOut = await git(
+          ['for-each-ref', '--format=%(refname:short)', 'refs/heads/poweragent/session-*'],
+          realCwd
+        )
+        const sessionBranches = sessionBranchesOut
           .split('\n')
-          .map((line) => line.replace(/^\*?\s+/, '').trim())
+          .map((line) => line.trim())
           .filter(Boolean)
 
         if (sessionBranches.length === 0) continue
 
-        const mergedOut = await git(['branch', '--merged', 'HEAD'], realCwd)
+        const mergedOut = await git(
+          ['for-each-ref', '--merged', 'HEAD', '--format=%(refname:short)', 'refs/heads/poweragent/session-*'],
+          realCwd
+        )
         const mergedBranches = new Set(
-          mergedOut.split('\n').map((line) => line.replace(/^\*?\s+/, '').trim()).filter(Boolean)
+          mergedOut.split('\n').map((line) => line.trim()).filter(Boolean)
         )
 
         for (const branch of sessionBranches) {
