@@ -133,6 +133,23 @@ contextBridge.exposeInMainWorld('api', {
     open: ({ sessionId, cwd, cli, taskName } = {}) =>
       ipcRenderer.invoke('app:open-task-session', { sessionId, cwd, cli, taskName })
   },
+  subchat: {
+    canStart: () => ipcRenderer.invoke('subchat:can-start'),
+    start: (cols, rows) => ipcRenderer.invoke('subchat:start', { cols, rows }),
+    write: (data) => ipcRenderer.send('subchat:write', data),
+    resize: (cols, rows) => ipcRenderer.send('subchat:resize', { cols, rows }),
+    close: () => ipcRenderer.invoke('subchat:close'),
+    onData: (cb) => {
+      const h = (_e, d) => cb(d)
+      ipcRenderer.on('subchat:data', h)
+      return () => ipcRenderer.removeListener('subchat:data', h)
+    },
+    onExit: (cb) => {
+      const h = (_e, p) => cb(p)
+      ipcRenderer.on('subchat:exit', h)
+      return () => ipcRenderer.removeListener('subchat:exit', h)
+    }
+  },
   openBitacoraWindow: () => ipcRenderer.invoke('bitacora:open'),
   onTaskRunStarted: (cb) => {
     const h = (_e, p) => cb(p)

@@ -60,6 +60,7 @@ const { createSessionListing, projectDirFor } = require('./main/claude-session-l
 const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
 const { createSessionGit } = require('./main/session-git')
 const { createSessionGitMap } = require('./main/session-git-map')
+const { createSubchatManager } = require('./main/subchat-pty')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -1267,6 +1268,15 @@ function buildClaudeLocalArgs(cli, sessionId) {
   return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
 }
 
+// ── Sub-chat desechable (fork de la sesión activa, ver main/subchat-pty.js) ──
+const subchatManager = createSubchatManager({
+  ptySpawn: (file, argv, opts) => pty.spawn(file, argv, opts),
+  ensureCliAvailable,
+  buildFdLimitCommand,
+  getClaudeModel,
+  log: (m) => console.log('[subchat]', m)
+})
+
 // ── Git por sesión (aislamiento por worktree) ──
 // Fail-open: si sessionGit es null o prepare devuelve null, la sesión corre en
 // su cwd real sin aislamiento (comportamiento idéntico al de siempre).
@@ -1444,6 +1454,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 
 function killPty(session) {
   if (!session || !session.pty) return
+  try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
   logSemanticForSession(session, 'pty_fin', {
     detail: `cwd=${session.cwd || ''}`,
     ok: true
@@ -3152,6 +3163,33 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
 ipcMain.handle('pty-cwd', (event) => {
   const s = getSessionByEvent(event)
   return s ? s.cwd : os.homedir()
+})
+
+// ── Sub-chat IPC (fork desechable de la sesión activa) ──
+ipcMain.handle('subchat:can-start', (event) => {
+  const s = getSessionByEvent(event)
+  return subchatManager.canStart(s)
+})
+
+ipcMain.handle('subchat:start', (event, { cols, rows } = {}) => {
+  const s = getSessionByEvent(event)
+  if (!s) return { ok: false, error: 'Sesión no disponible' }
+  return subchatManager.start(s, { cols, rows })
+})
+
+ipcMain.on('subchat:write', (event, data) => {
+  const s = getSessionByEvent(event)
+  if (s) subchatManager.write(s.wcId, data)
+})
+
+ipcMain.on('subchat:resize', (event, { cols, rows } = {}) => {
+  const s = getSessionByEvent(event)
+  if (s) subchatManager.resize(s.wcId, cols, rows)
+})
+
+ipcMain.handle('subchat:close', (event) => {
+  const s = getSessionByEvent(event)
+  return s ? subchatManager.close(s.wcId, 'renderer') : false
 })
 
 // ── Audio: guarda buffer y transcribe con whisper.cpp ──
