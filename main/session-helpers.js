@@ -61,11 +61,14 @@ function extractClaudeResumeId(args) {
   return null
 }
 
-function buildResumeArgs(cli, sessionId) {
+// `model` solo aplica a claude (prepend `--model`); evita el gate de créditos
+// del contexto 1M cuando se le pasa un id estándar (ej. 'opus'). Codex intacto.
+function buildResumeArgs(cli, sessionId, model = '') {
   const sid = String(sessionId || '').trim()
-  if (!sid) return []
-  if (cli === 'codex') return ['resume', sid]
-  return ['--resume', sid]
+  if (cli === 'codex') return sid ? ['resume', sid] : []
+  const m = String(model || '').trim()
+  const modelArgs = m ? ['--model', m] : []
+  return sid ? [...modelArgs, '--resume', sid] : modelArgs
 }
 
 // Caches con LRU manual: una vez la clave existe se renueva la posición.

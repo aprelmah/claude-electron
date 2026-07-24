@@ -2698,8 +2698,13 @@ function createLanWsServer(options = {}) {
     const bin = trimToString(config?.bin, 1000)
     if (!bin) throw new Error('No hay binario CLI configurado')
     const baseArgs = Array.isArray(config?.args) ? config.args : []
-    const resumeArgs = buildResumeArgsForCli(config?.cli || session?.cli, options?.resumeSessionId || session?.selectedResumeSessionId || '')
-    const args = [...resumeArgs, ...baseArgs]
+    const cliName = config?.cli || session?.cli
+    const resumeArgs = buildResumeArgsForCli(cliName, options?.resumeSessionId || session?.selectedResumeSessionId || '')
+    // Floor 'opus' para claude: sin --model resuelve al 1M (gate de créditos).
+    const modelArgs = (cliName !== 'codex' && !baseArgs.includes('--model'))
+      ? ['--model', config?.context?.model || 'opus']
+      : []
+    const args = [...modelArgs, ...resumeArgs, ...baseArgs]
     const execCommand = buildExecCommand(bin, args)
     return pty.spawn('/bin/bash', ['-c', execCommand], {
       name: 'xterm-256color',

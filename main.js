@@ -605,7 +605,7 @@ async function runLanSemanticChatTurn({ session, prompt, signal } = {}) {
     sessionId: compacted.sessionId || undefined,
     signal,
     cwd,
-    model,
+    model: model || getClaudeModel(),
     effort,
     timeoutMs: 240000,
     origin: 'lan'
@@ -1250,6 +1250,17 @@ function scheduleProfileBootstrapMessage(session, proc, profile) {
   }, 650)
 }
 
+// Modelo Claude por defecto (config). 'opus' = contexto estándar 200k, evita
+// el gate de créditos del 1M. Usado al spawnear PTY local y como fallback headless.
+function getClaudeModel() {
+  return appConfig?.cli?.claudeModel || 'opus'
+}
+
+// Args claude para spawn local: prepende --model con el default configurado.
+function buildClaudeLocalArgs(cli, sessionId) {
+  return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
@@ -1686,7 +1697,7 @@ function startAgentPty(session) {
 
   let proc
   try {
-    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, [])], {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, buildClaudeLocalArgs(session.activeCli, null))], {
       name: 'xterm-256color',
       cols: session.cols || 120,
       rows: session.rows || 35,
@@ -2109,9 +2120,7 @@ function startTaskSessionPty(s) {
     throw new Error(cliCheck.error)
   }
 
-  const args = s.cli === 'codex'
-    ? ['resume', s.sessionId]
-    : ['--resume', s.sessionId]
+  const args = buildResumeArgs(s.cli, s.sessionId, s.cli === 'claude' ? getClaudeModel() : '')
 
   s.sessionFilesSnapshot = s.cli === 'claude'
     ? snapshotClaudeSessions(s.cwd)
@@ -2254,7 +2263,7 @@ function initTelegramBridge() {
       }
       if (hasExplicitSid && targetCli === 'claude') {
         const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd })
-        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '', origin: 'telegram' })
+        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
       }
 
       if (targetCli === 'codex') {
@@ -2287,7 +2296,7 @@ function initTelegramBridge() {
       }
 
       const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
-      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '', origin: 'telegram' })
+      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
     },
     onGetActiveCli: async () => getActiveCliSync(),
     onGetCwd: async () => getCwdSync(),
@@ -2896,7 +2905,7 @@ ipcMain.handle('pty-start', (event, { cols, rows, cwd, cli, sessionId } = {}) =>
       throw new Error(switchResult.error || 'No se pudo cambiar de CLI')
     }
   }
-  const args = sessionId ? buildResumeArgs(s.activeCli, sessionId) : []
+  const args = buildClaudeLocalArgs(s.activeCli, sessionId)
   startPty(s, cols, rows, cwd, args)
   if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
   try {
@@ -2994,7 +3003,7 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(s, cols, rows, cwd)
+        startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, null))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         resolve(s.cwd)
       } catch (err) {
@@ -3268,7 +3277,7 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows, cli
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(s, cols, rows, cwd, buildResumeArgs(s.activeCli, sessionId))
+        startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, sessionId))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         try {
           if (recentCwds && s.cwd) recentCwds.push(s.cwd)
@@ -3341,7 +3350,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
@@ -3778,7 +3787,7 @@ ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
         // Fallback automático a claude.
         const checkC = ensureCliAvailable('claude')
         if (!checkC.ok) return { ok: false, error: check.error + ' / ' + checkC.error }
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
       } else {
         result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
       }
@@ -3789,7 +3798,7 @@ ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
         if (!checkX.ok) return { ok: false, error: check.error + ' / ' + checkX.error }
         result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
       } else {
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
       }
     }
   } catch (err) {

@@ -65,6 +65,7 @@ const btnSaveSettings = document.getElementById('btn-save-settings')
 const btnRefreshTelegramStatus = document.getElementById('btn-refresh-telegram-status')
 const cfgDefaultCli = document.getElementById('cfg-default-cli')
 const cfgClaudeBin = document.getElementById('cfg-claude-bin')
+const cfgClaudeModel = document.getElementById('cfg-claude-model')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
@@ -2081,6 +2082,7 @@ async function refreshSettings() {
   const config = await window.api.getAppConfig()
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
   cfgClaudeBin.value = config?.cli?.claudeBin || ''
+  if (cfgClaudeModel) cfgClaudeModel.value = config?.cli?.claudeModel || 'opus'
   cfgCodexBin.value = config?.cli?.codexBin || ''
   cfgWhisperBin.value = config?.cli?.whisperBin || ''
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
@@ -2496,6 +2498,7 @@ btnSaveSettings.addEventListener('click', async () => {
     cli: {
       defaultCli: cfgDefaultCli.value,
       claudeBin: cfgClaudeBin.value.trim(),
+      claudeModel: cfgClaudeModel ? cfgClaudeModel.value.trim() : '',
       codexBin: cfgCodexBin.value.trim(),
       whisperBin: cfgWhisperBin.value.trim()
     },

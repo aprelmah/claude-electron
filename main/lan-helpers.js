@@ -57,7 +57,9 @@ function buildLanCliArgs(cli, { model = '', effort = '' } = {}) {
     if (effort) args.push('-c', `model_reasoning_effort=${effort}`)
     return args
   }
-  if (model) args.push('--model', model)
+  // Floor 'opus' (contexto estándar): sin --model, claude resuelve al default
+  // 1M (claude-opus-4-8[1m]) que exige usage credits y rompe headless/LAN.
+  args.push('--model', model || 'opus')
   if (effort) args.push('--effort', effort)
   return args
 }

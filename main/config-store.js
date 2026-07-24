@@ -106,6 +106,17 @@ const CLI_BIN_ALLOWED_ROOTS = [
   '/bin/'
 ]
 
+// Modelo Claude por defecto del PTY local. Default 'opus' (contexto estándar
+// 200k) para NO disparar el gate de créditos del 1M (`claude-opus-4-8[1m]`).
+// Acepta alias (opus/sonnet/haiku) e ids tipo `claude-opus-4-8` o `...[1m]`.
+function sanitizeClaudeModel(value, fallback = 'opus') {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (!v) return fallback
+  if (v.length > 60) return fallback
+  if (!/^[a-z0-9][a-z0-9.\-]*(\[[a-z0-9]+\])?$/.test(v)) return fallback
+  return v
+}
+
 function sanitizeCliBinaryPath(value) {
   const v = typeof value === 'string' ? value.trim() : ''
   if (!v) return ''
@@ -167,7 +178,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         // .local/bin, /usr/local). Bloquea RCE local vía XSS que setea bin a /tmp/x.
         claudeBin: sanitizeCliBinaryPath(cli.claudeBin),
         codexBin: sanitizeCliBinaryPath(cli.codexBin),
-        whisperBin: sanitizeCliBinaryPath(cli.whisperBin)
+        whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
+        claudeModel: sanitizeClaudeModel(cli.claudeModel)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -197,7 +209,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
   return {
     normalizeAppConfig,
     normalizeLanServerConfig,
-    sanitizeCliBinaryPath
+    sanitizeCliBinaryPath,
+    sanitizeClaudeModel
   }
 }
 
@@ -230,5 +243,6 @@ module.exports = {
   createConfigNormalizers,
   readConfigFromFile,
   writeConfigToFile,
-  sanitizeCliBinaryPath
+  sanitizeCliBinaryPath,
+  sanitizeClaudeModel
 }
