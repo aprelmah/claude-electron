@@ -366,6 +366,7 @@ let subchatTerm = null
 let subchatFit = null
 let subchatOffData = null
 let subchatOffExit = null
+let subchatOpening = false
 const subchatPane = document.getElementById('subchat-pane')
 const subchatDividerEl = document.getElementById('subchat-divider')
 const subchatTermEl = document.getElementById('subchat-terminal')
@@ -373,46 +374,51 @@ const btnSubchat = document.getElementById('btn-subchat')
 const btnSubchatClose = document.getElementById('btn-subchat-close')
 
 async function openSubchatPane() {
-  if (subchatTerm) return
-  const can = await window.api.subchat.canStart()
-  if (!can?.ok) {
-    if (btnSubchat) btnSubchat.title = `Sub-chat: ${can?.reason || 'no disponible'}`
-    return
+  if (subchatTerm || subchatOpening) return
+  subchatOpening = true
+  try {
+    const can = await window.api.subchat.canStart()
+    if (!can?.ok) {
+      if (btnSubchat) btnSubchat.title = `Sub-chat: ${can?.reason || 'no disponible'}`
+      return
+    }
+    subchatPane.classList.remove('hidden')
+    subchatDividerEl.classList.remove('hidden')
+    subchatTerm = new Terminal({
+      fontFamily: 'Menlo, Monaco, "SF Mono", Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      allowTransparency: false,
+      scrollback: 5000,
+      theme: term.options.theme
+    })
+    const subchatFitAddon = new FitAddon.FitAddon()
+    subchatTerm.loadAddon(subchatFitAddon)
+    subchatTerm.open(subchatTermEl)
+    subchatFit = createTermFit({
+      term: subchatTerm,
+      fitAddon: subchatFitAddon,
+      observeEl: subchatTermEl,
+      sendResize: (cols, rows) => window.api.subchat.resize(cols, rows)
+    })
+    subchatTerm.onData((d) => window.api.subchat.write(d))
+    subchatOffData = window.api.subchat.onData((d) => subchatTerm?.write(d))
+    subchatOffExit = window.api.subchat.onExit(() => closeSubchatPane({ notifyMain: false }))
+    const size = subchatFit.getSafeSize({ forceFit: true })
+    const r = await window.api.subchat.start(size.cols, size.rows)
+    if (!r?.ok) {
+      subchatTerm.write(`\r\n\x1b[31m${r?.error || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
+      setTimeout(() => closeSubchatPane({ notifyMain: false }), 2500)
+      return
+    }
+    subchatFit.scheduleRefit({ forceFit: true })
+    mainTermFit.scheduleRefit({ forceFit: true })
+    subchatTerm.focus()
+  } finally {
+    subchatOpening = false
   }
-  subchatPane.classList.remove('hidden')
-  subchatDividerEl.classList.remove('hidden')
-  subchatTerm = new Terminal({
-    fontFamily: 'Menlo, Monaco, "SF Mono", Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 1.2,
-    cursorBlink: true,
-    cursorStyle: 'bar',
-    allowTransparency: false,
-    scrollback: 5000,
-    theme: term.options.theme
-  })
-  const subchatFitAddon = new FitAddon.FitAddon()
-  subchatTerm.loadAddon(subchatFitAddon)
-  subchatTerm.open(subchatTermEl)
-  subchatFit = createTermFit({
-    term: subchatTerm,
-    fitAddon: subchatFitAddon,
-    observeEl: subchatTermEl,
-    sendResize: (cols, rows) => window.api.subchat.resize(cols, rows)
-  })
-  subchatTerm.onData((d) => window.api.subchat.write(d))
-  subchatOffData = window.api.subchat.onData((d) => subchatTerm?.write(d))
-  subchatOffExit = window.api.subchat.onExit(() => closeSubchatPane({ notifyMain: false }))
-  const size = subchatFit.getSafeSize({ forceFit: true })
-  const r = await window.api.subchat.start(size.cols, size.rows)
-  if (!r?.ok) {
-    subchatTerm.write(`\r\n\x1b[31m${r?.error || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
-    setTimeout(() => closeSubchatPane({ notifyMain: false }), 2500)
-    return
-  }
-  subchatFit.scheduleRefit({ forceFit: true })
-  mainTermFit.scheduleRefit({ forceFit: true })
-  subchatTerm.focus()
 }
 
 function closeSubchatPane({ notifyMain = true } = {}) {
