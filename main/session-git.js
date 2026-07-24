@@ -138,7 +138,61 @@ function createSessionGit({ worktreesRoot, looksRemotePath, isEnabled, execFileI
     }
   }
 
-  return { git, isGitRepo, prepareSessionWorkspace, finalizeSessionWorkspace, removeWorktree }
+  // Barre huérfanos: worktrees borrados a mano (rm -rf, Finder, etc.) que git
+  // aún referencia, y ramas poweragent/session-* que ya no sirven a ningún
+  // worktree. Solo borra ramas totalmente mergeadas en HEAD — una rama con
+  // commits propios sin mergear (caso 'conflict'/'dirty-target') sobrevive,
+  // porque es la única copia de ese trabajo. Fail-open total: nunca lanza,
+  // cualquier fallo por repo se loguea y se sigue con el siguiente.
+  async function sweepOrphans({ realCwds } = {}) {
+    const cwds = Array.isArray(realCwds) ? [...new Set(realCwds.filter(Boolean))] : []
+    for (const realCwd of cwds) {
+      try {
+        if (looksRemotePath(realCwd)) continue
+        if (!(await isGitRepo(realCwd))) continue
+
+        try {
+          await git(['worktree', 'prune'], realCwd, { timeout: 30000 })
+        } catch (err) {
+          log.warn?.(`[session-git] sweep: prune falló (${realCwd}): ${err?.message || err}`)
+        }
+
+        const worktreeListOut = await git(['worktree', 'list', '--porcelain'], realCwd)
+        const busyBranches = new Set()
+        for (const line of worktreeListOut.split('\n')) {
+          const m = line.match(/^branch refs\/heads\/(.+)$/)
+          if (m) busyBranches.add(m[1])
+        }
+
+        const branchListOut = await git(['branch', '--list', 'poweragent/session-*'], realCwd)
+        const sessionBranches = branchListOut
+          .split('\n')
+          .map((line) => line.replace(/^\*?\s+/, '').trim())
+          .filter(Boolean)
+
+        if (sessionBranches.length === 0) continue
+
+        const mergedOut = await git(['branch', '--merged', 'HEAD'], realCwd)
+        const mergedBranches = new Set(
+          mergedOut.split('\n').map((line) => line.replace(/^\*?\s+/, '').trim()).filter(Boolean)
+        )
+
+        for (const branch of sessionBranches) {
+          if (busyBranches.has(branch)) continue
+          if (!mergedBranches.has(branch)) continue
+          try {
+            await git(['branch', '-d', branch], realCwd)
+          } catch (err) {
+            log.warn?.(`[session-git] sweep: no se pudo borrar rama ${branch} (${realCwd}): ${err?.message || err}`)
+          }
+        }
+      } catch (err) {
+        log.warn?.(`[session-git] sweep falló (${realCwd}): ${err?.message || err}`)
+      }
+    }
+  }
+
+  return { git, isGitRepo, prepareSessionWorkspace, finalizeSessionWorkspace, removeWorktree, sweepOrphans }
 }
 
 module.exports = { createSessionGit }
