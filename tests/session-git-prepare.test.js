@@ -54,6 +54,22 @@ test('prepare devuelve null: no repo, remoto, disabled, repo sin HEAD', async ()
   assert.equal(await makeSg().prepareSessionWorkspace({ realCwd: empty }), null)
 })
 
+test('prepare desde un subdirectorio mantiene el cwd equivalente dentro del worktree', async () => {
+  const repo = initRepo()
+  const sub = path.join(repo, 'apps', 'web')
+  fs.mkdirSync(sub, { recursive: true })
+  fs.writeFileSync(path.join(sub, 'index.js'), 'x\n')
+  execFileSync('git', ['add', '-A'], { cwd: repo })
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'sub', '-q'], { cwd: repo })
+  const sg = makeSg()
+  const ws = await sg.prepareSessionWorkspace({ realCwd: sub })
+  assert.ok(ws)
+  assert.ok(ws.workCwd.endsWith(path.join('apps', 'web')), `workCwd debe acabar en apps/web: ${ws.workCwd}`)
+  assert.ok(fs.existsSync(ws.workCwd), 'el subdirectorio existe dentro del worktree')
+  assert.notEqual(ws.workCwd, ws.worktreePath)
+  assert.ok(ws.workCwd.startsWith(ws.worktreePath), 'workCwd cuelga de worktreePath')
+})
+
 test('dos prepare sobre el mismo repo dan worktrees y ramas distintos', async () => {
   const repo = initRepo()
   const sg = makeSg()

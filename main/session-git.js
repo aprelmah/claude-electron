@@ -49,9 +49,30 @@ function createSessionGit({
       const key = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`
       const branch = `poweragent/session-${key}`
       const worktreePath = path.join(worktreesRoot, `${slugFor(realCwd)}-${key}`)
+      // Prefijo del subdirectorio respecto a la raíz del repo (vacío en la
+      // raíz). Se calcula ANTES de crear el worktree: si falla, no queda nada
+      // huérfano que limpiar.
+      const prefix = (await git(['rev-parse', '--show-prefix'], realCwd)).replace(/\/+$/, '')
       fs.mkdirSync(worktreesRoot, { recursive: true })
       await git(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], realCwd, { timeout: 60000 })
-      return { key, realCwd, branch, worktreePath, workCwd: worktreePath }
+      // Si la sesión nace en un subdirectorio del repo, el PTY debe arrancar
+      // en el subdirectorio equivalente del worktree — no teletransportarse a
+      // la raíz. worktreePath sigue siendo la raíz (es lo que gestiona git).
+      let workCwd = worktreePath
+      if (prefix) {
+        const candidate = path.join(worktreePath, prefix)
+        let isDir = false
+        try { isDir = fs.statSync(candidate).isDirectory() } catch { isDir = false }
+        if (!isDir) {
+          // Fail-open: el subdirectorio no existe en HEAD → limpiar lo recién
+          // creado y arrancar sin aislar.
+          await removeWorktree({ worktreePath, realCwd })
+          try { await git(['branch', '-D', branch], realCwd) } catch { /* mejor esfuerzo */ }
+          return null
+        }
+        workCwd = candidate
+      }
+      return { key, realCwd, branch, worktreePath, workCwd }
     } catch (err) {
       log.warn?.(`[session-git] prepare falló (${realCwd}): ${err?.message || err}`)
       return null
@@ -66,25 +87,31 @@ function createSessionGit({
     }
   }
 
+  // Devuelve 'committed' si dejó los cambios en un commit, 'nothing' si no
+  // había nada que commitear. --no-verify SIEMPRE: los worktrees comparten
+  // .git/hooks con el repo real y un pre-commit lento (ej. suite de tests)
+  // reventaría el timeout perdiendo el commit de rescate de la sesión.
   async function commitSessionChanges(ws) {
-    await git(['add', '-A'], ws.workCwd)
+    await git(['add', '-A'], ws.workCwd, { timeout: 60000 })
     const message = `poweragent: sesión ${ws.key} ${new Date().toISOString()}`
     try {
-      await git(['commit', '-m', message], ws.workCwd)
+      await git(['commit', '--no-verify', '-m', message], ws.workCwd, { timeout: 60000 })
     } catch (err) {
       const output = String(err?.stdout || '') + String(err?.stderr || '') + String(err?.message || '')
-      if (/nothing to commit/i.test(output)) return
+      if (/nothing to commit/i.test(output)) return 'nothing'
       try {
         await git(
-          ['-c', 'user.name=POWER-AGENT', '-c', 'user.email=poweragent@local', 'commit', '-m', message],
-          ws.workCwd
+          ['-c', 'user.name=POWER-AGENT', '-c', 'user.email=poweragent@local', 'commit', '--no-verify', '-m', message],
+          ws.workCwd,
+          { timeout: 60000 }
         )
       } catch (err2) {
         const output2 = String(err2?.stdout || '') + String(err2?.stderr || '') + String(err2?.message || '')
-        if (/nothing to commit/i.test(output2)) return
+        if (/nothing to commit/i.test(output2)) return 'nothing'
         throw err2
       }
     }
+    return 'committed'
   }
 
   async function hasUpstream(cwd) {
@@ -96,10 +123,28 @@ function createSessionGit({
     }
   }
 
-  async function finalizeSessionWorkspace(ws) {
+  // Cola por repo: dos finalize simultáneos sobre el mismo realCwd (varias
+  // ventanas, LAN + local, recovery al arrancar) se serializan para no
+  // pisarse el index.lock ni producir falsos conflictos.
+  const finalizeQueues = new Map()
+
+  function finalizeSessionWorkspace(ws) {
+    const queueKey = String(ws?.realCwd || '')
+    const prev = finalizeQueues.get(queueKey) || Promise.resolve()
+    const run = prev.then(() => doFinalizeSessionWorkspace(ws))
+    const tracked = run.catch(() => { /* la cola nunca se rompe */ })
+    finalizeQueues.set(queueKey, tracked)
+    tracked.then(() => {
+      if (finalizeQueues.get(queueKey) === tracked) finalizeQueues.delete(queueKey)
+    })
+    return run
+  }
+
+  async function doFinalizeSessionWorkspace(ws) {
     let branchExists = true
+    let committed = false
     try {
-      await commitSessionChanges(ws)
+      committed = (await commitSessionChanges(ws)) === 'committed'
 
       const branchRev = await git(['rev-parse', ws.branch], ws.workCwd)
       const targetHead = await git(['rev-parse', 'HEAD'], ws.realCwd)
@@ -120,9 +165,25 @@ function createSessionGit({
       try {
         await git(['merge', '--no-edit', ws.branch], ws.realCwd)
       } catch (err) {
-        try { await git(['merge', '--abort'], ws.realCwd) } catch { /* nada que abortar */ }
-        await removeWorktree(ws)
-        return { outcome: 'conflict', branch: ws.branch, detail: String(err?.stderr || err?.message || err) }
+        // Mismo fallback de identidad que el commit: un merge no fast-forward
+        // crea commit propio y también exige user.name/user.email.
+        const output = String(err?.stdout || '') + String(err?.stderr || '') + String(err?.message || '')
+        let mergedWithIdentity = false
+        if (/(tell me who you are|user\.name|user\.email|empty ident)/i.test(output)) {
+          try { await git(['merge', '--abort'], ws.realCwd) } catch { /* nada que abortar */ }
+          try {
+            await git(
+              ['-c', 'user.name=POWER-AGENT', '-c', 'user.email=poweragent@local', 'merge', '--no-edit', ws.branch],
+              ws.realCwd
+            )
+            mergedWithIdentity = true
+          } catch { /* cae al tratamiento de conflicto */ }
+        }
+        if (!mergedWithIdentity) {
+          try { await git(['merge', '--abort'], ws.realCwd) } catch { /* nada que abortar */ }
+          await removeWorktree(ws)
+          return { outcome: 'conflict', branch: ws.branch, detail: String(err?.stderr || err?.message || err) }
+        }
       }
 
       await removeWorktree(ws)
@@ -140,8 +201,22 @@ function createSessionGit({
 
       return { outcome: 'merged', branch: ws.branch }
     } catch (err) {
+      const detail = String(err?.stderr || err?.message || err)
+      if (!committed) {
+        // El commit no llegó a puerto: si el worktree tiene cambios, es la
+        // ÚNICA copia de ese trabajo → conservarlo en disco (rama incluida).
+        let hasChanges = true
+        try { hasChanges = (await git(['status', '--porcelain'], ws.workCwd)) !== '' } catch { /* asumir cambios */ }
+        if (hasChanges) {
+          return {
+            outcome: 'error',
+            branch: ws.branch,
+            detail: `worktree conservado con cambios sin commitear en ${ws.worktreePath}: ${detail}`
+          }
+        }
+      }
       if (branchExists) await removeWorktree(ws)
-      return { outcome: 'error', branch: ws.branch, detail: String(err?.stderr || err?.message || err) }
+      return { outcome: 'error', branch: ws.branch, detail }
     }
   }
 
@@ -206,6 +281,51 @@ function createSessionGit({
         log.warn?.(`[session-git] sweep falló (${realCwd}): ${err?.message || err}`)
       }
     }
+  }
+
+  // Recuperación tras crash: al arrancar la app no hay ningún PTY vivo, así
+  // que toda entrada activa del registro es huérfana por definición. Para
+  // cada una: si su worktree sigue en disco → copiar transcripts a casa y
+  // finalizar (commit → merge) como si la sesión hubiera cerrado bien; si el
+  // dir ya no existe → 'gone'. Nunca lanza: cada entrada en su try/catch.
+  async function recoverOrphanedWorkspaces({ entries } = {}) {
+    const list = Array.isArray(entries) ? entries : []
+    const results = []
+    for (const entry of list) {
+      const claudeSessionId = String(entry?.claudeSessionId || '')
+      try {
+        const realCwd = String(entry?.realCwd || '')
+        const branch = String(entry?.branch || '')
+        const worktreePath = String(entry?.worktreePath || '')
+        if (!realCwd || !branch || !worktreePath || !fs.existsSync(worktreePath)) {
+          results.push({ claudeSessionId, branch, outcome: 'gone' })
+          continue
+        }
+        // Coherencia con prepare: si la sesión corría en un subdirectorio del
+        // repo, reconstruir el workCwd equivalente dentro del worktree.
+        let workCwd = worktreePath
+        try {
+          const prefix = (await git(['rev-parse', '--show-prefix'], realCwd)).replace(/\/+$/, '')
+          if (prefix && fs.statSync(path.join(worktreePath, prefix)).isDirectory()) {
+            workCwd = path.join(worktreePath, prefix)
+          }
+        } catch { /* raíz del worktree como fallback */ }
+        const ws = {
+          key: branch.replace('poweragent/session-', ''),
+          realCwd,
+          branch,
+          worktreePath,
+          workCwd
+        }
+        try { copySessionsHome({ realCwd: ws.realCwd, workCwd: ws.workCwd }) } catch { /* fail-open */ }
+        const r = await finalizeSessionWorkspace(ws)
+        results.push({ claudeSessionId, branch, outcome: r?.outcome || 'error', detail: r?.detail })
+      } catch (err) {
+        log.warn?.(`[session-git] recover falló (${claudeSessionId}): ${err?.message || err}`)
+        results.push({ claudeSessionId, outcome: 'error', detail: String(err?.message || err) })
+      }
+    }
+    return results
   }
 
   // Copia el transcript .jsonl de una sesión Claude Code del dir codificado
@@ -300,6 +420,7 @@ function createSessionGit({
     finalizeSessionWorkspace,
     removeWorktree,
     sweepOrphans,
+    recoverOrphanedWorkspaces,
     copySessionToWorktree,
     copySessionsHome
   }
