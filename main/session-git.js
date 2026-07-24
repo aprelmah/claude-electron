@@ -9,7 +9,14 @@ const { execFile } = require('node:child_process')
 
 const GIT_TIMEOUT_MS = 15000
 
-function createSessionGit({ worktreesRoot, looksRemotePath, isEnabled, execFileImpl = execFile, log = console } = {}) {
+function createSessionGit({
+  worktreesRoot,
+  looksRemotePath,
+  isEnabled,
+  execFileImpl = execFile,
+  log = console,
+  resolveClaudeProjectDir
+} = {}) {
   function git(args, cwd, { timeout = GIT_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {
       execFileImpl('git', args, { cwd, timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -201,7 +208,73 @@ function createSessionGit({ worktreesRoot, looksRemotePath, isEnabled, execFileI
     }
   }
 
-  return { git, isGitRepo, prepareSessionWorkspace, finalizeSessionWorkspace, removeWorktree, sweepOrphans }
+  // Copia el transcript .jsonl de una sesión Claude Code del dir codificado
+  // del proyecto real al del worktree (creándolo con mkdir -p). Se usa al
+  // arrancar el PTY con --resume dentro del worktree: sin esto, Claude Code
+  // no encuentra el historial de la sesión porque vive bajo el cwd real.
+  // Fail-open: cualquier fallo (dep no inyectada, dir/fichero ausente) ->
+  // false sin lanzar excepción.
+  function copySessionToWorktree({ claudeSessionId, realCwd, workCwd }) {
+    try {
+      if (typeof resolveClaudeProjectDir !== 'function') return false
+      if (!claudeSessionId || !realCwd || !workCwd) return false
+
+      const sourceDir = resolveClaudeProjectDir(realCwd)
+      if (!sourceDir) return false
+      const sourceFile = path.join(sourceDir, `${claudeSessionId}.jsonl`)
+      if (!fs.existsSync(sourceFile)) return false
+
+      const targetDir = resolveClaudeProjectDir(workCwd)
+      if (!targetDir) return false
+      fs.mkdirSync(targetDir, { recursive: true })
+      fs.copyFileSync(sourceFile, path.join(targetDir, `${claudeSessionId}.jsonl`))
+      return true
+    } catch (err) {
+      log.warn?.(`[session-git] copySessionToWorktree falló (${claudeSessionId}): ${err?.message || err}`)
+      return false
+    }
+  }
+
+  // Copia TODOS los .jsonl del dir codificado del worktree al del proyecto
+  // real, sobrescribiendo (el worktree tiene los turnos más recientes tras
+  // el trabajo de la sesión). Se usa al finalizar/mergear el worktree para
+  // que el transcript de Claude Code quede sincronizado en el proyecto real.
+  // Fail-open: dep no inyectada o dir origen ausente -> [] sin lanzar.
+  function copySessionsHome({ realCwd, workCwd }) {
+    try {
+      if (typeof resolveClaudeProjectDir !== 'function') return []
+      if (!realCwd || !workCwd) return []
+
+      const sourceDir = resolveClaudeProjectDir(workCwd)
+      if (!sourceDir || !fs.existsSync(sourceDir)) return []
+
+      const targetDir = resolveClaudeProjectDir(realCwd)
+      if (!targetDir) return []
+      fs.mkdirSync(targetDir, { recursive: true })
+
+      const files = fs.readdirSync(sourceDir).filter((name) => name.endsWith('.jsonl'))
+      const copiedSessionIds = []
+      for (const file of files) {
+        fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file))
+        copiedSessionIds.push(file.slice(0, -'.jsonl'.length))
+      }
+      return copiedSessionIds
+    } catch (err) {
+      log.warn?.(`[session-git] copySessionsHome falló (${realCwd}): ${err?.message || err}`)
+      return []
+    }
+  }
+
+  return {
+    git,
+    isGitRepo,
+    prepareSessionWorkspace,
+    finalizeSessionWorkspace,
+    removeWorktree,
+    sweepOrphans,
+    copySessionToWorktree,
+    copySessionsHome
+  }
 }
 
 module.exports = { createSessionGit }
