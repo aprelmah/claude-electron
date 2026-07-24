@@ -38,6 +38,16 @@
 - Queda prohibido asumir `+34` (o cualquier otro pais) por defecto.
 - Ante duda de formato/destino: bloquear envio y pedir confirmacion.
 
+## Git automático por sesión
+
+- **Qué hace**: cada sesión (ventana local o sesión LAN) con `cwd` dentro de un repo git local trabaja en su propio `git worktree` + rama `poweragent/session-<key>`, no en el directorio real. `session.cwd` sigue mostrando el path real (UI/recientes intactos). Al cerrar la sesión: commit automático → sin cambios se limpia en silencio → con cambios se intenta merge a la rama del dir real (solo si está limpio) → merge limpio borra rama/worktree y hace `push` si hay upstream.
+- **Toggle**: `cli.gitSessionIsolation` (Configuración → "Aislamiento git por sesión"), default ON. Escape hatch total: en OFF, o si el cwd no es repo git, o es path remoto (NAS/SMB), o falla cualquier comando git → fail-open al flujo de siempre, sin bloquear el spawn.
+- **Ramas de conflicto**: si el merge da conflicto o el dir real está sucio, la rama `poweragent/session-<key>` queda viva con los cambios (no se borra) y se avisa: `Notification` de macOS en ventana local, `console.warn` + frame `status` por WebSocket en LAN. Revisar y mergear a mano esas ramas.
+- **Ubicaciones**: worktrees en `userData/worktrees/<repoSlug>-<sessionKey>/`; registro de sesiones en `userData/session-git-map.json` (mapea `claudeSessionId → { realCwd, branch, worktreePath, active }`, atomic writes, flush en `before-quit`). Sweep de huérfanos al arrancar (`git worktree prune` + finalize de entradas `active: true` sin PTY vivo).
+- **Qué NO está aislado**: automation PTY (`startAgentPty`) y task-sessions/pool oculto de Telegram (`startTaskSessionPty`) siguen con `--resume` sobre el cwd original. Pendiente integrarlos cuando esto esté validado en uso real.
+- **Regla para spawns nuevos**: cualquier spawn de PTY nuevo debe decidir explícitamente si pasa por `ensureSessionWorkspace`/`prepareSessionWorkspace` (aislado) o queda excluido — y documentarlo aquí. No dejarlo implícito.
+- Módulos: `main/session-git.js` (lógica git + registro), `main/session-git-map.js` (persistencia). Detalle de diseño: `docs/superpowers/specs/2026-07-24-git-auto-por-sesion-design.md`.
+
 ## Incident history
 - Date: **2026-05-14**
 - Symptom 1: app crash on startup (`SIGABRT`, stack in `_RegisterApplication` / `NSApplication`).
