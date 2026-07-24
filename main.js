@@ -1589,6 +1589,10 @@ let lastContext = null
 let sessionGit = null
 let sessionGitMap = null
 const pendingFinalizes = new Set()
+// Guarda de reentrada para el finalize en before-quit: cuando esperamos a las
+// integraciones git pendientes hacemos preventDefault + app.quit(), lo que vuelve
+// a disparar before-quit; esta bandera deja pasar ese segundo disparo sin repetir.
+let quitFinalizeHandled = false
 let claudeSessionsIndex = null
 let codexSessionsIndex = null
 let automationManager = null
@@ -2960,7 +2964,9 @@ app.on('window-all-closed', async () => {
   }
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  // Segundo disparo tras nuestro propio app.quit(): la limpieza ya corrió, salir.
+  if (quitFinalizeHandled) return
   globalShortcut.unregisterAll()
   pauseAgentProposalPolling()
   try { lanWsServer?.stop() } catch {}
@@ -2977,6 +2983,26 @@ app.on('before-quit', () => {
   try { codexSessionsIndex?.flush?.() } catch {}
   try { codexSessionsIndex?.stopWatcher() } catch {}
   try { sessionGitMap?.flush?.() } catch {}
+  // Cmd+Q en macOS no pasa por window-all-closed: forzar la integración git de
+  // las sesiones vivas con workspace y esperar (acotado) a que terminen los merges.
+  // finalizeWorkspaceForSession anula session.gitWorkspace al entrar → llamarlo dos
+  // veces (ej. tras destroySession) es un no-op, sin doble finalize.
+  for (const s of sessions.values()) finalizeWorkspaceForSession(s)
+  if (pendingFinalizes.size) {
+    event.preventDefault()
+    quitFinalizeHandled = true
+    ;(async () => {
+      await Promise.race([
+        Promise.allSettled([...pendingFinalizes]),
+        new Promise((r) => setTimeout(r, 10000))
+      ])
+      // Los markFinalized ocurren durante los finalize → flush final tras la espera.
+      try { sessionGitMap?.flush?.() } catch {}
+      app.quit()
+    })()
+  } else {
+    quitFinalizeHandled = true
+  }
 })
 
 // ── PTY IPC ──
