@@ -5,7 +5,7 @@ const path = require('path')
 const os = require('os')
 const fs = require('fs')
 const http = require('http')
-const { atomicWriteJsonSync, atomicWriteFileSync } = require('./main/atomic-writes')
+const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
@@ -57,6 +57,7 @@ const { registerAutomationsIpc } = require('./main/automations-ipc')
 const { registerBitacoraIpc } = require('./main/bitacora-ipc')
 const { createHealthCollectors } = require('./main/health-collectors')
 const { createSessionListing, projectDirFor } = require('./main/claude-session-listing')
+const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -209,6 +210,12 @@ const GRAPH_FILE_ACTIVE_MIN_MS_NORMAL = 120
 const GRAPH_FILE_ACTIVE_MIN_MS_BUSY = 1200
 const GRAPH_REFRESH_MIN_MS_NORMAL = 320
 const GRAPH_REFRESH_MIN_MS_BUSY = 1800
+
+// ── PERF-H6: pty-data IPC batching ──
+const { createPtyDataBatcher } = require('./main/pty-data-batcher')
+const _ptyBatcher = createPtyDataBatcher()
+const enqueuePtyData = (s, d) => _ptyBatcher.enqueue(s, d)
+const flushPtyData = (s) => _ptyBatcher.flush(s)
 
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
@@ -581,7 +588,8 @@ async function runLanSemanticChatTurn({ session, prompt, signal } = {}) {
       cwd,
       model,
       effort,
-      timeoutMs: 240000
+      timeoutMs: 240000,
+      origin: 'lan'
     })
     const nextSessionId = String(result?.sessionId || currentChatSessionId || '').trim()
     return { text: String(result?.text || '').trim(), sessionId: nextSessionId || null }
@@ -597,12 +605,22 @@ async function runLanSemanticChatTurn({ session, prompt, signal } = {}) {
     sessionId: compacted.sessionId || undefined,
     signal,
     cwd,
-    model,
+    model: model || getClaudeModel(),
     effort,
-    timeoutMs: 240000
+    timeoutMs: 240000,
+    origin: 'lan'
   })
   const nextSessionId = String(result?.sessionId || currentChatSessionId || '').trim()
   return { text: String(result?.text || '').trim(), sessionId: nextSessionId || null }
+}
+
+function ensureLanAuthToken() {
+  // SEC-C1: token Bearer obligatorio. Si no existe, lo generamos y persistimos.
+  const current = appConfig?.lanServer?.authToken
+  if (typeof current === 'string' && current.length >= 32) return current
+  const token = require('crypto').randomBytes(32).toString('hex')
+  persistLanServerConfig({ authToken: token })
+  return token
 }
 
 function ensureLanWsServer() {
@@ -615,7 +633,8 @@ function ensureLanWsServer() {
     runSemanticChatTurn: (payload) => runLanSemanticChatTurn(payload),
     buildExecCommand: buildFdLimitCommand,
     logger: (message) => console.log(message),
-    onAuditEvent: (event) => logLanAuditSemantic(event)
+    onAuditEvent: (event) => logLanAuditSemantic(event),
+    getAuthToken: () => ensureLanAuthToken()
   })
   return lanWsServer
 }
@@ -1203,22 +1222,14 @@ const {
   syncSessionContextAfterTelegramDetach
 } = _relayBindings
 
-function resolveExistingDir(inputPath) {
-  const value = typeof inputPath === 'string' ? inputPath.trim() : ''
-  if (!value) return ''
-  try {
-    const stat = fs.statSync(value)
-    return stat.isDirectory() ? value : ''
-  } catch {
-    return ''
-  }
-}
+const { looksRemotePath, resolveExistingDir } = require('./main/dir-helpers')
 
 function getProfileStartupMessage(profile) {
   const personaPrompt = sanitizePersonaPrompt(profile?.personaPrompt || '')
   if (personaPrompt) return `${personaPrompt}\n`
   const claudeMdPath = typeof profile?.claudeMdPath === 'string' ? profile.claudeMdPath.trim() : ''
   if (!claudeMdPath) return ''
+  if (looksRemotePath(claudeMdPath)) return ''
   try {
     const stat = fs.statSync(claudeMdPath)
     if (!stat.isFile() || stat.size <= 0 || stat.size > 512 * 1024) return ''
@@ -1237,6 +1248,17 @@ function scheduleProfileBootstrapMessage(session, proc, profile) {
     if (session?.pty !== proc) return
     try { proc.write(message) } catch {}
   }, 650)
+}
+
+// Modelo Claude por defecto (config). 'opus' = contexto estándar 200k, evita
+// el gate de créditos del 1M. Usado al spawnear PTY local y como fallback headless.
+function getClaudeModel() {
+  return appConfig?.cli?.claudeModel || 'opus'
+}
+
+// Args claude para spawn local: prepende --model con el default configurado.
+function buildClaudeLocalArgs(cli, sessionId) {
+  return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
 }
 
 // ── PTY per-session ──
@@ -1313,6 +1335,8 @@ function startPty(session, cols, rows, cwd, args = []) {
     if (!proc._alive) return
     const s = sessions.get(myWcId)
     if (s) trackPtyLoadForGraph(s)
+    // Relay (Telegram) recibe data sin batching para no romper la detección de
+    // marcadores de fin de turno.
     if (s?.relayListener) {
       try { s.relayListener(data) } catch {}
     }
@@ -1327,12 +1351,16 @@ function startPty(session, cols, rows, cwd, args = []) {
       }
     }
     if (!s || !s.win || s.win.isDestroyed()) return
-    // Mantener siempre espejo local: aunque Telegram esté en relay activo,
-    // la ventana principal sigue mostrando el stream real de la PTY.
-    s.win.webContents.send('pty-data', data)
+    // PERF-H6: batching de pty-data hacia el renderer. Flush a ~16ms (60fps) o
+    // cuando acumulamos ≥8KB. Multi-PTY ya no satura el IPC con miles de
+    // mensajes pequeños/turno.
+    enqueuePtyData(s, data)
   })
 
   proc.onExit(() => {
+    // PERF-H6: vaciar el buffer pendiente antes de mandar pty-exit.
+    const sBeforeExit = sessions.get(myWcId)
+    if (sBeforeExit) { try { flushPtyData(sBeforeExit) } catch {} }
     if (proc._alive) {
       const s = sessions.get(myWcId)
       if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('pty-exit')
@@ -1669,7 +1697,7 @@ function startAgentPty(session) {
 
   let proc
   try {
-    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, [])], {
+    proc = pty.spawn('/bin/bash', ['-c', buildFdLimitCommand(cliCheck.bin, buildClaudeLocalArgs(session.activeCli, null))], {
       name: 'xterm-256color',
       cols: session.cols || 120,
       rows: session.rows || 35,
@@ -1960,20 +1988,31 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
   return os.homedir()
 }
 
-async function openTaskSessionWindow({ sessionId, cwd, cli, taskName, hidden = false } = {}) {
+async function openTaskSessionWindow({ sessionId, cwd, cli, taskName, hidden = false, chatId = '' } = {}) {
   if (!sessionId || typeof sessionId !== 'string') return null
   if (!isValidSessionId(sessionId)) return null
+  const normalizedChat = chatId ? String(chatId) : ''
 
   const existing = taskSessionWindowsBySessionId.get(sessionId)
   if (existing && !existing.isDestroyed()) {
     const existingState = taskSessionStateByWc.get(existing.webContents.id)
-    if (!hidden) {
-      if (existingState) existingState.hidden = false
-      if (existing.isMinimized()) existing.restore()
-      existing.show()
-      existing.focus()
+    // PTY-H4: si la ventana existente ya pertenece a OTRO chat de Telegram,
+    // no la reusamos — abriríamos un wcId compartido y un evict de uno
+    // arrastraría al otro. Cada chat tiene su propia ventana.
+    const existingChat = existingState?.telegramChatId || ''
+    const chatConflict = normalizedChat && existingChat && existingChat !== normalizedChat
+    if (!chatConflict) {
+      if (!hidden) {
+        if (existingState) existingState.hidden = false
+        if (existing.isMinimized()) existing.restore()
+        existing.show()
+        existing.focus()
+      }
+      if (existingState && normalizedChat && !existingState.telegramChatId) {
+        existingState.telegramChatId = normalizedChat
+      }
+      return existing
     }
-    return existing
   }
 
   const targetCli = cli === 'codex' ? 'codex' : 'claude'
@@ -2026,6 +2065,7 @@ async function openTaskSessionWindow({ sessionId, cwd, cli, taskName, hidden = f
     relayListener: null,
     relayCancel: null,
     hidden: !!hidden,
+    telegramChatId: normalizedChat,
     taskName: targetTaskName,
     theme: initialTheme,
     cols: 120,
@@ -2080,9 +2120,7 @@ function startTaskSessionPty(s) {
     throw new Error(cliCheck.error)
   }
 
-  const args = s.cli === 'codex'
-    ? ['resume', s.sessionId]
-    : ['--resume', s.sessionId]
+  const args = buildResumeArgs(s.cli, s.sessionId, s.cli === 'claude' ? getClaudeModel() : '')
 
   s.sessionFilesSnapshot = s.cli === 'claude'
     ? snapshotClaudeSessions(s.cwd)
@@ -2167,6 +2205,11 @@ function startTaskSessionPty(s) {
       st.pty = null
       if (st.detectIntervalId) { try { clearInterval(st.detectIntervalId) } catch {} ; st.detectIntervalId = null }
     }
+    // PTY-H3: notificar al pool que el PTY murió. Sin esto, el pool cree que sigue
+    // sano hasta TTL (15min) y /abrir o el sink podrían reusar una ventana zombie.
+    if (telegramHiddenPtyPool) {
+      try { telegramHiddenPtyPool.notifyPtyExit(myWcId) } catch {}
+    }
   })
 
   return proc
@@ -2205,23 +2248,28 @@ function initTelegramBridge() {
       const targetCli = (boundCli === 'claude' || boundCli === 'codex')
         ? boundCli
         : (opts?.cli === 'codex' ? 'codex' : 'claude')
+      // PTY-H1: refrescar TTL del pool cuando hay tráfico real en el chat.
+      // Sin esto, una conversación viva muere al cumplir TTL desde la creación.
+      if (binding.bound && telegramHiddenPtyPool && opts?.chatId) {
+        try { telegramHiddenPtyPool.touchHiddenPty(opts.chatId) } catch {}
+      }
 
       // Regla: si el chat tiene sessionId persistida y NO hay binding explícito de relay PTY,
       // ir directo a headless --resume con esa sesión. Esto cubre tareas programadas y
       // cualquier comunicación Mac→Telegram que haya enlazado una sesión al chat.
       const hasExplicitSid = !binding.bound && typeof opts?.sessionId === 'string' && opts.sessionId.length > 0
       if (hasExplicitSid && targetCli === 'codex') {
-        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
       }
       if (hasExplicitSid && targetCli === 'claude') {
         const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd })
-        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
       }
 
       if (targetCli === 'codex') {
         // Codex por Telegram se mantiene en ruta headless estable (resume por thread_id).
         // El relay PTY en Codex puede no delimitar fin de turno de forma consistente y provocar latencia/doble respuesta.
-        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '' })
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
       }
 
       const relaySession = pickRelaySessionForChat(opts?.chatId, !binding.bound, 'claude')
@@ -2248,7 +2296,7 @@ function initTelegramBridge() {
       }
 
       const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
-      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || '', effort: tg.claudeEffort || '' })
+      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
     },
     onGetActiveCli: async () => getActiveCliSync(),
     onGetCwd: async () => getCwdSync(),
@@ -2296,35 +2344,16 @@ function initTelegramBridge() {
         ok: ok !== false
       })
     },
-    onOpenTaskSession: async ({ sessionId, cli, cwd, taskName, chatId }) => {
+    onOpenTaskSession: async (payload) => {
       try {
-        if (!sessionId || !isValidSessionId(sessionId)) {
-          return { ok: false, error: 'sessionId inválido' }
-        }
-        const targetCli = cli === 'codex' ? 'codex' : 'claude'
-        const key = normalizeTelegramChatKey(chatId)
-        if (key && telegramHiddenPtyPool) {
-          const existing = telegramHiddenPtyPool.getHiddenPtyForChat(key)
-          if (existing && existing.sessionId === sessionId && existing.cli === targetCli) {
-            const shown = telegramHiddenPtyPool.showHiddenPty(key)
-            if (shown) {
-              const st = taskSessionStateByWc.get(existing.wcId)
-              if (st) st.hidden = false
-              return { ok: true, fromPool: true }
-            }
-          }
-        }
-        const win = await openTaskSessionWindow({
-          sessionId,
-          cwd: cwd || '',
-          cli: targetCli,
-          taskName: taskName || ''
+        return await handleOpenTaskSession(payload, {
+          isValidSessionId,
+          normalizeTelegramChatKey,
+          telegramHiddenPtyPool,
+          taskSessionStateByWc,
+          telegramRelayByChat,
+          openTaskSessionWindow
         })
-        if (!win) return { ok: false, error: 'No se pudo abrir la ventana' }
-        if (key) {
-          try { telegramRelayByChat.set(key, win.webContents.id) } catch {}
-        }
-        return { ok: true }
       } catch (err) {
         return { ok: false, error: err?.message || String(err) }
       }
@@ -2434,7 +2463,11 @@ const { runClaudeHeadless, runCodexHeadless } = createHeadlessRunners({
   buildRuntimeEnv,
   commandExists,
   buildFdLimitCommand,
-  getCwdSync
+  getCwdSync,
+  // SEC-H7: auditoría semántica de cada invocación headless (prompt_hash, origin, sessionId).
+  onAuditEvent: (event) => {
+    try { logSemantic(event.action, event) } catch {}
+  }
 })
 
 // ── Application menu (Cmd+N / Cmd+W) ──
@@ -2499,13 +2532,12 @@ app.whenReady().then(async () => {
     callback(true)
   })
   session.defaultSession.setPermissionCheckHandler(() => true)
+  // PERF-H3: askForMediaAccess sin await. TCC de macOS puede tardar seg/min en
+  // responder y bloqueaba el overlay "Elige proyecto". Best-effort fire-and-forget.
   if (process.platform === 'darwin') {
-    try {
-      const ok = await systemPreferences.askForMediaAccess('microphone')
-      console.log('[mic] askForMediaAccess →', ok)
-    } catch (err) {
-      console.log('[mic] askForMediaAccess error:', err?.message || err)
-    }
+    systemPreferences.askForMediaAccess('microphone')
+      .then((ok) => console.log('[mic] askForMediaAccess →', ok))
+      .catch((err) => console.log('[mic] askForMediaAccess error:', err?.message || err))
   }
 
   buildAppMenu()
@@ -2586,15 +2618,17 @@ app.whenReady().then(async () => {
       broadcastToAllWindows,
       onEnsureHiddenPty: async ({ chatId, sessionId, cli, cwd, taskName }) => {
         if (!telegramHiddenPtyPool) return { ok: false, error: 'pool no inicializado' }
-        // Codex en Telegram se mantiene en headless (resume por thread_id estable).
-        // El pool solo spawnea PTY oculto para Claude.
-        if (cli !== 'claude') return { ok: true, skipped: true, reason: 'cli-not-claude' }
-        const res = await telegramHiddenPtyPool.ensureHiddenPtyForChat({ chatId, sessionId, cli, cwd, taskName })
-        // Red de seguridad: persistir sid en el bridge para que onRunQuery pueda
-        // caer a headless --resume si el PTY oculto se cuelga o cae por TTL.
-        if (res && res.ok && sessionId && telegramBridge && typeof telegramBridge.adoptSession === 'function') {
-          try { telegramBridge.adoptSession(String(chatId), 'claude', sessionId) } catch {}
+        const isClaude = cli === 'claude'
+        const cliKey = (cli === 'codex') ? 'codex' : 'claude'
+        // PTY-H2: persistimos sid en el bridge SIEMPRE (también Codex). Sin esto,
+        // el siguiente mensaje del usuario por Telegram a una sesión Codex pierde
+        // contexto (sid==null → sesión nueva). El pool oculto solo aplica a Claude;
+        // Codex sigue en headless --resume estable.
+        if (sessionId && telegramBridge && typeof telegramBridge.adoptSession === 'function') {
+          try { telegramBridge.adoptSession(String(chatId), cliKey, sessionId) } catch {}
         }
+        if (!isClaude) return { ok: true, skipped: true, reason: 'cli-not-claude' }
+        const res = await telegramHiddenPtyPool.ensureHiddenPtyForChat({ chatId, sessionId, cli, cwd, taskName })
         return res
       }
     })
@@ -2854,6 +2888,9 @@ app.on('before-quit', () => {
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
   try { if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0) } catch {}
   try { tasksScheduler?.destroy() } catch {}
+  // PERF-H7: flush índices pendientes para no perder writes en debounce.
+  try { claudeSessionsIndex?.flush?.() } catch {}
+  try { codexSessionsIndex?.flush?.() } catch {}
   try { codexSessionsIndex?.stopWatcher() } catch {}
 })
 
@@ -2868,7 +2905,7 @@ ipcMain.handle('pty-start', (event, { cols, rows, cwd, cli, sessionId } = {}) =>
       throw new Error(switchResult.error || 'No se pudo cambiar de CLI')
     }
   }
-  const args = sessionId ? buildResumeArgs(s.activeCli, sessionId) : []
+  const args = buildClaudeLocalArgs(s.activeCli, sessionId)
   startPty(s, cols, rows, cwd, args)
   if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
   try {
@@ -2966,7 +3003,7 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(s, cols, rows, cwd)
+        startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, null))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         resolve(s.cwd)
       } catch (err) {
@@ -3160,9 +3197,14 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
     if (!isPathSafe(dir, [claudeRoot])) return { ok: false, error: 'Path not allowed' }
     const file = path.join(dir, `${sessionId}.jsonl`)
     if (!isPathSafe(file, [claudeRoot])) return { ok: false, error: 'Path not allowed' }
-    if (!fs.existsSync(file)) return { ok: false, error: 'No encontré el archivo de sesión.' }
-
-    const raw = fs.readFileSync(file, 'utf-8')
+    // PERF-H8: lectura async + write async para no bloquear main en transcripts grandes.
+    let raw
+    try {
+      raw = await fs.promises.readFile(file, 'utf-8')
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return { ok: false, error: 'No encontré el archivo de sesión.' }
+      throw err
+    }
     const hadTrailingNl = raw.endsWith('\n')
     const lines = raw.split('\n')
     let updated = false
@@ -3206,9 +3248,9 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
 
     const out = lines.join('\n')
     const finalText = hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out
-    atomicWriteFileSync(file, finalText, 'utf-8')
+    await atomicWriteFileAsync(file, finalText, 'utf-8')
     let stat = null
-    try { stat = fs.statSync(file) } catch {}
+    try { stat = await fs.promises.stat(file) } catch {}
     rememberClaudeSessionTitle(file, {
       title: clipText(nextTitle),
       statKey: statCacheKey(stat),
@@ -3235,7 +3277,7 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows, cli
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        startPty(s, cols, rows, cwd, buildResumeArgs(s.activeCli, sessionId))
+        startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, sessionId))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         try {
           if (recentCwds && s.cwd) recentCwds.push(s.cwd)
@@ -3305,24 +3347,29 @@ registerProfilesEnterpriseIpc({
 
 ipcMain.handle('save-app-config', async (event, partialConfig) => {
   const previousDefault = appConfig.cli.defaultCli
-  const enterprisePatch = partialConfig?.enterprise
-  const mergedEnterprise = enterprisePatch
-    ? {
-      ...appConfig.enterprise,
-      ...enterprisePatch,
-      roles: enterprisePatch?.roles ?? appConfig?.enterprise?.roles,
-      operators: enterprisePatch?.operators ?? appConfig?.enterprise?.operators
+  // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
+  // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
+  // desde renderer. cli/telegram filtrados por campos válidos.
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel']
+  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
+  const SAFE_LAN = ['enabled', 'port']
+  function pick(src, keys) {
+    const out = {}
+    if (!src || typeof src !== 'object') return out
+    for (const k of keys) {
+      if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k]
     }
-    : appConfig.enterprise
+    return out
+  }
+  const partial = partialConfig || {}
   const merged = normalizeAppConfig({
     ...appConfig,
-    ...partialConfig,
-    cli: { ...appConfig.cli, ...(partialConfig?.cli || {}) },
-    telegram: { ...appConfig.telegram, ...(partialConfig?.telegram || {}) },
-    lanServer: { ...appConfig.lanServer, ...(partialConfig?.lanServer || {}) },
-    profiles: partialConfig?.profiles ?? appConfig.profiles,
-    activeProfile: partialConfig?.activeProfile ?? appConfig.activeProfile,
-    enterprise: mergedEnterprise
+    cli: { ...appConfig.cli, ...pick(partial.cli, SAFE_CLI) },
+    telegram: { ...appConfig.telegram, ...pick(partial.telegram, SAFE_TELEGRAM) },
+    lanServer: { ...appConfig.lanServer, ...pick(partial.lanServer, SAFE_LAN) },
+    profiles: Array.isArray(partial.profiles) ? partial.profiles : appConfig.profiles,
+    activeProfile: typeof partial.activeProfile === 'string' ? partial.activeProfile : appConfig.activeProfile,
+    enterprise: appConfig.enterprise // sin tocar: usar enterprise:save-config
   })
   saveAppConfig(merged)
   const warnings = []
@@ -3740,18 +3787,18 @@ ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
         // Fallback automático a claude.
         const checkC = ensureCliAvailable('claude')
         if (!checkC.ok) return { ok: false, error: check.error + ' / ' + checkC.error }
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd })
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
       } else {
-        result = await runCodexHeadless({ prompt, cwd: s.cwd })
+        result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
       }
     } else {
       const check = ensureCliAvailable('claude')
       if (!check.ok) {
         const checkX = ensureCliAvailable('codex')
         if (!checkX.ok) return { ok: false, error: check.error + ' / ' + checkX.error }
-        result = await runCodexHeadless({ prompt, cwd: s.cwd })
+        result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
       } else {
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd })
+        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
       }
     }
   } catch (err) {

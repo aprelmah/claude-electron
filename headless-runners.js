@@ -4,16 +4,51 @@ const MAX_BUF = 1 * 1024 * 1024
 const TRUNCATED_TAG = '...[truncated]...'
 const DEFAULT_HEADLESS_TIMEOUT_MS = 300_000
 
+// PERF-H5: antes hacíamos `buf + chunk` y luego slice → pico memoria 2× MAX_BUF.
+// Ahora truncamos antes de concatenar cuando el resultado superaría el límite.
 function appendBounded(buf, chunk) {
-  const combined = buf + chunk
-  if (combined.length > MAX_BUF) {
-    return TRUNCATED_TAG + combined.slice(-MAX_BUF)
+  const incoming = typeof chunk === 'string' ? chunk : String(chunk || '')
+  if (buf.length + incoming.length <= MAX_BUF) {
+    return buf + incoming
   }
-  return combined
+  // Si el chunk solo ya excede MAX_BUF, guardamos su cola.
+  if (incoming.length >= MAX_BUF) {
+    return TRUNCATED_TAG + incoming.slice(-MAX_BUF + TRUNCATED_TAG.length)
+  }
+  // Caso normal: nos quedamos con tail de buf + chunk completo.
+  const keepFromBuf = MAX_BUF - incoming.length - TRUNCATED_TAG.length
+  if (keepFromBuf <= 0) {
+    return TRUNCATED_TAG + incoming
+  }
+  return TRUNCATED_TAG + buf.slice(-keepFromBuf) + incoming
 }
 
-function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildFdLimitCommand, getCwdSync }) {
-  function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs }) {
+// SEC-H7: helper para auditar invocaciones headless. Hash truncado del prompt
+// para no loggear contenido sensible, + origen, cli, sessionId.
+function hashPromptTruncated(prompt) {
+  try {
+    const crypto = require('crypto')
+    return crypto.createHash('sha256').update(String(prompt || '').slice(0, 4096)).digest('hex').slice(0, 16)
+  } catch { return '' }
+}
+
+function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildFdLimitCommand, getCwdSync, onAuditEvent }) {
+  function _audit(action, details) {
+    if (typeof onAuditEvent !== 'function') return
+    try { onAuditEvent({ action, ts: Date.now(), ...details }) } catch {}
+  }
+
+  function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+    _audit('headless-claude-invoked', {
+      cli: 'claude',
+      origin: origin || 'unknown',
+      sessionId: sessionId || null,
+      model: model || null,
+      effort: effort || null,
+      prompt_hash: hashPromptTruncated(prompt),
+      prompt_len: String(prompt || '').length,
+      bypass_permissions: true
+    })
     const meta = cliMeta('claude')
     const env = buildRuntimeEnv()
     if (!commandExists(meta.bin, env)) {
@@ -129,7 +164,16 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     })
   }
 
-  function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs }) {
+  function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+    _audit('headless-codex-invoked', {
+      cli: 'codex',
+      origin: origin || 'unknown',
+      sessionId: sessionId || null,
+      model: model || null,
+      effort: effort || null,
+      prompt_hash: hashPromptTruncated(prompt),
+      prompt_len: String(prompt || '').length
+    })
     const meta = cliMeta('codex')
     const env = buildRuntimeEnv()
     if (!commandExists(meta.bin, env)) {

@@ -109,7 +109,8 @@ function createTelegramHiddenPtyPool({
         cli: targetCli,
         cwd: cwd || '',
         taskName: taskName || '',
-        hidden: true
+        hidden: true,
+        chatId: key
       })
     } catch (err) {
       trace('open-window-error', { chatId: key, error: err?.message || String(err) })
@@ -209,6 +210,17 @@ function createTelegramHiddenPtyPool({
   }
 
   function notifyWindowClosed(wcId) {
+    return _notifyWcGone(wcId, 'window-closed')
+  }
+
+  // PTY-H3: cuando muere el PTY pero la ventana sigue viva, también hay que sacar
+  // la entry del pool y desbindear el relay. Si no, el pool cree que está sano
+  // hasta TTL (15min) → /abrir muestra ventana zombie sin PTY.
+  function notifyPtyExit(wcId) {
+    return _notifyWcGone(wcId, 'pty-exit')
+  }
+
+  function _notifyWcGone(wcId, reason) {
     if (wcId == null) return false
     let removed = 0
     for (const [k, v] of byChat.entries()) {
@@ -216,7 +228,7 @@ function createTelegramHiddenPtyPool({
         byChat.delete(k)
         removed++
         try { unbindRelay?.(k, wcId) } catch {}
-        trace('window-closed', { chatId: k, wcId })
+        trace(reason, { chatId: k, wcId })
       }
     }
     if (removed > 0 && byChat.size === 0 && sweepTimer) {
@@ -298,6 +310,7 @@ function createTelegramHiddenPtyPool({
     closeHiddenPty,
     touchHiddenPty,
     notifyWindowClosed,
+    notifyPtyExit,
     notifySessionRotated,
     getStats,
     sweep,

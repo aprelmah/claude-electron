@@ -73,9 +73,9 @@ function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs
 }
 
 function escapeForXmlData(text) {
-  // No es XML real, pero neutralizamos cierres de etiqueta para evitar que el
-  // cliente cierre los delimitadores y se cuele como instrucción.
-  return String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // TEST-H3: escapamos & antes que < y > para no doble-escapar.
+  // Coherente con escapeForCompactedPrompt (main/session-helpers.js).
+  return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function buildPrompt({ displayNumber, history, body, maxHistory }) {

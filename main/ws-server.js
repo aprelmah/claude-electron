@@ -5,6 +5,7 @@ const http = require('http')
 const crypto = require('crypto')
 const pty = require('node-pty')
 const { WebSocketServer } = require('ws')
+const { looksRemotePath } = require('./dir-helpers')
 
 const DEFAULT_LAN_WS_PORT = 9999
 const MIN_LAN_PORT = 1024
@@ -75,7 +76,8 @@ const FS_DENIED_AUDIT_CODES = new Set([
   'PERMISSION_DENIED',
   'PATH_OUTSIDE_ALLOWED_ROOTS',
   'PATH_SYMLINK_ESCAPE',
-  'READ_ONLY_ROOT'
+  'READ_ONLY_ROOT',
+  'REMOTE_PATH_UNSUPPORTED'
 ])
 
 const IMAGE_MIME_BY_EXT = Object.freeze({
@@ -459,6 +461,9 @@ function mergeRequestedContext(base, patch) {
 function resolveExistingDir(candidatePath) {
   const resolved = normalizeAbsolutePath(candidatePath)
   if (!resolved) return ''
+  // Defensa NAS/SMB: statSync síncrono sobre /Volumes/... no responsivo cuelga
+  // main process. Rechazamos paths remotos a nivel de config de sesión LAN.
+  if (looksRemotePath(resolved)) return ''
   try {
     const stat = fs.statSync(resolved)
     if (!stat.isDirectory()) return ''
@@ -571,12 +576,22 @@ function ensureSafeRequestedPath(session, rawPath, fallbackPath = '') {
   if (!finalInput) throw createFsError('INVALID_PATH', 'Ruta vacía o inválida')
   if (finalInput.includes('\u0000')) throw createFsError('INVALID_PATH', 'Ruta inválida')
 
+  // Defensa NAS/SMB: paths remotos (/Volumes/..., //host/share, \\host\share)
+  // cuelgan statSync/readdirSync síncronos en main process. El cliente LAN no
+  // tiene caso de uso legítimo para tocar mounts remotos del host vía sesión.
+  if (looksRemotePath(finalInput)) {
+    throw createFsError('REMOTE_PATH_UNSUPPORTED', 'Permiso denegado: ruta remota no soportada')
+  }
+
   const base = resolveExistingDir(session.cwd) || os.homedir()
   const candidate = path.isAbsolute(finalInput)
     ? finalInput
     : path.join(base, finalInput)
   const resolved = normalizeAbsolutePath(candidate)
   if (!resolved) throw createFsError('INVALID_PATH', 'No se pudo normalizar la ruta')
+  if (looksRemotePath(resolved)) {
+    throw createFsError('REMOTE_PATH_UNSUPPORTED', 'Permiso denegado: ruta remota no soportada')
+  }
 
   const matchedLexicalRoot = session.pathPolicy.allowedRoots.find((root) => isUnderPath(resolved, root.normalized))
   if (!matchedLexicalRoot) {
@@ -958,6 +973,37 @@ function createLanWsServer(options = {}) {
   const fsWatchDepth = Math.max(1, Math.min(Number.parseInt(fsWatchOptions.depth, 10) || MAX_FS_TREE_DEPTH, MAX_FS_TREE_DEPTH))
   const sessionLockTimeoutMs = Math.max(4000, Math.min(Number.parseInt(options.sessionLockTimeoutMs, 10) || SESSION_LOCK_TIMEOUT_MS, 60000))
   const sessionLockSweepMs = Math.max(500, Math.min(Number.parseInt(options.sessionLockSweepMs, 10) || SESSION_LOCK_SWEEP_MS, sessionLockTimeoutMs))
+  // SEC-C1: auth Bearer token. Si getAuthToken devuelve un string no vacío,
+  // toda conexión WS y endpoint HTTP (excepto /lan-client.html público)
+  // exige ?token= o Authorization: Bearer match.
+  const getAuthToken = typeof options.getAuthToken === 'function'
+    ? options.getAuthToken
+    : () => ''
+  function timingSafeStringEqual(a, b) {
+    const A = String(a || '')
+    const B = String(b || '')
+    if (!A || !B || A.length !== B.length) return false
+    try {
+      return crypto.timingSafeEqual(Buffer.from(A), Buffer.from(B))
+    } catch { return false }
+  }
+  function extractTokenFromReq(req) {
+    try {
+      const url = new URL(req?.url || '/', 'http://127.0.0.1')
+      const q = url.searchParams.get('token') || url.searchParams.get('auth')
+      if (q) return String(q)
+    } catch {}
+    try {
+      const h = req?.headers?.authorization || req?.headers?.Authorization
+      if (typeof h === 'string' && /^bearer\s+/i.test(h)) return h.replace(/^bearer\s+/i, '').trim()
+    } catch {}
+    return ''
+  }
+  function isAuthorizedReq(req) {
+    const expected = String(getAuthToken() || '')
+    if (!expected) return true
+    return timingSafeStringEqual(extractTokenFromReq(req), expected)
+  }
 
   let wsServer = null
   let httpServer = null
@@ -2652,8 +2698,13 @@ function createLanWsServer(options = {}) {
     const bin = trimToString(config?.bin, 1000)
     if (!bin) throw new Error('No hay binario CLI configurado')
     const baseArgs = Array.isArray(config?.args) ? config.args : []
-    const resumeArgs = buildResumeArgsForCli(config?.cli || session?.cli, options?.resumeSessionId || session?.selectedResumeSessionId || '')
-    const args = [...resumeArgs, ...baseArgs]
+    const cliName = config?.cli || session?.cli
+    const resumeArgs = buildResumeArgsForCli(cliName, options?.resumeSessionId || session?.selectedResumeSessionId || '')
+    // Floor 'opus' para claude: sin --model resuelve al 1M (gate de créditos).
+    const modelArgs = (cliName !== 'codex' && !baseArgs.includes('--model'))
+      ? ['--model', config?.context?.model || 'opus']
+      : []
+    const args = [...modelArgs, ...resumeArgs, ...baseArgs]
     const execCommand = buildExecCommand(bin, args)
     return pty.spawn('/bin/bash', ['-c', execCommand], {
       name: 'xterm-256color',
@@ -2858,6 +2909,12 @@ function createLanWsServer(options = {}) {
   }
 
   function onWsConnection(ws, req) {
+    // SEC-C1: verifyClient ya rechaza no-auth en handshake; defensa en profundidad por si bypaseo.
+    if (!isAuthorizedReq(req)) {
+      try { ws.close(4401, 'unauthorized') } catch {}
+      try { ws.terminate?.() } catch {}
+      return
+    }
     const initialRequested = extractRequestedContextFromQuery(req)
     const manualSessionSelector = extractSessionSelectorModeFromQuery(req)
     const session = {
@@ -3075,6 +3132,41 @@ function createLanWsServer(options = {}) {
     }
     httpServer = http.createServer((req, res) => {
       const u = new URL(req.url || '/', 'http://127.0.0.1')
+      // SEC-C4: assets estáticos públicos de vendor/ (xterm) ANTES del gate de token.
+      // El navegador pide <script src="vendor/..."> sin token (las sub-peticiones no heredan
+      // el ?token= de la página), y son librerías públicas sin secretos. Sandbox: solo
+      // /vendor/, sin traversal, bajo clientDir/vendor.
+      if (u.pathname.startsWith('/vendor/')) {
+        const safe = u.pathname.replace(/\/+/g, '/')
+        if (safe.includes('..')) { res.writeHead(400); res.end('bad'); return }
+        const rel = safe.slice('/vendor/'.length)
+        const clientDir = path.dirname(clientHtmlPath)
+        const abs = path.join(clientDir, 'vendor', rel)
+        if (!abs.startsWith(path.join(clientDir, 'vendor') + path.sep)) {
+          res.writeHead(403); res.end('forbidden'); return
+        }
+        try {
+          const data = fs.readFileSync(abs)
+          const ext = path.extname(abs).toLowerCase()
+          const ctype = ext === '.js' ? 'application/javascript; charset=utf-8'
+            : ext === '.css' ? 'text/css; charset=utf-8'
+            : ext === '.map' ? 'application/json; charset=utf-8'
+            : 'application/octet-stream'
+          res.writeHead(200, { 'content-type': ctype, 'cache-control': 'public, max-age=86400' })
+          res.end(data)
+        } catch {
+          res.writeHead(404); res.end('not found')
+        }
+        return
+      }
+      // SEC-C1: todos los endpoints HTTP requieren token cuando getAuthToken() está activo.
+      // El cliente HTML solo se sirve si el visitante ya conoce el token (lo lleva en su URL).
+      if (!isAuthorizedReq(req)) {
+        try { emitAudit('lan-http-auth-rejected', { ip: normalizeRemoteIp(req?.socket?.remoteAddress), path: u.pathname }) } catch {}
+        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer realm="lan"' })
+        res.end('unauthorized')
+        return
+      }
       if (u.pathname === '/' || u.pathname === '/lan-client.html') {
         try {
           const html = fs.readFileSync(clientHtmlPath, 'utf8')
@@ -3120,7 +3212,19 @@ function createLanWsServer(options = {}) {
     clientHtmlPath = nextHtmlPath
     lanIp = pickLanIPv4()
 
-    wsServer = new WebSocketServer({ port, host: '0.0.0.0' })
+    wsServer = new WebSocketServer({
+      port,
+      host: '0.0.0.0',
+      // SEC-C1: rechazar handshake si el token no es válido (no abrir socket).
+      verifyClient: (info, cb) => {
+        const ok = isAuthorizedReq(info.req)
+        if (!ok) {
+          try { emitAudit('lan-ws-auth-rejected', { ip: normalizeRemoteIp(info.req?.socket?.remoteAddress) }) } catch {}
+          return cb(false, 401, 'unauthorized')
+        }
+        return cb(true)
+      }
+    })
     wsServer.on('connection', onWsConnection)
 
     await new Promise((resolve, reject) => {
@@ -3146,13 +3250,15 @@ function createLanWsServer(options = {}) {
     running = true
     ensureLockSweepTimer()
     logger(`[lan] ws server started on ${lanIp}:${port}`)
+    const tk = String(getAuthToken() || '')
+    const tkQuery = tk ? `&token=${encodeURIComponent(tk)}` : ''
     return {
       ok: true,
       running,
       ip: lanIp,
       port,
       httpPort,
-      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}`
+      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}${tkQuery}`
     }
   }
 
@@ -3183,12 +3289,14 @@ function createLanWsServer(options = {}) {
   }
 
   function getStatus() {
+    const tk = String(getAuthToken() || '')
+    const tkQuery = tk ? `&token=${encodeURIComponent(tk)}` : ''
     return {
       running,
       ip: lanIp,
       port,
       httpPort,
-      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}`,
+      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}${tkQuery}`,
       sessions: listSessions()
     }
   }
@@ -3207,5 +3315,11 @@ module.exports = {
   createLanWsServer,
   clampLanPort,
   pickLanIPv4,
-  DEFAULT_LAN_WS_PORT
+  DEFAULT_LAN_WS_PORT,
+  // Exposed for tests only — defensa NAS/SMB
+  __test__: {
+    ensureSafeRequestedPath,
+    resolveExistingDir,
+    listDirectoryTree
+  }
 }

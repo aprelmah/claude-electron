@@ -9,6 +9,11 @@ function createClaudeSessionsIndex({ userDataDir }) {
   const filePath = path.join(userDataDir, 'claude-sessions-index.json')
 
   let cache = null
+  // PERF-H7: debounce de writes. Antes hacíamos un atomicWrite sync por cada set(),
+  // lo que provoca cascada en el primer listado (1000+ writes). Ahora batch 250ms.
+  let dirty = false
+  let persistTimer = null
+  const PERSIST_DEBOUNCE_MS = 250
 
   function read() {
     if (cache) return cache
@@ -26,10 +31,26 @@ function createClaudeSessionsIndex({ userDataDir }) {
     return cache
   }
 
+  function persistNow() {
+    try { atomicWriteJsonSync(filePath, cache || {}) } catch {}
+    dirty = false
+  }
+
   function persist() {
-    try {
-      atomicWriteJsonSync(filePath, cache || {})
-    } catch {}
+    dirty = true
+    if (persistTimer) return
+    persistTimer = setTimeout(() => {
+      persistTimer = null
+      if (dirty) persistNow()
+    }, PERSIST_DEBOUNCE_MS)
+    if (typeof persistTimer.unref === 'function') {
+      try { persistTimer.unref() } catch {}
+    }
+  }
+
+  function flush() {
+    if (persistTimer) { try { clearTimeout(persistTimer) } catch {} ; persistTimer = null }
+    if (dirty) persistNow()
   }
 
   function normalizeEntry(entry) {
@@ -117,6 +138,7 @@ function createClaudeSessionsIndex({ userDataDir }) {
     removeForCwd,
     removeSession,
     clear,
+    flush,
     filePath
   }
 }

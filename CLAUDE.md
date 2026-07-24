@@ -1,6 +1,7 @@
 # POWER-AGENT Runbook
 
 ## Latest Handoff
+- **AUDITORÍA 2026-05-24 (commit `9f7f06a`, PR #1, rama `audit-fixes-2026-05-24`)** — 27 hallazgos cerrados (5 CRITICAL + 18 HIGH + 4 mejoras). Tests **254 → 418, 0 fail, 10 runs estables**. Detalle: `.claude/memory/audit_2026_05_24.md` + informes en `/tmp/audit-poweragent-2026-05-24/`. Nuevos módulos: `main/dir-helpers.js`, `main/pty-data-batcher.js`, `main/telegram-open-task-session.js`, `automations/security.js`, `vendor/xterm/*`. CI/CD añadido (`.github/workflows/test.yml`). Deployado a `/Applications/POWER-AGENT.app` 21:56. **SEC-C3 upgrade Electron sigue pendiente** (breaking, sesión humana). Reglas técnicas nuevas en MEMORY.md (LAN Bearer, `looksRemotePath`, `atomic-writes` 0o600, allowlist `save-app-config`, pool `notifyPtyExit`/`touchHiddenPty`/`chatId`, headless `origin`, índices con `flush()`, `vendor/`, batcher único).
 - **`HANDOFF-CLAUDE-2026-05-23-TELEGRAM-HIDDEN-PTY-POOL.md`** — sesión 23 may (noche): C+ pool de PTYs ocultos para enlace universal Mac→Telegram. Nuevo `main/telegram-hidden-pty-pool.js` (TTL 15min, LRU max 3, sweep 60s, deps inyectables). Sink Telegram spawnea PTY oculto cuando run.status=ok+claude+sessionId → binding queda en `telegramRelayByChat` → onRunQuery enruta directo a relay PTY sin headless. Adaptaciones: `openTaskSessionWindow` acepta `hidden:true`, taskState ahora tiene `activeCli/claudeSessionId/relayActive` (drop-in para `relayThroughPty`), `getRelayBindingForChat` mira también `taskSessionStateByWc` vía `getTaskSessionByWcId`. `/abrir` desde Telegram consulta primero el pool: si la ventana ya estaba oculta, la muestra; si no, spawna normal. Codex sigue por headless (relay PTY no delimita bien fin de turno). 22 tests nuevos (213 pass / 0 fail). Sin commit.
 - **`HANDOFF-CLAUDE-2026-05-23-FASE-B-LISTADO-EFICIENTE.md`** — sesión 23 may (tarde): Fase B listado eficiente. Stream JSONL Claude + cache persistente keyed por mtime+size (`userData/claude-sessions-index.json`). Índice persistente Codex por cwd con watcher fs incremental (`userData/codex-sessions-index.json`). Paginación 50+ en sidebar y picker. 2 agentes general-purpose en paralelo + integración + paginación. 33 tests nuevos. Commits e6caa1d+4c506ed+6600f97+f6a570f+625a33d+05f3dcc. Tests 171/0. **REGLA NUEVA:** `createSessionListing` usa late binding (getter) para índices porque main.js los crea después de top-level; siempre mantener fallback al walk si índice vacío.
 - `HANDOFF-CLAUDE-2026-05-23-CWD-FIRST-STARTUP.md` — sesión 23 may (mañana): arranque cwd-first. App no spawn-ea PTY auto al boot. Overlay "Elige proyecto" → vista "Elige sesión" (toggle Claude|Codex) → spawn. Multi-PTY (+ topbar). `main/recent-cwds.js`, `main/last-context.js`, `project-picker.js`. Bugs arreglados: resume-session codex, TCC EACCES en recientes, asar whitelist en package.json. Commits 889c613+0f97dd8+ef1c470+581cefd. Tests 138/0. **REGLA CRÍTICA NUEVA:** `package.json` `build.files` es whitelist — todo `.js`/`.html` nuevo en raíz debe añadirse a mano.
@@ -24,7 +25,7 @@
 7. Rollback de emergencia: `git reset --hard pre-ola2-2026-05-22` (vuelve a 1.2.0/Electron 20).
 
 ## Scope
-- Project path: `/Users/isabel/Desktop/claude-electron`
+- Project path: `/Users/isabel/Desktop/LUISMI/claude-electron`
 - App type: Electron desktop app with `node-pty` terminal + Whisper dictation.
 - Client install checklist: `INSTALACION_CLIENTE.md`
 
@@ -190,3 +191,36 @@ Este Mac es Intel → el script usa x64.
 - Apple Silicon app: `dist/mac-arm64/POWER-AGENT.app`
 - Intel DMG: `dist/POWER-AGENT-1.0.0.dmg`
 - ARM64 DMG: `dist/POWER-AGENT-1.0.0-arm64.dmg`
+
+## CI/CD
+
+### Tests en local
+```bash
+node --test tests/*.test.js
+```
+- Atajo equivalente: `npm test`.
+- Requiere Node `20.18.0` (rango `>=20.18.0 <23` declarado en `package.json` engines).
+- El Mac de Luismi tiene Node 24 como sistema → antes de `npm install` / `npm test`:
+  ```bash
+  nvm use 20.18.0
+  ```
+  Si no está instalada: `nvm install 20.18.0`. El `.nvmrc` del repo ayuda a fijarla.
+
+### Pre-commit hook
+```bash
+scripts/install-git-hooks.sh
+```
+- Copia symlink relativo a `.git/hooks/pre-commit` apuntando a `scripts/pre-commit.sh`.
+- En cada commit corre:
+  - `node --check` sobre los `.js` staged (excluye `node_modules/`, `dist/`, `build/`, `out/`, `automations/`).
+  - `node --test tests/*.test.js` (timeout 5min, override con `PRE_COMMIT_TEST_TIMEOUT=secs`).
+- Bypass puntual: `git commit --no-verify`.
+- Desinstalar: `rm .git/hooks/pre-commit`.
+
+### CI (GitHub Actions)
+- Workflow: `.github/workflows/test.yml`.
+- Triggers: push a `main` y PRs hacia `main`.
+- Runner: `macos-latest` (la app es Mac-only).
+- Node: `20.18.0` (cache npm).
+- Steps: `npm ci` + `node --test tests/*.test.js`.
+- Timeout: 10min. Permisos: `contents: read` (solo lectura, sin deploys ni releases).

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <link rel="stylesheet" href="vendor/xterm/css/xterm.css" />
   <style>
     :root {
       --r-xs: 6px;
@@ -361,11 +361,18 @@
     .onboarding { display: grid; gap: 14px; }
     body[data-connected="true"] .onboarding { display: none; }
 
+    /* La fila de sesión reutilizable vive DENTRO del bloque de conexión.
+       Solo aparece en la fase de elegir (canal abierto, sesión aún no activa).
+       Una vez dentro (data-connected) se oculta junto con todo el onboarding:
+       para cambiar de CLI/sesión el operador sale y vuelve a entrar. */
     .session-dock {
-      display: grid;
+      display: none;
       gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
     }
-    body:not([data-connected="true"]) .session-dock { display: none; }
+    body[data-channel-open="true"]:not([data-connected="true"]) .session-dock { display: grid; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
@@ -425,7 +432,13 @@
       background-repeat: no-repeat;
     }
 
-    .row-primary {
+    /* Bloque de conexión: un solo flujo vertical coherente. */
+    #connect-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .engine-grid {
       display: grid;
       grid-template-columns: 1fr;
       gap: 10px;
@@ -433,12 +446,6 @@
     }
 
     .primary-actions { display: grid; gap: 8px; }
-
-    .session-picker {
-      display: grid;
-      gap: 8px;
-      margin-top: 2px;
-    }
 
     .session-picker-row {
       display: grid;
@@ -1317,10 +1324,11 @@
 
     @media (min-width: 720px) {
       body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
-      .row-primary { grid-template-columns: 1fr auto; align-items: end; }
-      .primary-actions { grid-template-columns: auto auto; }
+      .engine-grid { grid-template-columns: minmax(140px, 1fr) 1fr 1fr; align-items: end; }
+      .primary-actions { grid-template-columns: auto auto; justify-content: start; }
+      .primary-actions .btn { min-width: 160px; }
       .session-picker-row { grid-template-columns: 1fr auto; align-items: end; }
-      .session-picker-actions { grid-template-columns: auto; }
+      .session-picker-actions { grid-template-columns: auto auto; }
       .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .attach-actions { grid-template-columns: auto auto; justify-content: start; }
       .attach-actions .btn { min-width: 200px; }
@@ -1360,7 +1368,7 @@
     }
   </style>
 </head>
-<body class="theme-dark" data-connected="false" data-viewer="closed" data-toast="closed" data-chat-view="chat" data-focus-chat="false">
+<body class="theme-dark" data-connected="false" data-channel-open="false" data-viewer="closed" data-toast="closed" data-chat-view="chat" data-focus-chat="false">
   <div class="app-shell">
     <header class="topbar" role="banner">
       <div class="brand">
@@ -1388,27 +1396,72 @@
     <section class="card card-pad onboarding" aria-labelledby="onboarding-title">
       <div class="onboarding-head">
         <h1 id="onboarding-title">Conectar al equipo central</h1>
-        <p class="onboarding-lead">Escribe tu nombre, revisa sesiones reutilizables de esta carpeta y pulsa <strong>Entrar</strong>.</p>
+        <p class="onboarding-lead">Define quién eres y qué motor usas, elige sesión y pulsa <strong>Entrar</strong>.</p>
       </div>
 
       <form id="connect-form" novalidate>
-        <div class="row-primary">
-          <div class="field">
-            <label for="username">Usuario</label>
-            <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
-          </div>
-          <div class="primary-actions">
-            <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
-            <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
-          </div>
+        <!-- 1. Usuario -->
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" class="control" name="username" autocomplete="username" placeholder="por ejemplo: operador.madrid" />
         </div>
 
+        <!-- 2. CLI · 3. Modelo · Esfuerzo (dependen del CLI, pegados a él) -->
+        <div class="engine-grid">
+          <div class="field">
+            <label for="session-cli">CLI</label>
+            <select id="session-cli" class="control">
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="model-id">Modelo</label>
+            <select id="model-id" class="control"></select>
+          </div>
+          <div class="field">
+            <label for="effort-level">Esfuerzo</label>
+            <select id="effort-level" class="control"></select>
+          </div>
+        </div>
+        <p class="hint">Modelo y esfuerzo dependen del CLI elegido. Se aplican al conectar o reconectar.</p>
+
+        <!-- 4. Sesión reutilizable (aparece cuando el canal está abierto, antes de entrar) -->
+        <div class="session-dock" aria-label="Selector de sesión LAN">
+          <div class="session-picker-row">
+            <div class="field">
+              <label for="session-select">Sesión reutilizable</label>
+              <select id="session-select" class="control">
+                <option value="">Nueva sesión (sin reanudar)</option>
+              </select>
+            </div>
+            <div class="session-picker-actions">
+              <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
+              <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar</button>
+            </div>
+          </div>
+          <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
+        </div>
+
+        <!-- Estado del enlace -->
+        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
+          <span id="handshake-text">Listo para conectar.</span>
+          <span id="handshake-tone" class="handshake-tone">en espera</span>
+        </div>
+
+        <!-- 5. Acción principal + reconexión -->
+        <div class="primary-actions" style="margin-top:12px">
+          <button id="btn-connect" class="btn btn-primary" type="submit">Entrar</button>
+          <button id="btn-autoreconnect" class="btn btn-ghost" type="button" aria-pressed="true">Reconexión: ON</button>
+        </div>
+
+        <!-- Infraestructura (lo que el operador normal no toca) -->
         <details id="advanced-options" class="advanced" style="margin-top:12px">
-          <summary>Opciones avanzadas (servidor, operador, perfil, proveedor)</summary>
+          <summary>Opciones avanzadas (servidor, operador, perfil)</summary>
           <div class="advanced-grid">
             <div class="field">
               <label for="ws-url">Servidor</label>
-              <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://192.168.1.10:9999" />
+              <input id="ws-url" class="control" type="text" inputmode="url" spellcheck="false" placeholder="ws://…:9999" />
             </div>
             <div class="field">
               <label for="operator-id">ID operador</label>
@@ -1418,55 +1471,9 @@
               <label for="profile-id">ID perfil</label>
               <input id="profile-id" class="control" type="text" autocomplete="off" placeholder="opcional" />
             </div>
-            <div class="field">
-              <label for="provider-id">Proveedor</label>
-              <select id="provider-id" class="control">
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="model-id">Modelo</label>
-              <select id="model-id" class="control"></select>
-            </div>
-            <div class="field">
-              <label for="effort-level">Esfuerzo</label>
-              <select id="effort-level" class="control"></select>
-            </div>
           </div>
-          <p class="hint" style="margin-top:8px">Elige proveedor, modelo y esfuerzo desde listas. Se aplican al conectar o reconectar, sin prompts ocultos extra.</p>
         </details>
-
-        <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
-          <span id="handshake-text">Listo para conectar.</span>
-          <span id="handshake-tone" class="handshake-tone">en espera</span>
-        </div>
       </form>
-    </section>
-
-    <section class="card card-pad session-dock" aria-label="Selector de sesión LAN">
-      <div class="session-picker">
-        <div class="session-picker-row">
-          <div class="field" style="min-width:140px">
-            <label for="session-cli">CLI</label>
-            <select id="session-cli" class="control">
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="session-select">Sesión reutilizable</label>
-            <select id="session-select" class="control">
-              <option value="">Nueva sesión (sin reanudar)</option>
-            </select>
-          </div>
-          <div class="session-picker-actions">
-            <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
-            <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar sesiones</button>
-          </div>
-        </div>
-        <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
-      </div>
     </section>
 
     <section class="chat-card" aria-labelledby="chat-title">
@@ -1660,8 +1667,8 @@
     </div>
   </aside>
 
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <script src="vendor/xterm/lib/xterm.js"></script>
+  <script src="vendor/xterm/lib/addon-fit.js"></script>
   <script>
     const refs = {
       body: document.body,
@@ -1669,7 +1676,10 @@
       wsUrlInput: document.getElementById('ws-url'),
       operatorIdInput: document.getElementById('operator-id'),
       profileIdInput: document.getElementById('profile-id'),
-      providerSelect: document.getElementById('provider-id'),
+      // Selector único de CLI (Claude/Codex). providerSelect y sessionCliSelect
+      // apuntan al MISMO elemento: única fuente de verdad para conexión, listado
+      // de sesiones y arranque. No hay forma de que se contradigan.
+      providerSelect: document.getElementById('session-cli'),
       modelSelect: document.getElementById('model-id'),
       effortSelect: document.getElementById('effort-level'),
       usernameInput: document.getElementById('username'),
@@ -1677,6 +1687,7 @@
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
       btnSessionOpen: document.getElementById('btn-session-open'),
       sessionSelect: document.getElementById('session-select'),
+      // Mismo nodo que providerSelect: el CLI es uno solo en toda la UI.
       sessionCliSelect: document.getElementById('session-cli'),
       btnSessionRefresh: document.getElementById('btn-session-refresh'),
       sessionPickerMeta: document.getElementById('session-picker-meta'),
@@ -1793,7 +1804,7 @@
 
     function sanitizeProvider(raw) {
       const value = String(raw || '').trim().toLowerCase()
-      return value === 'claude' ? 'claude' : 'codex'
+      return value === 'codex' ? 'codex' : 'claude'
     }
 
     function renderProviderDependentOptions(provider, { keepModel = true, keepEffort = true } = {}) {
@@ -1824,7 +1835,7 @@
     }
 
     initTheme()
-    renderProviderDependentOptions('codex', { keepModel: false, keepEffort: false })
+    renderProviderDependentOptions('claude', { keepModel: false, keepEffort: false })
 
     const term = new Terminal({
       convertEol: true,
@@ -2437,6 +2448,14 @@
       }
       appState.sessionList = Array.isArray(msg.sessions) ? msg.sessions : []
       appState.sessionListCwd = String(msg.cwd || '').trim()
+      // Cross-CLI: tras reconectar a otro CLI, reanudar/arrancar la sesión pedida.
+      if (appState.pendingCrossCliResume && appState.pendingCrossCliResume.cli === replyCli) {
+        const want = appState.pendingCrossCliResume.sessionId || ''
+        appState.pendingCrossCliResume = null
+        setStickyResumeForCli(replyCli, want)
+        appState.selectedResumeSessionId = want
+        appState.autoStartMode = 'always'
+      }
       const stickyForCli = getStickyResumeForCli(replyCli)
       const selected = String(msg.selectedSessionId || stickyForCli || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
@@ -2445,6 +2464,7 @@
         setStickyResumeForCli(replyCli, selected)
       }
       renderSessionSelector()
+      let autoStarted = false
       if (!appState.pendingSessionStartRequestId && !appState.sessionInfo) {
         if (appState.autoStartMode === 'always') {
           appState.autoStartMode = 'off'
@@ -2453,9 +2473,33 @@
         }
         if (appState.autoStartMode === 'if-empty') {
           appState.autoStartMode = 'off'
-          if (appState.sessionList.length === 0) startSelectedSession({ autoFromList: true })
+          if (appState.sessionList.length === 0) {
+            startSelectedSession({ autoFromList: true })
+            autoStarted = true
+          }
         }
       }
+      if (!autoStarted && !appState.sessionInfo && !appState.pendingSessionStartRequestId) {
+        setHandshakeStatus('warn', appState.sessionList.length > 0
+          ? 'Elige una sesión o «Nueva sesión» y pulsa «Abrir sesión».'
+          : 'Sin sesiones previas: pulsa «Abrir sesión» para empezar.', 'elige')
+      }
+    }
+
+    function reconnectToSession(cli, sessionId) {
+      const targetCli = cli === 'codex' ? 'codex' : 'claude'
+      // manualClose=true evita que el 'close' del socket viejo dispare auto-reconnect
+      // y colisione con el connect() explícito de abajo (connect() lo pone a false).
+      appState.manualClose = true
+      if (appState.reconnectTimer) { clearTimeout(appState.reconnectTimer); appState.reconnectTimer = null }
+      if (appState.socket) { try { appState.socket.close() } catch {} }
+      appState.socket = null
+      clearSessionState()
+      appState.pendingCrossCliResume = { cli: targetCli, sessionId: sessionId || '' }
+      if (refs.sessionCliSelect) refs.sessionCliSelect.value = targetCli
+      setHandshakeStatus('warn', `Reconectando a ${targetCli}${sessionId ? ' · ' + sessionId : ' · nueva'}…`, 'reconectando')
+      setConnectionStatus('connecting', 'Reconectando para cambiar de CLI…')
+      window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 200)
     }
 
     function startSelectedSession(options = {}) {
@@ -2472,6 +2516,12 @@
       const selected = String(refs.sessionSelect.value || appState.selectedResumeSessionId || '').trim()
       appState.selectedResumeSessionId = selected
       const currentCli = getSelectedSessionCli()
+      // Cross-CLI: el server exige modo hot estando conectado, pero el hot-swap entre
+      // CLIs distintos rompe el PTY. Reconexión limpia al CLI/sesión destino.
+      if (hot && appState.sessionInfo && (appState.sessionInfo.cli || 'claude') !== currentCli) {
+        reconnectToSession(currentCli, selected)
+        return true
+      }
       if (selected) {
         appState.stickyResumeSessionId = selected
         setStickyResumeForCli(currentCli, selected)
@@ -2550,7 +2600,7 @@
       refs.operatorIdInput.value = q.get('operatorId') || q.get('operator') || ''
       refs.profileIdInput.value = q.get('profileId') || q.get('profile') || ''
       refs.usernameInput.value = q.get('username') || q.get('user') || ''
-      const provider = q.get('cli') || q.get('provider') || q.get('engine') || 'codex'
+      const provider = q.get('cli') || q.get('provider') || q.get('engine') || 'claude'
       renderProviderDependentOptions(provider, { keepModel: false, keepEffort: false })
       refs.modelSelect.value = q.get('model') || q.get('modelId') || q.get('m') || ''
       const effort = (q.get('effort') || q.get('reasoningEffort') || q.get('reasoning') || q.get('e') || '').toLowerCase()
@@ -2576,6 +2626,10 @@
       if (ctx.cli) base.searchParams.set('cli', ctx.cli)
       if (ctx.model) base.searchParams.set('model', ctx.model)
       if (ctx.effort) base.searchParams.set('effort', ctx.effort)
+      // SEC-C1: propagar token Bearer al WS si está presente en la URL del cliente.
+      const pageQ = new URLSearchParams(window.location.search)
+      const token = pageQ.get('token') || pageQ.get('auth')
+      if (token) base.searchParams.set('token', token)
       return base.toString()
     }
     function sendMessage(payload) {
@@ -3101,6 +3155,7 @@
 
     function connectHandlers(socketUrl) {
       appState.socket.addEventListener('open', () => {
+        refs.body.dataset.channelOpen = 'true'
         refs.btnConnect.textContent = 'Entrar'
         setConnectionStatus('connecting', `Canal abierto · ${socketUrl}`)
         setHandshakeStatus('warn', 'Canal abierto. Enviando identidad y cargando sesiones…', 'pendiente')
@@ -3112,6 +3167,9 @@
       })
 
       appState.socket.addEventListener('message', (event) => {
+        // Ignorar mensajes tardíos de un socket anterior (p.ej. pty-exit del CLI saliente
+        // durante una reconexión cross-CLI) que pisarían el estado del socket nuevo.
+        if (event.target !== appState.socket) return
         let msg = null
         try { msg = JSON.parse(String(event.data || '')) } catch {}
         if (!msg || typeof msg !== 'object') return
@@ -3200,6 +3258,7 @@
         if (state === 'connected') {
           appState.pendingSessionStartRequestId = ''
           appState.autoStartMode = 'off'
+          appState.lastConnectedAt = Date.now()
           const activeResumeSessionId = String(msg?.resumeSessionId || '').trim()
           appState.selectedResumeSessionId = activeResumeSessionId
           appState.stickyResumeSessionId = activeResumeSessionId
@@ -3245,7 +3304,12 @@
           return
         }
         if (state === 'transcribing') { setConnectionStatus('connecting', 'Transcribiendo audio…'); return }
-        if (state === 'pty-exit')     { flushPendingAgentMessage(); finishAgentReplyCapture(); setConnectionStatus('connecting', 'PTY remoto finalizado'); return }
+        if (state === 'pty-exit')     {
+          // Ignorar pty-exit obsoleto del CLI saliente justo tras reconectar (cross-CLI):
+          // la sesión nueva ya conectó y está viva.
+          if (Date.now() - (appState.lastConnectedAt || 0) < 4000) return
+          flushPendingAgentMessage(); finishAgentReplyCapture(); setConnectionStatus('connecting', 'PTY remoto finalizado'); return
+        }
         if (state === 'error') {
           finishAgentReplyCapture()
           const code = String(msg.code || '')
@@ -3270,6 +3334,7 @@
       })
 
       appState.socket.addEventListener('close', () => {
+        refs.body.dataset.channelOpen = 'false'
         flushPendingAgentMessage()
         clearPendingFsRequests('Socket cerrado')
         stopMic(true)
@@ -3513,11 +3578,17 @@
       }
     })
 
+    // Selector ÚNICO de CLI. Un solo handler: actualiza modelo/esfuerzo dependientes
+    // del CLI y, si hay canal abierto, re-lista las sesiones de ese CLI. Como
+    // providerSelect y sessionCliSelect son el mismo nodo, no puede haber doble disparo
+    // ni estados contradictorios.
     if (refs.sessionCliSelect) {
       refs.sessionCliSelect.addEventListener('change', () => {
+        const nextCli = getSelectedSessionCli()
+        // Modelo/esfuerzo dependientes del CLI (Opciones avanzadas).
+        renderProviderDependentOptions(nextCli)
         const previousCli = appState.sessionListCli || 'claude'
         if (previousCli) setStickyResumeForCli(previousCli, appState.selectedResumeSessionId || '')
-        const nextCli = getSelectedSessionCli()
         appState.sessionListCli = nextCli
         appState.selectedResumeSessionId = getStickyResumeForCli(nextCli)
         appState.stickyResumeSessionId = appState.selectedResumeSessionId
@@ -3529,10 +3600,6 @@
         requestReusableSessions({ forceRefresh: true, silent: false, cli: nextCli })
       })
     }
-
-    refs.providerSelect.addEventListener('change', () => {
-      renderProviderDependentOptions(refs.providerSelect.value)
-    })
 
     refs.btnViewChat.addEventListener('click', () => setChatView('chat'))
     refs.btnViewTerminal.addEventListener('click', () => setChatView('terminal'))
@@ -3668,6 +3735,7 @@
     })
 
     refs.wsUrlInput.value = inferDefaultWsUrl()
+    refs.wsUrlInput.placeholder = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
     clearFsUi('Conecta primero para ver carpetas.')
     setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')

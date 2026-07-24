@@ -286,7 +286,14 @@ function registerWhatsappIpc({
       }
       const baseName = mediaFileNameFromUrl(mediaUrl)
       if (!baseName) return { ok: false, error: 'URL de media inválida' }
+      // Defensa en profundidad: aunque mediaFileNameFromUrl ya aplica
+      // path.basename, validamos que sourcePath quede DENTRO de WA_MEDIA_DIR
+      // antes de tocar el FS. Si baseName tras decode contiene caracteres
+      // raros que escapen del join, isPathSafe lo bloquea.
       const sourcePath = path.join(WA_MEDIA_DIR, baseName)
+      if (!isPathSafe(sourcePath, [WA_MEDIA_DIR])) {
+        return { ok: false, error: 'Path not allowed' }
+      }
       if (!fs.existsSync(sourcePath)) return { ok: false, error: `Media no encontrada: ${baseName}` }
 
       const sourceExt = path.extname(baseName)
@@ -346,8 +353,17 @@ function registerWhatsappIpc({
   })
 
   ipcMain.handle('whatsapp:transcribe-audio', async (_e, mediaPath) => {
-    if (!mediaPath || !fs.existsSync(mediaPath)) return { ok: false, error: 'archivo no existe' }
-    if (!isPathSafe(mediaPath, [WA_MEDIA_DIR, TMP_DIR])) return { ok: false, error: 'Path not allowed' }
+    // Validar PRIMERO el path: ni siquiera tocamos el FS con un path
+    // potencialmente malicioso (evita TOCTOU y side-channels de existsSync).
+    // Roots intencionalmente más estrictos que allowedFsRoots(): el audio
+    // legítimo siempre vive en WA_MEDIA_DIR o TMP_DIR.
+    if (typeof mediaPath !== 'string' || !mediaPath) {
+      return { ok: false, error: 'Path inválido' }
+    }
+    if (!isPathSafe(mediaPath, [WA_MEDIA_DIR, TMP_DIR])) {
+      return { ok: false, error: 'Path not allowed' }
+    }
+    if (!fs.existsSync(mediaPath)) return { ok: false, error: 'archivo no existe' }
     try {
       const text = await transcribeAudioFile(mediaPath, buildRuntimeEnv())
       return { ok: true, text }

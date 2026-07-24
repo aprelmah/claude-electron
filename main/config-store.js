@@ -95,6 +95,57 @@ function makeProfileIdFromName(name, existingIds = new Set()) {
   return `${base}-${n}`
 }
 
+// SEC-C2: allowlist de paths donde es legítimo apuntar claudeBin/codexBin/whisperBin.
+// Cualquier path absoluto fuera de estos roots se rechaza (vacío = autodetectar).
+const CLI_BIN_ALLOWED_ROOTS = [
+  '/usr/local/bin/',
+  '/usr/local/Cellar/',
+  '/opt/homebrew/bin/',
+  '/opt/homebrew/Cellar/',
+  '/usr/bin/',
+  '/bin/'
+]
+
+// Modelo Claude por defecto del PTY local. Default 'opus' (contexto estándar
+// 200k) para NO disparar el gate de créditos del 1M (`claude-opus-4-8[1m]`).
+// Acepta alias (opus/sonnet/haiku) e ids tipo `claude-opus-4-8` o `...[1m]`.
+function sanitizeClaudeModel(value, fallback = 'opus') {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (!v) return fallback
+  if (v.length > 60) return fallback
+  if (!/^[a-z0-9][a-z0-9.\-]*(\[[a-z0-9]+\])?$/.test(v)) return fallback
+  return v
+}
+
+function sanitizeCliBinaryPath(value) {
+  const v = typeof value === 'string' ? value.trim() : ''
+  if (!v) return ''
+  // Rechazar caracteres shell peligrosos.
+  if (/[;&|`$<>\\\n\r\t"'*?]/.test(v)) return ''
+  // Rechazar traversal.
+  if (v.includes('..')) return ''
+  // Solo paths absolutos.
+  if (!v.startsWith('/') && !v.startsWith('~')) return ''
+  const os = require('os')
+  const path = require('path')
+  let resolved = v
+  if (v.startsWith('~')) {
+    resolved = path.join(os.homedir(), v.slice(1))
+  }
+  if (!path.isAbsolute(resolved)) return ''
+  // Allowlist de roots (paths del HOME también permitidos para nvm/.local).
+  const home = os.homedir()
+  const userRoots = [
+    path.join(home, '.local/bin/'),
+    path.join(home, 'bin/'),
+    path.join(home, '.nvm/versions/node/')
+  ]
+  const allowed = [...CLI_BIN_ALLOWED_ROOTS, ...userRoots]
+  const ok = allowed.some((root) => resolved === root.replace(/\/$/, '') || resolved.startsWith(root))
+  if (!ok) return ''
+  return resolved
+}
+
 // Factory: pass clampLanPort + normalizeEnterpriseConfig + defaultEnterpriseRoleId
 // so we don't depend on ws-server / enterprise-policy at load time.
 function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defaultEnterpriseRoleId }) {
@@ -102,7 +153,10 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     const cfg = raw && typeof raw === 'object' ? raw : {}
     return {
       enabled: Boolean(cfg.enabled),
-      port: clampLanPort(cfg.port)
+      port: clampLanPort(cfg.port),
+      // SEC-C1: token Bearer para auth WS+HTTP. Si vacío, server queda inseguro
+      // (compat hacia atrás); main.js genera y persiste uno al primer arranque.
+      authToken: typeof cfg.authToken === 'string' ? cfg.authToken.trim() : ''
     }
   }
 
@@ -120,9 +174,12 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     const normalized = {
       cli: {
         defaultCli: cli.defaultCli === 'codex' ? 'codex' : 'claude',
-        claudeBin: typeof cli.claudeBin === 'string' ? cli.claudeBin.trim() : '',
-        codexBin: typeof cli.codexBin === 'string' ? cli.codexBin.trim() : '',
-        whisperBin: typeof cli.whisperBin === 'string' ? cli.whisperBin.trim() : ''
+        // SEC-C2: solo paths absolutos dentro de roots conocidos (Homebrew, nvm,
+        // .local/bin, /usr/local). Bloquea RCE local vía XSS que setea bin a /tmp/x.
+        claudeBin: sanitizeCliBinaryPath(cli.claudeBin),
+        codexBin: sanitizeCliBinaryPath(cli.codexBin),
+        whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
+        claudeModel: sanitizeClaudeModel(cli.claudeModel)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -151,7 +208,9 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
 
   return {
     normalizeAppConfig,
-    normalizeLanServerConfig
+    normalizeLanServerConfig,
+    sanitizeCliBinaryPath,
+    sanitizeClaudeModel
   }
 }
 
@@ -167,7 +226,8 @@ function readConfigFromFile(filePath, fallback) {
 }
 
 function writeConfigToFile(filePath, value) {
-  atomicWriteJsonSync(filePath, value)
+  // SEC-H1: 0o600 — el config guarda telegram.botToken y lanServer.authToken.
+  atomicWriteJsonSync(filePath, value, { mode: 0o600 })
 }
 
 module.exports = {
@@ -182,5 +242,7 @@ module.exports = {
   makeProfileIdFromName,
   createConfigNormalizers,
   readConfigFromFile,
-  writeConfigToFile
+  writeConfigToFile,
+  sanitizeCliBinaryPath,
+  sanitizeClaudeModel
 }

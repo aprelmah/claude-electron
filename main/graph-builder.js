@@ -6,9 +6,15 @@
 
 const fs = require('fs')
 const path = require('path')
+const { looksRemotePath } = require('./dir-helpers')
 
 function computeProjectGraph(rootPath) {
   if (!rootPath) return { ok: false, error: 'no rootPath' }
+  // Defensa NAS/SMB: statSync/readdirSync síncronos cuelgan main process
+  // sobre paths remotos. Saltamos sin error visible (graph vacío).
+  if (looksRemotePath(rootPath)) {
+    return { ok: true, nodes: [], edges: [], dirs: [] }
+  }
 
   const SKIP = new Set(['.DS_Store', '.git', 'node_modules', '.next', '.cache',
     '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode', 'coverage'])
@@ -30,6 +36,8 @@ function computeProjectGraph(rootPath) {
   }
 
   function walk(dir) {
+    // Defensa NAS/SMB: nunca readdirSync sobre paths remotos.
+    if (looksRemotePath(dir)) return
     let entries
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
@@ -37,6 +45,8 @@ function computeProjectGraph(rootPath) {
       if (SKIP.has(e.name) || e.name.startsWith('._')) continue
       if (typeof e.isSymbolicLink === 'function' && e.isSymbolicLink()) continue
       const full = path.join(dir, e.name)
+      // Skip silencioso de mounts remotos enlazados desde árbol local.
+      if (looksRemotePath(full)) continue
       if (e.isDirectory()) {
         addDir(full)
         walk(full)
@@ -150,6 +160,8 @@ function computeProjectGraph(rootPath) {
   }
 
   for (const filePath of allFiles) {
+    // Defensa NAS/SMB: nunca statSync/readFileSync sobre paths remotos.
+    if (looksRemotePath(filePath)) continue
     let content
     try { if (fs.statSync(filePath).size > 2 * 1024 * 1024) continue } catch { continue }
     const ext = path.extname(filePath).toLowerCase()

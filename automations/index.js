@@ -9,6 +9,7 @@ const { createInstaller } = require('./installer')
 const { slugify } = require('./slug')
 const { scheduleToCron } = require('./schedule-to-cron')
 const { lintScript, findShellcheck } = require('./validator')
+const { validateAutomationScript } = require('./security')
 
 const MAX_GEN_RETRIES = 3
 
@@ -280,6 +281,28 @@ class AutomationManager {
   async updateDraft(id, { scriptText, plistText, description } = {}) {
     const current = await this._persistence.get(id)
     if (!current) throw new Error(`Automatización no encontrada: ${id}`)
+
+    // SEC-H5: validar scriptText antes de aceptarlo. El renderer puede llamarnos
+    // con scriptText arbitrario (XSS → RCE persistente vía launchd).
+    if (typeof scriptText === 'string' && scriptText.length > 0) {
+      const v = validateAutomationScript(scriptText)
+      if (!v.ok) {
+        if (this._onSemanticEvent) {
+          try {
+            this._onSemanticEvent({
+              action: 'automation-install-rejected',
+              cli: 'claude',
+              session: current?.chatSessionId || '',
+              detail: `updateDraft: ${v.error}`,
+              ok: false,
+              automationId: id
+            })
+          } catch {}
+        }
+        return { ok: false, error: `Script rechazado por seguridad: ${v.error}` }
+      }
+    }
+
     const updated = { ...current, updatedAt: nowIso() }
     if (typeof scriptText === 'string') updated.generatedScript = scriptText
     if (typeof plistText === 'string') updated.generatedPlist = plistText
@@ -317,6 +340,40 @@ class AutomationManager {
     const force = !!(opts && opts.force)
     const current = await this._persistence.get(id)
     if (!current) return { ok: false, error: `Automatización no encontrada: ${id}` }
+
+    // SEC-H5: defensa-en-profundidad antes de tocar el FS y launchctl.
+    // Si lo que llega aquí no pasa la allowlist de shebang / patrones,
+    // abortamos y dejamos auditoría.
+    const sec = validateAutomationScript(current.generatedScript || '')
+    if (!sec.ok) {
+      if (this._onSemanticEvent) {
+        try {
+          this._onSemanticEvent({
+            action: 'automation-install-rejected',
+            cli: 'claude',
+            session: current?.chatSessionId || '',
+            detail: `install: ${sec.error}`,
+            ok: false,
+            automationId: id
+          })
+        } catch {}
+      }
+      return { ok: false, error: `Script rechazado por seguridad: ${sec.error}` }
+    }
+
+    // Auditoría semántica de aceptación pre-install.
+    if (this._onSemanticEvent) {
+      try {
+        this._onSemanticEvent({
+          action: 'automation-install',
+          cli: 'claude',
+          session: current?.chatSessionId || '',
+          detail: `script_hash=${sec.hash} length=${sec.length} shebang=${sec.shebang} label=${current.label || ''}`,
+          ok: true,
+          automationId: id
+        })
+      } catch {}
+    }
 
     // Validación pre-install: shellcheck sobre el script actual.
     if (!force) {
