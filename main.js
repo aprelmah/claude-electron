@@ -636,7 +636,11 @@ function ensureLanWsServer() {
     buildExecCommand: buildFdLimitCommand,
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event),
-    getAuthToken: () => ensureLanAuthToken()
+    getAuthToken: () => ensureLanAuthToken(),
+    // Getters: sessionGit/sessionGitMap son `let` inicializados en onReady,
+    // después de crear el servidor. La resolución perezosa evita capturar null.
+    sessionGit: () => sessionGit,
+    sessionGitMap: () => sessionGitMap
   })
   return lanWsServer
 }
