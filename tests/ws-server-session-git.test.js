@@ -36,7 +36,7 @@ function installFakePty(capturedSpawns) {
 
 // sessionGit falso: registra llamadas y devuelve un workspace con workCwd temporal.
 function makeFakeSessionGit(workCwd, { prepareReturnsNull = false } = {}) {
-  const calls = { prepare: 0, finalize: 0, copy: 0, finalized: [] }
+  const calls = { prepare: 0, finalize: 0, copy: 0, finalized: [], copyToWorktree: [] }
   return {
     calls,
     async prepareSessionWorkspace({ realCwd }) {
@@ -57,6 +57,10 @@ function makeFakeSessionGit(workCwd, { prepareReturnsNull = false } = {}) {
     copySessionsHome() {
       calls.copy += 1
       return []
+    },
+    copySessionToWorktree(args) {
+      calls.copyToWorktree.push(args)
+      return true
     }
   }
 }
@@ -257,6 +261,79 @@ test('LAN + sessionGit: closeSession finaliza el workspace exactamente una vez',
   } finally {
     restorePty()
     try { await server.stop() } catch {}
+  }
+})
+
+test('LAN + sessionGit: resume copia el transcript al worktree (conexión y hot-switch)', async (t) => {
+  const { cwd, clientHtmlPath } = makeFixture('ws-git-copy')
+  const workCwd = mkTmpDir('ws-git-worktree3')
+  const capturedSpawns = []
+  const restorePty = installFakePty(capturedSpawns)
+  const sessionGit = makeFakeSessionGit(workCwd)
+
+  const port = 17700 + Math.floor(Math.random() * 200)
+  const server = buildServer({ clientHtmlPath, cwd, sessionGit })
+  try {
+    if (!(await tryStart(server, port, clientHtmlPath, t))) { restorePty(); return }
+  } catch (err) {
+    restorePty()
+    throw err
+  }
+
+  try {
+    const ws = await openWs(`ws://127.0.0.1:${port}?lanSessionMode=select&username=cli-git-copy`)
+    const start = await requestSessionStart(ws, 'g-copy-1', 'git-session-1')
+    assert.equal(start.ok, true)
+    await waitForMessage(ws, (msg) => msg.type === 'status' && msg.state === 'connected', 12000, 'connected')
+
+    assert.equal(sessionGit.calls.copyToWorktree.length, 1, 'la conexión con resume copia el transcript')
+    const call = sessionGit.calls.copyToWorktree[0]
+    assert.equal(call.claudeSessionId, 'git-session-1')
+    assert.equal(call.realCwd, cwd, 'realCwd es el cwd real de la sesión')
+    assert.equal(call.workCwd, workCwd, 'workCwd es el del worktree')
+
+    // Hot-switch sobre la misma sesión: también debe copiar antes de spawnear.
+    const hot = await requestSessionStart(ws, 'g-copy-2', 'git-session-1', { mode: 'hot' })
+    assert.equal(hot.ok, true)
+    assert.equal(sessionGit.calls.copyToWorktree.length, 2, 'el hot-switch también copia el transcript')
+    assert.equal(sessionGit.calls.copyToWorktree[1].claudeSessionId, 'git-session-1')
+
+    ws.close()
+  } finally {
+    restorePty()
+    await server.stop()
+  }
+})
+
+test('LAN + sessionGit: sin gitWorkspace no se copia transcript al resumir', async (t) => {
+  const { cwd, clientHtmlPath } = makeFixture('ws-git-copy-none')
+  const workCwd = mkTmpDir('ws-git-worktree4')
+  const capturedSpawns = []
+  const restorePty = installFakePty(capturedSpawns)
+  const sessionGit = makeFakeSessionGit(workCwd, { prepareReturnsNull: true })
+
+  const port = 17900 + Math.floor(Math.random() * 200)
+  const server = buildServer({ clientHtmlPath, cwd, sessionGit })
+  try {
+    if (!(await tryStart(server, port, clientHtmlPath, t))) { restorePty(); return }
+  } catch (err) {
+    restorePty()
+    throw err
+  }
+
+  try {
+    const ws = await openWs(`ws://127.0.0.1:${port}?lanSessionMode=select&username=cli-git-copy2`)
+    const start = await requestSessionStart(ws, 'g-copy-3', 'git-session-1')
+    assert.equal(start.ok, true)
+    await waitForMessage(ws, (msg) => msg.type === 'status' && msg.state === 'connected', 12000, 'connected')
+
+    assert.equal(sessionGit.calls.copyToWorktree.length, 0, 'sin workspace no hay nada que copiar')
+    assert.equal(capturedSpawns[0].opts.cwd, cwd, 'el PTY usa el cwd real')
+
+    ws.close()
+  } finally {
+    restorePty()
+    await server.stop()
   }
 })
 

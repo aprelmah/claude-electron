@@ -1044,6 +1044,25 @@ function createLanWsServer(options = {}) {
     })().catch((err) => console.warn('[session-git] finalize LAN:', err?.message || err))
   }
 
+  // Antes de spawnear un PTY claude con --resume dentro de un worktree, copiar
+  // el transcript .jsonl de la sesión al dir codificado del worktree: sin esto
+  // Claude Code no encuentra el historial (vive bajo el cwd real). Espejo de
+  // lo que hace main.js en resume-session. Fail-open: cualquier fallo → warn.
+  function copyResumeTranscriptToWorktree(session, cliName, resumeSessionId) {
+    if (!resumeSessionId || !session?.gitWorkspace) return
+    if ((cliName || session?.cli || 'claude') === 'codex') return
+    try {
+      const sessionGit = getSessionGit()
+      sessionGit?.copySessionToWorktree({
+        claudeSessionId: resumeSessionId,
+        realCwd: session.cwd,
+        workCwd: session.gitWorkspace.workCwd
+      })
+    } catch (err) {
+      logger(`[session-git] copySessionToWorktree LAN: ${err?.message || err}`)
+    }
+  }
+
   let wsServer = null
   let httpServer = null
   let running = false
@@ -2498,6 +2517,7 @@ function createLanWsServer(options = {}) {
     let nextPty = null
     if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
       try {
+        copyResumeTranscriptToWorktree(session, prepared?.cli, startSessionId)
         nextPty = createPtyForSession(session, prepared, { resumeSessionId: startSessionId })
       } catch (err) {
         if (previousLockKey && previousLockKey !== session.sessionLockKey) {
@@ -2854,6 +2874,7 @@ function createLanWsServer(options = {}) {
     const resumeSessionId = sanitizeResumeSessionId(options?.resumeSessionId || session.selectedResumeSessionId || '')
     if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
       try {
+        copyResumeTranscriptToWorktree(session, resolved?.cli, resumeSessionId)
         ptyProcess = createPtyForSession(session, resolved, { resumeSessionId })
       } catch (err) {
         session.initInFlight = false
