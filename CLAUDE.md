@@ -46,6 +46,7 @@
 - **Ubicaciones**: worktrees en `userData/worktrees/<repoSlug>-<sessionKey>/`; registro de sesiones en `userData/session-git-map.json` (mapea `claudeSessionId → { realCwd, branch, worktreePath, active }`, atomic writes, flush en `before-quit`). Sweep de huérfanos al arrancar (`git worktree prune` + finalize de entradas `active: true` sin PTY vivo).
 - **Qué NO está aislado**: automation PTY (`startAgentPty`) y task-sessions/pool oculto de Telegram (`startTaskSessionPty`) siguen con `--resume` sobre el cwd original. Pendiente integrarlos cuando esto esté validado en uso real.
 - **Regla para spawns nuevos**: cualquier spawn de PTY nuevo debe decidir explícitamente si pasa por `ensureSessionWorkspace`/`prepareSessionWorkspace` (aislado) o queda excluido — y documentarlo aquí. No dejarlo implícito.
+- **Limitaciones documentadas**: (1) archivos gitignored creados durante la sesión se pierden al finalizar (`worktree remove --force`; `add -A` respeta el gitignore); (2) sesiones CODEX nacidas en worktree no aparecen en el historial del proyecto (el índice codex bucketiza por cwd del rollout) — limitación v1 consciente; (3) el operador LAN no ve el aviso de conflicto si el socket ya cerró (el dueño del Mac conserva la rama y el `console.warn`).
 - Módulos: `main/session-git.js` (lógica git + registro), `main/session-git-map.js` (persistencia). Detalle de diseño: `docs/superpowers/specs/2026-07-24-git-auto-por-sesion-design.md`.
 
 ## Incident history

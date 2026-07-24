@@ -2728,10 +2728,23 @@ app.whenReady().then(async () => {
         isEnabled: () => appConfig?.cli?.gitSessionIsolation !== false,
         resolveClaudeProjectDir
       })
-      // Barrido de worktrees huérfanos de sesiones previas (fire-and-forget).
-      sessionGit.sweepOrphans({
-        realCwds: [...new Set(Object.values(sessionGitMap.all()).map((e) => e.realCwd))]
-      }).catch((err) => console.warn('[session-git] sweep:', err?.message))
+      // Recuperación tras crash + barrido de huérfanos (fire-and-forget).
+      // Al arrancar no hay ningún PTY vivo → toda entrada activa del registro
+      // es huérfana por definición: integrarla (commit+merge) y marcarla
+      // finalizada antes del sweep, que solo borra ramas ya mergeadas.
+      const orphanEntries = Object.entries(sessionGitMap.all())
+        .filter(([, e]) => e && e.active)
+        .map(([claudeSessionId, e]) => ({ claudeSessionId, ...e }))
+      sessionGit.recoverOrphanedWorkspaces({ entries: orphanEntries })
+        .then((results) => {
+          for (const r of results || []) {
+            try { sessionGitMap.markFinalized(r.claudeSessionId) } catch {}
+          }
+        })
+        .then(() => sessionGit.sweepOrphans({
+          realCwds: [...new Set(Object.values(sessionGitMap.all()).map((e) => e.realCwd))]
+        }))
+        .catch((err) => console.warn('[session-git] recovery/sweep:', err?.message))
     } catch (err) {
       console.warn('[session-git] init failed:', err?.message || err)
       sessionGit = null
@@ -3012,7 +3025,7 @@ app.on('before-quit', (event) => {
       // Los markFinalized ocurren durante los finalize → flush final tras la espera.
       try { sessionGitMap?.flush?.() } catch {}
       app.quit()
-    })()
+    })().catch(() => { try { app.quit() } catch {} })
   } else {
     quitFinalizeHandled = true
   }
