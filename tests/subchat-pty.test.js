@@ -172,6 +172,25 @@ describe('subchat-pty: write / resize / data / exit / close', () => {
     assert.equal(sends.length, before)
   })
 
+  test("close(wcId, 'parent-pty-closed') avisa al renderer con subchat:exit", () => {
+    const { mgr } = makeManager()
+    const { session, sends } = makeSession()
+    mgr.start(session, { cols: 80, rows: 24 })
+    assert.equal(mgr.close(7, 'parent-pty-closed'), true)
+    const exits = sends.filter((m) => m.ch === 'subchat:exit')
+    assert.equal(exits.length, 1)
+    assert.deepEqual(exits[0].p, { code: null, reason: 'parent-pty-closed' })
+  })
+
+  test("close(wcId, 'renderer') NO emite subchat:exit (el renderer ya lo sabe)", () => {
+    const { mgr } = makeManager()
+    const { session, sends } = makeSession()
+    mgr.start(session, { cols: 80, rows: 24 })
+    assert.equal(mgr.close(7, 'renderer'), true)
+    const exits = sends.filter((m) => m.ch === 'subchat:exit')
+    assert.equal(exits.length, 0)
+  })
+
   test('closeAll cierra todos los sub-chats vivos', () => {
     const { mgr } = makeManager()
     const a = makeSession({ wcId: 1 })

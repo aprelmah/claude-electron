@@ -105,8 +105,19 @@ function createSubchatManager({
     const entry = byWc.get(wcId)
     if (!entry) return false
     byWc.delete(wcId)
+    // Flush ANTES de marcar alive=false: el sendFn del batcher exige
+    // entry.alive para despachar, así que si lo apagamos antes el último
+    // chunk pendiente se perdería en silencio.
+    try { batcher.flush(entry) } catch {}
     entry.alive = false
     try { entry.pty.kill() } catch {}
+    // El pty.onExit real usa un guard de identidad (byWc ya no tiene esta
+    // entry) y no emitirá 'subchat:exit' — lo hacemos aquí para que el
+    // renderer se entere también cuando el cierre lo inicia el main
+    // (madre cerrada, app-quit, etc). 'renderer' ya lo sabe: no hace falta.
+    if (reason !== 'renderer') {
+      sendToRenderer(entry, 'subchat:exit', { code: null, reason })
+    }
     trace(`subchat close wc=${wcId} reason=${reason}`)
     return true
   }

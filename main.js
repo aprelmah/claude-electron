@@ -1433,6 +1433,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     const s = sessions.get(myWcId)
     if (s && s.pty === proc) {
+      try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
       if (typeof s.relayCancel === 'function') {
         const err = new Error('PTY cerrado')
         err.name = 'RelayPtyClosed'
@@ -1453,8 +1454,9 @@ function startPty(session, cols, rows, cwd, args = []) {
 }
 
 function killPty(session) {
-  if (!session || !session.pty) return
+  if (!session) return
   try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
+  if (!session.pty) return
   logSemanticForSession(session, 'pty_fin', {
     detail: `cwd=${session.cwd || ''}`,
     ok: true
@@ -3009,6 +3011,7 @@ app.on('before-quit', (event) => {
   try { lanWsServer?.stop() } catch {}
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
+  try { subchatManager.closeAll() } catch {}
   try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}

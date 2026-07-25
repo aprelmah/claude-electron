@@ -367,11 +367,33 @@ let subchatFit = null
 let subchatOffData = null
 let subchatOffExit = null
 let subchatOpening = false
+// El pty del sub-chat murió (madre cerrada, crash del fork, start rechazado)
+// pero el panel/xterm se dejan visibles para que el mensaje de error no
+// desaparezca solo. Solo ✕ o el toggle Cmd+Shift+S hacen la limpieza final.
+let subchatDead = false
 const subchatPane = document.getElementById('subchat-pane')
 const subchatDividerEl = document.getElementById('subchat-divider')
 const subchatTermEl = document.getElementById('subchat-terminal')
 const btnSubchat = document.getElementById('btn-subchat')
 const btnSubchatClose = document.getElementById('btn-subchat-close')
+
+// Deja el pty por muerto pero el panel abierto: escribe el motivo en el
+// xterm, suelta los listeners IPC (ya no hay nada al otro lado) y espera a
+// que el usuario cierre con ✕ o el toggle. Usada tanto por subchat:exit
+// como por cualquier fallo al arrancar (IMPORTANT 3 e IMPORTANT 4 comparten
+// este mismo camino: el panel se queda vivo mostrando el error).
+function killSubchatPaneKeepVisible(message) {
+  if (subchatTerm) { try { subchatTerm.write(message) } catch {} }
+  if (subchatOffData) { try { subchatOffData() } catch {} subchatOffData = null }
+  if (subchatOffExit) { try { subchatOffExit() } catch {} subchatOffExit = null }
+  subchatDead = true
+}
+
+function handleSubchatExit(payload) {
+  const code = payload?.code
+  const suffix = (code === null || code === undefined) ? '' : ` (code ${code})`
+  killSubchatPaneKeepVisible(`\r\n\x1b[33m[sub-chat terminó${suffix}]\x1b[0m\r\n`)
+}
 
 async function openSubchatPane() {
   if (subchatTerm || subchatOpening) return
@@ -382,6 +404,7 @@ async function openSubchatPane() {
       if (btnSubchat) btnSubchat.title = `Sub-chat: ${can?.reason || 'no disponible'}`
       return
     }
+    subchatDead = false
     subchatPane.classList.remove('hidden')
     subchatDividerEl.classList.remove('hidden')
     subchatTerm = new Terminal({
@@ -405,12 +428,16 @@ async function openSubchatPane() {
     })
     subchatTerm.onData((d) => window.api.subchat.write(d))
     subchatOffData = window.api.subchat.onData((d) => subchatTerm?.write(d))
-    subchatOffExit = window.api.subchat.onExit(() => closeSubchatPane({ notifyMain: false }))
+    subchatOffExit = window.api.subchat.onExit((payload) => handleSubchatExit(payload))
     const size = subchatFit.getSafeSize({ forceFit: true })
-    const r = await window.api.subchat.start(size.cols, size.rows)
-    if (!r?.ok) {
-      subchatTerm.write(`\r\n\x1b[31m${r?.error || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
-      setTimeout(() => closeSubchatPane({ notifyMain: false }), 2500)
+    try {
+      const r = await window.api.subchat.start(size.cols, size.rows)
+      if (!r?.ok) {
+        killSubchatPaneKeepVisible(`\r\n\x1b[31m${r?.error || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
+        return
+      }
+    } catch (err) {
+      killSubchatPaneKeepVisible(`\r\n\x1b[31m${err?.message || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
       return
     }
     subchatFit.scheduleRefit({ forceFit: true })
@@ -427,6 +454,7 @@ function closeSubchatPane({ notifyMain = true } = {}) {
   if (subchatOffExit) { try { subchatOffExit() } catch {} subchatOffExit = null }
   if (subchatFit) { try { subchatFit.dispose() } catch {} subchatFit = null }
   if (subchatTerm) { try { subchatTerm.dispose() } catch {} subchatTerm = null }
+  subchatDead = false
   subchatPane.classList.add('hidden')
   subchatDividerEl.classList.add('hidden')
   subchatPane.style.flexBasis = ''
