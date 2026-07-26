@@ -283,6 +283,58 @@ function createSessionGit({
     }
   }
 
+  // Worktrees en disco que el registro nunca llegó a apuntar. recordActive()
+  // solo se llama cuando el poll detecta un claudeSessionId, así que una
+  // sesión que muere antes de generarlo (ventana abierta sin escribir nada,
+  // pkill del protocolo de deploy) deja el worktree fuera del registro y el
+  // sweep no puede verlo. Al arrancar no hay ningún PTY vivo y la app es
+  // single-instance → todo worktree presente aquí es huérfano por definición.
+  // Devuelve entradas con la forma que espera recoverOrphanedWorkspaces
+  // (claudeSessionId vacío: no se conoce, y markFinalized lo ignora).
+  // Fail-open total: nunca lanza; lo que no se puede resolver se deja en paz.
+  async function discoverUnregisteredWorkspaces({ knownWorktreePaths } = {}) {
+    const found = []
+    try {
+      const known = new Set(
+        (Array.isArray(knownWorktreePaths) ? knownWorktreePaths : [])
+          .filter(Boolean)
+          .map((p) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } })
+      )
+      let entries = []
+      try {
+        entries = fs.readdirSync(worktreesRoot, { withFileTypes: true })
+      } catch { return found }
+
+      for (const dirent of entries) {
+        if (!dirent.isDirectory()) continue
+        const worktreePath = path.join(worktreesRoot, dirent.name)
+        try {
+          const resolved = fs.realpathSync(worktreePath)
+          if (known.has(resolved)) continue
+          // Un worktree de git tiene un fichero .git con 'gitdir: ...'; un
+          // directorio cualquiera dentro de worktreesRoot no.
+          if (!fs.existsSync(path.join(worktreePath, '.git'))) continue
+
+          const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath)
+          if (!branch.startsWith('poweragent/session-')) continue
+
+          // La raíz del repo principal es el primer 'worktree' del porcelain.
+          const listOut = await git(['worktree', 'list', '--porcelain'], worktreePath)
+          const mainLine = listOut.split('\n').find((line) => line.startsWith('worktree '))
+          const realCwd = mainLine ? mainLine.slice('worktree '.length).trim() : ''
+          if (!realCwd || !fs.existsSync(realCwd)) continue
+
+          found.push({ claudeSessionId: '', realCwd, branch, worktreePath })
+        } catch (err) {
+          log.warn?.(`[session-git] discover: se ignora ${worktreePath}: ${err?.message || err}`)
+        }
+      }
+    } catch (err) {
+      log.warn?.(`[session-git] discover falló: ${err?.message || err}`)
+    }
+    return found
+  }
+
   // Recuperación tras crash: al arrancar la app no hay ningún PTY vivo, así
   // que toda entrada activa del registro es huérfana por definición. Para
   // cada una: si su worktree sigue en disco → copiar transcripts a casa y
@@ -420,6 +472,7 @@ function createSessionGit({
     finalizeSessionWorkspace,
     removeWorktree,
     sweepOrphans,
+    discoverUnregisteredWorkspaces,
     recoverOrphanedWorkspaces,
     copySessionToWorktree,
     copySessionsHome

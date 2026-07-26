@@ -2745,19 +2745,29 @@ app.whenReady().then(async () => {
       // Al arrancar no hay ningún PTY vivo → toda entrada activa del registro
       // es huérfana por definición: integrarla (commit+merge) y marcarla
       // finalizada antes del sweep, que solo borra ramas ya mergeadas.
-      const orphanEntries = Object.entries(sessionGitMap.all())
-        .filter(([, e]) => e && e.active)
+      const registered = Object.entries(sessionGitMap.all())
         .map(([claudeSessionId, e]) => ({ claudeSessionId, ...e }))
-      sessionGit.recoverOrphanedWorkspaces({ entries: orphanEntries })
-        .then((results) => {
-          for (const r of results || []) {
-            try { sessionGitMap.markFinalized(r.claudeSessionId) } catch {}
-          }
+      const orphanEntries = registered.filter((e) => e.active)
+      ;(async () => {
+        // El registro solo conoce las sesiones que llegaron a generar un
+        // claudeSessionId. Los worktrees que quedaron fuera se descubren en
+        // disco (todo worktree presente al arrancar es huérfano).
+        const discovered = await sessionGit.discoverUnregisteredWorkspaces({
+          knownWorktreePaths: registered.map((e) => e.worktreePath).filter(Boolean)
         })
-        .then(() => sessionGit.sweepOrphans({
-          realCwds: [...new Set(Object.values(sessionGitMap.all()).map((e) => e.realCwd))]
-        }))
-        .catch((err) => console.warn('[session-git] recovery/sweep:', err?.message))
+        const results = await sessionGit.recoverOrphanedWorkspaces({
+          entries: [...orphanEntries, ...discovered]
+        })
+        for (const r of results || []) {
+          try { sessionGitMap.markFinalized(r.claudeSessionId) } catch {}
+        }
+        await sessionGit.sweepOrphans({
+          realCwds: [
+            ...Object.values(sessionGitMap.all()).map((e) => e.realCwd),
+            ...discovered.map((e) => e.realCwd)
+          ]
+        })
+      })().catch((err) => console.warn('[session-git] recovery/sweep:', err?.message))
     } catch (err) {
       console.warn('[session-git] init failed:', err?.message || err)
       sessionGit = null

@@ -16,13 +16,14 @@ _Última actualización: 2026-07-26 (verificado contra git y tests en el cierre)
 - Ramas/worktrees huérfanos de sesión: limpiados (2 worktrees vacíos + 3 ramas `poweragent/session-*`; el commit útil `9f558f2` se recuperó por cherry-pick → `86de38f`).
 - Pre-commit hook: instalado (`.git/hooks/pre-commit` → `scripts/pre-commit.sh`); no lo estaba.
 
-## Riesgo abierto — el registro `session-git-map.json` no se escribe nunca
+## Worktrees huérfanos no registrados — ARREGLADO (pendiente de prueba en app)
 
-No existe `userData/session-git-map.json` pese a haber worktrees creados. `sessionGitMap.recordActive()` (main.js:1389) solo se llama **dentro del poll que detecta un `claudeSessionId` nuevo**: si la sesión nunca produce sessionId (ventana abierta sin escribir nada) o si se resume una sesión existente, el worktree se crea pero **no queda registrado**.
+`sessionGitMap.recordActive()` (main.js:1389) solo se llama **dentro del poll que detecta un `claudeSessionId` nuevo**: si la sesión muere antes de generarlo (ventana abierta sin escribir nada, `pkill` del protocolo de deploy) el worktree se crea pero no queda registrado, y el sweep del arranque no podía verlo. Por eso no existía `userData/session-git-map.json` pese a haber worktrees, y por eso se acumularon los 2 worktrees vacíos limpiados a mano hoy.
 
-- **Impacto**: el sweep de huérfanos del arranque (main.js:2744) se apoya en ese registro → tras un crash o un `pkill`, esos worktrees quedan para siempre en `userData/worktrees/`. Evidencia real: los 2 worktrees vacíos que se limpiaron hoy a mano.
-- **No hay pérdida de datos**: el cierre normal del PTY sí finaliza bien (usa `session.gitWorkspace` en memoria, no el registro).
-- **Fix propuesto (pendiente de OK)**: en el sweep del arranque, barrer también los directorios de `userData/worktrees/` que no estén en el registro — al arrancar no hay ningún PTY vivo, así que todo worktree presente es huérfano por definición. Alternativa: llamar a `recordActive` al crear el worktree con clave provisional y re-key al detectar el sessionId.
+- **Fix (`main/session-git.js` → `discoverUnregisteredWorkspaces`)**: el arranque escanea `userData/worktrees/`, descarta los que ya están en el registro y trata el resto como huérfanos (al arrancar no hay PTY vivo y la app es single-instance). Se recuperan por el mismo camino que los registrados (`recoverOrphanedWorkspaces`) y sus `realCwd` se añaden al `sweepOrphans`. Fail-open: basura, worktrees de repos borrados o ramas que no son `poweragent/session-*` se ignoran sin tocarlas.
+- 6 tests nuevos en `tests/session-git-discover.test.js`. Suite: **505 (499 pass / 0 fail / 6 skip)**.
+- **Pendiente**: verificarlo en la app (crear worktree huérfano → matar app → arrancar → debe desaparecer). No se probó porque había una sesión viva de otro proyecto en la app empaquetada.
+- No hubo nunca pérdida de datos: el cierre normal del PTY finaliza bien porque usa `session.gitWorkspace` en memoria, no el registro.
 
 ## Última sesión (2026-07-25/26)
 
@@ -36,7 +37,7 @@ No existe `userData/session-git-map.json` pese a haber worktrees creados. `sessi
 
 1. **Prueba manual de Luismi (sub-chat)**: abrir con 2+ turnos → responde con contexto heredado → ✕ → principal intacto. Clave: `/exit` en la madre con sub-chat abierto → sin `claude` huérfano en `ps`. Con codex o sesión sin turnos → botón deshabilitado.
 2. Prueba manual pendiente de git-por-sesión (2 ventanas sobre el mismo repo, conflicto provocado).
-3. Decidir el fix del registro `session-git-map.json` (ver Riesgo abierto).
+3. Verificar en la app el barrido de worktrees no registrados (ver sección arriba).
 4. Con su OK: push de `feat/git-auto-por-sesion` + PR a main → merge → `npm run deploy`.
 5. SEC-C3 (upgrade Electron) sigue pendiente, sesión humana.
 
