@@ -8,19 +8,21 @@ _Última actualización: 2026-07-26 (verificado contra git y tests en el cierre)
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`feat/git-auto-por-sesion`**, HEAD `31fcfe6`, **SIN PUSH** (sin upstream). Lleva DOS features: git automático por sesión + sub-chat desechable.
+- Rama activa: **`feat/git-auto-por-sesion`**, HEAD `86de38f`, working tree **limpio**, **SIN PUSH** (sin upstream). Lleva DOS features: git automático por sesión + sub-chat desechable.
 - Sub-chat desechable COMPLETO: 6 commits (`598db26`..`d8ffbdd`), integrados al dir real por el propio git-por-sesión (`31fcfe6`).
 - Tests: **499 (493 pass / 0 fail / 6 skip pre-existentes)**. Módulo sub-chat: 17/17. `node --check` limpio en `main.js`, `renderer.js`, `preload.js`, `main/subchat-pty.js`.
-- Deploy: `/Applications/POWER-AGENT.app` NO lleva ninguna de las dos features.
-- ⚠️ **Working tree del dir real SUCIO**: `D node_modules`, `M package-lock.json` (ver "Riesgo abierto"). Mientras siga sucio, el finalize de cualquier sesión no podrá mergear y dejará rama de conflicto.
+- Deploy: `/Applications/POWER-AGENT.app` **SÍ lleva ambas features** (build del 2026-07-25 09:34; `session-git.js`, `session-git-map.js`, `subchat-pty.js` están dentro del `app.asar`). Lo que falta es el push + PR, no el deploy.
+- Symlink `node_modules`: **RESUELTO** el 2026-07-26 (`6b06600`). `.gitignore` ahora usa patrones sin barra (`dist`, `node_modules`, `.claude/worktrees`) y `package-lock.json` quedó sincronizado con la 1.3.0.
+- Ramas/worktrees huérfanos de sesión: limpiados (2 worktrees vacíos + 3 ramas `poweragent/session-*`; el commit útil `9f558f2` se recuperó por cherry-pick → `86de38f`).
+- Pre-commit hook: instalado (`.git/hooks/pre-commit` → `scripts/pre-commit.sh`); no lo estaba.
 
-## Riesgo abierto — symlink `node_modules` commiteado
+## Riesgo abierto — el registro `session-git-map.json` no se escribe nunca
 
-El commit `31fcfe6` metió en el repo un **symlink `node_modules`** (`mode 120000`) apuntando a la ruta absoluta `/Users/isabel/Desktop/LUISMI/claude-electron/node_modules`.
+No existe `userData/session-git-map.json` pese a haber worktrees creados. `sessionGitMap.recordActive()` (main.js:1389) solo se llama **dentro del poll que detecta un `claudeSessionId` nuevo**: si la sesión nunca produce sessionId (ventana abierta sin escribir nada) o si se resume una sesión existente, el worktree se crea pero **no queda registrado**.
 
-- **Causa raíz**: `.gitignore` línea 3 es `node_modules/` **con barra final** → solo matchea directorios. Un subagente creó un symlink (que git ve como fichero) para poder correr tests en el worktree, y el `git add -A` del finalize de git-por-sesión lo commiteó.
-- **Impacto**: rompería cualquier clon en otra máquina; el dir real aparece sucio porque ahí `node_modules` es un directorio real.
-- **Fix pendiente (requiere OK de Luismi, toca git)**: `git rm --cached node_modules` + cambiar el patrón a `node_modules` sin barra + restaurar `package-lock.json`.
+- **Impacto**: el sweep de huérfanos del arranque (main.js:2744) se apoya en ese registro → tras un crash o un `pkill`, esos worktrees quedan para siempre en `userData/worktrees/`. Evidencia real: los 2 worktrees vacíos que se limpiaron hoy a mano.
+- **No hay pérdida de datos**: el cierre normal del PTY sí finaliza bien (usa `session.gitWorkspace` en memoria, no el registro).
+- **Fix propuesto (pendiente de OK)**: en el sweep del arranque, barrer también los directorios de `userData/worktrees/` que no estén en el registro — al arrancar no hay ningún PTY vivo, así que todo worktree presente es huérfano por definición. Alternativa: llamar a `recordActive` al crear el worktree con clave provisional y re-key al detectar el sessionId.
 
 ## Última sesión (2026-07-25/26)
 
@@ -33,8 +35,8 @@ El commit `31fcfe6` metió en el repo un **symlink `node_modules`** (`mode 12000
 ## Próximo paso
 
 1. **Prueba manual de Luismi (sub-chat)**: abrir con 2+ turnos → responde con contexto heredado → ✕ → principal intacto. Clave: `/exit` en la madre con sub-chat abierto → sin `claude` huérfano en `ps`. Con codex o sesión sin turnos → botón deshabilitado.
-2. **Limpiar el symlink** (ver Riesgo abierto) ANTES de cerrar sesiones, o los merges seguirán fallando.
-3. Prueba manual pendiente de git-por-sesión (2 ventanas sobre el mismo repo, conflicto provocado).
+2. Prueba manual pendiente de git-por-sesión (2 ventanas sobre el mismo repo, conflicto provocado).
+3. Decidir el fix del registro `session-git-map.json` (ver Riesgo abierto).
 4. Con su OK: push de `feat/git-auto-por-sesion` + PR a main → merge → `npm run deploy`.
 5. SEC-C3 (upgrade Electron) sigue pendiente, sesión humana.
 
