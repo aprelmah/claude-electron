@@ -2,6 +2,7 @@
 
 const os = require('os')
 const cronPresets = require('../scheduler/cron-presets')
+const { pickerStartDir } = require('./dir-helpers')
 
 function registerTasksIpc({
   ipcMain,
@@ -133,10 +134,12 @@ function registerTasksIpc({
 
   ipcMain.handle('tasks:get-cron-presets', () => cronPresets)
 
-  ipcMain.handle('tasks:pick-folder', async (event) => {
+  ipcMain.handle('tasks:pick-folder', async (event, startPath) => {
     const win = BrowserWindow.fromWebContents(event.sender) || getTasksManagerWin()
+    // Electron 43 abre los diálogos en Descargas si no se fija defaultPath.
     const result = await dialog.showOpenDialog(win, {
-      properties: ['openDirectory']
+      properties: ['openDirectory'],
+      defaultPath: pickerStartDir(startPath)
     })
     if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
     return { path: result.filePaths[0], canceled: false }
