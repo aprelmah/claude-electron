@@ -15,7 +15,7 @@ _Última actualización: 2026-07-28, tarde (verificado contra git, GitHub, la ap
 - Tests: **525 (519 pass / 0 fail / 6 skip pre-existentes)**.
 - **`npm audit --omit=dev`: 0 vulnerabilidades.**
 - Deploy: `/Applications/POWER-AGENT.app` es el build del **2026-07-28 19:04**, con Electron 43 dentro (verificado en el binario del Framework), sin cuarentena y arrancado con ventana.
-- Ramas `feat/git-auto-por-sesion` y `chore/electron-43` siguen vivas en local y en `origin` tras el merge — pendiente borrarlas (requiere OK de Luismi).
+- Ramas `feat/git-auto-por-sesion` y `chore/electron-43`: **borradas** en local y en `origin` tras verificar 0 commits fuera de `main`. Siguen vivas otras ya mergeadas sin limpiar (`backup-2026-05-14-main`, `backup-pre-graph-revert`, `worktree-task-*`, y cuatro `worktree-agent-*` con worktree activo — estas hay que mirarlas antes de tocarlas).
 
 ## Última sesión (2026-07-28, tarde) — Electron 32 → 43, SEC-C3 cerrado
 
@@ -42,7 +42,7 @@ _Última actualización: 2026-07-28, tarde (verificado contra git, GitHub, la ap
 1. **Decisión de Luismi: actualizar macOS.** Este Mac es Monterey (12) y **Electron 43 es la última rama que lo soporta**; la 44 exige Ventura. Verificado rama a rama en los README de Electron. Sin actualizar macOS, en ~2 majors (unas 16 semanas) se vuelve a estar fuera de soporte. El Mac es Intel: si es de 2017 o posterior, Ventura le entra.
 2. **Comprobar el fallback de notificaciones en la app empaquetada** (la de `/Applications`, que es la que no está firmada): provocar un conflicto de git por sesión y ver si sale el diálogo. En dev no se puede probar. Si sale el diálogo → `UNNotification` está fallando como se preveía; si sale la notificación nativa de siempre → una firma no era necesaria y el fallback queda inerte, sin daño.
 3. **Prueba manual del sub-chat**, que sigue sin validar por un humano: contexto heredado en el fork, ✕ deja el principal intacto, y sobre todo `/exit` en la madre **sin dejar procesos `claude` huérfanos** en `ps`.
-4. Borrar las ramas ya mergeadas (`feat/git-auto-por-sesion`, `chore/electron-43`) en local y en `origin`.
+4. Limpieza opcional de ramas viejas ya mergeadas (`backup-*`, `worktree-task-*`). Las `worktree-agent-*` tienen worktree activo: revisar antes de borrar.
 5. Renovar certificado Apple y firmar/notarizar (trámite, no ingeniería). Bloquea distribuir a terceros — y ahora además desactivaría el fallback de notificaciones.
 6. Riesgo conocido sin cerrar: el servidor LAN va en **HTTP plano**, así que el Bearer token viaja en claro por la red.
 
