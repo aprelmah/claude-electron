@@ -96,14 +96,20 @@ function createCliResolver(getConfig) {
     if (baseEnv.CLICOLOR_FORCE === '0') delete baseEnv.CLICOLOR_FORCE
     if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
 
-    const extraPaths = [USER_LOCAL_BIN, PYTHON39_BIN, '/usr/local/bin']
+    // El bin de nvm va ANTES de /usr/local/bin a propósito: si gana el node de
+    // sistema, su prefix global es /usr/local/lib/node_modules (no escribible) y
+    // el auto-update de codex ("1. Update now") revienta con EACCES. Con nvm
+    // delante, el PATH del PTY iguala al de una Terminal normal.
+    const extraPaths = [USER_LOCAL_BIN]
     if (LATEST_NVM_NODE_BIN) extraPaths.push(LATEST_NVM_NODE_BIN)
+    extraPaths.push(PYTHON39_BIN, HOMEBREW_BIN)
     const cfg = getConfig?.() || {}
     const cli = cfg.cli || {}
     for (const candidate of [cli.claudeBin, cli.codexBin, cli.whisperBin]) {
       if (candidate && candidate.includes('/')) extraPaths.push(path.dirname(candidate))
     }
-    const mergedPath = Array.from(new Set([...extraPaths, process.env.PATH || ''])).join(':')
+    const inheritedPath = (process.env.PATH || '').split(':').filter(Boolean)
+    const mergedPath = Array.from(new Set([...extraPaths, ...inheritedPath])).join(':')
     return {
       ...baseEnv,
       TERM: 'xterm-256color',
