@@ -1005,6 +1005,64 @@ function createLanWsServer(options = {}) {
     return timingSafeStringEqual(extractTokenFromReq(req), expected)
   }
 
+  // Git por sesión (aislamiento por worktree). Se aceptan como getter o como
+  // objeto directo: en main.js son `let` que se inicializan en onReady, después
+  // de crear el servidor, así que la resolución perezosa evita capturar null.
+  const getSessionGit = typeof options.sessionGit === 'function'
+    ? options.sessionGit
+    : () => options.sessionGit || null
+  const getSessionGitMap = typeof options.sessionGitMap === 'function'
+    ? options.sessionGitMap
+    : () => options.sessionGitMap || null
+
+  // Duplicado consciente del finalize de main.js (finalizeWorkspaceForSession):
+  // la lógica de git es idéntica pero la notificación en LAN es console.warn +
+  // frame `status` por WebSocket si el socket sigue abierto. Fire-and-forget.
+  function finalizeSessionGitWorkspace(session) {
+    const sessionGit = getSessionGit()
+    const sessionGitMap = getSessionGitMap()
+    const ws = session?.gitWorkspace
+    if (!sessionGit || !ws) return
+    session.gitWorkspace = null // anular al entrar evita doble finalize
+    const sock = session.ws
+    ;(async () => {
+      const copied = sessionGit.copySessionsHome({ realCwd: ws.realCwd, workCwd: ws.workCwd })
+      const r = await sessionGit.finalizeSessionWorkspace(ws)
+      for (const sid of copied) { try { sessionGitMap?.markFinalized(sid) } catch {} }
+      if (r && (r.outcome === 'conflict' || r.outcome === 'dirty-target' || r.outcome === 'error')) {
+        console.warn(`[session-git] finalize LAN ${r.outcome}: ${ws.branch || ''}${r.detail ? ' — ' + r.detail : ''}`)
+        try {
+          safeSend(sock, {
+            type: 'status',
+            state: 'git-warning',
+            branch: ws.branch || null,
+            outcome: r.outcome,
+            message: r.detail || r.outcome
+          })
+        } catch {}
+      }
+    })().catch((err) => console.warn('[session-git] finalize LAN:', err?.message || err))
+  }
+
+  // Antes de spawnear un PTY claude con --resume dentro de un worktree, copiar
+  // el transcript .jsonl de la sesión al dir codificado del worktree: sin esto
+  // Claude Code no encuentra el historial (vive bajo el cwd real). Espejo de
+  // lo que hace main.js en resume-session. Fail-open: cualquier fallo → warn.
+  function copyResumeTranscriptToWorktree(session, cliName, resumeSessionId) {
+    if (!resumeSessionId || !session?.gitWorkspace) return
+    if ((cliName || session?.cli || 'claude') === 'codex') return
+    try {
+      const sessionGit = getSessionGit()
+      sessionGit?.copySessionToWorktree({
+        claudeSessionId: resumeSessionId,
+        realCwd: session.cwd,
+        workCwd: session.gitWorkspace.workCwd
+      })
+    } catch (err) {
+      logger(`[session-git] copySessionToWorktree LAN: ${err?.message || err}`)
+    }
+  }
+
   let wsServer = null
   let httpServer = null
   let running = false
@@ -1306,6 +1364,7 @@ function createLanWsServer(options = {}) {
   function closeSession(sessionId, reason = 'closed') {
     const session = sessions.get(String(sessionId || ''))
     if (!session) return false
+    finalizeSessionGitWorkspace(session) // fire-and-forget; anula gitWorkspace al entrar
     releaseSessionLock(session, reason)
     sessions.delete(session.id)
     abortSessionChat(session, reason)
@@ -2458,6 +2517,7 @@ function createLanWsServer(options = {}) {
     let nextPty = null
     if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
       try {
+        copyResumeTranscriptToWorktree(session, prepared?.cli, startSessionId)
         nextPty = createPtyForSession(session, prepared, { resumeSessionId: startSessionId })
       } catch (err) {
         if (previousLockKey && previousLockKey !== session.sessionLockKey) {
@@ -2710,7 +2770,7 @@ function createLanWsServer(options = {}) {
       name: 'xterm-256color',
       cols: session.cols,
       rows: session.rows,
-      cwd: session.cwd,
+      cwd: session.gitWorkspace?.workCwd || session.cwd,
       env: config?.env || { ...process.env }
     })
   }
@@ -2777,6 +2837,19 @@ function createLanWsServer(options = {}) {
     session.pathPolicy = resolved.pathPolicy
     session.fsLimits = resolved.fsLimits || defaultFsLimits
 
+    // Git por sesión: aísla la sesión LAN en un worktree si el cwd es un repo git.
+    // Fail-open: si sessionGit es null o prepare falla/devuelve null, corre en el
+    // cwd real. La rotación/hot-switch NO pasa por aquí y reutiliza session.gitWorkspace.
+    const sessionGitForPrepare = getSessionGit()
+    if (sessionGitForPrepare && !session.gitWorkspace) {
+      try {
+        session.gitWorkspace = (await sessionGitForPrepare.prepareSessionWorkspace({ realCwd: session.cwd })) || null
+      } catch (err) {
+        logger(`[session-git] prepare LAN: ${err?.message || err}`)
+        session.gitWorkspace = null
+      }
+    }
+
     emitAudit('empresa_contexto_resuelto', {
       ...auditActor(session),
       requestedOperatorId: session.requestedContext?.operatorId || null,
@@ -2801,6 +2874,7 @@ function createLanWsServer(options = {}) {
     const resumeSessionId = sanitizeResumeSessionId(options?.resumeSessionId || session.selectedResumeSessionId || '')
     if (session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
       try {
+        copyResumeTranscriptToWorktree(session, resolved?.cli, resumeSessionId)
         ptyProcess = createPtyForSession(session, resolved, { resumeSessionId })
       } catch (err) {
         session.initInFlight = false
@@ -3103,6 +3177,7 @@ function createLanWsServer(options = {}) {
         try { clearTimeout(session.initTimer) } catch {}
         session.initTimer = null
       }
+      finalizeSessionGitWorkspace(session) // idempotente: anula gitWorkspace al entrar
       releaseSessionLock(session, 'ws-close')
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)
@@ -3117,6 +3192,7 @@ function createLanWsServer(options = {}) {
         try { clearTimeout(session.initTimer) } catch {}
         session.initTimer = null
       }
+      finalizeSessionGitWorkspace(session) // idempotente: anula gitWorkspace al entrar
       releaseSessionLock(session, 'ws-error')
       if (!sessions.has(session.id)) return
       sessions.delete(session.id)

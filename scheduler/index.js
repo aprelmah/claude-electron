@@ -22,16 +22,28 @@ class TaskScheduler {
     }
   }
 
+  // node-cron 4 declara stop() como `void | Promise<void>`: un rechazo
+  // asíncrono se escaparía de un try/catch síncrono. Punto único para pararlos.
+  _stopJob(job) {
+    if (!job) return
+    try {
+      const r = job.stop()
+      if (r && typeof r.then === 'function') r.catch(() => {})
+    } catch {}
+  }
+
   _schedule(task) {
     if (!task || !task.cron) return
     if (!cron.validate(task.cron)) return
     if (this.jobs.has(task.id)) {
-      try { this.jobs.get(task.id).stop() } catch {}
+      this._stopJob(this.jobs.get(task.id))
       this.jobs.delete(task.id)
     }
+    // Sin `{ scheduled: true }`: esa opción desapareció en node-cron 4 y las
+    // tareas creadas con schedule() arrancan solas (createTask() no arranca).
     const job = cron.schedule(task.cron, () => {
       this.runNow(task.id).catch(() => {})
-    }, { scheduled: true })
+    })
     this.jobs.set(task.id, job)
     this._updateNextRun(task).catch(() => {})
   }
@@ -178,7 +190,7 @@ class TaskScheduler {
   async upsertTask(taskData) {
     const task = await this.persistence.upsertTask(taskData)
     if (this.jobs.has(task.id)) {
-      try { this.jobs.get(task.id).stop() } catch {}
+      this._stopJob(this.jobs.get(task.id))
       this.jobs.delete(task.id)
     }
     if (task.enabled) this._schedule(task)
@@ -188,7 +200,7 @@ class TaskScheduler {
 
   async deleteTask(id) {
     if (this.jobs.has(id)) {
-      try { this.jobs.get(id).stop() } catch {}
+      this._stopJob(this.jobs.get(id))
       this.jobs.delete(id)
     }
     this.cancel(id)
@@ -200,7 +212,7 @@ class TaskScheduler {
   async toggle(id, enabled) {
     const task = await this.persistence.updateTask(id, { enabled: !!enabled })
     if (this.jobs.has(id)) {
-      try { this.jobs.get(id).stop() } catch {}
+      this._stopJob(this.jobs.get(id))
       this.jobs.delete(id)
     }
     if (task.enabled) this._schedule(task)
@@ -210,7 +222,7 @@ class TaskScheduler {
 
   destroy() {
     for (const [, job] of this.jobs) {
-      try { job.stop() } catch {}
+      this._stopJob(job)
     }
     this.jobs.clear()
     for (const [, ac] of this.activeRuns) {

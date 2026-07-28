@@ -50,6 +50,17 @@ else
 fi
 
 # 2) Run unit tests with a sensible timeout (5 minutes).
+#
+# Git exports GIT_DIR / GIT_INDEX_FILE / etc. into hooks. Tests that create
+# throwaway repos (tests/session-git-*.test.js) inherit them and end up running
+# their git commands against THIS repo instead of their temp fixture, which
+# fails the suite only under the hook. Scrub the git environment first.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+      GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
+      GIT_EDITOR GIT_EXEC_PATH GIT_REFLOG_ACTION || true
+
 TEST_TIMEOUT="${PRE_COMMIT_TEST_TIMEOUT:-300}"
 
 if ! ls tests/*.test.js >/dev/null 2>&1; then

@@ -117,6 +117,15 @@ function sanitizeClaudeModel(value, fallback = 'opus') {
   return v
 }
 
+// Aislamiento git por sesión (rama+commit automático por PTY en repos git).
+// Default true. Escape hatch: solo `false` explícito lo desactiva; cualquier
+// otro valor (ausente, basura, tipo incorrecto) cae al default seguro.
+function sanitizeGitSessionIsolation(value, fallback = true) {
+  if (value === false) return false
+  if (value === true) return true
+  return fallback
+}
+
 function sanitizeCliBinaryPath(value) {
   const v = typeof value === 'string' ? value.trim() : ''
   if (!v) return ''
@@ -179,7 +188,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         claudeBin: sanitizeCliBinaryPath(cli.claudeBin),
         codexBin: sanitizeCliBinaryPath(cli.codexBin),
         whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
-        claudeModel: sanitizeClaudeModel(cli.claudeModel)
+        claudeModel: sanitizeClaudeModel(cli.claudeModel),
+        gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -210,7 +220,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     normalizeAppConfig,
     normalizeLanServerConfig,
     sanitizeCliBinaryPath,
-    sanitizeClaudeModel
+    sanitizeClaudeModel,
+    sanitizeGitSessionIsolation
   }
 }
 
@@ -244,5 +255,6 @@ module.exports = {
   readConfigFromFile,
   writeConfigToFile,
   sanitizeCliBinaryPath,
-  sanitizeClaudeModel
+  sanitizeClaudeModel,
+  sanitizeGitSessionIsolation
 }

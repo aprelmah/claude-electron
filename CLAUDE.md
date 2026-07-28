@@ -38,6 +38,17 @@
 - Queda prohibido asumir `+34` (o cualquier otro pais) por defecto.
 - Ante duda de formato/destino: bloquear envio y pedir confirmacion.
 
+## Git automático por sesión
+
+- **Qué hace**: cada sesión (ventana local o sesión LAN) con `cwd` dentro de un repo git local trabaja en su propio `git worktree` + rama `poweragent/session-<key>`, no en el directorio real. `session.cwd` sigue mostrando el path real (UI/recientes intactos). Al cerrar la sesión: commit automático → sin cambios se limpia en silencio → con cambios se intenta merge a la rama del dir real (solo si está limpio) → merge limpio borra rama/worktree y hace `push` si hay upstream.
+- **Toggle**: `cli.gitSessionIsolation` (Configuración → "Aislamiento git por sesión"), default ON. Escape hatch total: en OFF, o si el cwd no es repo git, o es path remoto (NAS/SMB), o falla cualquier comando git → fail-open al flujo de siempre, sin bloquear el spawn.
+- **Ramas de conflicto**: si el merge da conflicto o el dir real está sucio, la rama `poweragent/session-<key>` queda viva con los cambios (no se borra) y se avisa: `Notification` de macOS en ventana local, `console.warn` + frame `status` por WebSocket en LAN. Revisar y mergear a mano esas ramas.
+- **Ubicaciones**: worktrees en `userData/worktrees/<repoSlug>-<sessionKey>/`; registro de sesiones en `userData/session-git-map.json` (mapea `claudeSessionId → { realCwd, branch, worktreePath, active }`, atomic writes, flush en `before-quit`). Sweep de huérfanos al arrancar (`git worktree prune` + finalize de entradas `active: true` sin PTY vivo). El registro **solo se escribe cuando la sesión llega a generar un `claudeSessionId`**, así que el arranque completa el barrido con `discoverUnregisteredWorkspaces()`: escanea `userData/worktrees/`, y todo worktree que no esté en el registro se trata como huérfano (al arrancar no hay ningún PTY vivo y la app es single-instance). Se recupera igual que los registrados: commit → merge → limpieza.
+- **Qué NO está aislado**: automation PTY (`startAgentPty`) y task-sessions/pool oculto de Telegram (`startTaskSessionPty`) siguen con `--resume` sobre el cwd original. Pendiente integrarlos cuando esto esté validado en uso real. El sub-chat desechable (`main/subchat-pty.js`) tampoco pasa por `ensureSessionWorkspace`: hereda el `workCwd` del worktree de su sesión madre (mismo aislamiento que ella, sin worktree propio). Es un hilo de consulta; si edita archivos, los cambios caen en la rama de la madre.
+- **Regla para spawns nuevos**: cualquier spawn de PTY nuevo debe decidir explícitamente si pasa por `ensureSessionWorkspace`/`prepareSessionWorkspace` (aislado) o queda excluido — y documentarlo aquí. No dejarlo implícito.
+- **Limitaciones documentadas**: (0) el `add -A` del finalize commitea artefactos que el `.gitignore` NO matchea por usar patrón con barra final — caso real: un symlink `node_modules` creado en el worktree para correr tests acabó commiteado (`node_modules/` solo matchea directorios, no symlinks). Usar patrones sin barra para lo que pueda aparecer como symlink, y nunca symlinkar `node_modules` dentro de un worktree; (1) archivos gitignored creados durante la sesión se pierden al finalizar (`worktree remove --force`; `add -A` respeta el gitignore); (2) sesiones CODEX nacidas en worktree no aparecen en el historial del proyecto (el índice codex bucketiza por cwd del rollout) — limitación v1 consciente; (3) el operador LAN no ve el aviso de conflicto si el socket ya cerró (el dueño del Mac conserva la rama y el `console.warn`).
+- Módulos: `main/session-git.js` (lógica git + registro), `main/session-git-map.js` (persistencia). Detalle de diseño: `docs/superpowers/specs/2026-07-24-git-auto-por-sesion-design.md`.
+
 ## Incident history
 - Date: **2026-05-14**
 - Symptom 1: app crash on startup (`SIGABRT`, stack in `_RegisterApplication` / `NSApplication`).
@@ -73,13 +84,22 @@
 Después de cualquier cambio de código, probar SIEMPRE en **modo dev** antes de empaquetar.
 
 ### Cómo lanzar en modo dev (desde Claude Code / agente)
-```bash
-# 1. Matar cualquier instancia previa (dev O empaquetada)
-pkill -f "POWER-AGENT.app" 2>/dev/null
-pkill -f "electron \." 2>/dev/null
-sleep 1
 
-# 2. Lanzar en la sesión gráfica del usuario vía osascript
+⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app** (verificado 2026-07-28: la instancia sobrevive y sigue creando helpers). Usar el cierre ordenado de macOS para la empaquetada y `pkill -9` para la de dev.
+
+```bash
+# 1. Matar cualquier instancia previa (dev Y empaquetada)
+osascript -e 'quit app "POWER-AGENT"' 2>/dev/null          # empaquetada: cierre ordenado (dispara before-quit)
+pkill -9 -f "claude-electron/node_modules/electron" 2>/dev/null   # dev
+sleep 3
+
+# 2. Si la app murió a lo bruto, limpiar el lock huérfano (si no, el siguiente
+#    arranque se suicida EN SILENCIO, sin ningún mensaje de error)
+UD="$HOME/Library/Application Support/CLAUDE-NOVAK"
+[ -e "$UD/SingletonLock" ] && ! pgrep -f "claude-electron/node_modules/electron" >/dev/null \
+  && rm -f "$UD/SingletonLock" "$UD/SingletonSocket" "$UD/SingletonCookie"
+
+# 3. Lanzar en la sesión gráfica del usuario vía osascript
 osascript /tmp/launch_poweragent.scpt
 # Si el script no existe, créalo primero:
 cat > /tmp/launch_poweragent.scpt << 'EOF'
@@ -102,6 +122,16 @@ ps aux | grep electron | grep -v grep | head -2
 # Debe mostrar: node_modules/electron/dist/Electron.app ... --app-path=/Users/isabel/Desktop/LUISMI/claude-electron
 # NO debe mostrar: dist/mac/POWER-AGENT.app
 ```
+
+### Verificar que además tiene VENTANA
+```bash
+ps aux | grep "claude-electron/node_modules/electron" | grep -v grep | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
+# Debe aparecer --type=renderer. Si solo hay gpu-process + utility, la app
+# arrancó sin ventana (típico del lock huérfano: el main nuevo se suicidó y
+# quedaron helpers sueltos de la instancia vieja).
+```
+
+**Dev y empaquetada nunca conviven**: ambas usan el mismo `userData` (`app.setPath('userData', .../CLAUDE-NOVAK)` en `main.js`), luego comparten `SingletonLock`. Si una está viva, la otra arranca y se cierra sola sin avisar.
 
 ### Cómo empaquetar (solo cuando el modo dev funciona)
 ```bash

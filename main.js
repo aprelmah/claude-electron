@@ -58,6 +58,9 @@ const { registerBitacoraIpc } = require('./main/bitacora-ipc')
 const { createHealthCollectors } = require('./main/health-collectors')
 const { createSessionListing, projectDirFor } = require('./main/claude-session-listing')
 const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
+const { createSessionGit } = require('./main/session-git')
+const { createSessionGitMap } = require('./main/session-git-map')
+const { createSubchatManager } = require('./main/subchat-pty')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -634,7 +637,11 @@ function ensureLanWsServer() {
     buildExecCommand: buildFdLimitCommand,
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event),
-    getAuthToken: () => ensureLanAuthToken()
+    getAuthToken: () => ensureLanAuthToken(),
+    // Getters: sessionGit/sessionGitMap son `let` inicializados en onReady,
+    // después de crear el servidor. La resolución perezosa evita capturar null.
+    sessionGit: () => sessionGit,
+    sessionGitMap: () => sessionGitMap
   })
   return lanWsServer
 }
@@ -1261,6 +1268,59 @@ function buildClaudeLocalArgs(cli, sessionId) {
   return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
 }
 
+// ── Sub-chat desechable (fork de la sesión activa, ver main/subchat-pty.js) ──
+const subchatManager = createSubchatManager({
+  ptySpawn: (file, argv, opts) => pty.spawn(file, argv, opts),
+  ensureCliAvailable,
+  buildFdLimitCommand,
+  getClaudeModel,
+  log: (m) => console.log('[subchat]', m)
+})
+
+// ── Git por sesión (aislamiento por worktree) ──
+// Fail-open: si sessionGit es null o prepare devuelve null, la sesión corre en
+// su cwd real sin aislamiento (comportamiento idéntico al de siempre).
+async function ensureSessionWorkspace(session, cwd) {
+  if (!sessionGit) return
+  const realCwd = resolveExistingDir(cwd) || resolveExistingDir(session.cwd)
+  if (!realCwd) return
+  if (session.gitWorkspace) {
+    if (session.gitWorkspace.realCwd === realCwd) return       // restart/hot-switch: reusar worktree
+    finalizeWorkspaceForSession(session)                        // cambio de proyecto en la misma ventana
+  }
+  try {
+    session.gitWorkspace = await sessionGit.prepareSessionWorkspace({ realCwd })
+  } catch (err) {
+    console.warn('[session-git] prepare:', err?.message || err)
+    session.gitWorkspace = null
+  }
+}
+
+function finalizeWorkspaceForSession(session) {
+  const ws = session?.gitWorkspace
+  if (!ws) return
+  session.gitWorkspace = null
+  const p = (async () => {
+    const copied = sessionGit.copySessionsHome({ realCwd: ws.realCwd, workCwd: ws.workCwd })
+    const r = await sessionGit.finalizeSessionWorkspace(ws)
+    for (const sid of copied) sessionGitMap.markFinalized(sid)
+    if (r.outcome === 'conflict' || r.outcome === 'dirty-target' || r.outcome === 'error') {
+      notifySessionGitIssue(ws, r)
+    }
+  })().catch((err) => console.warn('[session-git] finalize:', err?.message)).finally(() => pendingFinalizes.delete(p))
+  pendingFinalizes.add(p)
+}
+
+function notifySessionGitIssue(ws, r) {
+  const msg = r.outcome === 'conflict'
+    ? `Conflicto al integrar la sesión. Sus cambios quedaron en la rama ${r.branch} de ${ws.realCwd}.`
+    : r.outcome === 'dirty-target'
+      ? `El proyecto ${ws.realCwd} tenía cambios sin commitear. Los cambios de la sesión quedaron en la rama ${r.branch}.`
+      : `Error integrando la sesión (${r.detail || 'desconocido'}). Rama: ${r.branch}.`
+  try { new Notification({ title: 'POWER-AGENT · git por sesión', body: msg }).show() } catch {}
+  console.warn('[session-git]', msg)
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
@@ -1284,7 +1344,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 
   // Snapshot ANTES del spawn solo si es claude — para capturar el sessionId que cree.
   const sessionFilesBefore = session.activeCli === 'claude'
-    ? snapshotClaudeSessions(session.cwd)
+    ? snapshotClaudeSessions(session.gitWorkspace?.workCwd || session.cwd)
     : null
   if (session.activeCli === 'claude') {
     session.claudeSessionId = extractClaudeResumeId(args)
@@ -1298,7 +1358,7 @@ function startPty(session, cols, rows, cwd, args = []) {
       name: 'xterm-256color',
       cols: session.cols || 120,
       rows: session.rows || 35,
-      cwd: session.cwd,
+      cwd: session.gitWorkspace?.workCwd || session.cwd,
       env: cliCheck.env
     })
   } catch (err) {
@@ -1323,9 +1383,15 @@ function startPty(session, cols, rows, cwd, args = []) {
       const s = sessions.get(myWcId)
       if (!s || !s.pty || s.pty !== proc) { clearInterval(detect); return }
       if (s.claudeSessionId) { clearInterval(detect); return }
-      const sid = findUpdatedOrNewClaudeSessionId(s.cwd, sessionFilesBefore)
+      const sid = findUpdatedOrNewClaudeSessionId(s.gitWorkspace?.workCwd || s.cwd, sessionFilesBefore)
       if (sid) {
         s.claudeSessionId = sid
+        if (s.gitWorkspace) sessionGitMap.recordActive({
+          claudeSessionId: sid,
+          realCwd: s.gitWorkspace.realCwd,
+          branch: s.gitWorkspace.branch,
+          worktreePath: s.gitWorkspace.worktreePath
+        })
         clearInterval(detect)
       }
     }, 2000)
@@ -1367,6 +1433,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     const s = sessions.get(myWcId)
     if (s && s.pty === proc) {
+      try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
       if (typeof s.relayCancel === 'function') {
         const err = new Error('PTY cerrado')
         err.name = 'RelayPtyClosed'
@@ -1387,7 +1454,9 @@ function startPty(session, cols, rows, cwd, args = []) {
 }
 
 function killPty(session) {
-  if (!session || !session.pty) return
+  if (!session) return
+  try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
+  if (!session.pty) return
   logSemanticForSession(session, 'pty_fin', {
     detail: `cwd=${session.cwd || ''}`,
     ok: true
@@ -1430,6 +1499,7 @@ function destroySession(wcId) {
   if (s.treeWatchDebounce) { clearTimeout(s.treeWatchDebounce); s.treeWatchDebounce = null }
   if (s.treeWatcher) { try { s.treeWatcher.close() } catch {} s.treeWatcher = null }
   killPty(s)
+  finalizeWorkspaceForSession(s)
   unbindRelaySessionsByWcId(wcId)
   sessions.delete(wcId)
   if (primaryWcId === wcId) {
@@ -1533,6 +1603,13 @@ let tasksInbox = null
 let sessionLinks = null
 let recentCwds = null
 let lastContext = null
+let sessionGit = null
+let sessionGitMap = null
+const pendingFinalizes = new Set()
+// Guarda de reentrada para el finalize en before-quit: cuando esperamos a las
+// integraciones git pendientes hacemos preventDefault + app.quit(), lo que vuelve
+// a disparar before-quit; esta bandera deja pasar ese segundo disparo sin repetir.
+let quitFinalizeHandled = false
 let claudeSessionsIndex = null
 let codexSessionsIndex = null
 let automationManager = null
@@ -1980,7 +2057,16 @@ function resolveTaskSessionCwd(sessionId, providedCwd) {
         const obj = JSON.parse(firstLine)
         const cwd = safe(obj?.cwd)
         if (cwd) {
-          try { if (fs.statSync(cwd).isDirectory()) return cwd } catch {}
+          try {
+            if (fs.statSync(cwd).isDirectory()) return cwd
+          } catch {
+            // cwd no existe en disco (p.ej. worktree borrado tras finalizar
+            // la sesión) — si sabemos a qué cwd real pertenecía, usarlo.
+            try {
+              const entry = sessionGitMap?.lookupByWorktreePath(cwd)
+              if (entry && entry.realCwd) return entry.realCwd
+            } catch {}
+          }
         }
       } catch {}
     }
@@ -2645,6 +2731,49 @@ app.whenReady().then(async () => {
     recentCwds = createRecentCwds({ userDataDir: app.getPath('userData') })
     lastContext = createLastContext({ userDataDir: app.getPath('userData') })
     try {
+      sessionGitMap = createSessionGitMap({
+        filePath: path.join(app.getPath('userData'), 'session-git-map.json'),
+        atomicWriteJsonSync
+      })
+      sessionGit = createSessionGit({
+        worktreesRoot: path.join(app.getPath('userData'), 'worktrees'),
+        looksRemotePath,
+        isEnabled: () => appConfig?.cli?.gitSessionIsolation !== false,
+        resolveClaudeProjectDir
+      })
+      // Recuperación tras crash + barrido de huérfanos (fire-and-forget).
+      // Al arrancar no hay ningún PTY vivo → toda entrada activa del registro
+      // es huérfana por definición: integrarla (commit+merge) y marcarla
+      // finalizada antes del sweep, que solo borra ramas ya mergeadas.
+      const registered = Object.entries(sessionGitMap.all())
+        .map(([claudeSessionId, e]) => ({ claudeSessionId, ...e }))
+      const orphanEntries = registered.filter((e) => e.active)
+      ;(async () => {
+        // El registro solo conoce las sesiones que llegaron a generar un
+        // claudeSessionId. Los worktrees que quedaron fuera se descubren en
+        // disco (todo worktree presente al arrancar es huérfano).
+        const discovered = await sessionGit.discoverUnregisteredWorkspaces({
+          knownWorktreePaths: registered.map((e) => e.worktreePath).filter(Boolean)
+        })
+        const results = await sessionGit.recoverOrphanedWorkspaces({
+          entries: [...orphanEntries, ...discovered]
+        })
+        for (const r of results || []) {
+          try { sessionGitMap.markFinalized(r.claudeSessionId) } catch {}
+        }
+        await sessionGit.sweepOrphans({
+          realCwds: [
+            ...Object.values(sessionGitMap.all()).map((e) => e.realCwd),
+            ...discovered.map((e) => e.realCwd)
+          ]
+        })
+      })().catch((err) => console.warn('[session-git] recovery/sweep:', err?.message))
+    } catch (err) {
+      console.warn('[session-git] init failed:', err?.message || err)
+      sessionGit = null
+      sessionGitMap = null
+    }
+    try {
       claudeSessionsIndex = createClaudeSessionsIndex({ userDataDir: app.getPath('userData') })
     } catch (err) {
       console.error('[claude-sessions-index] init failed:', err?.message || err)
@@ -2868,20 +2997,31 @@ app.on('activate', () => {
   if (sessions.size === 0) createWindow()
 })
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
     globalShortcut.unregisterAll()
     telegramBridge?.stop()
+    // Esperar (acotado) a que terminen las integraciones git de las sesiones
+    // cerradas antes de salir, para no perder merges en curso.
+    if (pendingFinalizes.size) {
+      await Promise.race([
+        Promise.allSettled([...pendingFinalizes]),
+        new Promise((r) => setTimeout(r, 10000))
+      ])
+    }
     app.quit()
   }
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  // Segundo disparo tras nuestro propio app.quit(): la limpieza ya corrió, salir.
+  if (quitFinalizeHandled) return
   globalShortcut.unregisterAll()
   pauseAgentProposalPolling()
   try { lanWsServer?.stop() } catch {}
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
+  try { subchatManager.closeAll() } catch {}
   try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}
@@ -2892,10 +3032,31 @@ app.on('before-quit', () => {
   try { claudeSessionsIndex?.flush?.() } catch {}
   try { codexSessionsIndex?.flush?.() } catch {}
   try { codexSessionsIndex?.stopWatcher() } catch {}
+  try { sessionGitMap?.flush?.() } catch {}
+  // Cmd+Q en macOS no pasa por window-all-closed: forzar la integración git de
+  // las sesiones vivas con workspace y esperar (acotado) a que terminen los merges.
+  // finalizeWorkspaceForSession anula session.gitWorkspace al entrar → llamarlo dos
+  // veces (ej. tras destroySession) es un no-op, sin doble finalize.
+  for (const s of sessions.values()) finalizeWorkspaceForSession(s)
+  if (pendingFinalizes.size) {
+    event.preventDefault()
+    quitFinalizeHandled = true
+    ;(async () => {
+      await Promise.race([
+        Promise.allSettled([...pendingFinalizes]),
+        new Promise((r) => setTimeout(r, 10000))
+      ])
+      // Los markFinalized ocurren durante los finalize → flush final tras la espera.
+      try { sessionGitMap?.flush?.() } catch {}
+      app.quit()
+    })().catch(() => { try { app.quit() } catch {} })
+  } else {
+    quitFinalizeHandled = true
+  }
 })
 
 // ── PTY IPC ──
-ipcMain.handle('pty-start', (event, { cols, rows, cwd, cli, sessionId } = {}) => {
+ipcMain.handle('pty-start', async (event, { cols, rows, cwd, cli, sessionId } = {}) => {
   const s = getSessionByEvent(event)
   if (!s) return null
   if (cli && (cli === 'claude' || cli === 'codex') && s.activeCli !== cli) {
@@ -2906,6 +3067,7 @@ ipcMain.handle('pty-start', (event, { cols, rows, cwd, cli, sessionId } = {}) =>
     }
   }
   const args = buildClaudeLocalArgs(s.activeCli, sessionId)
+  await ensureSessionWorkspace(s, cwd)
   startPty(s, cols, rows, cwd, args)
   if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
   try {
@@ -3002,13 +3164,11 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
   killPty(s)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
-      try {
+      ensureSessionWorkspace(s, cwd).then(() => {
         startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, null))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         resolve(s.cwd)
-      } catch (err) {
-        reject(err)
-      }
+      }).catch(reject)
     }, 200)
   })
 })
@@ -3016,6 +3176,33 @@ ipcMain.handle('pty-restart', (event, { cwd, cols, rows } = {}) => {
 ipcMain.handle('pty-cwd', (event) => {
   const s = getSessionByEvent(event)
   return s ? s.cwd : os.homedir()
+})
+
+// ── Sub-chat IPC (fork desechable de la sesión activa) ──
+ipcMain.handle('subchat:can-start', (event) => {
+  const s = getSessionByEvent(event)
+  return subchatManager.canStart(s)
+})
+
+ipcMain.handle('subchat:start', (event, { cols, rows } = {}) => {
+  const s = getSessionByEvent(event)
+  if (!s) return { ok: false, error: 'Sesión no disponible' }
+  return subchatManager.start(s, { cols, rows })
+})
+
+ipcMain.on('subchat:write', (event, data) => {
+  const s = getSessionByEvent(event)
+  if (s) subchatManager.write(s.wcId, data)
+})
+
+ipcMain.on('subchat:resize', (event, { cols, rows } = {}) => {
+  const s = getSessionByEvent(event)
+  if (s) subchatManager.resize(s.wcId, cols, rows)
+})
+
+ipcMain.handle('subchat:close', (event) => {
+  const s = getSessionByEvent(event)
+  return s ? subchatManager.close(s.wcId, 'renderer') : false
 })
 
 // ── Audio: guarda buffer y transcribe con whisper.cpp ──
@@ -3153,7 +3340,19 @@ const _sessionListing = createSessionListing({
   resolveExistingDir,
   extractTurnText,
   claudeIndex: () => claudeSessionsIndex,
-  get codexIndex() { return codexSessionsIndex }
+  get codexIndex() { return codexSessionsIndex },
+  // Late binding: sessionGitMap se crea en onReady, después de este top-level.
+  // Al listar sesiones de un cwd, sumamos las de sus worktrees ACTIVOS —
+  // mientras la sesión sigue en worktree, su .jsonl vive ahí, no en el real.
+  getActiveWorktreeSessionDirs: (cwd) => {
+    try {
+      return (sessionGitMap?.listActiveForCwd(cwd) || [])
+        .map((entry) => resolveClaudeProjectDir(entry.worktreePath))
+        .filter(Boolean)
+    } catch {
+      return []
+    }
+  }
 })
 const {
   listClaudeSessionsForCwd,
@@ -3276,7 +3475,20 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows, cli
   killPty(s)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
-      try {
+      ensureSessionWorkspace(s, cwd).then(() => {
+        // Copiar el JSONL de la sesión a reanudar dentro del worktree para que
+        // `--resume` lo encuentre bajo el cwd aislado.
+        if (sessionId && s.gitWorkspace) {
+          try {
+            sessionGit.copySessionToWorktree({
+              claudeSessionId: sessionId,
+              realCwd: s.gitWorkspace.realCwd,
+              workCwd: s.gitWorkspace.workCwd
+            })
+          } catch (err) {
+            console.warn('[session-git] copySessionToWorktree:', err?.message || err)
+          }
+        }
         startPty(s, cols, rows, cwd, buildClaudeLocalArgs(s.activeCli, sessionId))
         if (s === sessions.get(primaryWcId)) updatePrimarySnapshot()
         try {
@@ -3288,9 +3500,7 @@ ipcMain.handle('resume-session', async (event, { sessionId, cwd, cols, rows, cli
           })
         } catch {}
         resolve(s.cwd)
-      } catch (err) {
-        reject(err)
-      }
+      }).catch(reject)
     }, 200)
   })
 })
@@ -3350,7 +3560,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {

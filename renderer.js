@@ -66,6 +66,7 @@ const btnRefreshTelegramStatus = document.getElementById('btn-refresh-telegram-s
 const cfgDefaultCli = document.getElementById('cfg-default-cli')
 const cfgClaudeBin = document.getElementById('cfg-claude-bin')
 const cfgClaudeModel = document.getElementById('cfg-claude-model')
+const cfgGitIsolation = document.getElementById('cfg-git-isolation')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
@@ -275,83 +276,243 @@ async function initTheme() {
 
 const DEFAULT_TERM_COLS = 120
 const DEFAULT_TERM_ROWS = 35
-const pendingTermRefitTimers = []
-let resizeDebounceId = null
-let terminalResizeObserver = null
 
-function clearPendingTermRefitTimers() {
-  while (pendingTermRefitTimers.length) {
-    const timerId = pendingTermRefitTimers.pop()
-    try { clearTimeout(timerId) } catch {}
+// Fit/resize por instancia de terminal. observeEl: contenedor cuyo tamaño
+// dispara refits. sendResize(cols, rows): sincroniza el PTY correspondiente.
+function createTermFit({ term, fitAddon, observeEl, sendResize }) {
+  const pendingTimers = []
+  let debounceId = null
+  let observer = null
+
+  function clearPending() {
+    while (pendingTimers.length) {
+      const id = pendingTimers.pop()
+      try { clearTimeout(id) } catch {}
+    }
   }
-}
 
-function getSafeTerminalSize({ forceFit = true } = {}) {
-  if (forceFit) {
-    try { fitAddon.fit() } catch {}
+  function getSafeSize({ forceFit = true } = {}) {
+    if (forceFit) {
+      try { fitAddon.fit() } catch {}
+    }
+    let cols = Number(term.cols || 0)
+    let rows = Number(term.rows || 0)
+    if (!Number.isFinite(cols) || cols < 40) cols = DEFAULT_TERM_COLS
+    if (!Number.isFinite(rows) || rows < 10) rows = DEFAULT_TERM_ROWS
+    cols = Math.max(40, Math.min(260, Math.floor(cols)))
+    rows = Math.max(10, Math.min(120, Math.floor(rows)))
+    return { cols, rows }
   }
-  let cols = Number(term.cols || 0)
-  let rows = Number(term.rows || 0)
-  if (!Number.isFinite(cols) || cols < 40) cols = DEFAULT_TERM_COLS
-  if (!Number.isFinite(rows) || rows < 10) rows = DEFAULT_TERM_ROWS
-  cols = Math.max(40, Math.min(260, Math.floor(cols)))
-  rows = Math.max(10, Math.min(120, Math.floor(rows)))
-  return { cols, rows }
-}
 
-function fitAndSync(options = {}) {
-  const { cols, rows } = getSafeTerminalSize(options)
-  try { window.api.resizePty(cols, rows) } catch {}
-  return { cols, rows }
-}
-
-function fitAndSyncDebounced() {
-  if (resizeDebounceId) clearTimeout(resizeDebounceId)
-  resizeDebounceId = setTimeout(() => {
-    fitAndSync({ forceFit: true })
-    resizeDebounceId = null
-  }, 140)
-}
-
-function scheduleTerminalRefit(options = {}) {
-  clearPendingTermRefitTimers()
-  const delays = [0, 80, 180, 360, 720, 1200]
-  for (const delay of delays) {
-    const timerId = setTimeout(() => {
-      fitAndSync({ forceFit: options.forceFit !== false })
-    }, delay)
-    pendingTermRefitTimers.push(timerId)
+  function fitAndSync(options = {}) {
+    const { cols, rows } = getSafeSize(options)
+    try { sendResize(cols, rows) } catch {}
+    return { cols, rows }
   }
+
+  function fitDebounced() {
+    if (debounceId) clearTimeout(debounceId)
+    debounceId = setTimeout(() => {
+      fitAndSync({ forceFit: true })
+      debounceId = null
+    }, 140)
+  }
+
+  function scheduleRefit(options = {}) {
+    clearPending()
+    const delays = [0, 80, 180, 360, 720, 1200]
+    for (const delay of delays) {
+      const id = setTimeout(() => {
+        fitAndSync({ forceFit: options.forceFit !== false })
+      }, delay)
+      pendingTimers.push(id)
+    }
+  }
+
+  if (window.ResizeObserver && observeEl) {
+    try {
+      observer = new ResizeObserver(() => scheduleRefit({ forceFit: true }))
+      observer.observe(observeEl)
+    } catch {}
+  }
+
+  function dispose() {
+    if (debounceId) { clearTimeout(debounceId); debounceId = null }
+    clearPending()
+    if (observer) {
+      try { observer.disconnect() } catch {}
+      observer = null
+    }
+  }
+
+  return { fitAndSync, fitDebounced, scheduleRefit, dispose, getSafeSize }
 }
 
-window.addEventListener('resize', fitAndSyncDebounced)
-if (window.ResizeObserver && termWrap) {
+const mainTermFit = createTermFit({
+  term,
+  fitAddon,
+  observeEl: termEl, // antes se observaba termWrap; observar #terminal reacciona también al split
+  sendResize: (cols, rows) => window.api.resizePty(cols, rows)
+})
+
+// Wrappers de compatibilidad: el resto del archivo llama a estos nombres.
+function getSafeTerminalSize(options = {}) { return mainTermFit.getSafeSize(options) }
+function fitAndSync(options = {}) { return mainTermFit.fitAndSync(options) }
+function fitAndSyncDebounced() { mainTermFit.fitDebounced() }
+function scheduleTerminalRefit(options = {}) { mainTermFit.scheduleRefit(options) }
+
+// ── Sub-chat desechable ──
+let subchatTerm = null
+let subchatFit = null
+let subchatOffData = null
+let subchatOffExit = null
+let subchatOpening = false
+// El pty del sub-chat murió (madre cerrada, crash del fork, start rechazado)
+// pero el panel/xterm se dejan visibles para que el mensaje de error no
+// desaparezca solo. Solo ✕ o el toggle Cmd+Shift+S hacen la limpieza final.
+let subchatDead = false
+const subchatPane = document.getElementById('subchat-pane')
+const subchatDividerEl = document.getElementById('subchat-divider')
+const subchatTermEl = document.getElementById('subchat-terminal')
+const btnSubchat = document.getElementById('btn-subchat')
+const btnSubchatClose = document.getElementById('btn-subchat-close')
+
+// Deja el pty por muerto pero el panel abierto: escribe el motivo en el
+// xterm, suelta los listeners IPC (ya no hay nada al otro lado) y espera a
+// que el usuario cierre con ✕ o el toggle. Usada tanto por subchat:exit
+// como por cualquier fallo al arrancar (IMPORTANT 3 e IMPORTANT 4 comparten
+// este mismo camino: el panel se queda vivo mostrando el error).
+function killSubchatPaneKeepVisible(message) {
+  if (subchatTerm) { try { subchatTerm.write(message) } catch {} }
+  if (subchatOffData) { try { subchatOffData() } catch {} subchatOffData = null }
+  if (subchatOffExit) { try { subchatOffExit() } catch {} subchatOffExit = null }
+  subchatDead = true
+}
+
+function handleSubchatExit(payload) {
+  const code = payload?.code
+  const suffix = (code === null || code === undefined) ? '' : ` (code ${code})`
+  killSubchatPaneKeepVisible(`\r\n\x1b[33m[sub-chat terminó${suffix}]\x1b[0m\r\n`)
+}
+
+async function openSubchatPane() {
+  if (subchatTerm || subchatOpening) return
+  subchatOpening = true
   try {
-    terminalResizeObserver = new ResizeObserver(() => {
-      scheduleTerminalRefit({ forceFit: true })
+    const can = await window.api.subchat.canStart()
+    if (!can?.ok) {
+      if (btnSubchat) btnSubchat.title = `Sub-chat: ${can?.reason || 'no disponible'}`
+      return
+    }
+    subchatDead = false
+    subchatPane.classList.remove('hidden')
+    subchatDividerEl.classList.remove('hidden')
+    subchatTerm = new Terminal({
+      fontFamily: 'Menlo, Monaco, "SF Mono", Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      allowTransparency: false,
+      scrollback: 5000,
+      theme: term.options.theme
     })
-    terminalResizeObserver.observe(termWrap)
-  } catch {}
+    const subchatFitAddon = new FitAddon.FitAddon()
+    subchatTerm.loadAddon(subchatFitAddon)
+    subchatTerm.open(subchatTermEl)
+    subchatFit = createTermFit({
+      term: subchatTerm,
+      fitAddon: subchatFitAddon,
+      observeEl: subchatTermEl,
+      sendResize: (cols, rows) => window.api.subchat.resize(cols, rows)
+    })
+    subchatTerm.onData((d) => window.api.subchat.write(d))
+    subchatOffData = window.api.subchat.onData((d) => subchatTerm?.write(d))
+    subchatOffExit = window.api.subchat.onExit((payload) => handleSubchatExit(payload))
+    const size = subchatFit.getSafeSize({ forceFit: true })
+    try {
+      const r = await window.api.subchat.start(size.cols, size.rows)
+      if (!r?.ok) {
+        killSubchatPaneKeepVisible(`\r\n\x1b[31m${r?.error || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
+        return
+      }
+    } catch (err) {
+      killSubchatPaneKeepVisible(`\r\n\x1b[31m${err?.message || 'No se pudo abrir el sub-chat'}\x1b[0m\r\n`)
+      return
+    }
+    subchatFit.scheduleRefit({ forceFit: true })
+    mainTermFit.scheduleRefit({ forceFit: true })
+    subchatTerm.focus()
+  } finally {
+    subchatOpening = false
+  }
 }
+
+function closeSubchatPane({ notifyMain = true } = {}) {
+  if (notifyMain) { try { window.api.subchat.close() } catch {} }
+  if (subchatOffData) { try { subchatOffData() } catch {} subchatOffData = null }
+  if (subchatOffExit) { try { subchatOffExit() } catch {} subchatOffExit = null }
+  if (subchatFit) { try { subchatFit.dispose() } catch {} subchatFit = null }
+  if (subchatTerm) { try { subchatTerm.dispose() } catch {} subchatTerm = null }
+  subchatDead = false
+  subchatPane.classList.add('hidden')
+  subchatDividerEl.classList.add('hidden')
+  subchatPane.style.flexBasis = ''
+  mainTermFit.scheduleRefit({ forceFit: true })
+  term.focus()
+}
+
+if (btnSubchat) btnSubchat.addEventListener('click', () => { openSubchatPane() })
+if (btnSubchatClose) btnSubchatClose.addEventListener('click', () => closeSubchatPane())
+
+window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyS') {
+    e.preventDefault()
+    if (subchatTerm) closeSubchatPane()
+    else openSubchatPane()
+  }
+})
+
+// Divisor arrastrable: ajusta flex-basis del panel en % del row.
+;(function initSubchatDivider() {
+  let dragging = false
+  subchatDividerEl.addEventListener('mousedown', (e) => {
+    dragging = true
+    e.preventDefault()
+  })
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return
+    const row = document.getElementById('terminal-row')
+    const rect = row.getBoundingClientRect()
+    const pct = Math.max(20, Math.min(70, ((rect.right - e.clientX) / rect.width) * 100))
+    subchatPane.style.flexBasis = `${pct}%`
+  })
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return
+    dragging = false
+    if (subchatFit) subchatFit.scheduleRefit({ forceFit: true })
+    mainTermFit.scheduleRefit({ forceFit: true })
+  })
+})()
+
+window.addEventListener('resize', () => {
+  mainTermFit.fitDebounced()
+  if (subchatFit) subchatFit.fitDebounced()
+})
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', () => {
-    scheduleTerminalRefit({ forceFit: true })
+    mainTermFit.scheduleRefit({ forceFit: true })
+    if (subchatFit) subchatFit.scheduleRefit({ forceFit: true })
   })
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return
-  scheduleTerminalRefit({ forceFit: true })
+  mainTermFit.scheduleRefit({ forceFit: true })
+  if (subchatFit) subchatFit.scheduleRefit({ forceFit: true })
 })
 window.addEventListener('beforeunload', () => {
-  if (resizeDebounceId) {
-    clearTimeout(resizeDebounceId)
-    resizeDebounceId = null
-  }
-  clearPendingTermRefitTimers()
-  if (terminalResizeObserver) {
-    try { terminalResizeObserver.disconnect() } catch {}
-    terminalResizeObserver = null
-  }
+  mainTermFit.dispose()
+  if (subchatFit) subchatFit.dispose()
 })
 
 // ── Status bar ──
@@ -1852,6 +2013,15 @@ async function refreshSessionStrip(force = false) {
     }
   } catch {}
   sessionMetaRefreshInFlight = false
+  try {
+    const can = await window.api.subchat.canStart()
+    if (btnSubchat) {
+      btnSubchat.disabled = !can?.ok && !subchatTerm
+      btnSubchat.title = can?.ok || subchatTerm
+        ? 'Sub-chat (pregunta lateral sin tocar el hilo) — Cmd+Shift+S'
+        : `Sub-chat: ${can?.reason || 'no disponible'}`
+    }
+  } catch {}
 }
 
 if (sessionStripId) {
@@ -2083,6 +2253,7 @@ async function refreshSettings() {
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
   cfgClaudeBin.value = config?.cli?.claudeBin || ''
   if (cfgClaudeModel) cfgClaudeModel.value = config?.cli?.claudeModel || 'opus'
+  if (cfgGitIsolation) cfgGitIsolation.checked = config?.cli?.gitSessionIsolation !== false
   cfgCodexBin.value = config?.cli?.codexBin || ''
   cfgWhisperBin.value = config?.cli?.whisperBin || ''
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
@@ -2499,6 +2670,7 @@ btnSaveSettings.addEventListener('click', async () => {
       defaultCli: cfgDefaultCli.value,
       claudeBin: cfgClaudeBin.value.trim(),
       claudeModel: cfgClaudeModel ? cfgClaudeModel.value.trim() : '',
+      gitSessionIsolation: cfgGitIsolation ? Boolean(cfgGitIsolation.checked) : true,
       codexBin: cfgCodexBin.value.trim(),
       whisperBin: cfgWhisperBin.value.trim()
     },

@@ -191,7 +191,17 @@ function streamCountLines(filePath, chunkSize = 64 * 1024) {
 }
 
 function createSessionListing(opts = {}) {
-  const { resolveClaudeProjectDir, resolveExistingDir, extractTurnText, claudeIndex = null } = opts
+  const {
+    resolveClaudeProjectDir,
+    resolveExistingDir,
+    extractTurnText,
+    claudeIndex = null,
+    // Late binding (mismo patrón que claudeIndex/codexIndex): en main.js
+    // sessionGitMap se crea en onReady, después de que este módulo se
+    // instancie a nivel top-level. Se invoca en cada listado, así que
+    // siempre ve el valor actual de sessionGitMap por closure.
+    getActiveWorktreeSessionDirs = null
+  } = opts
   function resolveIndex() {
     if (!claudeIndex) return null
     if (typeof claudeIndex === 'function') {
@@ -203,19 +213,29 @@ function createSessionListing(opts = {}) {
     return opts.codexIndex || null
   }
 
-  function listClaudeSessionsForCwd(cwd, options = {}) {
-    const dir = resolveClaudeProjectDir(cwd)
-    if (!dir || !fs.existsSync(dir)) return []
+  function resolveWorktreeDirs(cwd) {
+    if (typeof getActiveWorktreeSessionDirs !== 'function') return []
+    try {
+      const dirs = getActiveWorktreeSessionDirs(cwd)
+      return Array.isArray(dirs) ? dirs.filter(Boolean) : []
+    } catch {
+      return []
+    }
+  }
+
+  // Escanea un directorio de sesiones .jsonl y devuelve las filas + ids vistos.
+  // cacheKey es la clave bajo la que se guarda/lee del índice (cwd real para
+  // el dir principal, el propio path del dir para worktrees).
+  function scanClaudeSessionDir(dir, cacheKey, idx) {
+    if (!dir || !fs.existsSync(dir)) return { rows: [], seenIds: new Set() }
     let files = []
     try {
       files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
     } catch {
-      return []
+      return { rows: [], seenIds: new Set() }
     }
 
-    const idx = resolveIndex()
-    const cwdKey = String(cwd || '').trim()
-    const cachedMap = idx && cwdKey ? idx.getForCwd(cwdKey) : {}
+    const cachedMap = idx && cacheKey ? idx.getForCwd(cacheKey) : {}
     const seenIds = new Set()
 
     const rows = files.map((f) => {
@@ -256,9 +276,9 @@ function createSessionListing(opts = {}) {
       const preview = streamFirstUserPreview(fullPath, extractTurnText)
       const msgCount = streamCountLines(fullPath)
 
-      if (idx && cwdKey) {
+      if (idx && cacheKey) {
         try {
-          idx.set(cwdKey, id, { preview, msgCount, mtime, size })
+          idx.set(cacheKey, id, { preview, msgCount, mtime, size })
         } catch {}
       }
 
@@ -270,18 +290,48 @@ function createSessionListing(opts = {}) {
         msgCount,
         path: fullPath
       }
-    })
-      .filter(Boolean)
-      .sort((a, b) => b.mtime - a.mtime)
+    }).filter(Boolean)
 
-    if (idx && cwdKey) {
-      for (const sid of Object.keys(cachedMap)) {
-        if (!seenIds.has(sid)) {
-          try { idx.removeSession(cwdKey, sid) } catch {}
+    return { rows, seenIds }
+  }
+
+  function listClaudeSessionsForCwd(cwd, options = {}) {
+    const dir = resolveClaudeProjectDir(cwd)
+    const dirExists = !!dir && fs.existsSync(dir)
+    const idx = resolveIndex()
+    const cwdKey = String(cwd || '').trim()
+    const extraDirs = resolveWorktreeDirs(cwd)
+
+    if (!dirExists && extraDirs.length === 0) return []
+
+    // Fusión por sessionId: se escanea primero el dir principal y luego los
+    // worktrees activos, así que si un mismo id existe en ambos gana la
+    // copia del worktree (es la más nueva mientras la sesión sigue activa).
+    const merged = new Map()
+
+    if (dirExists) {
+      const { rows, seenIds } = scanClaudeSessionDir(dir, cwdKey, idx)
+      for (const row of rows) merged.set(row.id, row)
+
+      // Poda de cache huérfana: solo sobre el dir principal, comportamiento
+      // idéntico al previo (no se toca el cache de los dirs de worktree aquí).
+      if (idx && cwdKey) {
+        const cachedMap = idx.getForCwd(cwdKey)
+        for (const sid of Object.keys(cachedMap)) {
+          if (!seenIds.has(sid)) {
+            try { idx.removeSession(cwdKey, sid) } catch {}
+          }
         }
       }
     }
 
+    for (const wDir of extraDirs) {
+      if (!wDir || wDir === dir) continue
+      const { rows } = scanClaudeSessionDir(wDir, wDir, idx)
+      for (const row of rows) merged.set(row.id, row)
+    }
+
+    const rows = Array.from(merged.values()).sort((a, b) => b.mtime - a.mtime)
     const limit = Math.max(1, Math.min(Number.parseInt(options?.limit, 10) || 300, 1000))
     return rows.slice(0, limit)
   }
