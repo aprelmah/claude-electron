@@ -4,7 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { atomicWriteFileSync } = require('./atomic-writes')
-const { looksRemotePath } = require('./dir-helpers')
+const { looksRemotePath, pickerStartDir } = require('./dir-helpers')
 
 // Defensa NAS/SMB: paths remotos (/Volumes/..., //host/share, \\host\share)
 // cuelgan main process en statSync/readdirSync/readFileSync síncronos.
@@ -102,9 +102,11 @@ function registerFilesystemIpc({
     return { ok: true, entries: result }
   })
 
-  ipcMain.handle('fs-pick-folder', async (event) => {
+  ipcMain.handle('fs-pick-folder', async (event, startPath) => {
+    // Electron 43 abre los diálogos en Descargas si no se fija defaultPath.
     const result = await dialog.showOpenDialog(winFromEvent(event), {
-      properties: ['openDirectory']
+      properties: ['openDirectory'],
+      defaultPath: pickerStartDir(startPath)
     })
     if (result.canceled) return null
     return result.filePaths[0]

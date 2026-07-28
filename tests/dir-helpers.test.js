@@ -6,7 +6,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const { looksRemotePath, resolveExistingDir } = require('../main/dir-helpers')
+const { looksRemotePath, resolveExistingDir, pickerStartDir } = require('../main/dir-helpers')
 
 test('looksRemotePath: detecta mount points macOS', () => {
   assert.equal(looksRemotePath('/Volumes/NAS-QNAP'), true)
@@ -82,4 +82,38 @@ test('resolveExistingDir: vacío/no-string', () => {
   assert.equal(resolveExistingDir(null), '')
   assert.equal(resolveExistingDir(undefined), '')
   assert.equal(resolveExistingDir(123), '')
+})
+
+// Electron 43: sin defaultPath los diálogos abren en ~/Descargas.
+test('pickerStartDir: usa el path sugerido cuando es un directorio existente', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-'))
+  try {
+    assert.equal(pickerStartDir(dir, '/fallback'), dir)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('pickerStartDir: cae al home si el path no existe, es un fichero o está vacío', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-'))
+  const file = path.join(dir, 'f.txt')
+  fs.writeFileSync(file, 'x')
+  try {
+    assert.equal(pickerStartDir(path.join(dir, 'no-existe'), '/fallback'), '/fallback')
+    assert.equal(pickerStartDir(file, '/fallback'), '/fallback')
+    assert.equal(pickerStartDir('', '/fallback'), '/fallback')
+    assert.equal(pickerStartDir(undefined, '/fallback'), '/fallback')
+    assert.equal(pickerStartDir(null, '/fallback'), '/fallback')
+    assert.equal(pickerStartDir(42, '/fallback'), '/fallback')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('pickerStartDir: acepta rutas remotas sin tocar el filesystem', () => {
+  assert.equal(pickerStartDir('/Volumes/NAS-QNAP/IALUISMI', '/fallback'), '/Volumes/NAS-QNAP/IALUISMI')
+})
+
+test('pickerStartDir: sin argumentos devuelve el home real', () => {
+  assert.equal(pickerStartDir(), os.homedir())
 })
