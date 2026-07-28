@@ -35,6 +35,8 @@ const {
 } = require('./main/agent-pty-proposal')
 const {
   extractTurnText,
+  resolveRelayCwd,
+  relayCwdCandidates,
   statCacheKey,
   safeStat,
   clipText,
@@ -909,6 +911,7 @@ const {
   snapshotClaudeSessions,
   findUpdatedOrNewClaudeSessionId,
   snapshotClaudeSessionMeta,
+  findRelayTranscript,
   pickRelayTranscriptCandidate,
   extractAssistantTextFromTranscript,
   cleanRelayFallbackText
@@ -941,10 +944,17 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   const message = String(prompt || '').trim()
   if (!message) return null
 
-  const beforeMeta = targetCli === 'claude' ? snapshotClaudeSessionMeta(session.cwd) : null
-  const latest = targetCli === 'claude' ? listClaudeSessionFilesWithMtime(session.cwd)[0] : null
+  // El transcript se localiza por sessionId, NO adivinando el directorio: una
+  // sesión nueva en worktree escribe en el proyecto del worktree, pero una
+  // resumida (--resume) sigue escribiendo en el proyecto original. Ver
+  // findRelayTranscript.
+  const relayCwds = relayCwdCandidates(session)
+  let transcript = targetCli === 'claude'
+    ? findRelayTranscript({ sessionId: session.claudeSessionId || null, cwds: relayCwds })
+    : null
+  let baseOffset = transcript?.size || 0
   const preferredSessionId = targetCli === 'claude'
-    ? (session.claudeSessionId || latest?.sessionId || null)
+    ? (session.claudeSessionId || transcript?.sessionId || null)
     : null
   if (targetCli === 'claude' && !session.claudeSessionId && preferredSessionId) session.claudeSessionId = preferredSessionId
 
@@ -964,6 +974,8 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
     // reseteamos firstOutputTimer (sin marcar sawAnyOutput aún — eso es señal de
     // texto real en el PTY).
     const LIVENESS_POLL_MS = 2000
+    // Cada cuánto se mira el transcript para ver si el turno ya cerró.
+    const TRANSCRIPT_POLL_MS = 300
     const SILENCE_MS = targetCli === 'codex' ? 3200 : 2200
     const ECHO_SKIP_MS = 700
     const FORCE_FINAL_TEXT_MS = 15000
@@ -982,6 +994,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
     let maxTimer = null
     let livenessTimer = null
     let livenessBaseline = null
+    let transcriptPoll = null
 
     const finishErr = (err) => {
       cleanup()
@@ -1010,12 +1023,24 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       if (targetCli !== 'claude') {
         return { sid: null, fromTranscript: { text: '', sawAssistant: false, sawEndTurn: false } }
       }
-      const candidate = pickRelayTranscriptCandidate(session.cwd, beforeMeta, session.claudeSessionId || preferredSessionId)
-      let fromTranscript = { text: '', sawAssistant: false, sawEndTurn: false }
+      // Relocalizar si aún no teníamos fichero: la sesión puede haberlo creado
+      // durante este turno (primer mensaje de una sesión nueva).
+      if (!transcript) {
+        const found = findRelayTranscript({
+          sessionId: session.claudeSessionId || preferredSessionId,
+          cwds: relayCwds
+        })
+        if (found) {
+          transcript = found
+          baseOffset = 0 // fichero nuevo: todo su contenido es de este turno
+        }
+      }
+      const candidate = transcript
+      let fromTranscript = { text: '', sawAssistant: false, sawEndTurn: false, turnComplete: false }
       let sid = session.claudeSessionId || preferredSessionId || null
       if (candidate) {
         sid = candidate.sessionId || sid
-        const offset = candidate.before?.size || 0
+        const offset = baseOffset
         // Filtrar por timestamp del turno: una respuesta tardía del turno previo
         // puede escribirse al transcript después del snapshot inicial, lo que
         // antes provocaba que el turno N+1 devolviera la respuesta del turno N.
@@ -1063,7 +1088,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
         armSilenceTimer()
         return
       }
-      if (fromTranscript.sawEndTurn) {
+      if (fromTranscript.turnComplete || fromTranscript.sawEndTurn) {
         finishOk(text, sid)
         return
       }
@@ -1072,8 +1097,15 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
         return
       }
       if (elapsed >= FORCE_END_RELAY_MS) {
-        const fallbackText = text || cleanRelayFallbackText(capture, 'claude')
-        finishOk(fallbackText, sid)
+        // NUNCA raspar el TUI: mandaba spinners, el banner de bienvenida y el
+        // historial entero a Telegram. Sin texto en el transcript, error claro.
+        if (!text) {
+          const err = new Error('No pude leer la respuesta de Claude (transcript no disponible)')
+          err.name = 'RelayEmpty'
+          finishErr(err)
+          return
+        }
+        finishOk(text, sid)
         return
       }
       armSilenceTimer()
@@ -1093,6 +1125,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       if (firstOutputTimer) clearTimeout(firstOutputTimer)
       if (maxTimer) clearTimeout(maxTimer)
       if (livenessTimer) clearInterval(livenessTimer)
+      if (transcriptPoll) clearInterval(transcriptPoll)
       if (signal) signal.removeEventListener('abort', onAbort)
       if (session) {
         session.relayActive = false
@@ -1131,8 +1164,14 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       // así el offset cubre cualquier escritura tardía del turno anterior.
       if (targetCli === 'claude') {
         try {
-          const refreshed = snapshotClaudeSessionMeta(session.cwd)
-          for (const [k, v] of refreshed.entries()) beforeMeta.set(k, v)
+          const fresh = findRelayTranscript({
+            sessionId: session.claudeSessionId || preferredSessionId,
+            cwds: relayCwds
+          })
+          if (fresh) {
+            transcript = fresh
+            baseOffset = fresh.size // todo lo que venga después es de este turno
+          }
         } catch {}
       }
 
@@ -1158,6 +1197,27 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
         armSilenceTimer()
       }
 
+      // Disparo por transcript: el JSONL es la fuente de verdad y dice cuándo
+      // acabó el turno. Sin esto había que esperar 2,2s de silencio del TUI y,
+      // en turnos con herramientas, se acababa en los topes de 15s/45s.
+      if (targetCli === 'claude') {
+        let lastPolledSize = baseOffset
+        transcriptPoll = setInterval(() => {
+          if (finalized) return
+          try {
+            // Si el fichero no ha crecido no hay nada nuevo: un stat en vez de
+            // parsear. Sin esto el poll trabaja en balde 3 veces por segundo.
+            if (transcript) {
+              const size = safeStat(transcript.filePath)?.size ?? 0
+              if (size <= lastPolledSize) return
+              lastPolledSize = size
+            }
+            const { sid, fromTranscript } = buildRelayResult()
+            if (fromTranscript.turnComplete) finishOk(fromTranscript.text, sid)
+          } catch {}
+        }, TRANSCRIPT_POLL_MS)
+      }
+
       firstOutputTimer = setTimeout(() => {
         if (finalized || sawAnyOutput) return
         const err = new Error('Relay no output')
@@ -1177,20 +1237,14 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       // texto del PTY todavía. Cuando llegue texto real al PTY, relayListener
       // marca sawAnyOutput y este chequeo deja de operar.
       if (targetCli === 'claude') {
-        livenessBaseline = snapshotClaudeSessionMeta(session.cwd)
+        livenessBaseline = transcript?.size || 0
         livenessTimer = setInterval(() => {
           if (finalized || sawAnyOutput) return
           if (!session?.pty) return
           let grew = false
           try {
-            const current = snapshotClaudeSessionMeta(session.cwd)
-            for (const [file, meta] of current.entries()) {
-              const prev = livenessBaseline.get(file)
-              if (!prev || (meta?.size || 0) > (prev?.size || 0)) {
-                grew = true
-                break
-              }
-            }
+            const current = transcript ? safeStat(transcript.filePath)?.size || 0 : 0
+            if (current > livenessBaseline) grew = true
             livenessBaseline = current
           } catch {}
           if (grew) {
@@ -2544,7 +2598,7 @@ function resolveSessionIdForRelay(session) {
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
   if (cli === 'claude') {
     if (session.claudeSessionId) return session.claudeSessionId
-    const latest = listClaudeSessionFilesWithMtime(session.cwd)[0]
+    const latest = listClaudeSessionFilesWithMtime(resolveRelayCwd(session))[0]
     if (latest?.sessionId) {
       session.claudeSessionId = latest.sessionId
       return latest.sessionId
