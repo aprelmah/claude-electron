@@ -84,13 +84,22 @@
 Después de cualquier cambio de código, probar SIEMPRE en **modo dev** antes de empaquetar.
 
 ### Cómo lanzar en modo dev (desde Claude Code / agente)
-```bash
-# 1. Matar cualquier instancia previa (dev O empaquetada)
-pkill -f "POWER-AGENT.app" 2>/dev/null
-pkill -f "electron \." 2>/dev/null
-sleep 1
 
-# 2. Lanzar en la sesión gráfica del usuario vía osascript
+⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app** (verificado 2026-07-28: la instancia sobrevive y sigue creando helpers). Usar el cierre ordenado de macOS para la empaquetada y `pkill -9` para la de dev.
+
+```bash
+# 1. Matar cualquier instancia previa (dev Y empaquetada)
+osascript -e 'quit app "POWER-AGENT"' 2>/dev/null          # empaquetada: cierre ordenado (dispara before-quit)
+pkill -9 -f "claude-electron/node_modules/electron" 2>/dev/null   # dev
+sleep 3
+
+# 2. Si la app murió a lo bruto, limpiar el lock huérfano (si no, el siguiente
+#    arranque se suicida EN SILENCIO, sin ningún mensaje de error)
+UD="$HOME/Library/Application Support/CLAUDE-NOVAK"
+[ -e "$UD/SingletonLock" ] && ! pgrep -f "claude-electron/node_modules/electron" >/dev/null \
+  && rm -f "$UD/SingletonLock" "$UD/SingletonSocket" "$UD/SingletonCookie"
+
+# 3. Lanzar en la sesión gráfica del usuario vía osascript
 osascript /tmp/launch_poweragent.scpt
 # Si el script no existe, créalo primero:
 cat > /tmp/launch_poweragent.scpt << 'EOF'
@@ -113,6 +122,16 @@ ps aux | grep electron | grep -v grep | head -2
 # Debe mostrar: node_modules/electron/dist/Electron.app ... --app-path=/Users/isabel/Desktop/LUISMI/claude-electron
 # NO debe mostrar: dist/mac/POWER-AGENT.app
 ```
+
+### Verificar que además tiene VENTANA
+```bash
+ps aux | grep "claude-electron/node_modules/electron" | grep -v grep | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
+# Debe aparecer --type=renderer. Si solo hay gpu-process + utility, la app
+# arrancó sin ventana (típico del lock huérfano: el main nuevo se suicidó y
+# quedaron helpers sueltos de la instancia vieja).
+```
+
+**Dev y empaquetada nunca conviven**: ambas usan el mismo `userData` (`app.setPath('userData', .../CLAUDE-NOVAK)` en `main.js`), luego comparten `SingletonLock`. Si una está viva, la otra arranca y se cierra sola sin avisar.
 
 ### Cómo empaquetar (solo cuando el modo dev funciona)
 ```bash
