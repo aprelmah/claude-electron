@@ -1,6 +1,7 @@
 'use strict'
 
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 
 function createRelayTranscriptHelpers({
@@ -66,6 +67,68 @@ function createRelayTranscriptHelpers({
     return snap
   }
 
+  // Localiza el transcript de un turno SIN adivinar el directorio.
+  //
+  // Claude Code decide dónde escribe según cómo nació la sesión: una sesión
+  // nueva lanzada dentro de un worktree escribe en el proyecto del worktree,
+  // pero una sesión resumida (`--resume <id>`) sigue escribiendo en el proyecto
+  // ORIGINAL aunque el proceso corra en el worktree. Adivinar por cwd falla en
+  // una de las dos direcciones siempre, y entonces el relay no ve end_turn y
+  // acaba mandando el TUI raspado.
+  //
+  // Estrategia: el fichero se llama <sessionId>.jsonl, así que se busca por
+  // nombre — primero en los cwds conocidos, luego en todo ~/.claude/projects.
+  function findRelayTranscript({ sessionId, cwds = [] } = {}) {
+    const dirs = []
+    for (const cwd of cwds) {
+      if (!cwd) continue
+      const dir = claudeProjectSessionsDir(cwd)
+      if (dir && !dirs.includes(dir)) dirs.push(dir)
+    }
+
+    const stat = (filePath, sid) => {
+      try {
+        const st = fs.statSync(filePath)
+        if (!st.isFile()) return null
+        return { filePath, sessionId: sid, size: st.size, mtimeMs: st.mtimeMs }
+      } catch {
+        return null
+      }
+    }
+    const newest = (rows) => rows.filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null
+
+    if (sessionId) {
+      const inKnownDirs = newest(dirs.map((d) => stat(path.join(d, `${sessionId}.jsonl`), sessionId)))
+      if (inKnownDirs) return inKnownDirs
+
+      // Barrido global: la sesión puede vivir en un proyecto que no corresponde
+      // a ninguno de los cwds actuales.
+      try {
+        const root = path.dirname(dirs[0] || claudeProjectSessionsDir(os.homedir()) || '')
+        if (root) {
+          const hits = fs.readdirSync(root, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => stat(path.join(root, e.name, `${sessionId}.jsonl`), sessionId))
+          const hit = newest(hits)
+          if (hit) return hit
+        }
+      } catch {}
+    }
+
+    // Sin sessionId (o sesión aún sin fichero): el .jsonl más reciente de los
+    // directorios candidatos.
+    const fallback = []
+    for (const dir of dirs) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.jsonl')) continue
+          fallback.push(stat(path.join(dir, f), f.replace(/\.jsonl$/, '')))
+        }
+      } catch {}
+    }
+    return newest(fallback)
+  }
+
   function pickRelayTranscriptCandidate(cwd, beforeMeta, preferredSessionId) {
     const dir = claudeProjectSessionsDir(cwd)
     if (!dir) return null
@@ -110,17 +173,40 @@ function createRelayTranscriptHelpers({
 
   function extractAssistantTextFromTranscript(transcriptPath, offsetBytes = 0, minTimestampMs = 0, opts = {}) {
     try {
-      const rawBuf = fs.readFileSync(transcriptPath)
-      if (!rawBuf || rawBuf.length === 0) return { text: '', sawAssistant: false, sawEndTurn: false }
-
-      const start = Math.max(0, Math.min(offsetBytes || 0, rawBuf.length))
-      let slice = rawBuf.slice(start).toString('utf8')
-      if (start > 0) {
-        // Si arrancamos en mitad de línea JSON, descarta hasta el siguiente \n.
+      // Lectura parcial: solo la cola nueva desde el offset del turno. Con
+      // readFileSync entero, el poll de 300ms releía transcripts de MBs varias
+      // veces por segundo para sacar dos líneas.
+      let slice = ''
+      let start = 0
+      let startsAtLineBoundary = true
+      const fd = fs.openSync(transcriptPath, 'r')
+      try {
+        const size = fs.fstatSync(fd).size
+        if (size === 0) return { text: '', sawAssistant: false, sawEndTurn: false, lastStopReason: null, turnComplete: false }
+        start = Math.max(0, Math.min(offsetBytes || 0, size))
+        if (start > 0) {
+          // ¿El offset cae justo tras un \n? Entonces la primera línea del slice
+          // está completa y NO hay que descartarla. Sin esta comprobación se
+          // perdía la primera línea nueva, que suele ser la propia respuesta.
+          const probe = Buffer.allocUnsafe(1)
+          const n = fs.readSync(fd, probe, 0, 1, start - 1)
+          startsAtLineBoundary = n === 1 && probe[0] === 0x0a
+        }
+        const length = size - start
+        if (length > 0) {
+          const buf = Buffer.allocUnsafe(length)
+          const read = fs.readSync(fd, buf, 0, length, start)
+          slice = buf.toString('utf8', 0, read)
+        }
+      } finally {
+        try { fs.closeSync(fd) } catch {}
+      }
+      if (start > 0 && !startsAtLineBoundary) {
+        // Arrancamos en mitad de una línea JSON: descarta hasta el siguiente \n.
         const firstNl = slice.indexOf('\n')
         slice = firstNl === -1 ? '' : slice.slice(firstNl + 1)
       }
-      if (!slice.trim()) return { text: '', sawAssistant: false, sawEndTurn: false }
+      if (!slice.trim()) return { text: '', sawAssistant: false, sawEndTurn: false, lastStopReason: null, turnComplete: false }
 
       const tolerance = Number.isFinite(opts?.toleranceMs) && opts.toleranceMs >= 0
         ? opts.toleranceMs
@@ -131,6 +217,7 @@ function createRelayTranscriptHelpers({
       let lastAssistantText = ''
       let sawAssistant = false
       let sawEndTurn = false
+      let lastStopReason = null
       const lines = slice.split('\n')
       for (const raw of lines) {
         const line = raw.trim()
@@ -138,6 +225,9 @@ function createRelayTranscriptHelpers({
         let obj
         try { obj = JSON.parse(line) } catch { continue }
         if (obj?.type !== 'assistant') continue
+        // Los sub-agentes (Task) escriben sus propios turnos con end_turn en el
+        // mismo fichero. Si los contáramos, el relay cerraría el turno a mitad.
+        if (obj?.isSidechain) continue
         // Si el turno actual marca un tiempo mínimo, descartar respuestas anteriores
         // (evita devolver la respuesta tardía del turno previo como respuesta al actual).
         if (minTs > 0 && typeof obj.timestamp === 'string') {
@@ -147,11 +237,16 @@ function createRelayTranscriptHelpers({
         sawAssistant = true
         const text = extractTurnText(obj)
         if (text) lastAssistantText = text
-        if (obj?.message?.stop_reason === 'end_turn') sawEndTurn = true
+        const stop = obj?.message?.stop_reason
+        if (stop !== undefined && stop !== null) lastStopReason = stop
+        if (stop === 'end_turn') sawEndTurn = true
       }
-      return { text: lastAssistantText, sawAssistant, sawEndTurn }
+      // turnComplete: el ÚLTIMO evento del turno es end_turn. Con tool_use por
+      // medio, sawEndTurn puede ser cierto mientras el turno sigue vivo.
+      const turnComplete = lastStopReason === 'end_turn' && !!lastAssistantText
+      return { text: lastAssistantText, sawAssistant, sawEndTurn, lastStopReason, turnComplete }
     } catch {
-      return { text: '', sawAssistant: false, sawEndTurn: false }
+      return { text: '', sawAssistant: false, sawEndTurn: false, lastStopReason: null, turnComplete: false }
     }
   }
 
@@ -186,6 +281,7 @@ function createRelayTranscriptHelpers({
     snapshotClaudeSessions,
     findUpdatedOrNewClaudeSessionId,
     snapshotClaudeSessionMeta,
+    findRelayTranscript,
     pickRelayTranscriptCandidate,
     extractAssistantTextFromTranscript,
     cleanRelayFallbackText

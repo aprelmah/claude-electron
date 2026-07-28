@@ -22,6 +22,34 @@ function extractTurnText(obj) {
   return ''
 }
 
+// Directorio donde el CLI escribe DE VERDAD su transcript.
+//
+// Con aislamiento git por sesión, claude corre dentro del worktree y su JSONL
+// va a ~/.claude/projects/<worktree-codificado>/, mientras que session.cwd sigue
+// siendo el path real a propósito (UI y recientes intactos). El relay de
+// Telegram debe mirar el worktree: si busca en el cwd real no encuentra el turno
+// en curso, nunca ve end_turn y acaba mandando la pantalla raspada.
+//
+// Fail-open: sin gitWorkspace (toggle off, cwd no-git, path remoto) devuelve el
+// cwd de siempre.
+function resolveRelayCwd(session) {
+  if (!session) return null
+  return session.gitWorkspace?.workCwd || session.cwd || null
+}
+
+// Los dos sitios donde puede vivir el transcript de la sesión: el worktree
+// (sesión nacida ahí) y el cwd real (sesión resumida con --resume, que Claude
+// Code sigue escribiendo en su proyecto original). El orden no implica
+// prioridad: quien busca se queda con el fichero más reciente.
+function relayCwdCandidates(session) {
+  if (!session) return []
+  const out = []
+  for (const cwd of [session.gitWorkspace?.workCwd, session.cwd]) {
+    if (cwd && !out.includes(cwd)) out.push(cwd)
+  }
+  return out
+}
+
 function statCacheKey(stat) {
   if (!stat) return ''
   return `${Number(stat.mtimeMs || 0)}:${Number(stat.size || 0)}`
@@ -95,6 +123,8 @@ function createLruCache(max = 300) {
 
 module.exports = {
   extractTurnText,
+  resolveRelayCwd,
+  relayCwdCandidates,
   statCacheKey,
   safeStat,
   clipText,
