@@ -8,7 +8,7 @@ _Última actualización: 2026-07-28 (verificado contra git, GitHub y npm audit e
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`feat/git-auto-por-sesion`**, HEAD `b94d6b4`, working tree **limpio**, **sincronizada con `origin`** (ya no está sin push).
+- Rama activa: **`feat/git-auto-por-sesion`**, working tree **limpio**, **sincronizada con `origin`** (ya no está sin push). Último commit de código: `b94d6b4`; encima van solo los commits de documentación de este cierre.
 - **PR #2 abierto** → https://github.com/aprelmah/claude-electron/pull/2 — `MERGEABLE`, **CI en verde** (macOS, Node 20.18.0, 53s). 33 ficheros, +4.943 / −191, 32 commits sobre `main`.
 - Lleva DOS features completas: git automático por sesión + sub-chat desechable.
 - Tests: **511 (505 pass / 0 fail / 6 skip pre-existentes)**.
