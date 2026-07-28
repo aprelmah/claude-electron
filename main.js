@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, net, Notification } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, net } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -8,6 +8,8 @@ const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
+const { createNotifier } = require('./main/native-notify')
+const notifyNative = createNotifier()
 const { createLanWsServer, clampLanPort, DEFAULT_LAN_WS_PORT } = require('./main/ws-server')
 const {
   createCliResolver,
@@ -1317,7 +1319,25 @@ function notifySessionGitIssue(ws, r) {
     : r.outcome === 'dirty-target'
       ? `El proyecto ${ws.realCwd} tenía cambios sin commitear. Los cambios de la sesión quedaron en la rama ${r.branch}.`
       : `Error integrando la sesión (${r.detail || 'desconocido'}). Rama: ${r.branch}.`
-  try { new Notification({ title: 'POWER-AGENT · git por sesión', body: msg }).show() } catch {}
+  // Sin notificación nativa (app sin firmar en Electron 42+) este aviso es la
+  // única forma de enterarse de que una rama quedó sin integrar → cae a diálogo.
+  notifyNative({
+    title: 'POWER-AGENT · git por sesión',
+    body: msg,
+    fallback: () => {
+      try {
+        const box = {
+          type: 'warning',
+          title: 'POWER-AGENT · git por sesión',
+          message: 'La sesión no se pudo integrar',
+          detail: msg,
+          buttons: ['Entendido']
+        }
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        if (win) dialog.showMessageBox(win, box); else dialog.showMessageBox(box)
+      } catch {}
+    }
+  })
   console.warn('[session-git]', msg)
 }
 
@@ -2905,12 +2925,16 @@ app.whenReady().then(async () => {
           sticker: 'Sticker'
         }[message.type] || ''
         const body = (message.body && String(message.body).slice(0, 140)) || bodyType || 'Mensaje nuevo'
-        if (!Notification.isSupported()) return
-        const n = new Notification({ title: String(title), body, silent: false })
-        n.on('click', () => {
-          try { global.__openWhatsappWindow && global.__openWhatsappWindow() } catch {}
+        notifyNative({
+          title: String(title),
+          body,
+          silent: false,
+          onClick: () => {
+            try { global.__openWhatsappWindow && global.__openWhatsappWindow() } catch {}
+          },
+          // Aquí no molestamos con diálogos: un rebote del Dock por mensaje basta.
+          fallback: () => { try { app.dock && app.dock.bounce('informational') } catch {} }
         })
-        n.show()
       } catch (err) {
         console.warn('[whatsapp] native notification failed:', err?.message || err)
       }
