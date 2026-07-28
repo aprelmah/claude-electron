@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   ptyCwd: () => ipcRenderer.invoke('pty-cwd'),
   onPtyData: (cb) => ipcRenderer.on('pty-data', (_, d) => cb(d)),
   onPtyExit: (cb) => ipcRenderer.on('pty-exit', () => cb()),
+  onPtyRestarting: (cb) => ipcRenderer.on('pty-restarting', (_, payload) => cb(payload)),
   onPtyError: (cb) => ipcRenderer.on('pty-error', (_, message) => cb(message)),
   onPtyBusy: (cb) => ipcRenderer.on('pty-busy', (_, message) => cb(message)),
 

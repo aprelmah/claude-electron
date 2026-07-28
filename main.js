@@ -222,6 +222,12 @@ const _ptyBatcher = createPtyDataBatcher()
 const enqueuePtyData = (s, d) => _ptyBatcher.enqueue(s, d)
 const flushPtyData = (s) => _ptyBatcher.flush(s)
 
+// ── Auto-update de los CLI dentro del PTY ──
+// Codex se cierra tras actualizarse ("Please restart Codex"); relanzamos la
+// sesión en vez de mandar al usuario al picker.
+const { createCliUpdateWatcher } = require('./main/cli-update-watch')
+const cliUpdateWatcher = createCliUpdateWatcher()
+
 // ── Per-window sessions ──
 // key = webContents.id → WindowSession { win, wcId, ordinal, pty, cols, rows, cwd, activeCli, treeWatcher, treeWatcherPath, treeWatchDebounce }
 const sessions = new Map()
@@ -1341,6 +1347,28 @@ function notifySessionGitIssue(ws, r) {
   console.warn('[session-git]', msg)
 }
 
+// Relanza el CLI en la misma sesión tras un auto-update (codex se cierra solo
+// pidiendo reinicio). Reutiliza el worktree ya creado: NO vuelve a pasar por
+// ensureSessionWorkspace, porque session.gitWorkspace sigue siendo válido.
+function respawnAfterCliUpdate(wcId) {
+  const s = sessions.get(wcId)
+  if (!s || s.pty) return
+  if (s.win && !s.win.isDestroyed()) {
+    s.win.webContents.send('pty-restarting', { cli: s.activeCli, reason: 'cli-update' })
+  }
+  setTimeout(() => {
+    const live = sessions.get(wcId)
+    if (!live || live.pty) return
+    try {
+      startPty(live, live.cols, live.rows, live.cwd, live.lastPtyArgs || [])
+    } catch (err) {
+      const msg = `No se pudo reiniciar tras la actualización: ${err?.message || err}`
+      console.warn('[cli-update]', msg)
+      if (live.win && !live.win.isDestroyed()) live.win.webContents.send('pty-exit')
+    }
+  }, 500)
+}
+
 // ── PTY per-session ──
 function startPty(session, cols, rows, cwd, args = []) {
   if (!session) throw new Error('Sesión no disponible')
@@ -1389,6 +1417,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 
   proc._alive = true
   session.pty = proc
+  session.lastPtyArgs = Array.isArray(args) ? args.slice() : []
   const myWcId = session.wcId
   scheduleProfileBootstrapMessage(session, proc, activeProfile)
   logSemanticForSession(session, 'pty_inicio', {
@@ -1421,6 +1450,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     if (!proc._alive) return
     const s = sessions.get(myWcId)
     if (s) trackPtyLoadForGraph(s)
+    try { cliUpdateWatcher.observe(myWcId, data) } catch {}
     // Relay (Telegram) recibe data sin batching para no romper la detección de
     // marcadores de fin de turno.
     if (s?.relayListener) {
@@ -1447,11 +1477,14 @@ function startPty(session, cols, rows, cwd, args = []) {
     // PERF-H6: vaciar el buffer pendiente antes de mandar pty-exit.
     const sBeforeExit = sessions.get(myWcId)
     if (sBeforeExit) { try { flushPtyData(sBeforeExit) } catch {} }
-    if (proc._alive) {
-      const s = sessions.get(myWcId)
+    const s = sessions.get(myWcId)
+    // El CLI acaba de autoactualizarse y se ha cerrado pidiendo reinicio: no es
+    // fin de sesión, así que relanzamos en vez de avisar al renderer.
+    const restartAfterUpdate = !!proc._alive && !!s && s.pty === proc &&
+      cliUpdateWatcher.takeRestart(myWcId)
+    if (proc._alive && !restartAfterUpdate) {
       if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('pty-exit')
     }
-    const s = sessions.get(myWcId)
     if (s && s.pty === proc) {
       try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
       if (typeof s.relayCancel === 'function') {
@@ -1467,6 +1500,7 @@ function startPty(session, cols, rows, cwd, args = []) {
       s.ptyLoadEvents = 0
       s.ptyHighLoadUntil = 0
     }
+    if (restartAfterUpdate) respawnAfterCliUpdate(myWcId)
   })
 
   if (session === sessions.get(primaryWcId)) updatePrimarySnapshot()
@@ -1476,6 +1510,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 function killPty(session) {
   if (!session) return
   try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
+  try { cliUpdateWatcher.forget(session.wcId) } catch {}
   if (!session.pty) return
   logSemanticForSession(session, 'pty_fin', {
     detail: `cwd=${session.cwd || ''}`,

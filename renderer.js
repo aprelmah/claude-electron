@@ -4352,6 +4352,15 @@ window.api.onPtyExit(() => {
     window.ProjectPicker.showProject()
   }
 })
+if (typeof window.api.onPtyRestarting === 'function') {
+  // El CLI se ha actualizado y se cierra pidiendo reinicio: main.js lo relanza,
+  // así que no tocamos has-pty ni abrimos el picker.
+  window.api.onPtyRestarting((payload) => {
+    const name = payload?.cli === 'codex' ? 'Codex' : 'Claude'
+    term.write(`\r\n\x1b[36m[${name} actualizado — reiniciando sesión…]\x1b[0m\r\n`)
+    showStatus(`${name} actualizado, reiniciando sesión…`, 'info', 5000)
+  })
+}
 window.api.onPtyError((message) => {
   const msg = (message || 'Error de terminal').toString()
   term.write(`\r\n\x1b[31m[error] ${msg}\x1b[0m\r\n`)
