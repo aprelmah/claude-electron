@@ -63,6 +63,8 @@
   let bridgeControlBusy = false
   let allAutoBtnEl = null
   let allAutoBusy = false
+  let autoReplyBtnEl = null
+  let autoReplyBusy = false
   let bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: '' }
   let qrPollTimerId = null
   let qrLoadBusy = false
@@ -617,6 +619,39 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
   opacity: 0.75;
   cursor: wait;
 }
+.wa-bot-toggle {
+  width: auto !important;
+  min-width: 66px;
+  height: 22px !important;
+  padding: 0 8px !important;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #d6dde3;
+  background: rgba(255,255,255,0.04);
+}
+.wa-bot-toggle.wa-bot-on {
+  border-color: rgba(37,211,102,0.45);
+  color: #8ef2bc;
+  background: rgba(37,211,102,0.13);
+}
+.wa-bot-toggle.wa-bot-off {
+  border-color: rgba(240,71,71,0.5);
+  color: #ff9e9e;
+  background: rgba(240,71,71,0.15);
+}
+.wa-bot-toggle.is-busy {
+  opacity: 0.75;
+  cursor: wait;
+}
+.wa-bot-toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .wa-auto-all-btn {
   width: auto !important;
   min-width: 74px;
@@ -710,6 +745,9 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
         </button>
         <button class="icon-btn small wa-header-btn" id="wa-btn-cfg" title="Configuración" aria-label="Configuración">
           <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 20a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.3.5.5.84.58.34.08.69.1 1.03.09a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.3.2-.5.5-.58.84z"/></svg>
+        </button>
+        <button class="icon-btn small wa-header-btn wa-bot-toggle" id="wa-btn-autoreply" title="Auto-respuesta global" aria-label="Auto-respuesta global">
+          BOT
         </button>
         <button class="icon-btn small wa-header-btn wa-bridge-toggle" id="wa-btn-bridge-toggle" title="Parar bridge WhatsApp (emergencia)" aria-label="Parar bridge WhatsApp">
           <span class="wa-bridge-pill">STOP</span>
@@ -819,10 +857,6 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
         </div>
         <div class="wa-cfg-body">
           <div class="wa-cfg-pane" data-pane="general">
-            <label class="settings-check">
-              <input type="checkbox" id="wa-cfg-autoreply" />
-              <span>Auto-respuesta global activada</span>
-            </label>
             <div class="settings-row">
               <label class="settings-field">
                 <span>Modelo Claude</span>
@@ -1503,6 +1537,50 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     bridgeControlBtnEl.setAttribute('aria-label', 'Arrancar bridge WhatsApp')
   }
 
+  function canToggleAutoReply() {
+    return !!(wa && typeof wa.saveConfig === 'function')
+  }
+
+  function updateAutoReplyButtonUI() {
+    if (!autoReplyBtnEl) return
+    const supported = canToggleAutoReply()
+    const on = isAutoReplyEnabled()
+    autoReplyBtnEl.classList.toggle('is-busy', autoReplyBusy)
+    autoReplyBtnEl.classList.toggle('wa-bot-on', supported && on && !autoReplyBusy)
+    autoReplyBtnEl.classList.toggle('wa-bot-off', supported && !on && !autoReplyBusy)
+    autoReplyBtnEl.disabled = autoReplyBusy || !supported
+    autoReplyBtnEl.textContent = autoReplyBusy ? '…' : (on ? 'BOT ON' : 'BOT OFF')
+    const label = on
+      ? 'Auto-respuesta activada: pulsa para que el bot deje de responder'
+      : 'Auto-respuesta desactivada: pulsa para que el bot vuelva a responder'
+    autoReplyBtnEl.title = supported ? label : 'No disponible'
+    autoReplyBtnEl.setAttribute('aria-label', supported ? label : 'No disponible')
+    autoReplyBtnEl.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+
+  async function toggleAutoReply() {
+    if (!canToggleAutoReply() || autoReplyBusy) return
+    const next = !isAutoReplyEnabled()
+    autoReplyBusy = true
+    updateAutoReplyButtonUI()
+    try {
+      const res = await wa.saveConfig({ autoReply: next })
+      if (!res || !res.ok) {
+        showInputError((res && res.error) || 'No se pudo cambiar la auto-respuesta')
+        return
+      }
+      status.autoReply = res.config ? res.config.autoReply !== false : next
+      if (!isAutoReplyEnabled()) clearAllTyping()
+      showHeaderNotice(next ? 'Bot activado: responde solo' : 'Bot en silencio: no responde a nadie')
+    } catch (e) {
+      showInputError((e && e.message) || 'No se pudo cambiar la auto-respuesta')
+    } finally {
+      autoReplyBusy = false
+      updateAutoReplyButtonUI()
+      refreshStatus()
+    }
+  }
+
   function updateAllAutoButtonUI() {
     if (!allAutoBtnEl) return
     const supported = canSetAllAuto()
@@ -1602,7 +1680,9 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       else if (status.qrPresent) statusDotEl.classList.add('wa-status-pending')
       else statusDotEl.classList.add('wa-status-off')
     }
-    const sub = $('#wa-header-sub', panelEl)
+    // Un aviso vivo manda sobre el subtítulo: sin esto, cualquier refreshStatus()
+    // disparado justo después de showHeaderNotice() lo borra antes de que se lea.
+    const sub = headerNoticeTimer ? null : $('#wa-header-sub', panelEl)
     const bridgeLbl = bridgeStateText()
     if (sub) {
       const modelLbl = status.model ? status.model : 'default'
@@ -1618,6 +1698,7 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     if (qrBtn) qrBtn.classList.toggle('attention', !!status.qrPresent && !status.connected)
     updateBridgeControlUI()
     updateAllAutoButtonUI()
+    updateAutoReplyButtonUI()
   }
 
   function updateUnreadBadge() {
@@ -2047,7 +2128,10 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     cfgModalEl.classList.remove('hidden')
     try {
       const c = await wa.getConfig()
-      $('#wa-cfg-autoreply', cfgModalEl).checked = !!(c && c.autoReply)
+      // El toggle de auto-respuesta vive en la cabecera (#wa-btn-autoreply), no aquí:
+      // es el control de emergencia y tiene que estar a un clic.
+      status.autoReply = !!(c && c.autoReply)
+      updateAutoReplyButtonUI()
       $('#wa-cfg-model', cfgModalEl).value = (c && c.model) || ''
       $('#wa-cfg-effort', cfgModalEl).value = (c && c.effort) || ''
       $('#wa-cfg-persona', cfgModalEl).value = (c && c.personaPath) || ''
@@ -2230,8 +2314,9 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       inp.value = ''
     })
     $('#wa-cfg-save', cfgModalEl).addEventListener('click', async () => {
+      // autoReply NO viaja aquí a propósito: lo gobierna el botón de la cabecera y
+      // saveConfig hace merge, así que guardar el modal nunca puede pisarlo.
       const partial = {
-        autoReply: $('#wa-cfg-autoreply', cfgModalEl).checked,
         model: $('#wa-cfg-model', cfgModalEl).value.trim(),
         effort: $('#wa-cfg-effort', cfgModalEl).value.trim(),
         personaPath: $('#wa-cfg-persona', cfgModalEl).value.trim(),
@@ -2240,11 +2325,6 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       $('#wa-cfg-status', cfgModalEl).textContent = 'Guardando…'
       try {
         const r = await wa.saveConfig(partial)
-        if (r && r.ok) {
-          status.autoReply = partial.autoReply !== false
-          if (!isAutoReplyEnabled()) clearAllTyping()
-          updateStatusUI()
-        }
         await refreshStatus()
         $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok) ? 'Guardado.' : 'Error guardando'
       } catch (e) {
@@ -2574,6 +2654,7 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     statusDotEl = $('.wa-status-dot', panelEl)
     bridgeControlBtnEl = $('#wa-btn-bridge-toggle', panelEl)
     allAutoBtnEl = $('#wa-btn-all-auto', panelEl)
+    autoReplyBtnEl = $('#wa-btn-autoreply', panelEl)
     searchInputEl = $('#wa-search-input', panelEl)
 
     // 3. Modales
@@ -2601,6 +2682,7 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     $('#wa-btn-cfg', panelEl).addEventListener('click', openCfgModal)
     if (bridgeControlBtnEl) bridgeControlBtnEl.addEventListener('click', toggleBridgeControl)
     if (allAutoBtnEl) allAutoBtnEl.addEventListener('click', forceAllIndividualAuto)
+    if (autoReplyBtnEl) autoReplyBtnEl.addEventListener('click', toggleAutoReply)
     const qrRefreshBtn = $('#wa-qr-refresh', qrModalEl)
     if (qrRefreshBtn) qrRefreshBtn.addEventListener('click', () => { retryQrModal() })
     const imgDownloadBtn = $('#wa-img-download', imgViewerEl)
