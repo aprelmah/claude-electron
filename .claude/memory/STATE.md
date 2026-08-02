@@ -2,57 +2,57 @@
 
 > Estado vivo del proyecto. Lo lee el arranque (Claude y Codex) y lo actualiza el cierre (`/wrap`).
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
-> El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `tech/`) y en la auto-memory del harness.
+> El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-02, mañana (verificado contra git, los tests y la app desplegada)._
+_Última actualización: 2026-08-02, tarde/noche (verificado contra git, los tests y la app desplegada)._
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`main`**, sincronizada con `origin`. Código en HEAD **`12aae16`** (+ commit de memoria de este cierre).
-- Commits de la sesión pusheados: **`870e658`** (fix headless resume + fork del relay) y **`12aae16`** (feat picker `/proyecto` + `/sesiones`).
-- `main` lleva: git automático por sesión, sub-chat desechable, **Electron 43**, auto-update de codex, relay de Telegram por transcript **con detección de fork**, headless que localiza el cwd por sessionId, y **elección de proyecto/sesión desde Telegram**.
-- **Electron 43.2.0** (Chromium 150.0.7871.129, Node interno 24.18.0, ABI 148). electron-builder 26.15.3, @electron/rebuild 4.2.0, node-pty 1.1.0.
-- Tests: **579 (573 pass / 0 fail / 6 skip pre-existentes)**. 3 suites nuevas: `telegram-headless-resume-cwd`, `relay-fork-detection`, `telegram-project-session-picker`.
-- Deploy: `/Applications/POWER-AGENT.app` es el build del **2026-08-02 10:25**, corriendo con ventana y bridge activo. Validado por Luismi en Telegram real.
-- CLI: **codex 0.145.0**, **claude 2.1.220**.
+- Rama activa: **`main`**. HEAD **`5194944`** — **ahead 1 de `origin/main`, sin push todavía** (Luismi no lo ha pedido para este último commit).
+- Working tree limpio (STATE.md aparte, en curso de este cierre).
+- Tests: **612 (606 pass / 0 fail / 6 skip pre-existentes)**. 2 suites nuevas de la tarde: `whatsapp-kb.test.js`, `whatsapp-bridge-retry.test.js`.
+- Deploy: `/Applications/POWER-AGENT.app` build de **2026-08-02 22:04**, corriendo (ventana principal + ventana WhatsApp, bridge Baileys activo). 9 despliegues a lo largo de la sesión, todos con tests en verde.
+- Bridge WhatsApp (`~/.claude/whatsapp-bridge/`, **fuera de git**): sano, `com.luismi.whatsapp-bridge` corriendo por launchd. Backups de hoy: `index.js.bak.20260802-{reset,qr-ascii,humanize,speedup}`.
+- Electron 43.2.0, CLI codex 0.145.0 / claude 2.1.220 (sin cambios hoy).
 
-## Última sesión (2026-08-02, mañana) — Telegram: "Error CLI", fork del resume y picker
+## Última sesión (2026-08-02, tarde/noche) — WhatsApp: QR, KB con edición en la app, anti-detección
 
-### Bug 1 — "Error CLI" al escribir al bot sin sesión abierta (`870e658`)
+Arrancó con mapeo completo del subsistema WhatsApp (4 agentes en paralelo). Detalle completo en:
+`.claude/memory/bugs/bug_wa_qr_rate_limit_2026_08_02.md`, `.claude/memory/bugs/bug_wa_sendtext_reconexion_2026_08_02.md`, `.claude/memory/decisions/kb_whatsapp_2026_08_02.md`, `.claude/memory/decisions/kb_fichas_ejemplo_turbo_2026_08_02.md`.
 
-- Mensaje directo al bot → headless `--resume <sid>` con cwd = homedir (la app recién arrancada no tiene sesión primaria; `lastPrimarySnapshot` nace en `os.homedir()`) → `No conversation found`. Antes "funcionaba" por accidente: una instancia zombie llevaba semanas viva con `turbo e` de primaria.
-- Arreglo: `resolveResumeCwd(sessionId)` en `main/relay-transcript-helpers.js` — barre `~/.claude/projects` por `<sessionId>.jsonl` y saca de las líneas del JSONL el cwd **que codifica al directorio contenedor Y existe** (no vale "el primero": una sesión nacida en worktree mezcla cwds muertos). Si la sesión es huérfana → conversación nueva en vez de error eterno.
-- El "pendiente conocido" del headless con `getCwdSync()` queda **CERRADO**.
+### Bugs cerrados
+- **QR nunca fue escaneable** (desde mayo): `/qr` devolvía el payload crudo, no el ASCII. Fix + rate limit de `/status` subido (60→600/min, saturaba la app en bucle) + botón Reintentar del modal ahora reinicia el bridge de verdad.
+- **Reset a 0** pedido por Luismi: conversaciones/media/credenciales a `backup-reset-20260802/` (sin borrar, backup vivo, pendiente confirmación para eliminarlo).
+- **Envío automático perdido en ventana de reconexión del bridge**: un mensaje real (Noa) cayó justo cuando el bridge reconectaba solo, `/send/text` dio 503 sin reintento → cliente sin respuesta. Fix: `bridgeFetchWithRetry`, solo para envíos automáticos del bot (los manuales de Luismi no reintentan, para feedback inmediato).
+- **Panel de conversación**: horas mal leídas (epoch en segundos tratado como ms → "21/1/1970"), colisión de clases CSS burbuja/contenido (huecos gigantes en citas, stickers cortados). Rediseño completo con colores por participante en grupos.
 
-### Bug 2 — RelayEmpty al enviar a Telegram una sesión resumida (`870e658`)
+### Feature nueva — Base de Conocimiento (KB) de WhatsApp
+Pipeline: selector (haiku) sobre el índice de fichas → respuesta anclada SOLO a las fichas elegidas (sonnet) → verificación por código del marcador `[KB:id]` → sin marcador válido, se descarta y escala al humano (mensaje honesto + chat a MANUAL). Fichas con varias soluciones numeradas, guiadas una a una usando el historial (nunca repite una ya descartada). "Ficha activa" por chat (TTL 30 min) evita re-clasificar cada turno.
 
-- **Regla dura nueva: el `--resume` interactivo del TUI FORKEA a un sessionId nuevo.** El fichero viejo queda intacto y los turnos van al forkeado (caso real: enlace a `d5173326…`, turno en `e95bc91e…`). El relay vigilaba el viejo → 45 s → RelayEmpty.
-- Arreglo: `detectForkedRelayTranscript()` — snapshot de los `.jsonl` candidatos pre-write; si el transcript esperado no crece (~2 s), adopta el fichero nuevo/crecido **que contenga el prompt del turno** (exigido, para no secuestrar sesiones concurrentes del mismo proyecto) y actualiza el sessionId en sesión y chat.
-- ⚠️ El **pool de PTYs ocultos** y las **task-sessions** NO tienen aún esta detección: mismo bug latente si resumen sesiones.
+Tipo de selector `vago` añadido en caliente (feedback de Luismi con caso real de Noa: "tengo un problema con mi batería" es vago pero será el caso MÁS común): una pregunta de aclaración antes de escalar, tope 1 intento (TTL 30 min), con historial de contexto en el selector.
 
-### Feature — elegir proyecto y sesión desde Telegram (`12aae16`)
+Editor completo en la app: Configuración WhatsApp → pestaña **Fichas** (listar/crear/editar/borrar), IPC validado siempre en main (`whatsapp:kb-list/get/save/delete`). 3 fichas de ejemplo sembradas con contenido técnico real (baterías/inversores Turbo Energy, de `~/Desktop/turbo e/`) — **son de prueba, sin validar por Luismi como texto definitivo**.
 
-- `/proyecto` → botones inline con los cwds recientes; fija el proyecto del chat. `/sesiones` → conversaciones previas del proyecto (fecha + preview) + "Nueva sesión". Elegir sesión desengancha el relay PTY del chat.
-- `telegram-sessions.json` guarda ahora también `cwd` por chat; viaja como `chatCwd` al enrutado. `/reset` conserva el proyecto; `/status` muestra el proyecto del chat.
-- Enrutado de Telegram, 4 niveles: binding PTY > sessionId persistida (headless en su cwd real) > sesión primaria abierta > headless nuevo en `chatCwd`.
+### Anti-detección (pedido explícito por Luismi)
+Humanización en el bridge (fuera de git): read receipt + "escribiendo" con jitter antes de enviar, `markOnlineOnConnect:false` (no queda en línea 24/7). Ajustado dos veces por velocidad (recortado a la mitad) y una vez por naturalidad: la ventana de agrupación de mensajes en ráfaga era un valor FIJO — el único patrón sin jitter de todo el pipeline — ahora sortea 4-8s en cada ráfaga.
 
 ## Próximo paso
 
-1. **Añadir detección de fork al pool de PTYs ocultos y task-sessions** (mismo patrón que el relay: `detectForkedRelayTranscript`).
-2. **Elegir modelo de codex.** Quedó en `model = "codex-auto-review"`. En el selector `/model`, opción **1 `gpt-5.6-sol`**.
-3. **Probar el picker de sesiones con codex** (el listado se sirve, el flujo real no se validó).
-4. **Decisión de Luismi: actualizar macOS.** Monterey (12) y Electron 43 es la última rama que lo soporta; la 44 exige Ventura.
-5. **Comprobar el fallback de notificaciones en la app empaquetada** (conflicto de git por sesión → ¿sale el diálogo?). En dev no se reproduce.
-6. **Prueba manual del sub-chat**: contexto heredado en el fork, ✕ deja el principal intacto, `/exit` sin procesos `claude` huérfanos.
-7. Renovar certificado Apple y firmar/notarizar. Riesgo conocido sin cerrar: LAN en HTTP plano, Bearer en claro.
+1. **Decidir push** de `5194944` a origin — Luismi no lo ha pedido aún para este commit.
+2. **Decidir las 3 fichas de ejemplo de Turbo Energy**: revisarlas/validarlas o borrarlas antes de que un cliente real las reciba (auto-reply sigue activo, allowlist vacía = responde a cualquiera).
+3. **Decisión de producto pendiente**: ¿el bot debe reconocer un cierre de conversación ("gracias", "ok") y callar, en vez de disparar el pipeline completo cada vez?
+4. **Reforzar la regla de prefijo internacional** en el camino IPC de la app (`numberToJid`) — hoy solo vive en `scripts/whatsapp-send-safe.sh`, detectado pero no tocado.
+5. **Responder a mano** el mensaje de Noa ("tengo un problema con mi bateria") que quedó sin respuesta real en el historial del incidente de reconexión.
+6. Borrar `~/.claude/whatsapp-bridge/backup-reset-20260802/` cuando Luismi confirme que todo va bien unos días.
+7. Heredado de la mañana, sin tocar hoy: detección de fork en pool de PTYs ocultos y task-sessions de Telegram; elegir modelo de codex (`gpt-5.6-sol`); probar picker de sesiones con codex; actualizar macOS (Monterey tope con Electron 43); certificado Apple/firma.
 
 ## Notas operativas
 
-- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** Usar `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev). Y **`open` sobre una instancia zombie tampoco relanza nada**: solo "activa" el proceso muerto — cerrar primero, abrir después.
-- ⚠️ Al morir a lo bruto queda un **`SingletonLock` huérfano** en `userData`: el siguiente arranque se suicida **en silencio**. Si la app "no arranca", borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie`.
-- Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → comparten ese lock y **nunca pueden convivir**.
-- Comprobar que hay ventana: debe existir un proceso `--type=renderer`.
-- **Para depurar el relay o el main**: dev con `npm start 2>&1 | tee /tmp/poweragent-relay.log` vía `osascript` y leer el log. Instrumentar antes de teorizar.
-- El ruido `EGL ... Bad attribute` es cosmético (8/s, medido). Sin arreglo desde nuestro código.
+- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** Usar `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev).
+- ⚠️ Al morir a lo bruto queda un **`SingletonLock` huérfano** en `userData`: el siguiente arranque se suicida **en silencio**. Borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie` si "no arranca".
+- Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → **nunca pueden convivir**.
+- **El bridge de WhatsApp está fuera de git** (`~/.claude/whatsapp-bridge/index.js`): cambios ahí van con backup `.bak.<fecha>` a mano, se pierden si se reinstala sin restaurar.
+- El "escribiendo…" del panel de la app es **solo cosmético para Luismi** — no lo ve el cliente real (su indicador lo gobierna el bridge, aparte, solo segundos antes de enviar). Fuente de confusión real hoy, ya aclarada.
 - Dev/deploy requieren `osascript` (sin WindowServer). Mac Intel → `dist/mac/POWER-AGENT.app`.
 - CI usa Node 20.18.0; el Mac corre Node 24 (tests pasan en ambos).
+- El ruido `EGL ... Bad attribute` es cosmético (8/s, medido). Sin arreglo desde nuestro código.
