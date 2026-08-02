@@ -912,6 +912,8 @@ const {
   findUpdatedOrNewClaudeSessionId,
   snapshotClaudeSessionMeta,
   findRelayTranscript,
+  resolveResumeCwd,
+  detectForkedRelayTranscript,
   pickRelayTranscriptCandidate,
   extractAssistantTextFromTranscript,
   cleanRelayFallbackText
@@ -1162,6 +1164,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       }
       // Reinstalar snapshot del transcript justo antes de escribir el prompt,
       // así el offset cubre cualquier escritura tardía del turno anterior.
+      let dirSnapsBefore = []
       if (targetCli === 'claude') {
         try {
           const fresh = findRelayTranscript({
@@ -1172,6 +1175,12 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
             transcript = fresh
             baseOffset = fresh.size // todo lo que venga después es de este turno
           }
+        } catch {}
+        // Snapshot de TODOS los .jsonl candidatos PRE-write: si el turno acaba
+        // en un fichero forkeado (--resume interactivo crea sessionId nuevo),
+        // el poll lo detecta comparando contra este estado.
+        try {
+          dirSnapsBefore = relayCwds.map((c) => ({ cwd: c, snap: snapshotClaudeSessionMeta(c) }))
         } catch {}
       }
 
@@ -1202,6 +1211,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       // en turnos con herramientas, se acababa en los topes de 15s/45s.
       if (targetCli === 'claude') {
         let lastPolledSize = baseOffset
+        let lastForkCheckAt = 0
         transcriptPoll = setInterval(() => {
           if (finalized) return
           try {
@@ -1209,8 +1219,27 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
             // parsear. Sin esto el poll trabaja en balde 3 veces por segundo.
             if (transcript) {
               const size = safeStat(transcript.filePath)?.size ?? 0
-              if (size <= lastPolledSize) return
-              lastPolledSize = size
+              if (size <= lastPolledSize) {
+                // Transcript esperado congelado: puede ser el fork de un
+                // --resume interactivo (el TUI resume creando un sessionId
+                // NUEVO y escribe los turnos ahí; el viejo no crece jamás).
+                const now = Date.now()
+                if (now - startedAt < 1500 || now - lastForkCheckAt < 1000) return
+                lastForkCheckAt = now
+                const forked = detectForkedRelayTranscript({
+                  cwds: relayCwds,
+                  before: dirSnapsBefore,
+                  excludeSessionId: transcript.sessionId || session.claudeSessionId || preferredSessionId,
+                  promptMarker: message
+                })
+                if (!forked) return
+                transcript = { filePath: forked.filePath, sessionId: forked.sessionId, size: forked.baseOffset, mtimeMs: 0 }
+                baseOffset = forked.baseOffset
+                lastPolledSize = forked.baseOffset
+                session.claudeSessionId = forked.sessionId
+              } else {
+                lastPolledSize = size
+              }
             }
             const { sid, fromTranscript } = buildRelayResult()
             if (fromTranscript.turnComplete) finishOk(fromTranscript.text, sid)
@@ -2437,7 +2466,11 @@ function initTelegramBridge() {
     },
     onRunQuery: async (opts) => {
       const tg = appConfig.telegram || {}
-      const cwd = getCwdSync()
+      // Prioridad de cwd: proyecto elegido por el chat (/proyecto) > sesión
+      // primaria de la app > homedir. Sin esto, tras un arranque limpio el
+      // headless corría en homedir y `--resume` no encontraba el transcript.
+      const chatCwd = resolveExistingDir(opts?.chatCwd)
+      const cwd = chatCwd || getCwdSync()
       const binding = getRelayBindingForChat(opts?.chatId)
       const boundCli = binding.bound ? binding.session?.activeCli : null
       const targetCli = (boundCli === 'claude' || boundCli === 'codex')
@@ -2457,8 +2490,21 @@ function initTelegramBridge() {
         return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
       }
       if (hasExplicitSid && targetCli === 'claude') {
-        const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd })
-        return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+        // El transcript manda: `--resume` solo funciona si el cwd del spawn
+        // mapea al proyecto donde vive el <sessionId>.jsonl. Localizarlo por
+        // sessionId, nunca adivinar por cwd (regla del relay, misma trampa).
+        const resumeCwd = resolveResumeCwd(opts.sessionId) || cwd
+        const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd: resumeCwd })
+        try {
+          return await runClaudeHeadless({ ...opts, ...compacted, cwd: resumeCwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+        } catch (err) {
+          if (err?.name === 'AbortError' || !/no conversation found/i.test(String(err?.message || ''))) throw err
+          // Sesión huérfana (transcript borrado o ilocalizable): mejor empezar
+          // conversación nueva que devolver error para siempre. El sessionId
+          // nuevo vuelve al bridge en el result y sustituye al muerto.
+          console.warn('[telegram-headless] sessionId huérfano, arrancando conversación nueva:', opts.sessionId)
+          return runClaudeHeadless({ ...opts, sessionId: null, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+        }
       }
 
       if (targetCli === 'codex') {
@@ -2551,6 +2597,18 @@ function initTelegramBridge() {
         })
       } catch (err) {
         return { ok: false, error: err?.message || String(err) }
+      }
+    },
+    onListProjects: async () => {
+      try { return recentCwds ? recentCwds.list({ pruneMissing: true }) : [] } catch { return [] }
+    },
+    onListSessions: async ({ cwd, cli } = {}) => {
+      try {
+        if (!cwd || looksRemotePath(cwd)) return []
+        if (cli === 'codex') return listCodexSessionsForCwd(cwd, { limit: 12 })
+        return listClaudeSessionsForCwd(cwd, { limit: 12 })
+      } catch {
+        return []
       }
     }
   })

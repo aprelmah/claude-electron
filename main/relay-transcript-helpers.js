@@ -129,6 +129,174 @@ function createRelayTranscriptHelpers({
     return newest(fallback)
   }
 
+  // Busca en las líneas del transcript un cwd VÁLIDO para resume: uno cuyo
+  // proyecto codificado sea exactamente el directorio donde vive el fichero y
+  // que siga existiendo en disco. No vale "el primero que aparezca": una sesión
+  // nacida en worktree y continuada en el dir real lleva varios cwds mezclados
+  // (worktrees ya borrados, scratchpads, el dir real) — caso real 2026-08-02.
+  function findResumableCwdInTranscript(filePath, containingDir) {
+    let content = ''
+    try {
+      const st = fs.statSync(filePath)
+      const CAP = 50 * 1024 * 1024
+      if (st.size <= CAP) {
+        content = fs.readFileSync(filePath, 'utf8')
+      } else {
+        // Transcript gigante: con la cola basta, las líneas recientes llevan
+        // el cwd vigente.
+        const fd = fs.openSync(filePath, 'r')
+        try {
+          const len = 4 * 1024 * 1024
+          const buf = Buffer.allocUnsafe(len)
+          const read = fs.readSync(fd, buf, 0, len, st.size - len)
+          content = buf.toString('utf8', 0, read)
+        } finally {
+          try { fs.closeSync(fd) } catch {}
+        }
+      }
+    } catch {
+      return null
+    }
+    const target = path.resolve(containingDir)
+    const seen = new Set()
+    for (const raw of content.split('\n')) {
+      const line = raw.trim()
+      if (!line || !line.includes('"cwd"')) continue
+      let obj
+      try { obj = JSON.parse(line) } catch { continue }
+      const cwd = obj?.cwd
+      if (typeof cwd !== 'string' || !cwd.trim() || seen.has(cwd)) continue
+      seen.add(cwd)
+      let dir = null
+      try { dir = claudeProjectSessionsDir(cwd) } catch {}
+      if (!dir || path.resolve(dir) !== target) continue
+      try {
+        if (fs.statSync(cwd).isDirectory()) return cwd
+      } catch {}
+    }
+    return null
+  }
+
+  // Resuelve el cwd desde el que `claude --resume <sessionId>` SÍ encuentra la
+  // sesión. El resume busca el transcript en el proyecto codificado del cwd del
+  // spawn; lanzarlo desde otro directorio da "No conversation found". Decodificar
+  // el nombre del directorio de proyecto es lossy, así que el cwd se lee del
+  // propio JSONL. Una sesión puede tener copias en varios proyectos (worktree +
+  // real): vale la más reciente cuyo cwd siga existiendo en disco.
+  function resolveResumeCwd(sessionId) {
+    if (!sessionId || typeof sessionId !== 'string') return null
+    let root = null
+    try {
+      root = path.dirname(claudeProjectSessionsDir(os.homedir()) || '')
+    } catch {
+      return null
+    }
+    if (!root || root === '.') return null
+
+    let entries = []
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())
+    } catch {
+      return null
+    }
+
+    const hits = []
+    for (const e of entries) {
+      const dir = path.join(root, e.name)
+      const filePath = path.join(dir, `${sessionId}.jsonl`)
+      let st
+      try { st = fs.statSync(filePath) } catch { continue }
+      if (!st.isFile()) continue
+      hits.push({ filePath, dir, mtimeMs: st.mtimeMs })
+    }
+    hits.sort((a, b) => b.mtimeMs - a.mtimeMs)
+    for (const hit of hits) {
+      const cwd = findResumableCwdInTranscript(hit.filePath, hit.dir)
+      if (cwd) return cwd
+    }
+    return null
+  }
+
+  // Detecta el transcript FORKEADO de un `--resume` interactivo. Claude Code,
+  // al resumir una sesión en el TUI, no apendiza al fichero viejo: crea un
+  // sessionId nuevo con el historial copiado y escribe ahí los turnos nuevos.
+  // Un relay enganchado al sessionId del spawn se queda mirando un fichero que
+  // nunca crece. Señal de adopción: fichero nuevo (o crecido) en los proyectos
+  // candidatos, distinto del esperado, que contenga el prompt recién escrito —
+  // sin promptMarker no se adopta nada (mejor quieto que secuestrar la sesión
+  // concurrente de otra ventana).
+  //
+  //   cwds: proyectos candidatos (los mismos del relay)
+  //   before: [{ cwd, snap }] con snap = snapshotClaudeSessionMeta(cwd) PRE-write
+  //   excludeSessionId: el sessionId esperado (nunca se devuelve a sí mismo)
+  //   promptMarker: texto del prompt del turno (se busca JSON-escapado)
+  //
+  // Devuelve { filePath, sessionId, baseOffset } o null.
+  function detectForkedRelayTranscript({ cwds = [], before = [], excludeSessionId = null, promptMarker = '' } = {}) {
+    const marker = String(promptMarker || '').split('\n')[0].trim().slice(0, 64)
+    if (!marker) return null
+    // El transcript guarda el texto JSON-escapado (comillas, backslashes).
+    const escapedMarker = JSON.stringify(marker).slice(1, -1)
+    const snapByCwd = new Map()
+    for (const b of before) {
+      if (b && b.cwd && b.snap) snapByCwd.set(b.cwd, b.snap)
+    }
+    const excludeFile = excludeSessionId ? `${excludeSessionId}.jsonl` : null
+
+    const candidates = []
+    for (const cwd of cwds) {
+      if (!cwd) continue
+      const dir = claudeProjectSessionsDir(cwd)
+      if (!dir) continue
+      const snap = snapByCwd.get(cwd) || new Map()
+      let files = []
+      try {
+        files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+      } catch {
+        continue
+      }
+      for (const f of files) {
+        if (excludeFile && f === excludeFile) continue
+        const filePath = path.join(dir, f)
+        let st
+        try { st = fs.statSync(filePath) } catch { continue }
+        if (!st.isFile()) continue
+        const prev = snap.get(f)
+        if (prev && st.size <= prev.size) continue
+        candidates.push({
+          filePath,
+          sessionId: f.replace(/\.jsonl$/, ''),
+          baseOffset: prev ? prev.size : 0,
+          mtimeMs: st.mtimeMs,
+          size: st.size
+        })
+      }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
+    for (const c of candidates) {
+      let slice = ''
+      try {
+        const fd = fs.openSync(c.filePath, 'r')
+        try {
+          const len = Math.min(c.size - c.baseOffset, 1024 * 1024)
+          if (len <= 0) continue
+          const buf = Buffer.allocUnsafe(len)
+          const read = fs.readSync(fd, buf, 0, len, c.baseOffset)
+          slice = buf.toString('utf8', 0, read)
+        } finally {
+          try { fs.closeSync(fd) } catch {}
+        }
+      } catch {
+        continue
+      }
+      if (slice.includes(escapedMarker)) {
+        return { filePath: c.filePath, sessionId: c.sessionId, baseOffset: c.baseOffset }
+      }
+    }
+    return null
+  }
+
   function pickRelayTranscriptCandidate(cwd, beforeMeta, preferredSessionId) {
     const dir = claudeProjectSessionsDir(cwd)
     if (!dir) return null
@@ -282,6 +450,9 @@ function createRelayTranscriptHelpers({
     findUpdatedOrNewClaudeSessionId,
     snapshotClaudeSessionMeta,
     findRelayTranscript,
+    findResumableCwdInTranscript,
+    resolveResumeCwd,
+    detectForkedRelayTranscript,
     pickRelayTranscriptCandidate,
     extractAssistantTextFromTranscript,
     cleanRelayFallbackText
