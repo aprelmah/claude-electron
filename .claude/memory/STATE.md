@@ -2,56 +2,57 @@
 
 > Estado vivo del proyecto. Lo lee el arranque (Claude y Codex) y lo actualiza el cierre (`/wrap`).
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
-> El detalle histórico vive en `.claude/memory/` (handoffs, `tech/`) y en la auto-memory del harness.
+> El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-07-28, tarde (verificado contra git, GitHub, la app corriendo y el bundle desplegado)._
+_Última actualización: 2026-08-02, mañana (verificado contra git, los tests y la app desplegada)._
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`main`**, working tree limpio, sincronizada con `origin`. HEAD: `e900819`.
-- **PR #2 y PR #3 mergeados** el 2026-07-28. No queda nada abierto.
-- `main` lleva ya TRES bloques: git automático por sesión, sub-chat desechable y **Electron 43**.
+- Rama activa: **`main`**, sincronizada con `origin`. Código en HEAD **`12aae16`** (+ commit de memoria de este cierre).
+- Commits de la sesión pusheados: **`870e658`** (fix headless resume + fork del relay) y **`12aae16`** (feat picker `/proyecto` + `/sesiones`).
+- `main` lleva: git automático por sesión, sub-chat desechable, **Electron 43**, auto-update de codex, relay de Telegram por transcript **con detección de fork**, headless que localiza el cwd por sessionId, y **elección de proyecto/sesión desde Telegram**.
 - **Electron 43.2.0** (Chromium 150.0.7871.129, Node interno 24.18.0, ABI 148). electron-builder 26.15.3, @electron/rebuild 4.2.0, node-pty 1.1.0.
-- Tests: **525 (519 pass / 0 fail / 6 skip pre-existentes)**.
-- **`npm audit --omit=dev`: 0 vulnerabilidades.**
-- Deploy: `/Applications/POWER-AGENT.app` es el build del **2026-07-28 19:04**, con Electron 43 dentro (verificado en el binario del Framework), sin cuarentena y arrancado con ventana.
-- Ramas `feat/git-auto-por-sesion` y `chore/electron-43`: **borradas** en local y en `origin` tras verificar 0 commits fuera de `main`. Siguen vivas otras ya mergeadas sin limpiar (`backup-2026-05-14-main`, `backup-pre-graph-revert`, `worktree-task-*`, y cuatro `worktree-agent-*` con worktree activo — estas hay que mirarlas antes de tocarlas).
+- Tests: **579 (573 pass / 0 fail / 6 skip pre-existentes)**. 3 suites nuevas: `telegram-headless-resume-cwd`, `relay-fork-detection`, `telegram-project-session-picker`.
+- Deploy: `/Applications/POWER-AGENT.app` es el build del **2026-08-02 10:25**, corriendo con ventana y bridge activo. Validado por Luismi en Telegram real.
+- CLI: **codex 0.145.0**, **claude 2.1.220**.
 
-## Última sesión (2026-07-28, tarde) — Electron 32 → 43, SEC-C3 cerrado
+## Última sesión (2026-08-02, mañana) — Telegram: "Error CLI", fork del resume y picker
 
-- **Merge del PR #2** (git por sesión + sub-chat) y acto seguido el upgrade en `chore/electron-43` → **PR #3**, CI verde, mergeado. 4 commits troceados.
-- **Electron 32.3.3 → 43.2.0.** La 32 llevaba EOL desde ~marzo 2025: unos 16 meses de CVEs de Chromium sin parchear.
-- **El salto salió barato porque el código ya estaba modernizado**: de 55 secciones de breaking changes entre la 33 y la 43, solo 2 tocaban este repo. La app ya usaba `protocol.handle`, `contextIsolation` en las 4 ventanas y ninguna `BrowserView`. El cruce se hizo automático: extraer las APIs citadas en los breaking changes y grepearlas contra los ficheros del repo.
-- **Tres arreglos que sí exigió el salto:**
-  1. `main/native-notify.js` — E42 migró a `UNNotification`, que **exige app firmada**; esta no lo está, así que los avisos nativos habrían dejado de verse **en silencio**, incluido el de conflicto de git por sesión. Detección en runtime del evento `failed` + fallback (diálogo para git, rebote del Dock para WhatsApp). **No se reproduce en dev**: el `Electron.app` de `node_modules` sí viene firmado.
-  2. `pickerStartDir()` en `main/dir-helpers.js` — E43 abre los diálogos en `~/Descargas` si no se fija `defaultPath`; afectaba a los dos selectores de carpeta.
-  3. `engines.node` pierde el tope `<23` (Electron 43 embebe Node 24; el tope solo daba `EBADENGINE`).
-- **Prueba en la app real, conducida por CDP** (`--remote-debugging-port=9222` + WebSocket): ventana, xterm con 30 filas, sesión de Claude Code viva respondiendo dentro del PTY, `contextBridge` expuesto, IPC de ida y vuelta (`homeDir`) y sandbox de rutas rechazando fuera del cwd de sesión. Es la verificación fuerte de que `node-pty` funciona bajo el ABI nuevo.
-- Notas del upgrade y sus trampas: **`ELECTRON-43-UPGRADE-NOTES.md`**.
+### Bug 1 — "Error CLI" al escribir al bot sin sesión abierta (`870e658`)
 
-## Sesión previa (2026-07-26 → 28)
+- Mensaje directo al bot → headless `--resume <sid>` con cwd = homedir (la app recién arrancada no tiene sesión primaria; `lastPrimarySnapshot` nace en `os.homedir()`) → `No conversation found`. Antes "funcionaba" por accidente: una instancia zombie llevaba semanas viva con `turbo e` de primaria.
+- Arreglo: `resolveResumeCwd(sessionId)` en `main/relay-transcript-helpers.js` — barre `~/.claude/projects` por `<sessionId>.jsonl` y saca de las líneas del JSONL el cwd **que codifica al directorio contenedor Y existe** (no vale "el primero": una sesión nacida en worktree mezcla cwds muertos). Si la sesión es huérfana → conversación nueva en vez de error eterno.
+- El "pendiente conocido" del headless con `getCwdSync()` queda **CERRADO**.
 
-- **Saneado del repo**: symlink `node_modules` fuera del índice + `.gitignore` con patrones sin barra (`6b06600`); commit rescatado por cherry-pick de una rama de conflicto (`86de38f`); 2 worktrees y 3 ramas huérfanas eliminados.
-- **Bug del pre-commit hook** (`c0aad58`): git exporta `GIT_DIR`/`GIT_INDEX_FILE` a los hooks; los tests que crean repos temporales los heredaban y operaban sobre este repo. Fallaban **solo al commitear**. El hook además no estaba ni instalado.
-- **Bug de worktrees huérfanos** (`16a4ab9`): `recordActive()` solo se llama cuando el poll detecta un `claudeSessionId`, así que una sesión sin turnos —o un `pkill`— dejaba worktrees invisibles para el barrido. Nuevo `discoverUnregisteredWorkspaces()` que escanea el disco al arrancar. 6 tests + verificación end-to-end contra la app real.
-- **Dependencias** (`32c2b9e`, `b94d6b4`): `ws` a 8.21.1 (DoS por fragmentos, y es la librería del servidor LAN) y node-cron 3 → 4.6.0 (sin dependencias, se lleva el `uuid` vulnerable). La migración de node-cron se cubrió antes con 6 tests de ciclo de vida, incluido disparo real de un job.
-- **Auditoría del proyecto** (a petición de Luismi): 41.221 líneas propias, 47 módulos en `main/`, 54 ficheros de test, 9 deps de producción. Hardening de Electron correcto (`contextIsolation`, `nodeIntegration: false` en todas las ventanas).
+### Bug 2 — RelayEmpty al enviar a Telegram una sesión resumida (`870e658`)
+
+- **Regla dura nueva: el `--resume` interactivo del TUI FORKEA a un sessionId nuevo.** El fichero viejo queda intacto y los turnos van al forkeado (caso real: enlace a `d5173326…`, turno en `e95bc91e…`). El relay vigilaba el viejo → 45 s → RelayEmpty.
+- Arreglo: `detectForkedRelayTranscript()` — snapshot de los `.jsonl` candidatos pre-write; si el transcript esperado no crece (~2 s), adopta el fichero nuevo/crecido **que contenga el prompt del turno** (exigido, para no secuestrar sesiones concurrentes del mismo proyecto) y actualiza el sessionId en sesión y chat.
+- ⚠️ El **pool de PTYs ocultos** y las **task-sessions** NO tienen aún esta detección: mismo bug latente si resumen sesiones.
+
+### Feature — elegir proyecto y sesión desde Telegram (`12aae16`)
+
+- `/proyecto` → botones inline con los cwds recientes; fija el proyecto del chat. `/sesiones` → conversaciones previas del proyecto (fecha + preview) + "Nueva sesión". Elegir sesión desengancha el relay PTY del chat.
+- `telegram-sessions.json` guarda ahora también `cwd` por chat; viaja como `chatCwd` al enrutado. `/reset` conserva el proyecto; `/status` muestra el proyecto del chat.
+- Enrutado de Telegram, 4 niveles: binding PTY > sessionId persistida (headless en su cwd real) > sesión primaria abierta > headless nuevo en `chatCwd`.
 
 ## Próximo paso
 
-1. **Decisión de Luismi: actualizar macOS.** Este Mac es Monterey (12) y **Electron 43 es la última rama que lo soporta**; la 44 exige Ventura. Verificado rama a rama en los README de Electron. Sin actualizar macOS, en ~2 majors (unas 16 semanas) se vuelve a estar fuera de soporte. El Mac es Intel: si es de 2017 o posterior, Ventura le entra.
-2. **Comprobar el fallback de notificaciones en la app empaquetada** (la de `/Applications`, que es la que no está firmada): provocar un conflicto de git por sesión y ver si sale el diálogo. En dev no se puede probar. Si sale el diálogo → `UNNotification` está fallando como se preveía; si sale la notificación nativa de siempre → una firma no era necesaria y el fallback queda inerte, sin daño.
-3. **Prueba manual del sub-chat**, que sigue sin validar por un humano: contexto heredado en el fork, ✕ deja el principal intacto, y sobre todo `/exit` en la madre **sin dejar procesos `claude` huérfanos** en `ps`.
-4. Limpieza opcional de ramas viejas ya mergeadas (`backup-*`, `worktree-task-*`). Las `worktree-agent-*` tienen worktree activo: revisar antes de borrar.
-5. Renovar certificado Apple y firmar/notarizar (trámite, no ingeniería). Bloquea distribuir a terceros — y ahora además desactivaría el fallback de notificaciones.
-6. Riesgo conocido sin cerrar: el servidor LAN va en **HTTP plano**, así que el Bearer token viaja en claro por la red.
+1. **Añadir detección de fork al pool de PTYs ocultos y task-sessions** (mismo patrón que el relay: `detectForkedRelayTranscript`).
+2. **Elegir modelo de codex.** Quedó en `model = "codex-auto-review"`. En el selector `/model`, opción **1 `gpt-5.6-sol`**.
+3. **Probar el picker de sesiones con codex** (el listado se sirve, el flujo real no se validó).
+4. **Decisión de Luismi: actualizar macOS.** Monterey (12) y Electron 43 es la última rama que lo soporta; la 44 exige Ventura.
+5. **Comprobar el fallback de notificaciones en la app empaquetada** (conflicto de git por sesión → ¿sale el diálogo?). En dev no se reproduce.
+6. **Prueba manual del sub-chat**: contexto heredado en el fork, ✕ deja el principal intacto, `/exit` sin procesos `claude` huérfanos.
+7. Renovar certificado Apple y firmar/notarizar. Riesgo conocido sin cerrar: LAN en HTTP plano, Bearer en claro.
 
 ## Notas operativas
 
-- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** Usar `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev). Ver CLAUDE.md §Protocolo de despliegue.
-- ⚠️ Al morir a lo bruto queda un **`SingletonLock` huérfano** en `userData`: el siguiente arranque se suicida **en silencio**, sin error. Si la app "no arranca", borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie`.
-- Dev y empaquetada comparten `userData` (`app.setPath` a `CLAUDE-NOVAK` en main.js:154) → comparten ese lock y **nunca pueden convivir**.
-- Comprobar que hay ventana: debe existir un proceso `--type=renderer`. Solo `gpu-process` + `utility` = arrancó sin ventana.
-- El ruido `EGL ... Bad attribute` de la consola es cosmético y está medido: 8/s indefinidos. `--use-angle=metal` los elimina pero **mata el proceso GPU**; `--use-angle=gl` solo baja a 3/s. No hay arreglo desde nuestro código: se cierra con Electron 43.
+- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** Usar `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev). Y **`open` sobre una instancia zombie tampoco relanza nada**: solo "activa" el proceso muerto — cerrar primero, abrir después.
+- ⚠️ Al morir a lo bruto queda un **`SingletonLock` huérfano** en `userData`: el siguiente arranque se suicida **en silencio**. Si la app "no arranca", borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie`.
+- Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → comparten ese lock y **nunca pueden convivir**.
+- Comprobar que hay ventana: debe existir un proceso `--type=renderer`.
+- **Para depurar el relay o el main**: dev con `npm start 2>&1 | tee /tmp/poweragent-relay.log` vía `osascript` y leer el log. Instrumentar antes de teorizar.
+- El ruido `EGL ... Bad attribute` es cosmético (8/s, medido). Sin arreglo desde nuestro código.
 - Dev/deploy requieren `osascript` (sin WindowServer). Mac Intel → `dist/mac/POWER-AGENT.app`.
-- CI usa Node 20.18.0; el Mac corre Node 24 (tests pasan en ambos, verificado en el CI del PR #2).
+- CI usa Node 20.18.0; el Mac corre Node 24 (tests pasan en ambos).

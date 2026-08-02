@@ -48,7 +48,7 @@
 - **Qué NO está aislado**: automation PTY (`startAgentPty`) y task-sessions/pool oculto de Telegram (`startTaskSessionPty`) siguen con `--resume` sobre el cwd original. Pendiente integrarlos cuando esto esté validado en uso real. El sub-chat desechable (`main/subchat-pty.js`) tampoco pasa por `ensureSessionWorkspace`: hereda el `workCwd` del worktree de su sesión madre (mismo aislamiento que ella, sin worktree propio). Es un hilo de consulta; si edita archivos, los cambios caen en la rama de la madre.
 - **Regla para spawns nuevos**: cualquier spawn de PTY nuevo debe decidir explícitamente si pasa por `ensureSessionWorkspace`/`prepareSessionWorkspace` (aislado) o queda excluido — y documentarlo aquí. No dejarlo implícito. `respawnAfterCliUpdate` (reinicio tras auto-update del CLI) **no** vuelve a llamar a `ensureSessionWorkspace`: reutiliza el `session.gitWorkspace` ya creado, así que sigue en el mismo worktree y la misma rama.
 - **Dónde vive el transcript: NO se adivina por cwd.** Claude Code decide según cómo nació la sesión — una sesión **nueva** dentro del worktree escribe en `~/.claude/projects/<worktree-codificado>/`, pero una **resumida** (`--resume <id>`) sigue escribiendo en el proyecto ORIGINAL aunque el proceso corra en el worktree. Adivinar por cwd falla siempre en una de las dos direcciones. Usar `findRelayTranscript({ sessionId, cwds })` (`main/relay-transcript-helpers.js`), que busca el fichero `<sessionId>.jsonl` en los cwds candidatos (`relayCwdCandidates(session)`) y, si no aparece, barre todo `~/.claude/projects`. Regresión real 2026-07-28: el relay no encontraba el turno, nunca veía `end_turn` y a los 45s mandaba el TUI raspado (spinners, banner de bienvenida, historial repetido). Cubierto por `tests/relay-transcript-locate.test.js`.
-- **Pendiente conocido**: la ruta **headless** de Telegram (`runClaudeHeadless`, `main.js:2444`) sigue usando `getCwdSync()` → cwd real. Un `--resume <sessionId>` de una sesión aislada no encontrará su transcript. No se tocó porque `getCwdSync()` alimenta también la UI y el `/cwd` del bridge.
+- **CERRADO 2026-08-02** (antes "pendiente conocido"): la ruta **headless** de Telegram ya NO depende de `getCwdSync()`. `onRunQuery` resuelve el cwd con `resolveResumeCwd(sessionId)` (`main/relay-transcript-helpers.js`): barre `~/.claude/projects` por `<sessionId>.jsonl` y saca de las líneas del JSONL el cwd que codifica al directorio contenedor Y existe (no vale "el primero que aparezca": una sesión nacida en worktree mezcla cwds muertos). Si la sesión es huérfana (`No conversation found`), reintenta con conversación nueva. Cubierto por `tests/telegram-headless-resume-cwd.test.js`.
 - **Limitaciones documentadas**: (0) el `add -A` del finalize commitea artefactos que el `.gitignore` NO matchea por usar patrón con barra final — caso real: un symlink `node_modules` creado en el worktree para correr tests acabó commiteado (`node_modules/` solo matchea directorios, no symlinks). Usar patrones sin barra para lo que pueda aparecer como symlink, y nunca symlinkar `node_modules` dentro de un worktree; (1) archivos gitignored creados durante la sesión se pierden al finalizar (`worktree remove --force`; `add -A` respeta el gitignore); (2) sesiones CODEX nacidas en worktree no aparecen en el historial del proyecto (el índice codex bucketiza por cwd del rollout) — limitación v1 consciente; (3) el operador LAN no ve el aviso de conflicto si el socket ya cerró (el dueño del Mac conserva la rama y el `console.warn`).
 - Módulos: `main/session-git.js` (lógica git + registro), `main/session-git-map.js` (persistencia). Detalle de diseño: `docs/superpowers/specs/2026-07-24-git-auto-por-sesion-design.md`.
 
@@ -59,6 +59,8 @@
 - **Disparo por polling del JSONL** (`TRANSCRIPT_POLL_MS = 300`), no por silencio del PTY. Antes había que esperar 2,2s de silencio y, en turnos con herramientas (silencios de ~9s medidos), se acababa en los topes de 15s/45s. Los timers de silencio siguen como red de seguridad.
 - **Lectura parcial obligatoria**: `extractAssistantTextFromTranscript` lee solo desde el offset con `openSync`+`readSync`, y el poll hace `stat` antes de parsear. Con `readFileSync` entero, un transcript de 14MB se releía 3 veces por segundo.
 - **Trampa del offset**: si el offset cae justo tras un `\n`, la primera línea del slice está completa y **no** hay que descartarla. Descartarla siempre (bug hasta 2026-07-28) se comía la primera línea nueva, que suele ser la respuesta.
+- **El `--resume` interactivo FORKEA el sessionId** (regla dura, bug real 2026-08-02): al resumir una sesión en el TUI, Claude Code crea un sessionId NUEVO con el historial copiado y escribe ahí los turnos; el `.jsonl` viejo no crece jamás. Un relay enganchado al sessionId del spawn espera 45s y muere en RelayEmpty. `relayThroughPty` lo cubre: snapshot de los `.jsonl` candidatos pre-write y, si el transcript esperado no crece en ~2s, `detectForkedRelayTranscript` adopta el fichero nuevo/crecido **que contenga el prompt del turno** (exigido — sin esa coincidencia no se adopta nada, para no secuestrar la sesión concurrente de otra ventana) y actualiza el sessionId en sesión y chat. Cubierto por `tests/relay-fork-detection.test.js`. ⚠️ El pool de PTYs ocultos y las task-sessions NO tienen aún esta detección.
+- **Elección de proyecto/sesión desde el bot** (2026-08-02): `/proyecto` y `/sesiones` con botones inline (`callback_query` en el `getUpdates`, responder siempre con `answerCallbackQuery`). El cwd elegido se persiste por chat en `telegram-sessions.json` y viaja como `chatCwd` al enrutado. Orden de enrutado con 2+ sesiones: binding PTY > sessionId persistida del chat (headless en su cwd real) > sesión primaria > headless nuevo en `chatCwd`.
 
 ## Auto-update de los CLI dentro del PTY
 
@@ -214,9 +216,12 @@ Este Mac es Intel → el script usa x64.
 - Comandos soportados:
   - `/help`
   - `/status`
+  - `/proyecto` (elegir proyecto del chat, botones inline)
+  - `/sesiones` (elegir conversación previa del proyecto, botones inline)
   - `/cwd`
-  - `/restart`
+  - `/restart` (alias `/reset` — conserva el proyecto elegido)
   - `/cli claude|codex`
+  - `/salir`, `/cancel`, `/abrir`
 - Mensajes de voz:
   - Descarga audio de Telegram, transcribe con Whisper local y lo inyecta al terminal.
 
