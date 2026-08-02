@@ -66,6 +66,8 @@
   let bridgeStatus = { available: false, loaded: false, running: false, pid: 0, lastExit: null, detail: '' }
   let qrPollTimerId = null
   let qrLoadBusy = false
+  let qrLastState = 'none' // 'qr' | 'connected' | 'pending' | 'none' | 'error'
+  let qrRestartBusy = false
   let viewerMediaUrl = ''
   let viewerMediaName = ''
   let headerNoticeTimer = null
@@ -1770,31 +1772,77 @@
   }
 
   async function refreshQrModal() {
-    if (!wa || qrLoadBusy || !qrModalEl || qrModalEl.classList.contains('hidden')) return
+    if (!wa || qrLoadBusy || qrRestartBusy || !qrModalEl || qrModalEl.classList.contains('hidden')) return
     qrLoadBusy = true
     try {
       const [statusRes, qrRes] = await Promise.all([
         wa.getStatus().catch(() => null),
         wa.getQR().catch(() => null)
       ])
-      if (qrRes && qrRes.qr) {
-        setQrText(renderQrAscii(qrRes.qr), false)
+      if (qrRes && (qrRes.qrAscii || qrRes.qr)) {
+        const ascii = qrRes.qrAscii || renderQrAscii(qrRes.qr)
+        if (/[█▄▀]/.test(String(ascii))) {
+          qrLastState = 'qr'
+          setQrText(ascii, false)
+          return
+        }
+        // Bridge antiguo: /qr trae el payload crudo del QR, no hay nada escaneable.
+        qrLastState = 'none'
+        setQrText('El bridge está desactualizado y no envía el QR renderizado.\nEscanéalo desde bridge.log o actualiza el bridge.', true)
         return
       }
       const connected = !!(statusRes && statusRes.connected)
       const qrPending = !!((statusRes && statusRes.qrPresent) || (qrRes && qrRes.status === 'qr'))
       if (connected) {
+        qrLastState = 'connected'
         setQrText('WhatsApp ya está conectado.\nSi quieres un QR nuevo, primero usa STOP y luego START en el panel.', true)
       } else if (qrPending) {
+        qrLastState = 'pending'
         setQrText('QR pendiente.\nEspera unos segundos, se actualiza automáticamente.', true)
       } else {
-        setQrText('No hay QR activo ahora.\nPulsa STOP y START para reiniciar el bridge y regenerar el QR.', true)
+        qrLastState = 'none'
+        setQrText('No hay QR activo ahora.\nPulsa Reintentar para reiniciar el bridge y regenerar el QR.', true)
       }
     } catch (e) {
+      qrLastState = 'error'
       setQrText('Error al consultar el QR. Reintenta en unos segundos.', true)
     } finally {
       qrLoadBusy = false
     }
+  }
+
+  // Reintentar del modal QR: si no hay QR (bridge caído o sesión cerrada), reinicia
+  // el bridge de verdad; si solo está pendiente o ya conectado, re-consulta.
+  async function retryQrModal() {
+    if (!wa || qrRestartBusy) return
+    const needsRestart = (qrLastState === 'none' || qrLastState === 'error') && canBridgeControl()
+    if (!needsRestart) {
+      refreshQrModal()
+      return
+    }
+    qrRestartBusy = true
+    bridgeControlBusy = true
+    updateBridgeControlUI()
+    setQrText('Reiniciando bridge…\nEl QR aparecerá aquí en unos segundos.', true)
+    let restartFailed = null
+    try {
+      const res = await wa.bridgeControl('restart')
+      if (!res || !res.ok) restartFailed = (res && res.error) || 'error desconocido'
+    } catch (e) {
+      restartFailed = (e && e.message) || String(e)
+    } finally {
+      qrRestartBusy = false
+      bridgeControlBusy = false
+      await refreshBridgeStatus()
+      await refreshStatus()
+      updateBridgeControlUI()
+    }
+    if (restartFailed) {
+      qrLastState = 'error'
+      setQrText(`No se pudo reiniciar el bridge: ${restartFailed}.\nPrueba STOP y START en el panel.`, true)
+      return
+    }
+    refreshQrModal()
   }
 
   function startQrPolling() {
@@ -2248,7 +2296,7 @@
     if (bridgeControlBtnEl) bridgeControlBtnEl.addEventListener('click', toggleBridgeControl)
     if (allAutoBtnEl) allAutoBtnEl.addEventListener('click', forceAllIndividualAuto)
     const qrRefreshBtn = $('#wa-qr-refresh', qrModalEl)
-    if (qrRefreshBtn) qrRefreshBtn.addEventListener('click', () => { refreshQrModal() })
+    if (qrRefreshBtn) qrRefreshBtn.addEventListener('click', () => { retryQrModal() })
     const imgDownloadBtn = $('#wa-img-download', imgViewerEl)
     if (imgDownloadBtn) imgDownloadBtn.addEventListener('click', () => { downloadViewerMedia() })
     const personaBtn = $('#wa-btn-persona', panelEl)

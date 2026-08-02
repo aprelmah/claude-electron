@@ -2737,12 +2737,14 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 }
 .wa-qr-render {
   font-family: Menlo, monospace;
-  font-size: 6px;
-  line-height: 6px;
+  font-size: 7px;
+  line-height: 7px;
   letter-spacing: 0;
-  color: var(--text);
-  background: #fff;
-  color: #000;
+  /* qrcode-terminal pinta los módulos claros como bloques (pensado para terminal
+     oscuro): fondo negro + texto blanco replica el terminal; con fondo blanco el
+     QR sale invertido y el móvil no lo escanea. */
+  background: #000;
+  color: #fff;
   padding: 12px;
   border-radius: 6px;
   white-space: pre;

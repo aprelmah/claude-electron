@@ -617,6 +617,45 @@ function isAuthorized(jid) {
     try { emitter.emit('bridge-auth-error', { message: err?.message || 'auth error', at: Date.now() }) } catch {}
   }
 
+  // Ventana de agrupación: la gente escribe en varias líneas/mensajes seguidos.
+  // Acumulamos hasta AGGREGATE_SILENCE_MS de silencio del remitente y respondemos
+  // UNA sola vez a todo el bloque (un turno de claude, una respuesta).
+  const AGGREGATE_SILENCE_MS = 11_000
+  const pendingByJid = new Map() // jid → { msgs: [], timer, epoch }
+
+  function flushPending(jid) {
+    const batch = pendingByJid.get(jid)
+    pendingByJid.delete(jid)
+    if (!batch || !batch.msgs.length) return
+    if (!canAutoReplyNow(jid, batch.epoch)) return
+    const chat = chats.get(jid)
+    if (!chat) return
+
+    // Cap de cola por JID: con agregación una ráfaga colapsa en un turno, pero el
+    // techo sigue: si el modelo va lento y se apilan turnos, escalamos a manual.
+    const pending = queueLenByJid.get(jid) || 0
+    if (pending >= MAX_QUEUE_PER_JID) {
+      chat.mode = 'manual'
+      chat.escalationReason = 'user'
+      markDirty()
+      console.warn(`[wa-client] cola saturada para ${jid} (${pending} pendientes); escalado a manual`)
+      emitter.emit('chat-updated', summarizeChat(jid))
+      return
+    }
+
+    queueLenByJid.set(jid, pending + 1)
+    const prev = inflightByJid.get(jid) || Promise.resolve()
+    const next = prev.then(() => acquireSlot().then(() => respondTo(jid, batch.msgs, batch.epoch))).catch(() => {})
+    const tracked = next.finally(() => {
+      releaseSlot()
+      const cur = queueLenByJid.get(jid) || 0
+      if (cur <= 1) queueLenByJid.delete(jid)
+      else queueLenByJid.set(jid, cur - 1)
+      if (inflightByJid.get(jid) === tracked) inflightByJid.delete(jid)
+    })
+    inflightByJid.set(jid, tracked)
+  }
+
   async function handleIncoming(raw) {
     if (!raw || !raw.from) return
     const jid = raw.from
@@ -714,33 +753,17 @@ function isAuthorized(jid) {
 
     if (chat.mode !== 'auto') return
 
-    // Cap de cola por JID: si el modelo es lento y un cliente envía 50 mensajes,
-    // la cola crecería sin techo. Decisión: cuando hay MAX_QUEUE_PER_JID en vuelo
-    // para ese JID, escalamos a manual (Luismi atiende) en lugar de descartar.
-    const pending = queueLenByJid.get(jid) || 0
-    if (pending >= MAX_QUEUE_PER_JID) {
-      chat.mode = 'manual'
-      chat.escalationReason = 'user'
-      markDirty()
-      console.warn(`[wa-client] cola saturada para ${jid} (${pending} pendientes); escalado a manual`)
-      emitter.emit('chat-updated', summarizeChat(jid))
-      return
+    // Acumular en la ventana de agrupación; el timer se reinicia con cada mensaje
+    // del remitente y flushPending encola UN turno con todo el bloque.
+    let batch = pendingByJid.get(jid)
+    if (!batch) {
+      batch = { msgs: [], timer: null, epoch: autoReplyEpoch }
+      pendingByJid.set(jid, batch)
     }
-
-    // Serializamos por JID y respetamos semáforo global. Fire-and-forget para no
-    // bloquear el poll: el siguiente cliente puede entrar en paralelo.
-    queueLenByJid.set(jid, pending + 1)
-    const prev = inflightByJid.get(jid) || Promise.resolve()
-    const queuedEpoch = autoReplyEpoch
-    const next = prev.then(() => acquireSlot().then(() => respondTo(jid, msg, queuedEpoch))).catch(() => {})
-    const tracked = next.finally(() => {
-      releaseSlot()
-      const cur = queueLenByJid.get(jid) || 0
-      if (cur <= 1) queueLenByJid.delete(jid)
-      else queueLenByJid.set(jid, cur - 1)
-      if (inflightByJid.get(jid) === tracked) inflightByJid.delete(jid)
-    })
-    inflightByJid.set(jid, tracked)
+    batch.msgs.push(msg)
+    if (batch.timer) clearTimeout(batch.timer)
+    batch.timer = setTimeout(() => flushPending(jid), AGGREGATE_SILENCE_MS)
+    batch.timer.unref?.()
   }
 
   function canAutoReplyNow(jid, epoch) {
@@ -752,7 +775,8 @@ function isAuthorized(jid) {
     return true
   }
 
-  async function respondTo(jid, msg, epoch) {
+  // msgs: bloque de mensajes agregados por la ventana de silencio (1..N, en orden).
+  async function respondTo(jid, msgs, epoch) {
     const chat = chats.get(jid)
     if (!chat) return
     if (!canAutoReplyNow(jid, epoch)) return
@@ -773,22 +797,28 @@ function isAuthorized(jid) {
       return
     }
 
-    let promptBody = msg.body
-    if (msg.type === 'audio') {
-      if (msg.mediaPath && typeof transcribeAudio === 'function') {
-        try {
-          const text = await transcribeAudio(msg.mediaPath)
-          promptBody = text || '[Audio del cliente, sin transcripción disponible]'
-        } catch (err) {
-          console.error('[whatsapp] transcripción falló:', err?.message || err)
-          promptBody = '[Audio del cliente, sin transcripción disponible]'
+    // Cada mensaje del bloque se convierte en una línea; los audios se transcriben.
+    const parts = []
+    for (const m of msgs) {
+      let part = m.body
+      if (m.type === 'audio') {
+        if (m.mediaPath && typeof transcribeAudio === 'function') {
+          try {
+            const text = await transcribeAudio(m.mediaPath)
+            part = text || '[Audio del cliente, sin transcripción disponible]'
+          } catch (err) {
+            console.error('[whatsapp] transcripción falló:', err?.message || err)
+            part = '[Audio del cliente, sin transcripción disponible]'
+          }
+        } else {
+          part = '[Audio del cliente, sin transcripción disponible]'
         }
-      } else {
-        promptBody = '[Audio del cliente, sin transcripción disponible]'
       }
+      if (part && part.trim()) parts.push(part.trim())
     }
+    const promptBody = parts.join('\n')
 
-    if (!promptBody || !promptBody.trim()) return
+    if (!promptBody) return
     if (!canAutoReplyNow(jid, epoch)) return
 
     try {
@@ -797,7 +827,13 @@ function isAuthorized(jid) {
         systemPrompt: personaText || 'Eres el asistente de Luismi por WhatsApp. Castellano de España, frases cortas.',
         prompt: buildPrompt({
           displayNumber: chat.displayNumber,
-          history: chat.history.slice(0, -1), // sin el último, que es el mensaje recién recibido
+          // Fuera del historial los mensajes del propio bloque (van como mensaje
+          // actual). Filtrar por id, no por posición: con ráfagas, "el último del
+          // array" no es necesariamente el que estamos respondiendo.
+          history: (() => {
+            const batchIds = new Set(msgs.map((m) => m.id).filter(Boolean))
+            return chat.history.filter((h) => !h || !batchIds.has(h.id))
+          })(),
           body: promptBody,
           maxHistory: config.maxHistory
         }),
@@ -854,6 +890,9 @@ function isAuthorized(jid) {
     try {
       const payload = { to: targetJid, message: text }
       if (quotedId) payload.quotedId = quotedId
+      // Solo las respuestas automáticas se humanizan (read receipt + typing con
+      // jitter en el bridge); los envíos manuales del panel son Luismi real.
+      if (internal) payload.humanize = true
       const res = await bridgeFetch('POST', '/send/text', payload)
       const chat = ensureChat(targetJid)
       const msg = {
@@ -1110,9 +1149,9 @@ function isAuthorized(jid) {
   async function getQr() {
     try {
       const data = await bridgeFetch('GET', '/qr')
-      return { qr: data?.qr || null, status: data?.status || lastStatus }
+      return { qr: data?.qr || null, qrAscii: data?.qrAscii || null, status: data?.status || lastStatus }
     } catch (err) {
-      return { qr: null, status: 'disconnected', error: err?.message }
+      return { qr: null, qrAscii: null, status: 'disconnected', error: err?.message }
     }
   }
 
@@ -1188,6 +1227,8 @@ function isAuthorized(jid) {
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
     if (escalationSweepTimer) { clearInterval(escalationSweepTimer); escalationSweepTimer = null }
+    for (const b of pendingByJid.values()) { if (b.timer) clearTimeout(b.timer) }
+    pendingByJid.clear()
     stopPersonaWatcher()
     persistState()
   }
