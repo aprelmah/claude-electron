@@ -200,7 +200,9 @@ class TelegramBridge {
     onStatus,
     onSemanticInput,
     onSemanticOutput,
-    onOpenTaskSession
+    onOpenTaskSession,
+    onListProjects,
+    onListSessions
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -214,7 +216,12 @@ class TelegramBridge {
     this.onSemanticInput = onSemanticInput
     this.onSemanticOutput = onSemanticOutput
     this.onOpenTaskSession = onOpenTaskSession
+    this.onListProjects = onListProjects
+    this.onListSessions = onListSessions
     this.lastRunByChat = new Map()
+    // Último listado de /proyecto o /sesiones por chat: los botones inline
+    // llevan índices (callback_data máx. 64 bytes), aquí vive el mapeo real.
+    this.pendingPickers = new Map()
 
     this.config = null
     this.running = false
@@ -303,6 +310,31 @@ class TelegramBridge {
 
   _clearSessions(chatId) {
     delete this.sessions[String(chatId)]
+    this._saveSessions()
+  }
+
+  _getChatCwd(chatId) {
+    const v = this.sessions?.[String(chatId)]?.cwd
+    return typeof v === 'string' && v.trim() ? v : null
+  }
+
+  _setChatCwd(chatId, cwd) {
+    if (!cwd || typeof cwd !== 'string') return
+    const key = String(chatId)
+    this.sessions[key] = this.sessions[key] || {}
+    if (this.sessions[key].cwd === cwd) return
+    this.sessions[key].cwd = cwd
+    this._saveSessions()
+  }
+
+  // Olvida las conversaciones del chat pero conserva el proyecto elegido.
+  _clearChatSessionIds(chatId) {
+    const key = String(chatId)
+    const cur = this.sessions[key]
+    if (!cur) return
+    const cwd = typeof cur.cwd === 'string' && cur.cwd.trim() ? cur.cwd : null
+    if (cwd) this.sessions[key] = { cwd }
+    else delete this.sessions[key]
     this._saveSessions()
   }
 
@@ -432,7 +464,7 @@ class TelegramBridge {
         this.abortController = new AbortController()
         const updates = await this._api(
           'getUpdates',
-          { offset: this.offset, timeout: 30, allowed_updates: ['message'] },
+          { offset: this.offset, timeout: 30, allowed_updates: ['message', 'callback_query'] },
           this.abortController.signal
         )
         this.abortController = null
@@ -478,6 +510,10 @@ class TelegramBridge {
   }
 
   async _handleUpdate(update) {
+    if (update?.callback_query) {
+      await this._handleCallback(update.callback_query)
+      return
+    }
     const message = update?.message
     if (!message) return
 
@@ -560,6 +596,7 @@ class TelegramBridge {
         userPrompt: prompt,
         chatId: String(chatId),
         sessionId,
+        chatCwd: this._getChatCwd(chatId),
         signal: abortController.signal,
         onText: (text) => stream.appendText(text),
         onToolUse: (name) => stream.appendStatus(`[${name}]`),
@@ -670,6 +707,8 @@ class TelegramBridge {
         '',
         'Comandos:',
         '/status  -> estado del bridge',
+        '/proyecto -> elegir proyecto (carpeta) para este chat',
+        '/sesiones -> elegir conversación previa del proyecto',
         '/cwd     -> carpeta actual',
         '/reset   -> empezar conversación nueva (olvida sesión)',
         '/salir   -> desconectar este chat del relay PTY',
@@ -685,12 +724,13 @@ class TelegramBridge {
     if (lower === '/status') {
       const activeCli = await this.onGetActiveCli?.()
       const cwd = await this.onGetCwd?.()
+      const chatCwd = this._getChatCwd(chatId)
       const session = this._getSessionId(chatId, activeCli)
       await this._sendMessage(chatId, [
         `Bridge: ${this.running ? 'ON' : 'OFF'}`,
         `Bot: ${this.botUsername ? '@' + this.botUsername : '(sin username)'}`,
         `CLI: ${activeCli || 'desconocido'}`,
-        `CWD: ${cwd || '(desconocido)'}`,
+        `Proyecto del chat: ${chatCwd || `(el de la app: ${cwd || 'desconocido'})`}`,
         `Sesión: ${session ? session.slice(0, 8) + '…' : '(nueva)'}`
       ].join('\n'))
       return
@@ -703,7 +743,7 @@ class TelegramBridge {
     }
 
     if (lower === '/reset' || lower === '/restart') {
-      this._clearSessions(chatId)
+      this._clearChatSessionIds(chatId)
       const ctrl = this.activeStreams.get(chatId)
       if (ctrl) try { ctrl.abort() } catch {}
       await this._sendMessage(chatId, 'Conversación reseteada. Próximo mensaje empieza sesión nueva.')
@@ -803,7 +843,125 @@ class TelegramBridge {
       return
     }
 
+    if (lower === '/proyecto' || lower === '/proyectos') {
+      let projects = []
+      try { projects = (await this.onListProjects?.()) || [] } catch { projects = [] }
+      const items = projects
+        .map((p) => (typeof p === 'string' ? p : p?.cwd))
+        .filter((p) => typeof p === 'string' && p.trim())
+        .slice(0, 10)
+      if (!items.length) {
+        await this._sendMessage(chatId, 'No hay proyectos recientes. Abre alguno en el Mac primero.')
+        return
+      }
+      this.pendingPickers.set(String(chatId), { type: 'project', items, ts: Date.now() })
+      const keyboard = items.map((cwd, i) => [{ text: this._projectLabel(cwd, items), callback_data: `prj:${i}` }])
+      await this._sendMessage(chatId, 'Elige proyecto:', { reply_markup: { inline_keyboard: keyboard } })
+      return
+    }
+
+    if (lower === '/sesiones') {
+      const cwd = this._getChatCwd(chatId) || (await this.onGetCwd?.()) || ''
+      if (!cwd) {
+        await this._sendMessage(chatId, 'No hay proyecto activo. Elige uno con /proyecto.')
+        return
+      }
+      const cli = (await this.onGetActiveCli?.()) || 'claude'
+      let rows = []
+      try { rows = (await this.onListSessions?.({ cwd, cli })) || [] } catch { rows = [] }
+      const items = rows.slice(0, 10).map((r) => ({
+        id: r.id,
+        preview: String(r.preview || '(sin contenido)').replace(/\s+/g, ' ').trim(),
+        mtime: Number(r.mtime) || 0
+      }))
+      this.pendingPickers.set(String(chatId), { type: 'session', cli, cwd, items, ts: Date.now() })
+      const keyboard = items.map((s, i) => [{ text: this._sessionLabel(s), callback_data: `ses:${i}` }])
+      keyboard.push([{ text: '+ Nueva sesión', callback_data: 'ses:new' }])
+      const header = items.length
+        ? `Sesiones de ${path.basename(cwd)} (${cli}):`
+        : `No hay sesiones previas de ${cli} en ${path.basename(cwd)}. ¿Empezamos una nueva?`
+      await this._sendMessage(chatId, header, { reply_markup: { inline_keyboard: keyboard } })
+      return
+    }
+
     await this._sendMessage(chatId, 'Comando no reconocido. Usa /help.')
+  }
+
+  _projectLabel(cwd, all) {
+    const base = path.basename(cwd)
+    const dupes = all.filter((c) => path.basename(c) === base)
+    const label = dupes.length > 1 ? `${path.basename(path.dirname(cwd))}/${base}` : base
+    return label.slice(0, 48)
+  }
+
+  _sessionLabel(s) {
+    let when = ''
+    if (s.mtime > 0) {
+      try {
+        const d = new Date(s.mtime)
+        when = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} `
+      } catch {}
+    }
+    return `${when}${s.preview}`.slice(0, 48)
+  }
+
+  async _handleCallback(cb) {
+    const chatId = cb?.message?.chat?.id
+    const fromId = String(cb?.from?.id || '')
+    const data = String(cb?.data || '')
+    // Siempre responder el callback para que Telegram quite el spinner del botón.
+    try { await this._api('answerCallbackQuery', { callback_query_id: cb?.id }) } catch {}
+    if (!chatId || !this.allowedUsers.has(fromId)) return
+
+    const key = String(chatId)
+    const picker = this.pendingPickers.get(key)
+
+    if (data.startsWith('prj:')) {
+      const idx = Number(data.slice(4))
+      const cwd = picker?.type === 'project' ? picker.items[idx] : null
+      if (!cwd) {
+        await this._sendMessage(chatId, 'Ese listado caducó. Pide /proyecto otra vez.')
+        return
+      }
+      this.pendingPickers.delete(key)
+      // El binding de relay PTY tiene prioridad en el enrutado: si sigue vivo,
+      // seguiría mandando los mensajes a la sesión antigua. Fuera.
+      try { await this.onUnlinkRelay?.(key) } catch {}
+      this._setChatCwd(chatId, cwd)
+      this._clearChatSessionIds(chatId)
+      await this._sendMessage(chatId, [
+        `Proyecto: ${cwd}`,
+        'Escribe y empiezas conversación nueva ahí, o /sesiones para retomar una.'
+      ].join('\n'))
+      return
+    }
+
+    if (data === 'ses:new') {
+      this.pendingPickers.delete(key)
+      try { await this.onUnlinkRelay?.(key) } catch {}
+      this._clearChatSessionIds(chatId)
+      const cwd = this._getChatCwd(chatId)
+      await this._sendMessage(chatId, `Listo. Tu próximo mensaje empieza sesión nueva${cwd ? ` en ${path.basename(cwd)}` : ''}.`)
+      return
+    }
+
+    if (data.startsWith('ses:')) {
+      const idx = Number(data.slice(4))
+      const item = picker?.type === 'session' ? picker.items[idx] : null
+      if (!item) {
+        await this._sendMessage(chatId, 'Ese listado caducó. Pide /sesiones otra vez.')
+        return
+      }
+      this.pendingPickers.delete(key)
+      try { await this.onUnlinkRelay?.(key) } catch {}
+      this._setChatCwd(chatId, picker.cwd)
+      this._setSessionId(chatId, picker.cli, item.id)
+      await this._sendMessage(chatId, [
+        `Sesión enlazada: ${item.preview.slice(0, 120)}`,
+        'Tus próximos mensajes continúan esa conversación.'
+      ].join('\n'))
+      return
+    }
   }
 
   async sendMessage(chatId, text) {
@@ -886,17 +1044,20 @@ class TelegramBridge {
     }
   }
 
-  async _sendMessage(chatId, text) {
+  async _sendMessage(chatId, text, extra) {
     const normalized = String(text || '').trim()
     if (!normalized) return null
     const blocks = splitByLimit(normalized, MAX_MESSAGE_LEN)
     let last = null
-    for (const chunk of blocks) {
-      last = await this._api('sendMessage', {
+    for (let i = 0; i < blocks.length; i++) {
+      const payload = {
         chat_id: chatId,
-        text: chunk,
+        text: blocks[i],
         disable_web_page_preview: true
-      })
+      }
+      // El teclado inline va solo en el último bloque, pegado a los botones.
+      if (extra && i === blocks.length - 1) Object.assign(payload, extra)
+      last = await this._api('sendMessage', payload)
     }
     return last
   }
