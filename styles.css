@@ -2214,8 +2214,8 @@ body.layout-split #terminal-wrap { flex: 1; }
   --wa-green: #25D366;
   --wa-dark: #075E54;
   --wa-green-soft: #128C7E;
-  --wa-bubble-me: #056e58;
-  --wa-bubble-them: #2a2a35;
+  --wa-bubble-me: #005c4b;
+  --wa-bubble-them: #202c33;
 }
 body.light {
   --wa-bubble-me: #d9fdd3;

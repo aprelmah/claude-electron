@@ -5,11 +5,18 @@ const http = require('http')
 const { EventEmitter } = require('events')
 const { runClaudePersona, buildPrompt } = require('./whatsapp-auto-reply')
 const { readToken, HEADER_NAME, defaultTokenPath } = require('./whatsapp-auth')
+const {
+  loadKbIndex, loadKbCards, buildSelectorPrompt, parseSelectorResponse,
+  verifyGroundedReply, buildGroundedPromptPrefix, nextClarifyState,
+  SELECTOR_SYSTEM, KB_ANSWER_RULES, SMALLTALK_RULES, CLARIFY_RULES
+} = require('./whatsapp-kb')
 
 const BRIDGE_URL = 'http://127.0.0.1:3031'
 const BRIDGE_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge')
 const CONFIG_PATH = path.join(BRIDGE_DIR, 'config.json')
 const STATE_PATH = path.join(BRIDGE_DIR, 'state.json')
+const KB_DIR = path.join(BRIDGE_DIR, 'kb')
+const KB_AUDIT_PATH = path.join(BRIDGE_DIR, 'kb-audit.jsonl')
 const MEDIA_DIR = path.join(BRIDGE_DIR, 'media')
 const AUTH_TOKEN_PATH = defaultTokenPath()
 const POLL_MS = 1500
@@ -21,6 +28,7 @@ const MAX_PARALLEL_REPLIES = 3
 const PERSONA_RELOAD_DEBOUNCE_MS = 500
 const ESCALATION_SWEEP_MS = 60_000 // 1 min: revierte chats escalados-vencidos a auto
 const MAX_QUEUE_PER_JID = 5 // cola por JID: si se llena, escalamos a manual
+const KB_ACTIVE_TTL_SECS = 1800 // 30 min: la conversación sigue "dentro" de la ficha activa
 const CLAUDE_UNAVAILABLE_NOTIFY_MS = 10 * 60_000 // anti-spam del aviso al cliente
 const BRIDGE_TIMEOUT_DEFAULT_MS = 30_000
 const BRIDGE_TIMEOUT_LARGE_MS = 60_000
@@ -86,7 +94,14 @@ function normalizeConfig(raw) {
     model: cleanModel(src.model),
     effort: cleanEffort(src.effort),
     // Mantiene handover por defecto para mensajes escritos desde otro dispositivo.
-    handoverOnFromMe: src.handoverOnFromMe !== false
+    handoverOnFromMe: src.handoverOnFromMe !== false,
+    // KB: 'strict' (default) = si hay fichas en kb/, el bot solo resuelve lo que
+    // esté en ellas; 'off' desactiva la KB y vuelve a la persona libre.
+    kbMode: src.kbMode === 'off' ? 'off' : 'strict',
+    kbAnswerModel: cleanModel(src.kbAnswerModel) || 'sonnet',
+    kbEscalateText: (typeof src.kbEscalateText === 'string' && src.kbEscalateText.trim())
+      ? src.kbEscalateText.trim()
+      : 'Esto lo tengo que mirar bien. Le paso tu consulta a Luismi y te contesta en breve 👍'
   }
 }
 
@@ -304,6 +319,32 @@ function bridgeFetch(method, urlPath, body) {
         throw markAuthError(err)
       }
       throw err
+    }
+  })()
+}
+
+// Reintento para envíos automáticos (bot) cuando el mensaje llega justo en una
+// ventana de reconexión del bridge (Baileys reconecta solo cada cierto tiempo;
+// el /send/text que cae ahí da 503 "No listo" y se perdía sin más — bug real
+// 2026-08-02: cliente sin respuesta y "escribiendo…" colgado 60s en el panel).
+// Envíos manuales (Luismi desde el panel) NO pasan por aquí: fallan al momento
+// para que él lo vea y reintente a mano, con feedback inmediato.
+// Sin status = fallo de red/timeout (bridge caído del todo); 5xx = el bridge
+// respondió pero no pudo (503 "No listo" es el caso real de la reconexión).
+// 401/400/etc NO son transitorios: reintentar no los arregla.
+function isTransientBridgeError(err) {
+  return !err || !err.status || err.status >= 500
+}
+
+function bridgeFetchWithRetry(method, urlPath, body, { retries = 2, delaysMs = [4000, 8000] } = {}) {
+  return (async () => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await bridgeFetch(method, urlPath, body)
+      } catch (err) {
+        if (!isTransientBridgeError(err) || attempt === retries) throw err
+        await new Promise((r) => setTimeout(r, delaysMs[attempt] ?? 8000))
+      }
     }
   })()
 }
@@ -618,9 +659,18 @@ function isAuthorized(jid) {
   }
 
   // Ventana de agrupación: la gente escribe en varias líneas/mensajes seguidos.
-  // Acumulamos hasta AGGREGATE_SILENCE_MS de silencio del remitente y respondemos
-  // UNA sola vez a todo el bloque (un turno de claude, una respuesta).
-  const AGGREGATE_SILENCE_MS = 11_000
+  // Acumulamos hasta un silencio del remitente y respondemos UNA sola vez a
+  // todo el bloque (un turno de claude, una respuesta).
+  // Rango 4-8s (feedback Luismi 2026-08-02, dos rondas): primero bajado de 11s
+  // (se notaba lento con el pipeline de KB encima), luego se detectó que un
+  // valor FIJO es el patrón más delator de todos — "cada cuántos segundos
+  // contesta, no parece aleatorio, eso canta". Cada ráfaga recalcula un valor
+  // nuevo al azar, nunca el mismo número de segundos dos veces.
+  const AGGREGATE_SILENCE_MIN_MS = 4_000
+  const AGGREGATE_SILENCE_MAX_MS = 8_000
+  function nextAggregateSilenceMs() {
+    return AGGREGATE_SILENCE_MIN_MS + Math.random() * (AGGREGATE_SILENCE_MAX_MS - AGGREGATE_SILENCE_MIN_MS)
+  }
   const pendingByJid = new Map() // jid → { msgs: [], timer, epoch }
 
   function flushPending(jid) {
@@ -762,7 +812,7 @@ function isAuthorized(jid) {
     }
     batch.msgs.push(msg)
     if (batch.timer) clearTimeout(batch.timer)
-    batch.timer = setTimeout(() => flushPending(jid), AGGREGATE_SILENCE_MS)
+    batch.timer = setTimeout(() => flushPending(jid), nextAggregateSilenceMs())
     batch.timer.unref?.()
   }
 
@@ -773,6 +823,172 @@ function isAuthorized(jid) {
     if (epoch !== autoReplyEpoch) return false
     if (chat.mode !== 'auto') return false
     return true
+  }
+
+  function appendKbAudit(entry) {
+    try {
+      fs.appendFileSync(KB_AUDIT_PATH, JSON.stringify(entry) + '\n')
+    } catch {}
+  }
+
+  // Escalada al humano: mensaje honesto fijo + chat a manual. Es el fail-safe de
+  // TODO el modo KB: sin ficha, selector raro, verificación fallida o error → aquí.
+  async function escalateToHuman(jid, chat, reason) {
+    chat.mode = 'manual'
+    chat.escalationReason = 'user'
+    chat.kbActive = null
+    chat.kbClarify = null
+    markDirty()
+    emitter.emit('chat-updated', summarizeChat(jid))
+    const sent = await sendText(jid, config.kbEscalateText, { changeModeToManual: false, internal: true, source: 'claude' })
+    emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'kb-escalado', reason, text: config.kbEscalateText, error: sent?.error || '' })
+    return sent
+  }
+
+  // Pipeline KB: selector (haiku, índice) → respuesta anclada SOLO a las fichas
+  // elegidas (kbAnswerModel) → verificación del marcador [KB:id] → envío.
+  // Con "ficha activa": si el chat ya está resolviendo una ficha, los mensajes
+  // siguientes van directos a ella (guía por pasos multi-turno) sin re-clasificar.
+  async function respondFromKb({ jid, chat, msgs, promptBody, epoch, kbIndex }) {
+    const audit = { ts: new Date().toISOString(), jid, msg: promptBody.slice(0, 400) }
+    const batchIds = new Set(msgs.map((m) => m.id).filter(Boolean))
+    const historyForPrompt = chat.history.filter((h) => !h || !batchIds.has(h.id))
+    const runEnv = typeof buildRuntimeEnv === 'function' ? buildRuntimeEnv() : process.env
+    const persona = personaText || 'Eres el asistente de Luismi por WhatsApp. Castellano de España, frases cortas.'
+
+    // Devuelve 'sent' | 'ninguna' | 'cancelado' | 'escalated'
+    const answerFromCards = async (ids) => {
+      const cards = loadKbCards(KB_DIR, kbIndex, ids)
+      if (!cards) { audit.mode = 'kb-escalado'; audit.reason = 'fichas-ilegibles'; await escalateToHuman(jid, chat, 'fichas-ilegibles'); return 'escalated' }
+      const raw = await runClaudePersona({
+        claudeBin,
+        systemPrompt: persona + KB_ANSWER_RULES,
+        prompt: buildGroundedPromptPrefix(cards) + buildPrompt({ displayNumber: chat.displayNumber, history: historyForPrompt, body: promptBody, maxHistory: config.maxHistory }),
+        env: runEnv,
+        model: config.kbAnswerModel || 'sonnet',
+        timeoutMs: 90_000
+      })
+      if (!canAutoReplyNow(jid, epoch)) { audit.mode = 'cancelado'; return 'cancelado' }
+      const verdict = verifyGroundedReply(raw, ids)
+      audit.verdict = { ok: verdict.ok, reason: verdict.reason || '', ficha: verdict.usedId || '' }
+      if (!verdict.ok) {
+        if (verdict.reason === 'ninguna') return 'ninguna'
+        audit.mode = 'kb-escalado'
+        await escalateToHuman(jid, chat, verdict.reason || 'verificacion')
+        return 'escalated'
+      }
+      const safe = sanitizeAutoReplyText(verdict.clean)
+      if (!safe) { audit.mode = 'kb-escalado'; audit.reason = 'sanitize'; await escalateToHuman(jid, chat, 'sanitize'); return 'escalated' }
+      const sent = await sendText(jid, safe, { changeModeToManual: false, internal: true, source: 'claude' })
+      chat.kbActive = { ids: [verdict.usedId], since: nowTs() }
+      chat.kbClarify = null // resuelto de verdad: se acabó cualquier ronda de aclaración pendiente
+      markDirty()
+      audit.mode = 'kb'
+      audit.respuesta = safe.slice(0, 400)
+      emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'kb', ficha: verdict.usedId, text: safe, error: sent?.error || '' })
+      return 'sent'
+    }
+
+    try {
+      // 1) Ficha activa vigente → seguir guiando por esa ficha.
+      const activeIds = (chat.kbActive && Array.isArray(chat.kbActive.ids) && (nowTs() - (chat.kbActive.since || 0)) < KB_ACTIVE_TTL_SECS)
+        ? chat.kbActive.ids.filter((id) => kbIndex.some((e) => e.id === id))
+        : []
+      if (activeIds.length) {
+        audit.fichaActiva = activeIds
+        const r = await answerFromCards(activeIds)
+        if (r !== 'ninguna') return
+        // [KB:ninguna] con ficha activa = cambio de tema o soluciones agotadas → re-clasificar.
+        chat.kbActive = null
+        markDirty()
+      }
+
+      // 2) Selector contra el índice completo (con historial: un mensaje vago
+      // puede aclararse solo con el contexto de turnos anteriores).
+      const selRaw = await runClaudePersona({
+        claudeBin,
+        systemPrompt: SELECTOR_SYSTEM,
+        prompt: buildSelectorPrompt({ index: kbIndex, message: promptBody, history: historyForPrompt }),
+        env: runEnv,
+        model: 'haiku',
+        timeoutMs: 30_000
+      })
+      const sel = parseSelectorResponse(selRaw, kbIndex.map((e) => e.id))
+      audit.selector = sel
+      if (!canAutoReplyNow(jid, epoch)) { audit.mode = 'cancelado'; return }
+
+      if (sel.tipo === 'vago') {
+        // Toca el tema de alguna ficha pero sin detalle: UNA pregunta de
+        // aclaración antes de rendirnos (mensajes tipo "tengo un problema con
+        // la batería" van a ser el caso más común, no la excepción — feedback
+        // real de Luismi 2026-08-02). Tope de 1 intento: si sigue vago tras
+        // preguntar, se escala de verdad.
+        const { shouldAsk, next } = nextClarifyState(chat.kbClarify, nowTs())
+        if (!shouldAsk) {
+          audit.mode = 'kb-escalado'
+          audit.reason = 'vago-agotado'
+          await escalateToHuman(jid, chat, 'vago-agotado')
+          return
+        }
+        chat.kbClarify = next
+        markDirty()
+        const text = await runClaudePersona({
+          claudeBin,
+          systemPrompt: persona + CLARIFY_RULES,
+          prompt: buildPrompt({ displayNumber: chat.displayNumber, history: historyForPrompt, body: promptBody, maxHistory: config.maxHistory }),
+          env: runEnv,
+          model: config.model || 'haiku',
+          effort: config.effort || ''
+        })
+        if (!canAutoReplyNow(jid, epoch)) { audit.mode = 'cancelado'; return }
+        const safe = sanitizeAutoReplyText(text)
+        if (!safe) { audit.mode = 'kb-escalado'; audit.reason = 'sanitize'; await escalateToHuman(jid, chat, 'sanitize'); return }
+        const sent = await sendText(jid, safe, { changeModeToManual: false, internal: true, source: 'claude' })
+        audit.mode = 'vago'
+        emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'vago', text: safe, error: sent?.error || '' })
+        return
+      }
+
+      if (sel.tipo === 'smalltalk') {
+        const text = await runClaudePersona({
+          claudeBin,
+          systemPrompt: persona + SMALLTALK_RULES,
+          prompt: buildPrompt({ displayNumber: chat.displayNumber, history: historyForPrompt, body: promptBody, maxHistory: config.maxHistory }),
+          env: runEnv,
+          model: config.model || 'haiku',
+          effort: config.effort || ''
+        })
+        if (!canAutoReplyNow(jid, epoch)) { audit.mode = 'cancelado'; return }
+        const safe = sanitizeAutoReplyText(text)
+        if (!safe) { audit.mode = 'kb-escalado'; audit.reason = 'sanitize'; await escalateToHuman(jid, chat, 'sanitize'); return }
+        const sent = await sendText(jid, safe, { changeModeToManual: false, internal: true, source: 'claude' })
+        audit.mode = 'smalltalk'
+        emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'smalltalk', text: safe, error: sent?.error || '' })
+        return
+      }
+
+      if (sel.tipo !== 'kb') {
+        audit.mode = 'kb-escalado'
+        audit.reason = 'sin-ficha'
+        await escalateToHuman(jid, chat, 'sin-ficha')
+        return
+      }
+
+      const r = await answerFromCards(sel.ids)
+      if (r === 'ninguna') {
+        // La ficha elegida por el selector no cubre el caso según el modelo de respuesta.
+        audit.mode = 'kb-escalado'
+        audit.reason = 'kb-ninguna'
+        await escalateToHuman(jid, chat, 'kb-ninguna')
+      }
+    } catch (err) {
+      console.error('[whatsapp] KB error:', err?.message || err)
+      audit.mode = 'kb-escalado'
+      audit.reason = 'error:' + (err?.message || String(err)).slice(0, 120)
+      try { await escalateToHuman(jid, chat, 'error') } catch {}
+    } finally {
+      appendKbAudit(audit)
+    }
   }
 
   // msgs: bloque de mensajes agregados por la ventana de silencio (1..N, en orden).
@@ -820,6 +1036,16 @@ function isAuthorized(jid) {
 
     if (!promptBody) return
     if (!canAutoReplyNow(jid, epoch)) return
+
+    // ── Modo KB: si hay fichas, el bot SOLO resuelve lo que esté en ellas ──
+    if (config.kbMode !== 'off') {
+      let kbIndex = []
+      try { kbIndex = loadKbIndex(KB_DIR) } catch {}
+      if (kbIndex.length) {
+        await respondFromKb({ jid, chat, msgs, promptBody, epoch, kbIndex })
+        return
+      }
+    }
 
     try {
       const text = await runClaudePersona({
@@ -893,7 +1119,9 @@ function isAuthorized(jid) {
       // Solo las respuestas automáticas se humanizan (read receipt + typing con
       // jitter en el bridge); los envíos manuales del panel son Luismi real.
       if (internal) payload.humanize = true
-      const res = await bridgeFetch('POST', '/send/text', payload)
+      const res = internal
+        ? await bridgeFetchWithRetry('POST', '/send/text', payload)
+        : await bridgeFetch('POST', '/send/text', payload)
       const chat = ensureChat(targetJid)
       const msg = {
         id: res?.id || `local-${Date.now()}`,
@@ -1279,6 +1507,8 @@ module.exports = {
     jidToNumber,
     jidLocalId,
     sanitizePhoneForJid,
-    deriveDisplayNumber
+    deriveDisplayNumber,
+    isTransientBridgeError,
+    bridgeFetchWithRetry
   }
 }

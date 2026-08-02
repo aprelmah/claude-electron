@@ -84,9 +84,16 @@
     return node
   }
 
+  // WhatsApp entrega epoch en SEGUNDOS; new Date() espera ms. Sin normalizar,
+  // todos los mensajes caían en el 21/01/1970 (el "21/1" que se veía en la UI).
+  function toMs(ts) {
+    const n = Number(ts) || 0
+    return n > 0 && n < 1e12 ? n * 1000 : n
+  }
+
   function fmtTime(ts) {
     if (!ts) return ''
-    const d = new Date(ts)
+    const d = new Date(toMs(ts))
     const now = new Date()
     const sameDay = d.toDateString() === now.toDateString()
     if (sameDay) {
@@ -102,13 +109,39 @@
 
   function fmtRelative(ts) {
     if (!ts) return ''
-    const diff = Date.now() - ts
+    const diff = Date.now() - toMs(ts)
     const m = Math.floor(diff / 60000)
     if (m < 1) return 'ahora'
     if (m < 60) return `hace ${m}m`
     const h = Math.floor(m / 60)
     if (h < 24) return `hace ${h}h`
     return fmtTime(ts)
+  }
+
+  // Preview de un mensaje citado: icono + etiqueta legible, nunca "[image]".
+  const QUOTE_TYPE_LABELS = {
+    image: '📷 Foto',
+    video: '🎬 Vídeo',
+    audio: '🎤 Audio',
+    document: '📎 Documento',
+    sticker: '💟 Sticker'
+  }
+  function quotePreview(q) {
+    if (!q) return ''
+    if (q.type && q.type !== 'text') {
+      const label = QUOTE_TYPE_LABELS[q.type] || q.type
+      return q.body ? `${label} · ${String(q.body).slice(0, 60)}` : label
+    }
+    return String(q.body || '').slice(0, 80)
+  }
+
+  // Color estable por participante (grupos), paleta estilo WhatsApp.
+  const PARTICIPANT_COLORS = ['#53bdeb', '#e79db6', '#8fd6a4', '#e7c88f', '#c39ded', '#7fc8d6', '#f0a884', '#a3b8e8']
+  function participantColor(name) {
+    const s = String(name || '')
+    let h = 0
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+    return PARTICIPANT_COLORS[h % PARTICIPANT_COLORS.length]
   }
 
   function truncate(s, n) {
@@ -405,18 +438,78 @@
   function injectExtraStyles() {
     if (document.getElementById('wa-panel-extra-styles')) return
     const css = `
-.wa-bubble-bot-claude { color: #a8d8a8; }
+/* ── Conversación: rediseño 2026-08-02 (estilo WhatsApp dark pulido) ── */
+.wa-convo-body {
+  --wab-them: #202c33;
+  --wab-me: #005c4b;
+  --wab-claude: #024f63;
+  background: #0b141a;
+  background-image: radial-gradient(rgba(255,255,255,0.035) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+  gap: 2px;
+  padding: 14px max(16px, 6%);
+}
+body.light .wa-convo-body {
+  --wab-them: #ffffff;
+  --wab-me: #d9fdd3;
+  --wab-claude: #d5ecf5;
+  background: #efeae2;
+  background-image: radial-gradient(rgba(0,0,0,0.045) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+.wa-bubble-row { position: relative; margin-top: 1px; }
+.wa-bubble-row.first { margin-top: 10px; }
+.wa-bubble {
+  max-width: 65%;
+  min-width: 86px;
+  padding: 6px 9px 5px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13.2px;
+  line-height: 1.42;
+  box-shadow: 0 1px 0.5px rgba(0,0,0,0.35);
+  background: var(--wab-them);
+}
+body.light .wa-bubble { color: #111b21; }
+.wa-bubble-row.me .wa-bubble { background: var(--wab-me); color: #e7fce3; }
+body.light .wa-bubble-row.me .wa-bubble { color: #111b21; }
+.wa-bubble-row.me .wa-bubble.wa-bubble-claude { background: var(--wab-claude); color: #ddf3fc; }
+body.light .wa-bubble-row.me .wa-bubble.wa-bubble-claude { color: #0b3440; }
+/* Cola de la primera burbuja de cada racha de autor */
+.wa-bubble-row.first.them .wa-bubble { border-top-left-radius: 0; }
+.wa-bubble-row.first.me .wa-bubble { border-top-right-radius: 0; }
+.wa-bubble-row.first.them .wa-bubble::after {
+  content: ''; position: absolute; top: 0; left: -7px; width: 0; height: 0;
+  border-top: 9px solid var(--wab-them); border-left: 8px solid transparent;
+}
+.wa-bubble-row.first.me .wa-bubble::after {
+  content: ''; position: absolute; top: 0; right: -7px; width: 0; height: 0;
+  border-top: 9px solid var(--wab-me); border-right: 8px solid transparent;
+}
+.wa-bubble-row.first.me .wa-bubble.wa-bubble-claude::after { border-top-color: var(--wab-claude); }
+.wa-bubble-participant { font-size: 12px; font-weight: 600; color: #53bdeb; margin: 0 0 2px; }
+.wa-bubble-bot { font-size: 10px; opacity: 0.8; margin-bottom: 2px; }
+.wa-bubble-bot-claude { color: #7fd4f2; }
 .wa-bubble-bot-luismi { color: #c8e6c9; }
-.wa-bubble-row.me .wa-bubble { background: #005c4b; }
-.wa-bubble-row.me .wa-bubble.wa-bubble-claude { background: #1a6b3a; }
-.wa-bubble-participant { font-size: 11px; font-weight: 600; color: #53bdeb; margin-bottom: 2px; }
+.wa-bubble-meta { margin-top: 2px; gap: 3px; }
+.wa-bubble-time { font-size: 10px; color: rgba(255,255,255,0.45); }
+body.light .wa-bubble-time { color: rgba(0,0,0,0.4); }
+.wa-bubble-row.me .wa-bubble-time { color: rgba(255,255,255,0.62); }
+body.light .wa-bubble-row.me .wa-bubble-time { color: rgba(0,0,0,0.45); }
+.wa-bubble-check { font-size: 10px; }
+.wa-bubble-img, .wa-bubble-video {
+  max-width: min(320px, 100%);
+  max-height: 340px;
+  width: auto; height: auto;
+  border-radius: 6px;
+  margin: 2px 0;
+}
 .wa-group-icon { margin-right: 2px; opacity: .85; }
 .wa-mode-switch[aria-disabled="true"] {
   opacity: 0.55;
   cursor: not-allowed;
   pointer-events: none;
 }
-.wa-bubble-row { position: relative; }
 .wa-reply-btn {
   display: none; position: absolute; top: 4px; right: 4px;
   background: rgba(0,0,0,0.4); border: none; border-radius: 50%;
@@ -435,12 +528,40 @@
 .wa-reply-author { color: #00a884; font-weight: 600; display: block; }
 .wa-reply-preview { color: #8696a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .wa-reply-cancel { background: none; border: none; color: #8696a0; cursor: pointer; padding: 4px; font-size: 14px; }
+/* ── Editor de fichas KB (pestaña Fichas del modal de config) ── */
+/* No hay regla .hidden global que alcance estos nodos dentro del modal */
+#wa-kb-list-view.hidden, #wa-kb-editor.hidden, #wa-kb-delete.hidden { display: none; }
+.wa-kb-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.wa-kb-hint { font-size: 11px; color: #8696a0; line-height: 1.35; }
+.wa-kb-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.wa-kb-item { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+.wa-kb-item:hover { background: rgba(255,255,255,0.09); border-color: rgba(0,168,132,0.4); }
+.wa-kb-item-title { font-weight: 600; font-size: 12.5px; }
+.wa-kb-item-sintomas { font-size: 11px; color: #8696a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.wa-kb-empty { font-size: 12px; color: #8696a0; padding: 14px; text-align: center; line-height: 1.5; }
+.wa-kb-editor { max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+.wa-kb-sol { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.wa-kb-sol-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.wa-kb-sol-num { font-size: 11px; font-weight: 700; color: #00a884; white-space: nowrap; }
+.wa-kb-sol-head input { flex: 1; min-width: 0; }
+.wa-kb-sol-del { background: none; border: none; color: #8696a0; cursor: pointer; font-size: 16px; padding: 0 4px; }
+.wa-kb-sol-del:hover { color: #ff9e9e; }
+.wa-kb-sol-pasos { width: 100%; box-sizing: border-box; resize: vertical; }
+.wa-kb-editor-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.wa-kb-danger { color: #ff9e9e !important; border-color: rgba(240,71,71,0.4) !important; margin-right: auto; }
+.wa-kb-status { font-size: 11px; color: #8ef2bc; min-height: 15px; margin-top: 6px; }
+.wa-kb-status.wa-kb-status-err { color: #ff9e9e; }
+#wa-kb-sintomas, #wa-kb-problema { resize: vertical; }
+/* Quote compacto: máx 2 líneas visuales, nunca huecos gigantes */
 .wa-bubble-quoted {
-  background: rgba(0,0,0,0.2); border-left: 3px solid #00a884;
-  border-radius: 4px; padding: 4px 8px; margin-bottom: 4px; font-size: 12px;
+  background: rgba(0,0,0,0.22); border-left: 3px solid #00a884;
+  border-radius: 5px; padding: 4px 8px 5px; margin: 0 0 5px;
+  font-size: 12px; line-height: 1.35; max-height: 46px; overflow: hidden;
 }
-.wa-bubble-quoted-author { color: #00a884; font-weight: 600; display: block; }
-.wa-bubble-quoted-body { color: #8696a0; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.light .wa-bubble-quoted { background: rgba(0,0,0,0.06); }
+.wa-bubble-quoted-author { color: #00a884; font-weight: 600; display: block; margin-bottom: 1px; }
+.wa-bubble-quoted-body { color: rgba(255,255,255,0.62); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
 .wa-convo-footer { position: relative; }
 .wa-emoji-picker {
   position: absolute; bottom: 100%; left: 0; right: 0;
@@ -693,6 +814,7 @@
         </div>
         <div class="wa-cfg-tabs">
           <button class="wa-cfg-tab active" data-tab="general">General</button>
+          <button class="wa-cfg-tab" data-tab="fichas">Fichas</button>
           <button class="wa-cfg-tab" data-tab="allowlist">Allowlist</button>
         </div>
         <div class="wa-cfg-body">
@@ -727,6 +849,37 @@
               <span>Ruta al persona.md</span>
               <input type="text" id="wa-cfg-persona" placeholder="/ruta/al/persona.md" />
             </label>
+          </div>
+          <div class="wa-cfg-pane hidden" data-pane="fichas">
+            <div class="wa-kb-list-view" id="wa-kb-list-view">
+              <div class="wa-kb-toolbar">
+                <span class="wa-kb-hint">El bot solo resuelve lo que esté en estas fichas. Lo demás te lo pasa a ti.</span>
+                <button class="icon-btn text-btn primary" id="wa-kb-new" type="button">+ Nueva ficha</button>
+              </div>
+              <ul class="wa-kb-list" id="wa-kb-list"></ul>
+            </div>
+            <div class="wa-kb-editor hidden" id="wa-kb-editor">
+              <label class="settings-field">
+                <span>Título del problema</span>
+                <input type="text" id="wa-kb-titulo" placeholder="La impresora no imprime facturas" />
+              </label>
+              <label class="settings-field">
+                <span>Cómo lo dice el cliente (frases separadas por comas — de esto depende que el bot acierte)</span>
+                <textarea id="wa-kb-sintomas" rows="2" placeholder="no me salen los tickets, la impresora no imprime, no sale la factura"></textarea>
+              </label>
+              <label class="settings-field">
+                <span>Descripción del problema (opcional)</span>
+                <textarea id="wa-kb-problema" rows="2"></textarea>
+              </label>
+              <div class="wa-kb-sols" id="wa-kb-sols"></div>
+              <button class="icon-btn text-btn" id="wa-kb-add-sol" type="button">+ Añadir otra solución</button>
+              <div class="wa-kb-editor-actions">
+                <button class="icon-btn text-btn" id="wa-kb-cancel" type="button">← Volver</button>
+                <button class="icon-btn text-btn wa-kb-danger hidden" id="wa-kb-delete" type="button">Borrar ficha</button>
+                <button class="icon-btn text-btn primary" id="wa-kb-save" type="button">Guardar ficha</button>
+              </div>
+              <div class="wa-kb-status" id="wa-kb-status"></div>
+            </div>
           </div>
           <div class="wa-cfg-pane hidden" data-pane="allowlist">
             <div class="wa-cfg-allow-row">
@@ -946,9 +1099,14 @@
     const chat = chats.find(c => c.jid === currentJid)
     const isAutoChat = chat && chat.mode === 'auto'
     const transcripts = loadTranscripts()
+    let lastAuthorKey = null
     for (const m of currentMessages) {
-      const bubble = renderBubble(m, isAutoChat, transcripts)
-      convoBodyEl.appendChild(bubble)
+      const row = renderBubble(m, isAutoChat, transcripts)
+      // Primera burbuja de cada racha de autor: lleva la "cola" y más aire arriba.
+      const authorKey = m.fromMe ? 'me' : (m.participant || m.from || 'them')
+      if (authorKey !== lastAuthorKey) row.classList.add('first')
+      lastAuthorKey = authorKey
+      convoBodyEl.appendChild(row)
     }
     if (currentJid && typingTimers.has(currentJid) && isAutoReplyEnabled()) appendTypingBubble()
     if (stickBottom) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
@@ -981,10 +1139,16 @@
     if (existing) clearTimeout(existing)
     const t = setTimeout(() => hideTypingFor(jid), TYPING_TIMEOUT_MS)
     typingTimers.set(jid, t)
-    if (jid === currentJid) {
-      appendTypingBubble()
-      if (convoBodyEl) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
-    }
+    // Solo indicador interno del panel — el cliente NUNCA ve esto; su
+    // "escribiendo…" real lo controla el bridge, aparte, solo unos segundos
+    // antes de enviar. Retardo cosmético para que no salte al instante de
+    // recibir el mensaje (feedback Luismi 2026-08-02: "eso canta").
+    setTimeout(() => {
+      if (jid === currentJid && typingTimers.has(jid)) {
+        appendTypingBubble()
+        if (convoBodyEl) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
+      }
+    }, 1200 + Math.random() * 1500)
   }
 
   function hideTypingFor(jid) {
@@ -1002,28 +1166,37 @@
 
   function renderBubble(m, isAutoChat, transcripts) {
     const row = el('div', { cls: `wa-bubble-row ${m.fromMe ? 'me' : 'them'}` })
-    const bubble = el('div', { cls: `wa-bubble wa-bubble-${m.type || 'text'}` })
+    // OJO: el tipo va con prefijo kind- para no colisionar con las clases del
+    // CONTENIDO (.wa-bubble-text, .wa-bubble-sticker…): una burbuja de texto
+    // heredaba el pre-wrap del cuerpo y una de sticker quedaba clavada a 96px.
+    const bubble = el('div', { cls: `wa-bubble wa-bubble-kind-${m.type || 'text'}` })
     if (m.source === 'claude') bubble.classList.add('wa-bubble-claude')
 
-    // Mensaje citado (reply): pintar caja con autor + preview
-    if (m.quotedMsg) {
-      const q = m.quotedMsg
-      const qAuthor = q.fromMe ? 'Tú' : (q.participantName || 'Ellos')
-      const qPreview = q.type && q.type !== 'text' ? `[${q.type}]` : (q.body || '').slice(0, 80)
-      const quotedEl = el('div', { cls: 'wa-bubble-quoted' })
-      quotedEl.innerHTML = `
-        <span class="wa-bubble-quoted-author">${escapeHtml(qAuthor)}</span>
-        <span class="wa-bubble-quoted-body">${escapeHtml(qPreview)}</span>
-      `
-      bubble.appendChild(quotedEl)
-    }
-
-    // Nombre del participante en grupos (solo mensajes ajenos)
     const chatForBubble = chats.find(c => c.jid === currentJid)
     const isGroupChat = chatForBubble?.isGroup || isGroupJid(currentJid)
+
+    // Nombre del participante en grupos, SIEMPRE arriba del todo (como WhatsApp),
+    // con color estable por autor.
     if (!m.fromMe && isGroupChat && (m.participantName || m.participant)) {
       const name = participantLabel(m)
-      if (name) bubble.appendChild(el('div', { cls: 'wa-bubble-participant', text: name }))
+      if (name) {
+        const p = el('div', { cls: 'wa-bubble-participant', text: name })
+        p.style.color = participantColor(name)
+        bubble.appendChild(p)
+      }
+    }
+
+    // Mensaje citado (reply): caja compacta de una línea con autor + preview.
+    if (m.quotedMsg) {
+      const q = m.quotedMsg
+      const qAuthor = q.fromMe ? 'Tú' : (q.participantName || chatForBubble?.displayName || 'Contacto')
+      const quotedEl = el('div', { cls: 'wa-bubble-quoted' })
+      // Sin saltos de línea en el template: bajo white-space pre-wrap heredado se
+      // convertían en líneas fantasma dentro del quote.
+      quotedEl.innerHTML = `<span class="wa-bubble-quoted-author">${escapeHtml(qAuthor)}</span><span class="wa-bubble-quoted-body">${escapeHtml(quotePreview(q))}</span>`
+      const qa = quotedEl.querySelector('.wa-bubble-quoted-author')
+      if (qa && !q.fromMe && q.participantName) qa.style.color = participantColor(q.participantName)
+      bubble.appendChild(quotedEl)
     }
 
     // Identificación Luismi vs Claude en burbujas fromMe
@@ -1903,6 +2076,133 @@
     return Array.from(items).map(s => s.textContent)
   }
 
+  // ── Editor de fichas de conocimiento (pestaña Fichas) ──
+  let kbEditingId = null
+
+  function kbSetStatus(msg, isErr) {
+    const s = $('#wa-kb-status', cfgModalEl)
+    if (!s) return
+    s.textContent = msg || ''
+    s.classList.toggle('wa-kb-status-err', !!isErr)
+  }
+
+  function kbShowList() {
+    $('#wa-kb-list-view', cfgModalEl).classList.remove('hidden')
+    $('#wa-kb-editor', cfgModalEl).classList.add('hidden')
+    kbSetStatus('')
+  }
+
+  function kbAddSolRow(sol) {
+    const wrap = $('#wa-kb-sols', cfgModalEl)
+    const n = wrap.children.length + 1
+    const div = el('div', { cls: 'wa-kb-sol' })
+    div.innerHTML = `
+      <div class="wa-kb-sol-head">
+        <span class="wa-kb-sol-num">Solución ${n}</span>
+        <input type="text" class="wa-kb-sol-titulo" placeholder="nombre corto opcional: Reinicio básico" />
+        <button class="wa-kb-sol-del" type="button" title="Quitar esta solución">×</button>
+      </div>
+      <textarea class="wa-kb-sol-pasos" rows="4" placeholder="Los pasos exactos, tal cual quieres que se le digan al cliente. Si esta solución no funciona, el bot pasará a la siguiente."></textarea>
+    `
+    $('.wa-kb-sol-titulo', div).value = (sol && sol.titulo) || ''
+    $('.wa-kb-sol-pasos', div).value = (sol && sol.pasos) || ''
+    $('.wa-kb-sol-del', div).addEventListener('click', () => {
+      div.remove()
+      // Renumerar
+      let i = 1
+      wrap.querySelectorAll('.wa-kb-sol-num').forEach((s) => { s.textContent = `Solución ${i++}` })
+    })
+    wrap.appendChild(div)
+  }
+
+  function kbShowEditor(card, sections) {
+    kbEditingId = card ? card.id : null
+    $('#wa-kb-list-view', cfgModalEl).classList.add('hidden')
+    $('#wa-kb-editor', cfgModalEl).classList.remove('hidden')
+    $('#wa-kb-titulo', cfgModalEl).value = (card && card.titulo) || ''
+    $('#wa-kb-sintomas', cfgModalEl).value = (card && card.sintomas) || ''
+    $('#wa-kb-problema', cfgModalEl).value = (sections && sections.problema) || ''
+    $('#wa-kb-delete', cfgModalEl).classList.toggle('hidden', !card)
+    const wrap = $('#wa-kb-sols', cfgModalEl)
+    wrap.innerHTML = ''
+    const sols = (sections && sections.soluciones && sections.soluciones.length) ? sections.soluciones : [null]
+    sols.forEach((s) => kbAddSolRow(s))
+    kbSetStatus('')
+    requestAnimationFrame(() => { try { $('#wa-kb-titulo', cfgModalEl).focus() } catch {} })
+  }
+
+  async function refreshKbList() {
+    const ul = $('#wa-kb-list', cfgModalEl)
+    if (!ul || !wa || typeof wa.kbList !== 'function') return
+    ul.innerHTML = '<li class="wa-kb-empty">Cargando…</li>'
+    let res = null
+    try { res = await wa.kbList() } catch (e) { res = { ok: false, error: e.message } }
+    ul.innerHTML = ''
+    const fichas = (res && res.fichas) || []
+    if (!fichas.length) {
+      ul.innerHTML = '<li class="wa-kb-empty">Sin fichas todavía. Mientras no haya, el bot responde en modo libre con la persona.<br/>Crea la primera con «+ Nueva ficha».</li>'
+      return
+    }
+    for (const f of fichas) {
+      const li = el('li', { cls: 'wa-kb-item' })
+      li.innerHTML = `
+        <div class="wa-kb-item-title">${escapeHtml(f.titulo || f.id)}</div>
+        <div class="wa-kb-item-sintomas">${escapeHtml(f.sintomas || '(sin síntomas — el bot no sabrá elegirla)')}</div>
+      `
+      li.addEventListener('click', async () => {
+        try {
+          const r = await wa.kbGet(f.id)
+          if (r && r.ok) kbShowEditor(r.card, r.sections)
+          else kbSetStatus((r && r.error) || 'No se pudo abrir la ficha', true)
+        } catch (e) { kbSetStatus(e.message || 'Error abriendo ficha', true) }
+      })
+      ul.appendChild(li)
+    }
+  }
+
+  async function saveKbFromEditor() {
+    const titulo = $('#wa-kb-titulo', cfgModalEl).value.trim()
+    const sintomas = $('#wa-kb-sintomas', cfgModalEl).value.trim()
+    if (!titulo) { kbSetStatus('Falta el título del problema.', true); return }
+    if (!sintomas) { kbSetStatus('Faltan las frases del cliente (síntomas): sin ellas el bot no puede elegir esta ficha.', true); return }
+    const soluciones = Array.from(cfgModalEl.querySelectorAll('.wa-kb-sol')).map((div) => ({
+      titulo: $('.wa-kb-sol-titulo', div).value.trim(),
+      pasos: $('.wa-kb-sol-pasos', div).value.trim()
+    })).filter((s) => s.pasos)
+    if (!soluciones.length) { kbSetStatus('Escribe al menos una solución con pasos.', true); return }
+    kbSetStatus('Guardando…')
+    try {
+      const r = await wa.kbSave({
+        id: kbEditingId,
+        titulo,
+        sintomas,
+        problema: $('#wa-kb-problema', cfgModalEl).value.trim(),
+        soluciones
+      })
+      if (r && r.ok) {
+        kbSetStatus('Ficha guardada ✓')
+        await refreshKbList()
+        kbShowList()
+      } else {
+        kbSetStatus((r && r.error) || 'No se pudo guardar', true)
+      }
+    } catch (e) {
+      kbSetStatus(e.message || 'Error guardando', true)
+    }
+  }
+
+  async function deleteKbFromEditor() {
+    if (!kbEditingId) return
+    if (!window.confirm('¿Borrar esta ficha? El bot dejará de resolver este problema.')) return
+    try {
+      const r = await wa.kbDelete(kbEditingId)
+      if (r && r.ok) { await refreshKbList(); kbShowList() }
+      else kbSetStatus((r && r.error) || 'No se pudo borrar', true)
+    } catch (e) {
+      kbSetStatus(e.message || 'Error borrando', true)
+    }
+  }
+
   function bindCfgModal() {
     cfgModalEl.querySelectorAll('.wa-cfg-tab').forEach(t => {
       t.addEventListener('click', () => {
@@ -1912,8 +2212,14 @@
         cfgModalEl.querySelectorAll('.wa-cfg-pane').forEach(p => {
           p.classList.toggle('hidden', p.dataset.pane !== tab)
         })
+        if (tab === 'fichas') { kbShowList(); refreshKbList() }
       })
     })
+    $('#wa-kb-new', cfgModalEl).addEventListener('click', () => kbShowEditor(null, null))
+    $('#wa-kb-add-sol', cfgModalEl).addEventListener('click', () => kbAddSolRow(null))
+    $('#wa-kb-cancel', cfgModalEl).addEventListener('click', kbShowList)
+    $('#wa-kb-save', cfgModalEl).addEventListener('click', () => { saveKbFromEditor() })
+    $('#wa-kb-delete', cfgModalEl).addEventListener('click', () => { deleteKbFromEditor() })
     $('#wa-cfg-allow-add', cfgModalEl).addEventListener('click', () => {
       const inp = $('#wa-cfg-allow-input', cfgModalEl)
       const v = inp.value.trim()

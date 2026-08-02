@@ -36,6 +36,13 @@ Antes cada mensaje entrante disparaba SU turno de claude → 4 líneas seguidas 
 Ahora (`whatsapp-client.js`): `AGGREGATE_SILENCE_MS = 11s` — los mensajes de un remitente se acumulan en `pendingByJid` y el timer se reinicia con cada uno; al callarse, `flushPending` encola UN turno con todo el bloque (cada mensaje una línea; audios transcritos en orden). El historial del prompt excluye el bloque por id, no por posición. El cap `MAX_QUEUE_PER_JID` vive ahora en `flushPending`. `stop()` limpia los timers pendientes.
 Semántica conservada: epoch de invalidación, escalada por media (descarta el batch al pasar a manual vía `canAutoReplyNow`), serialización por JID y semáforo global.
 
+## Rediseño del panel de conversación (2026-08-02, "parece de aficionados")
+Tres bugs de render + rediseño CSS, verificado por CDP (dev con `--remote-debugging-port=9333`, script `cdp-shot.js` en scratchpad: lista targets → abre whatsapp-window → click chat → `Page.captureScreenshot`):
+1. **Horas "21/1" en todo**: WhatsApp da epoch en SEGUNDOS y `fmtTime` hacía `new Date(ts)` (ms) → 21/01/1970. Fix `toMs()` (< 1e12 → ×1000).
+2. **Colisión de clases burbuja/contenido** (regla dura): la burbuja llevaba `wa-bubble-<type>` y esas clases estilizan el CONTENIDO — burbuja de texto heredaba `white-space: pre-wrap` de `.wa-bubble-text` (los saltos del template del quote se volvían líneas fantasma = huecos gigantes) y la de sticker quedaba clavada a 96×96 por `.wa-bubble-sticker` (imagen cortada). Ahora la burbuja usa `wa-bubble-kind-<type>`. NUNCA nombrar la clase del contenedor igual que la del contenido.
+3. Quote citaba "[image]" y autor "Ellos" → ahora `quotePreview` (📷 Foto, 🎤 Audio…) y autor con fallback al displayName del chat.
+Rediseño (todo en `injectExtraStyles`, gana la cascada sobre styles.css): fondo #0b141a con textura de puntos, burbujas sin borde con sombra y cola (::after) en la primera de cada racha de autor (clase `.first` puesta en `renderMessages`), colores por participante (`participantColor` hash → paleta 8), quote compacto max-height 46px, metadatos 10px. Tema light cubierto con vars `--wab-*`.
+
 ## Reglas duras derivadas
 - Cualquier endpoint del bridge consultado por polling multi-fuente necesita límite propio en `rulesPerMinute` — el default 60/min se queda corto en cuanto hay 2+ consumidores.
 - El bridge externo NO está en git: todo cambio ahí va con backup `.bak.<fecha>` y hay que replicar la lógica compartida en `whatsapp/whatsapp-auth.js` si se toca auth (gemelos manuales).

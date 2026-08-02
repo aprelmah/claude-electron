@@ -6,6 +6,11 @@ const path = require('path')
 const { spawnSync } = require('child_process')
 const { atomicWriteFileSync } = require('./atomic-writes')
 const { isPathSafe } = require('./path-sandbox')
+const waKb = require('../whatsapp/whatsapp-kb')
+
+// Directorio de fichas de la base de conocimiento. Los ids se validan con regex
+// y el path se construye SIEMPRE aquí (nunca del renderer): sin traversal posible.
+const WA_KB_DIR = path.join(os.homedir(), '.claude', 'whatsapp-bridge', 'kb')
 
 // Whitelist: solo campos seguros editables desde el renderer. claudePath/personaPath
 // quedan fijados por el bridge para evitar RCE vía override desde un XSS.
@@ -16,7 +21,10 @@ const WA_SAFE_CONFIG_FIELDS = new Set([
   'maxHistory',
   'model',
   'effort',
-  'handoverOnFromMe'
+  'handoverOnFromMe',
+  'kbMode',
+  'kbAnswerModel',
+  'kbEscalateText'
 ])
 
 const WA_BRIDGE_LABEL = 'com.luismi.whatsapp-bridge'
@@ -233,6 +241,55 @@ function registerWhatsappIpc({
     const client = getClient()
     if (!client) return { qr: null }
     try { return await client.getQr() } catch (err) { return { qr: null, error: err?.message } }
+  })
+
+  // ── Base de conocimiento (fichas) ──
+  ipcMain.handle('whatsapp:kb-list', () => {
+    try {
+      return { ok: true, fichas: waKb.loadKbIndex(WA_KB_DIR) }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err), fichas: [] }
+    }
+  })
+
+  ipcMain.handle('whatsapp:kb-get', (_e, id) => {
+    try {
+      const card = waKb.getKbCard(WA_KB_DIR, id)
+      if (!card) return { ok: false, error: 'Ficha no encontrada' }
+      return { ok: true, card, sections: waKb.parseCardSections(card.body) }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('whatsapp:kb-save', (_e, payload) => {
+    try {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      let id = String(p.id || '').trim().toLowerCase()
+      if (!id) id = waKb.slugifyId(p.titulo)
+      if (!waKb.KB_ID_RE.test(id)) return { ok: false, error: 'Título/id no válido' }
+      const body = typeof p.body === 'string' && p.body.trim()
+        ? p.body
+        : waKb.buildCardBody({ problema: p.problema, soluciones: p.soluciones })
+      const saved = waKb.saveKbCard(WA_KB_DIR, {
+        id,
+        titulo: String(p.titulo || ''),
+        sintomas: String(p.sintomas || ''),
+        body
+      })
+      return { ok: true, id: saved.id }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('whatsapp:kb-delete', (_e, id) => {
+    try {
+      waKb.deleteKbCard(WA_KB_DIR, id)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
   })
 
   ipcMain.handle('whatsapp:get-chats', () => {
