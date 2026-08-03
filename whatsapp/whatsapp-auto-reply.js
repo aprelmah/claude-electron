@@ -3,24 +3,42 @@ const fs = require('fs')
 
 // Lanza claude headless con persona como --system-prompt y devuelve texto.
 // No usa --resume; cada turno es independiente (todo el contexto va en el prompt).
+// --tools "" desactiva TODOS los tools en la CLI: garantía dura de que un
+// cliente no puede provocar Bash/Edit/Read/etc por mucho que lo intente.
+// NOTA: NO usar --bare con claude >=2.1.144 — fuerza ANTHROPIC_API_KEY e
+// ignora la sesión OAuth (Max). Sin clave de API, sale "Not logged in".
+//
+// --strict-mcp-config y --setting-sources '' cortan la herencia del entorno
+// personal. El bot arrancaba cargando los ~10 servidores MCP configurados, el
+// CLAUDE.md global, settings, hooks y skills — nada de lo cual usa. Medido con
+// --output-format json sobre el prompt real (persona + una ficha, haiku):
+//   sin ellos → 11,2 s por turno (3,6 s de arranque + 7,6 s de API), y ~9.000
+//               tokens de entrada que no son ni la persona ni la ficha
+//   con ellos →  6,9 s por turno (0,75 s de arranque + 6,2 s de API)
+// Son 4,3 s por turno, y cada respuesta son DOS turnos (selector + respuesta):
+// ~8,6 s menos por mensaje. Calidad y voz sin cambios, comparadas a mano sobre
+// la misma ficha. De paso cierra el bot: un cliente de WhatsApp ya no alcanza
+// por ningún camino los MCP, hooks ni instrucciones personales de Luismi.
+const ISOLATION_ARGS = ['--tools', '', '--no-session-persistence', '--strict-mcp-config', '--setting-sources', '']
+
+function buildClaudeArgs({ prompt, systemPrompt, model = '', effort = '' }) {
+  const args = [
+    '-p', prompt,
+    '--system-prompt', systemPrompt,
+    '--output-format', 'text',
+    ...ISOLATION_ARGS
+  ]
+  if (model) args.push('--model', model)
+  if (effort) args.push('--effort', effort)
+  return args
+}
+
 function runClaudePersona({ claudeBin, systemPrompt, prompt, env, cwd, timeoutMs = 60_000, signal, model = '', effort = '' }) {
   return new Promise((resolve, reject) => {
     if (!claudeBin || !fs.existsSync(claudeBin)) {
       return reject(new Error(`Claude no disponible (${claudeBin})`))
     }
-    // --tools "" desactiva TODOS los tools en la CLI: garantía dura de que
-    // un cliente no puede provocar Bash/Edit/Read/etc por mucho que lo intente.
-    // NOTA: NO usar --bare con claude >=2.1.144 — fuerza ANTHROPIC_API_KEY e
-    // ignora la sesión OAuth (Max). Sin clave de API, sale "Not logged in".
-    const args = [
-      '-p', prompt,
-      '--system-prompt', systemPrompt,
-      '--tools', '',
-      '--output-format', 'text',
-      '--no-session-persistence'
-    ]
-    if (model) args.push('--model', model)
-    if (effort) args.push('--effort', effort)
+    const args = buildClaudeArgs({ prompt, systemPrompt, model, effort })
 
     let child
     try {
@@ -100,4 +118,4 @@ function buildPrompt({ displayNumber, history, body, maxHistory }) {
   ].join('\n')
 }
 
-module.exports = { runClaudePersona, buildPrompt }
+module.exports = { runClaudePersona, buildPrompt, buildClaudeArgs, ISOLATION_ARGS }
