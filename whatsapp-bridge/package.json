@@ -1,0 +1,16 @@
+{
+  "name": "whatsapp-bridge",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "WhatsApp bridge for Claude agents — powered by Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "express": "^4.18.2",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^9.0.0"
+  }
+}
