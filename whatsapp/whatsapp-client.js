@@ -8,7 +8,8 @@ const { readToken, HEADER_NAME, defaultTokenPath } = require('./whatsapp-auth')
 const {
   loadKbIndex, loadKbCards, buildSelectorPrompt, parseSelectorResponse,
   verifyGroundedReply, buildGroundedPromptPrefix, nextClarifyState,
-  SELECTOR_SYSTEM, KB_ANSWER_RULES, SMALLTALK_RULES, CLARIFY_RULES
+  SELECTOR_SYSTEM, KB_ANSWER_RULES, SMALLTALK_RULES, CLARIFY_RULES,
+  KB_CLARIFY_TTL_SECS
 } = require('./whatsapp-kb')
 
 const BRIDGE_URL = 'http://127.0.0.1:3031'
@@ -30,11 +31,35 @@ const STATUS_POLL_MS = 5000
 const STATE_FLUSH_MS = 5000
 const HISTORY_MAX = 200
 const MEDIA_ESCALATION_SECS = 300 // 5 min en manual tras adjunto de cliente
+// Escalada por fallo interno (timeout del selector, spawn de claude caído, EPIPE):
+// se revierte sola. Un hipo de 30s no puede dejar a un contacto sin bot para
+// siempre, que es lo que pasaba tratándolo como manual puesto por el usuario.
+const ERROR_ESCALATION_SECS = 600 // 10 min
+const ESCALATION_REASONS = ['media', 'user', 'error']
 const MAX_PARALLEL_REPLIES = 3
 const PERSONA_RELOAD_DEBOUNCE_MS = 500
 const ESCALATION_SWEEP_MS = 60_000 // 1 min: revierte chats escalados-vencidos a auto
 const MAX_QUEUE_PER_JID = 5 // cola por JID: si se llena, escalamos a manual
 const KB_ACTIVE_TTL_SECS = 1800 // 30 min: la conversación sigue "dentro" de la ficha activa
+
+// Estado de la KB por chat, restaurado desde disco. Se valida la forma porque el
+// JSON puede venir viejo o a medias, y un TTL ya vencido se descarta aquí igual
+// que lo haría el pipeline.
+function reviveKbActive(v, now) {
+  if (!v || !Array.isArray(v.ids) || !v.ids.length) return null
+  const since = Number(v.since) || 0
+  if (!since || (now - since) >= KB_ACTIVE_TTL_SECS) return null
+  const ids = v.ids.filter((id) => typeof id === 'string' && id)
+  return ids.length ? { ids, since } : null
+}
+
+function reviveKbClarify(v, now) {
+  if (!v) return null
+  const since = Number(v.since) || 0
+  const count = Number(v.count) || 0
+  if (!since || count <= 0 || (now - since) >= KB_CLARIFY_TTL_SECS) return null
+  return { count, since }
+}
 const CLAUDE_UNAVAILABLE_NOTIFY_MS = 10 * 60_000 // anti-spam del aviso al cliente
 const BRIDGE_TIMEOUT_DEFAULT_MS = 30_000
 const BRIDGE_TIMEOUT_LARGE_MS = 60_000
@@ -517,7 +542,7 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
       const displayNumber = deriveDisplayNumber(c.jid, c.displayNumber)
       const persistedMode = c.mode === 'manual' ? 'manual' : 'auto'
       const persistedEscalatedUntil = Number(c.escalatedUntil) || 0
-      const persistedEscalationReason = c.escalationReason === 'media' || c.escalationReason === 'user'
+      const persistedEscalationReason = ESCALATION_REASONS.includes(c.escalationReason)
         ? c.escalationReason
         : (persistedMode === 'manual' ? 'user' : null)
       const nextMode = isGroup ? 'manual' : persistedMode
@@ -547,6 +572,12 @@ function createWhatsAppClient({ transcribeAudio, buildRuntimeEnv, onAutoReplySen
         // Origen del manual. Migración: chats antiguos sin flag → 'user' (más seguro,
         // así no revertimos chats que Luismi puso manual a propósito antes del fix).
         escalationReason: nextEscalationReason,
+        // persistState serializa el chat entero, así que estos dos SÍ llegaban al
+        // disco; era este literal el que los tiraba al arrancar. Sin ellos, un
+        // cliente a medias de una ficha volvía a clasificarse desde cero tras un
+        // reinicio y se le repetía una aclaración que ya había contestado.
+        kbActive: isGroup ? null : reviveKbActive(c.kbActive, nowTs()),
+        kbClarify: isGroup ? null : reviveKbClarify(c.kbClarify, nowTs()),
         isGroup
       })
     }
@@ -866,8 +897,14 @@ function isAuthorized(jid) {
   // cuando el kill switch se pulsó con el turno en vuelo: el bot está silenciado,
   // así que el error interno no puede convertirse en un mensaje saliente.
   async function escalateToHuman(jid, chat, reason, { notifyCustomer = true } = {}) {
+    // Un fallo interno NO es una decisión de Luismi: se marca 'error' y el sweep
+    // lo devuelve a auto al vencer. Las escaladas de verdad (no hay ficha, la
+    // ficha no cubre el caso, se agotó la aclaración) sí piden intervención
+    // humana y siguen siendo 'user', que el sweep nunca toca.
+    const transient = reason === 'error'
     chat.mode = 'manual'
-    chat.escalationReason = 'user'
+    chat.escalationReason = transient ? 'error' : 'user'
+    chat.escalatedUntil = transient ? nowTs() + ERROR_ESCALATION_SECS : 0
     chat.kbActive = null
     chat.kbClarify = null
     markDirty()
@@ -1457,15 +1494,18 @@ function isAuthorized(jid) {
     const now = nowTs()
     let changed = false
     for (const chat of chats.values()) {
-      // Solo revertir escaladas multimedia vencidas. Manual puesto por el usuario
-      // (escalationReason='user') nunca se toca: Luismi decide cuándo volver a auto.
-      if (chat.mode === 'manual' && chat.escalationReason === 'media' && chat.escalatedUntil && chat.escalatedUntil <= now) {
+      // Se revierten las escaladas automáticas vencidas: multimedia y fallo
+      // interno. Manual puesto por el usuario (escalationReason='user') nunca se
+      // toca: Luismi decide cuándo volver a auto.
+      const autoReason = chat.escalationReason === 'media' || chat.escalationReason === 'error'
+      if (chat.mode === 'manual' && autoReason && chat.escalatedUntil && chat.escalatedUntil <= now) {
+        const why = chat.escalationReason === 'media' ? 'escalada multimedia vencida' : 'escalada por fallo interno vencida'
         chat.mode = 'auto'
         chat.escalatedUntil = 0
         chat.escalationReason = null
         markDirty()
         changed = true
-        console.log(`[wa-client] sweep: chat ${chat.jid} revertido a auto (escalada multimedia vencida)`)
+        console.log(`[wa-client] sweep: chat ${chat.jid} revertido a auto (${why})`)
         emitter.emit('chat-updated', summarizeChat(chat.jid))
       }
     }
@@ -1565,6 +1605,9 @@ module.exports = {
     isSafeToResend,
     bridgeFetchWithRetry,
     sanitizeAutoReplyText,
-    kbDirExists
+    kbDirExists,
+    reviveKbActive,
+    reviveKbClarify,
+    ESCALATION_REASONS
   }
 }

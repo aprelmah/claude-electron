@@ -320,5 +320,6 @@ module.exports = {
   SMALLTALK_RULES,
   CLARIFY_RULES,
   nextClarifyState,
-  KB_ID_RE
+  KB_ID_RE,
+  KB_CLARIFY_TTL_SECS
 }
