@@ -114,6 +114,21 @@ test('verifyGroundedReply: usa el ÚLTIMO marcador si hay varios', () => {
   assert.strictEqual(v.usedId, 'dos')
 })
 
+// El marcador es interno: al cliente no le puede llegar NINGUNO, ni el que
+// cierra ni el que el modelo cuela en mitad de la frase.
+test('verifyGroundedReply: quita TODOS los marcadores, no solo el último', () => {
+  const v = verifyGroundedReply('Como indica la ficha [KB:uno], apaga el interruptor.\n[KB:uno]', ['uno'])
+  assert.strictEqual(v.ok, true)
+  assert.ok(!/\[KB:/i.test(v.clean), `el marcador se filtró: ${JSON.stringify(v.clean)}`)
+  assert.strictEqual(v.clean, 'Como indica la ficha, apaga el interruptor.')
+})
+
+test('verifyGroundedReply: respuesta que es solo marcadores → no ok', () => {
+  const v = verifyGroundedReply('[KB:uno]\n[KB:uno]', ['uno'])
+  assert.strictEqual(v.ok, false)
+  assert.strictEqual(v.reason, 'respuesta-vacia')
+})
+
 test('verifyGroundedReply: [KB:ninguna] → no ok', () => {
   const v = verifyGroundedReply('No tengo eso.\n[KB:ninguna]', ['uno'])
   assert.strictEqual(v.ok, false)
@@ -193,6 +208,25 @@ test('saveKbCard: id inválido o traversal → throw sin tocar disco', () => {
   // Mayúsculas se normalizan, no se rechazan
   saveKbCard(dir, { id: 'MiFicha', body: 'contenido' })
   assert.ok(fs.existsSync(path.join(dir, 'mificha.md')))
+})
+
+// Dos títulos distintos pueden slugificar al mismo id (o compartir los 64
+// primeros caracteres): un alta nunca puede pisar la ficha que ya está ahí.
+test('saveKbCard: overwrite:false no pisa una ficha existente', () => {
+  const dir = mkKbDir({})
+  saveKbCard(dir, { id: 'bateria-no-carga', titulo: 'Batería', body: '## Solución 1\noriginal' })
+  assert.throws(
+    () => saveKbCard(dir, { id: 'bateria-no-carga', titulo: 'Batería', body: '## Solución 1\nnueva' }, { overwrite: false }),
+    /Ya existe una ficha/
+  )
+  assert.match(getKbCard(dir, 'bateria-no-carga').body, /original/)
+})
+
+test('saveKbCard: overwrite por defecto (edición) sí sobrescribe', () => {
+  const dir = mkKbDir({})
+  saveKbCard(dir, { id: 'ficha', titulo: 'T', body: 'viejo' })
+  saveKbCard(dir, { id: 'ficha', titulo: 'T', body: 'nuevo' })
+  assert.strictEqual(getKbCard(dir, 'ficha').body, 'nuevo')
 })
 
 test('deleteKbCard: id inválido → throw', () => {

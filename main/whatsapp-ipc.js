@@ -266,7 +266,10 @@ function registerWhatsappIpc({
     try {
       const p = payload && typeof payload === 'object' ? payload : {}
       let id = String(p.id || '').trim().toLowerCase()
-      if (!id) id = waKb.slugifyId(p.titulo)
+      // Alta (sin id) → el id sale del título y NO puede pisar una ficha ya
+      // existente. Edición (con id) → sobrescribir es justo lo que se pide.
+      const isNew = !id
+      if (isNew) id = waKb.slugifyId(p.titulo)
       if (!waKb.KB_ID_RE.test(id)) return { ok: false, error: 'Título/id no válido' }
       const body = typeof p.body === 'string' && p.body.trim()
         ? p.body
@@ -276,7 +279,7 @@ function registerWhatsappIpc({
         titulo: String(p.titulo || ''),
         sintomas: String(p.sintomas || ''),
         body
-      })
+      }, { overwrite: !isNew })
       return { ok: true, id: saved.id }
     } catch (err) {
       return { ok: false, error: err?.message || String(err) }

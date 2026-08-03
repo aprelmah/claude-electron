@@ -114,10 +114,18 @@ function buildCardFile({ id, titulo, sintomas, body }) {
   ].join('\n')
 }
 
-function saveKbCard(kbDir, { id, titulo, sintomas, body }) {
+// overwrite:false para altas — dos títulos distintos pueden slugificar al mismo
+// id (o compartir los primeros 64 caracteres) y la ficha vieja se perdía sin
+// aviso, con sus soluciones dentro.
+function saveKbCard(kbDir, { id, titulo, sintomas, body }, { overwrite = true } = {}) {
   const { clean, file } = kbFilePath(kbDir, id)
   if (!String(body || '').trim()) throw new Error('la ficha necesita contenido')
   if (String(body).length > KB_MAX_BODY) throw new Error('contenido demasiado largo')
+  if (!overwrite && fs.existsSync(file)) {
+    const err = new Error(`Ya existe una ficha con el id "${clean}". Ábrela desde la lista para editarla, o cambia el título.`)
+    err.code = 'KB_ID_EXISTS'
+    throw err
+  }
   fs.mkdirSync(kbDir, { recursive: true })
   const tmp = file + '.tmp'
   fs.writeFileSync(tmp, buildCardFile({ id: clean, titulo, sintomas, body }))
@@ -269,16 +277,26 @@ const SMALLTALK_RULES = [
   'PROHIBIDO dar soluciones, información técnica, precios, plazos o compromisos: cualquier consulta real la gestiona Luismi.'
 ].join('\n')
 
+const KB_MARKER_RE = /\[KB:([a-z0-9-_]+|ninguna)\]/gi
+
 // Verifica el marcador [KB:id] al final. Devuelve el texto limpio sin marcador.
 function verifyGroundedReply(text, allowedIds) {
   const src = String(text || '').trim()
-  const matches = [...src.matchAll(/\[KB:([a-z0-9-_]+|ninguna)\]/gi)]
+  const matches = [...src.matchAll(KB_MARKER_RE)]
   if (!matches.length) return { ok: false, reason: 'sin-marcador' }
   const last = matches[matches.length - 1]
   const id = last[1].toLowerCase()
   if (id === 'ninguna') return { ok: false, reason: 'ninguna' }
   if (!(allowedIds || []).includes(id)) return { ok: false, reason: 'ficha-no-permitida' }
-  const clean = (src.slice(0, last.index) + src.slice(last.index + last[0].length)).trim()
+  // Se quitan TODOS los marcadores, no solo el que cierra: el modelo a veces
+  // cita la ficha también en mitad de la frase ("como indica la ficha [KB:x]")
+  // y ese resto se le enviaba tal cual al cliente.
+  const clean = src
+    .replace(KB_MARKER_RE, '')
+    .replace(/[ \t]+([,.;:!?…])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
   if (!clean) return { ok: false, reason: 'respuesta-vacia' }
   return { ok: true, usedId: id, clean }
 }

@@ -2314,8 +2314,9 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       inp.value = ''
     })
     $('#wa-cfg-save', cfgModalEl).addEventListener('click', async () => {
-      // autoReply NO viaja aquí a propósito: lo gobierna el botón de la cabecera y
-      // saveConfig hace merge, así que guardar el modal nunca puede pisarlo.
+      // autoReply NO viaja aquí a propósito: lo gobierna el botón de la cabecera.
+      // updateConfig mergea sobre la config en memoria, así que guardar el modal
+      // respeta el estado vivo del bot (incluido el apagado por error de auth).
       const partial = {
         model: $('#wa-cfg-model', cfgModalEl).value.trim(),
         effort: $('#wa-cfg-effort', cfgModalEl).value.trim(),

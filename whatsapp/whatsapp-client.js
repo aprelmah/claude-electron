@@ -329,11 +329,23 @@ function bridgeFetch(method, urlPath, body) {
 // 2026-08-02: cliente sin respuesta y "escribiendo…" colgado 60s en el panel).
 // Envíos manuales (Luismi desde el panel) NO pasan por aquí: fallan al momento
 // para que él lo vea y reintente a mano, con feedback inmediato.
-// Sin status = fallo de red/timeout (bridge caído del todo); 5xx = el bridge
-// respondió pero no pudo (503 "No listo" es el caso real de la reconexión).
-// 401/400/etc NO son transitorios: reintentar no los arregla.
-function isTransientBridgeError(err) {
-  return !err || !err.status || err.status >= 500
+// OJO: /send/text NO es idempotente. Solo se reintenta cuando consta que el
+// mensaje NO salió; ante la duda se abandona, porque un duplicado le llega al
+// cliente y eso es peor que un mensaje perdido.
+//   - 503: el bridge contesta "No listo" ANTES de llamar a sendMessage → seguro.
+//   - ECONNREFUSED/EHOSTUNREACH/ENOTFOUND: ni se abrió la conexión → seguro.
+//   - 500: el catch del bridge envuelve al propio sendMessage, y Baileys lanza
+//     "Timed Out" en el ack cuando el mensaje YA ha salido por el socket →
+//     ambiguo, no se reintenta.
+//   - 'bridge timeout' del cliente (30s): con humanize el bridge quema hasta 7s
+//     antes de enviar, así que un envío lento pero entregado cae aquí → ambiguo.
+//   - 401/400/429: reintentar no los arregla.
+const SAFE_RESEND_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENOTFOUND'])
+
+function isSafeToResend(err) {
+  if (!err) return false
+  if (err.status) return err.status === 503
+  return SAFE_RESEND_CODES.has(err.code)
 }
 
 function bridgeFetchWithRetry(method, urlPath, body, { retries = 2, delaysMs = [4000, 8000] } = {}) {
@@ -342,7 +354,7 @@ function bridgeFetchWithRetry(method, urlPath, body, { retries = 2, delaysMs = [
       try {
         return await bridgeFetch(method, urlPath, body)
       } catch (err) {
-        if (!isTransientBridgeError(err) || attempt === retries) throw err
+        if (!isSafeToResend(err) || attempt === retries) throw err
         await new Promise((r) => setTimeout(r, delaysMs[attempt] ?? 8000))
       }
     }
@@ -1389,9 +1401,15 @@ function isAuthorized(jid) {
 
   function updateConfig(next) {
     const prevAutoReply = config.autoReply !== false
-    config = saveConfig(next || {})
+    // Merge sobre la config EN MEMORIA, no sobre la del disco. handleBridgeAuthError
+    // apaga autoReply solo en memoria; con el merge desde disco, guardar cualquier
+    // cosa del modal (modelo, persona, allowlist) resucitaba el bot.
+    config = saveConfig({ ...config, ...(next || {}) })
     const nextAutoReply = config.autoReply !== false
     if (prevAutoReply && !nextAutoReply) autoReplyEpoch += 1
+    // Si el operador vuelve a encender el bot, el kill switch de auth tiene que
+    // poder dispararse otra vez; si no, authErrorReported lo deja mudo para siempre.
+    if (!prevAutoReply && nextAutoReply) authErrorReported = false
     claudeBin = config.claudePath
     checkClaudeBinary()
     loadPersona()
@@ -1508,7 +1526,7 @@ module.exports = {
     jidLocalId,
     sanitizePhoneForJid,
     deriveDisplayNumber,
-    isTransientBridgeError,
+    isSafeToResend,
     bridgeFetchWithRetry
   }
 }
