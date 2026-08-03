@@ -83,8 +83,39 @@ function kbFilePath(kbDir, id) {
   return { clean, file: path.join(kbDir, `${clean}.md`) }
 }
 
-function getKbCard(kbDir, id) {
+// El id vive en el frontmatter y el nombre del fichero es libre: kb/ está
+// documentada como markdown escrito a mano, así que `bateria_turbo.md` puede
+// declarar `id: bateria-turbo`. Reconstruir la ruta como `<id>.md` a secas
+// hacía esas fichas imposibles de abrir y de borrar (ENOENT), y al reescribirlas
+// aparecía un segundo fichero con el mismo id dentro.
+// El id sigue validándose SIEMPRE en kbFilePath antes de tocar disco; aquí solo
+// se resuelve a qué fichero ya existente corresponde.
+function resolveKbFile(kbDir, id) {
   const { clean, file } = kbFilePath(kbDir, id)
+  if (fs.existsSync(file)) return { clean, file }
+  let names = []
+  try {
+    names = fs.readdirSync(kbDir).filter((f) => f.endsWith('.md') && f !== `${clean}.md`)
+  } catch {
+    return { clean, file }
+  }
+  for (const name of names) {
+    let raw
+    try {
+      raw = fs.readFileSync(path.join(kbDir, name), 'utf8')
+    } catch {
+      continue
+    }
+    const { meta } = parseFrontmatter(raw)
+    if (String(meta.id || '').trim().toLowerCase() === clean) {
+      return { clean, file: path.join(kbDir, name) }
+    }
+  }
+  return { clean, file }
+}
+
+function getKbCard(kbDir, id) {
+  const { clean, file } = resolveKbFile(kbDir, id)
   let raw
   try {
     raw = fs.readFileSync(file, 'utf8')
@@ -118,7 +149,9 @@ function buildCardFile({ id, titulo, sintomas, body }) {
 // id (o compartir los primeros 64 caracteres) y la ficha vieja se perdía sin
 // aviso, con sus soluciones dentro.
 function saveKbCard(kbDir, { id, titulo, sintomas, body }, { overwrite = true } = {}) {
-  const { clean, file } = kbFilePath(kbDir, id)
+  // Al editar se reescribe el fichero REAL de esa ficha aunque su nombre no
+  // coincida con el id; si no, el mismo id acabaría en dos ficheros.
+  const { clean, file } = resolveKbFile(kbDir, id)
   if (!String(body || '').trim()) throw new Error('la ficha necesita contenido')
   if (String(body).length > KB_MAX_BODY) throw new Error('contenido demasiado largo')
   if (!overwrite && fs.existsSync(file)) {
@@ -134,13 +167,17 @@ function saveKbCard(kbDir, { id, titulo, sintomas, body }, { overwrite = true } 
 }
 
 function deleteKbCard(kbDir, id) {
-  const { file } = kbFilePath(kbDir, id)
+  const { file } = resolveKbFile(kbDir, id)
   fs.unlinkSync(file)
   return true
 }
 
 // ── Secciones del cuerpo: ## Problema + ## Solución N (para el editor de la app) ──
 
+// Además de las secciones que el editor sabe pintar, se devuelve `extra`: todo
+// lo demás del cuerpo (## Notas internas, ## Aviso legal, preámbulo sin
+// cabecera...). kb/ está documentada como markdown a mano, así que ese material
+// existe; sin conservarlo, abrir una ficha y darle a Guardar lo borraba del disco.
 function parseCardSections(body) {
   const src = String(body || '')
   const problema = (src.match(/^##\s*Problema\s*\n([\s\S]*?)(?=^##\s|\s*$(?![\s\S]))/mi) || [])[1] || ''
@@ -150,10 +187,23 @@ function parseCardSections(body) {
   while ((m = re.exec(src))) {
     soluciones.push({ titulo: (m[1] || '').trim(), pasos: (m[2] || '').trim() })
   }
-  return { problema: problema.trim(), soluciones }
+  return { problema: problema.trim(), soluciones, extra: extractUnknownSections(src) }
 }
 
-function buildCardBody({ problema, soluciones }) {
+const KNOWN_SECTION_RE = /^##\s*(Problema|Soluci[oó]n(?:\s+\d+)?(?:\s*:.*)?)\s*$/i
+
+function extractUnknownSections(src) {
+  const lines = String(src || '').split('\n')
+  const kept = []
+  let keeping = true // el preámbulo antes de la primera cabecera también se conserva
+  for (const line of lines) {
+    if (/^##\s/.test(line)) keeping = !KNOWN_SECTION_RE.test(line.trim())
+    if (keeping) kept.push(line)
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function buildCardBody({ problema, soluciones, extra }) {
   const parts = []
   if (String(problema || '').trim()) parts.push(`## Problema\n${String(problema).trim()}`)
   const sols = (soluciones || []).filter((s) => String(s?.pasos || '').trim())
@@ -161,6 +211,7 @@ function buildCardBody({ problema, soluciones }) {
     const t = String(s.titulo || '').trim()
     parts.push(`## Solución ${i + 1}${t ? `: ${t}` : ''}\n${String(s.pasos).trim()}`)
   })
+  if (String(extra || '').trim()) parts.push(String(extra).trim())
   return parts.join('\n\n')
 }
 
@@ -209,14 +260,43 @@ function buildSelectorPrompt({ index, message, history }) {
   ].join('\n')
 }
 
+// Extrae el primer objeto JSON completo del texto contando llaves, saltando las
+// que van dentro de cadenas. Con un `/\{[\s\S]*?\}/` perezoso bastaba con que el
+// modelo añadiera un objeto anidado ({"meta":{...}}) para cortar el JSON a medias
+// y acabar en el fallback: una consulta con ficha buena terminaba escalada.
+function extractFirstJsonObject(src) {
+  const s = String(src || '')
+  const start = s.indexOf('{')
+  if (start < 0) return null
+  let depth = 0
+  let inStr = false
+  let escaped = false
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') inStr = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return s.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
 // Fail-safe: cualquier cosa que no sea un JSON válido con tipo conocido → sin_ficha.
 function parseSelectorResponse(text, validIds) {
   const fallback = { tipo: 'sin_ficha', ids: [] }
-  const m = String(text || '').match(/\{[\s\S]*?\}/)
-  if (!m) return fallback
+  const raw = extractFirstJsonObject(text)
+  if (!raw) return fallback
   let obj
   try {
-    obj = JSON.parse(m[0])
+    obj = JSON.parse(raw)
   } catch {
     return fallback
   }
@@ -321,5 +401,7 @@ module.exports = {
   CLARIFY_RULES,
   nextClarifyState,
   KB_ID_RE,
-  KB_CLARIFY_TTL_SECS
+  KB_CLARIFY_TTL_SECS,
+  resolveKbFile,
+  extractFirstJsonObject
 }

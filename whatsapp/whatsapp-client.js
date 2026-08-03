@@ -18,6 +18,7 @@ const CONFIG_PATH = path.join(BRIDGE_DIR, 'config.json')
 const STATE_PATH = path.join(BRIDGE_DIR, 'state.json')
 const KB_DIR = path.join(BRIDGE_DIR, 'kb')
 const KB_AUDIT_PATH = path.join(BRIDGE_DIR, 'kb-audit.jsonl')
+const KB_AUDIT_MAX_BYTES = 5 * 1024 * 1024 // 5 MB antes de rotar a .1
 
 // Distingue "nunca hubo KB" (instalación sin fichas) de "la KB se ha roto".
 // En strict, lo segundo escala; lo primero sigue con la persona libre.
@@ -885,9 +886,39 @@ function isAuthorized(jid) {
     return true
   }
 
+  // El audit lleva mensajes del cliente y respuestas enviadas: es PII. Se crea
+  // 0o600 (como el resto de estado sensible del bridge, regla de la auditoría
+  // 2026-05-24) y rota al superar el tope, conservando un único .1 anterior.
+  // Sin esto crecía sin límite y quedaba legible por cualquier proceso local.
+  function rotateKbAuditIfNeeded() {
+    try {
+      if (fs.statSync(KB_AUDIT_PATH).size < KB_AUDIT_MAX_BYTES) return
+    } catch {
+      return // no existe todavía
+    }
+    try {
+      fs.renameSync(KB_AUDIT_PATH, `${KB_AUDIT_PATH}.1`)
+    } catch {}
+  }
+
+  // El `mode` de appendFileSync solo aplica al crear: los audit que ya existen
+  // se quedarían en 0644. Se ajustan una vez por proceso.
+  let kbAuditPermsChecked = false
+  function tightenKbAuditPerms() {
+    if (kbAuditPermsChecked) return
+    kbAuditPermsChecked = true
+    for (const p of [KB_AUDIT_PATH, `${KB_AUDIT_PATH}.1`]) {
+      try {
+        if ((fs.statSync(p).mode & 0o077) !== 0) fs.chmodSync(p, 0o600)
+      } catch {}
+    }
+  }
+
   function appendKbAudit(entry) {
     try {
-      fs.appendFileSync(KB_AUDIT_PATH, JSON.stringify(entry) + '\n')
+      tightenKbAuditPerms()
+      rotateKbAuditIfNeeded()
+      fs.appendFileSync(KB_AUDIT_PATH, JSON.stringify(entry) + '\n', { mode: 0o600 })
     } catch {}
   }
 
@@ -1000,8 +1031,6 @@ function isAuthorized(jid) {
           await escalateToHuman(jid, chat, 'vago-agotado')
           return
         }
-        chat.kbClarify = next
-        markDirty()
         const text = await runClaudePersona({
           claudeBin,
           systemPrompt: persona + CLARIFY_RULES,
@@ -1014,6 +1043,14 @@ function isAuthorized(jid) {
         const safe = sanitizeAutoReplyText(text)
         if (!safe) { audit.mode = 'kb-escalado'; audit.reason = 'sanitize'; await escalateToHuman(jid, chat, 'sanitize'); return }
         const sent = await sendText(jid, safe, { changeModeToManual: false, internal: true, source: 'claude' })
+        // El intento se apunta solo si la pregunta SALIÓ. Marcándolo antes, un
+        // envío fallido (o un BOT OFF a mitad) gastaba el único intento y el
+        // siguiente mensaje del cliente se escalaba por "vago-agotado" sin que
+        // nadie le hubiera preguntado nada.
+        if (sent?.ok) {
+          chat.kbClarify = next
+          markDirty()
+        }
         audit.mode = 'vago'
         emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'vago', text: safe, error: sent?.error || '' })
         return
@@ -1554,6 +1591,11 @@ function isAuthorized(jid) {
     stopPersonaWatcher()
     persistState()
   }
+
+  // Al crear el cliente, no en start() ni en la primera escritura: el audit que
+  // ya está en disco lleva PII y hay que cerrarlo aunque el bot esté apagado y
+  // no llegue a escribir nunca.
+  tightenKbAuditPerms()
 
   // Flush de estado en SIGINT/SIGTERM. Sólo registramos una vez por proceso
   // aunque se creen múltiples clientes.

@@ -271,9 +271,20 @@ function registerWhatsappIpc({
       const isNew = !id
       if (isNew) id = waKb.slugifyId(p.titulo)
       if (!waKb.KB_ID_RE.test(id)) return { ok: false, error: 'Título/id no válido' }
+      // El editor solo modela Problema + Solución N. Al reconstruir el cuerpo hay
+      // que arrastrar las secciones que no sabe pintar (notas internas, avisos,
+      // preámbulo) leyéndolas de la ficha que ya está en disco; si no, guardar
+      // sin tocar nada las borraba.
+      let extra = ''
+      if (!isNew) {
+        try {
+          const prev = waKb.getKbCard(WA_KB_DIR, id)
+          if (prev) extra = waKb.parseCardSections(prev.body).extra || ''
+        } catch {}
+      }
       const body = typeof p.body === 'string' && p.body.trim()
         ? p.body
-        : waKb.buildCardBody({ problema: p.problema, soluciones: p.soluciones })
+        : waKb.buildCardBody({ problema: p.problema, soluciones: p.soluciones, extra })
       const saved = waKb.saveKbCard(WA_KB_DIR, {
         id,
         titulo: String(p.titulo || ''),
