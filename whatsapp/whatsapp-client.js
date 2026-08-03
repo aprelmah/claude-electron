@@ -43,6 +43,23 @@ const ESCALATION_SWEEP_MS = 60_000 // 1 min: revierte chats escalados-vencidos a
 const MAX_QUEUE_PER_JID = 5 // cola por JID: si se llena, escalamos a manual
 const KB_ACTIVE_TTL_SECS = 1800 // 30 min: la conversación sigue "dentro" de la ficha activa
 
+// Ventana de agrupación: la gente escribe en varias líneas/mensajes seguidos.
+// Acumulamos hasta un silencio del remitente y respondemos UNA sola vez a todo
+// el bloque (un turno de claude, una respuesta).
+// Historia del valor: 11s fijo → 4-8s aleatorio (feedback Luismi 2026-08-02: se
+// notaba lento con el pipeline de KB encima, y un valor FIJO es el patrón más
+// delator de todos — "cada cuántos segundos contesta, no parece aleatorio, eso
+// canta") → 7-12s aleatorio. Lo último porque con 4s de suelo una ráfaga con una
+// pausa normal de 5-6s se partía en dos turnos: el cliente recibía dos mensajes
+// para una sola idea, y el primero llegaba fuera de contexto. Sigue sin haber
+// ningún número fijo: cada ráfaga recalcula el suyo.
+const AGGREGATE_SILENCE_MIN_MS = 7_000
+const AGGREGATE_SILENCE_MAX_MS = 12_000
+
+function nextAggregateSilenceMs() {
+  return AGGREGATE_SILENCE_MIN_MS + Math.random() * (AGGREGATE_SILENCE_MAX_MS - AGGREGATE_SILENCE_MIN_MS)
+}
+
 // Estado de la KB por chat, restaurado desde disco. Se valida la forma porque el
 // JSON puede venir viejo o a medias, y un TTL ya vencido se descarta aquí igual
 // que lo haría el pipeline.
@@ -719,19 +736,6 @@ function isAuthorized(jid) {
     try { emitter.emit('bridge-auth-error', { message: err?.message || 'auth error', at: Date.now() }) } catch {}
   }
 
-  // Ventana de agrupación: la gente escribe en varias líneas/mensajes seguidos.
-  // Acumulamos hasta un silencio del remitente y respondemos UNA sola vez a
-  // todo el bloque (un turno de claude, una respuesta).
-  // Rango 4-8s (feedback Luismi 2026-08-02, dos rondas): primero bajado de 11s
-  // (se notaba lento con el pipeline de KB encima), luego se detectó que un
-  // valor FIJO es el patrón más delator de todos — "cada cuántos segundos
-  // contesta, no parece aleatorio, eso canta". Cada ráfaga recalcula un valor
-  // nuevo al azar, nunca el mismo número de segundos dos veces.
-  const AGGREGATE_SILENCE_MIN_MS = 4_000
-  const AGGREGATE_SILENCE_MAX_MS = 8_000
-  function nextAggregateSilenceMs() {
-    return AGGREGATE_SILENCE_MIN_MS + Math.random() * (AGGREGATE_SILENCE_MAX_MS - AGGREGATE_SILENCE_MIN_MS)
-  }
   const pendingByJid = new Map() // jid → { msgs: [], timer, epoch }
 
   function flushPending(jid) {
@@ -1650,6 +1654,9 @@ module.exports = {
     kbDirExists,
     reviveKbActive,
     reviveKbClarify,
-    ESCALATION_REASONS
+    ESCALATION_REASONS,
+    nextAggregateSilenceMs,
+    AGGREGATE_SILENCE_MIN_MS,
+    AGGREGATE_SILENCE_MAX_MS
   }
 }
