@@ -4,18 +4,30 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-02, tarde/noche (verificado contra git, los tests y la app desplegada)._
+_Última actualización: 2026-08-02, noche (verificado contra git, los tests y la app desplegada)._
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`main`**. HEAD **`5194944`** — **ahead 1 de `origin/main`, sin push todavía** (Luismi no lo ha pedido para este último commit).
+- Rama activa: **`main`**. HEAD **`e68e095`** — **ahead 4 de `origin/main`, sin push** (Luismi no lo ha pedido).
 - Working tree limpio (STATE.md aparte, en curso de este cierre).
-- Tests: **612 (606 pass / 0 fail / 6 skip pre-existentes)**. 2 suites nuevas de la tarde: `whatsapp-kb.test.js`, `whatsapp-bridge-retry.test.js`.
-- Deploy: `/Applications/POWER-AGENT.app` build de **2026-08-02 22:04**, corriendo (ventana principal + ventana WhatsApp, bridge Baileys activo). 9 despliegues a lo largo de la sesión, todos con tests en verde.
+- Tests: **612 (606 pass / 0 fail / 6 skip pre-existentes)**, corridos por el hook pre-commit de `63c695a`.
+- Deploy: `/Applications/POWER-AGENT.app` build de **2026-08-02 23:03**, corriendo. 11 despliegues en el día, todos con tests en verde.
+- **`autoReply` está en `false`**: el bot de WhatsApp NO responde a nadie ahora mismo. Es como lo dejó Luismi antes de esta última sesión, no un accidente.
 - Bridge WhatsApp (`~/.claude/whatsapp-bridge/`, **fuera de git**): sano, `com.luismi.whatsapp-bridge` corriendo por launchd. Backups de hoy: `index.js.bak.20260802-{reset,qr-ascii,humanize,speedup}`.
 - Electron 43.2.0, CLI codex 0.145.0 / claude 2.1.220 (sin cambios hoy).
 
-## Última sesión (2026-08-02, tarde/noche) — WhatsApp: QR, KB con edición en la app, anti-detección
+## Última sesión (2026-08-02, noche) — kill switch del bot a un clic
+
+Detalle: `.claude/memory/decisions/kill_switch_whatsapp_2026_08_02.md`.
+
+Arrancó preguntando si `AUTO TODO` debía desactivar además de activar. No: es one-way a propósito, porque el apagado real es `config.autoReply`. Pero ese apagado estaba enterrado en el modal de Configuración (4 clics + Guardar) para algo que se usa en una urgencia.
+
+- **`63c695a`** — toggle `BOT ON`/`BOT OFF` en la cabecera del panel (`#wa-btn-autoreply`), verde/rojo, un clic. Sale del modal por completo, **incluido el partial de Guardar**: `saveConfig` hace merge, así que guardar Configuración ya no puede pisar el estado del bot. Volver a meter `autoReply` en ese partial reintroduce el bug.
+- Mismo commit: `updateStatusUI` **respeta un aviso vivo** del subtítulo. El `refreshStatus()` del toggle borraba el `showHeaderNotice` antes de que se leyera (medido: 0 de 25 muestras a 120 ms). Afectaba también a los avisos de AUTO TODO y del bridge. Si alguien "limpia" esa línea, todos vuelven a ser invisibles.
+- **`e68e095`** — `.claude/skills/verify/SKILL.md`: cómo conducir la app por CDP (arranque con `--remote-debugging-port` por Terminal, el MCP chrome-devtools NO sirve, el `ws` de node_modules revienta bajo Bun, los dos targets del panel). Evita el cold start la próxima vez.
+- El bug del aviso lo encontró **conducir la app**, no los 612 tests en verde.
+
+## Sesión previa (2026-08-02, tarde) — WhatsApp: QR, KB con edición en la app, anti-detección
 
 Arrancó con mapeo completo del subsistema WhatsApp (4 agentes en paralelo). Detalle completo en:
 `.claude/memory/bugs/bug_wa_qr_rate_limit_2026_08_02.md`, `.claude/memory/bugs/bug_wa_sendtext_reconexion_2026_08_02.md`, `.claude/memory/decisions/kb_whatsapp_2026_08_02.md`, `.claude/memory/decisions/kb_fichas_ejemplo_turbo_2026_08_02.md`.
@@ -38,7 +50,8 @@ Humanización en el bridge (fuera de git): read receipt + "escribiendo" con jitt
 
 ## Próximo paso
 
-1. **Decidir push** de `5194944` a origin — Luismi no lo ha pedido aún para este commit.
+0. **Sincronizar las dos ventanas del panel al cambiar `autoReply`**: hoy solo se enteran por el `setInterval` de 15 s, así que tras togglear en una la otra miente 12-15 s. En un botón de emergencia es feo. Arreglo: broadcast por IPC al cambiar config.
+1. **Decidir push** de los 4 commits pendientes a origin — Luismi no lo ha pedido.
 2. **Decidir las 3 fichas de ejemplo de Turbo Energy**: revisarlas/validarlas o borrarlas antes de que un cliente real las reciba (auto-reply sigue activo, allowlist vacía = responde a cualquiera).
 3. **Decisión de producto pendiente**: ¿el bot debe reconocer un cierre de conversación ("gracias", "ok") y callar, en vez de disparar el pipeline completo cada vez?
 4. **Reforzar la regla de prefijo internacional** en el camino IPC de la app (`numberToJid`) — hoy solo vive en `scripts/whatsapp-send-safe.sh`, detectado pero no tocado.
