@@ -12,6 +12,14 @@ const USER_LOCAL_BIN = path.join(os.homedir(), '.local/bin')
 const PYTHON39_BIN = path.join(os.homedir(), 'Library/Python/3.9/bin')
 const HOMEBREW_BIN = '/usr/local/bin'
 
+// Identidad de la sesión de Claude Code que haya lanzado la app. Nunca debe
+// heredarla un PTY hijo — ver buildRuntimeEnv().
+const CLAUDE_SESSION_IDENTITY_VARS = [
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_ENTRYPOINT'
+]
+
 function resolveCommand(candidates) {
   for (const cmd of candidates) {
     if (!cmd) continue
@@ -96,6 +104,17 @@ function createCliResolver(getConfig) {
     if (baseEnv.CLICOLOR_FORCE === '0') delete baseEnv.CLICOLOR_FORCE
     if (baseEnv.FORCE_COLOR === '0') delete baseEnv.FORCE_COLOR
 
+    // Si la app se lanzó desde una sesión de Claude Code (un `npm run deploy`, un
+    // `open -a` desde un agente), hereda su identidad. El PTY hijo se cree
+    // entonces una sub-sesión de aquella y DESACTIVA el guardado del transcript:
+    //   "Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker"
+    // Eso rompe en silencio media app — sin .jsonl no hay --resume, ni historial,
+    // ni relay de Telegram (que lee ese fichero para saber qué contestó Claude),
+    // ni pool de PTYs ocultos, ni task-sessions. El único síntoma es una línea
+    // amarilla al fondo del TUI que es facilísimo no ver.
+    // Los PTYs de la app son siempre sesiones de primer nivel: se corta la herencia.
+    for (const k of CLAUDE_SESSION_IDENTITY_VARS) delete baseEnv[k]
+
     // El bin de nvm va ANTES de /usr/local/bin a propósito: si gana el node de
     // sistema, su prefix global es /usr/local/lib/node_modules (no escribible) y
     // el auto-update de codex ("1. Update now") revienta con EACCES. Con nvm
@@ -156,6 +175,7 @@ module.exports = {
   USER_LOCAL_BIN,
   PYTHON39_BIN,
   HOMEBREW_BIN,
+  CLAUDE_SESSION_IDENTITY_VARS,
   LATEST_NVM_NODE_BIN,
   LATEST_NVM_CODEX_BIN,
   FALLBACK_CLAUDE_BIN,
