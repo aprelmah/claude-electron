@@ -17,6 +17,12 @@ const CONFIG_PATH = path.join(BRIDGE_DIR, 'config.json')
 const STATE_PATH = path.join(BRIDGE_DIR, 'state.json')
 const KB_DIR = path.join(BRIDGE_DIR, 'kb')
 const KB_AUDIT_PATH = path.join(BRIDGE_DIR, 'kb-audit.jsonl')
+
+// Distingue "nunca hubo KB" (instalación sin fichas) de "la KB se ha roto".
+// En strict, lo segundo escala; lo primero sigue con la persona libre.
+function kbDirExists() {
+  try { return fs.statSync(KB_DIR).isDirectory() } catch { return false }
+}
 const MEDIA_DIR = path.join(BRIDGE_DIR, 'media')
 const AUTH_TOKEN_PATH = defaultTokenPath()
 const POLL_MS = 1500
@@ -185,7 +191,18 @@ function normalizeForModeration(text) {
 }
 
 function sanitizeAutoReplyText(text) {
-  const compact = String(text || '').replace(/\s+/g, ' ').trim()
+  // Los saltos de línea se PRESERVAN: la KB responde con pasos numerados y
+  // aplastarlos a una sola línea destruye justo lo que la ficha existe para
+  // entregar. Se colapsan espacios/tabs dentro de cada línea y las líneas en
+  // blanco de más. La moderación sigue viendo el texto en una línea, para que
+  // un salto por medio no esquive un patrón tóxico.
+  const compact = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
   if (!compact) return ''
   const normalized = normalizeForModeration(compact)
   if (TOXIC_REPLY_PATTERNS.some((rx) => rx.test(normalized))) return ''
@@ -845,13 +862,17 @@ function isAuthorized(jid) {
 
   // Escalada al humano: mensaje honesto fijo + chat a manual. Es el fail-safe de
   // TODO el modo KB: sin ficha, selector raro, verificación fallida o error → aquí.
-  async function escalateToHuman(jid, chat, reason) {
+  // notifyCustomer:false deja el chat escalado pero SIN avisar al cliente. Se usa
+  // cuando el kill switch se pulsó con el turno en vuelo: el bot está silenciado,
+  // así que el error interno no puede convertirse en un mensaje saliente.
+  async function escalateToHuman(jid, chat, reason, { notifyCustomer = true } = {}) {
     chat.mode = 'manual'
     chat.escalationReason = 'user'
     chat.kbActive = null
     chat.kbClarify = null
     markDirty()
     emitter.emit('chat-updated', summarizeChat(jid))
+    if (!notifyCustomer) return null
     const sent = await sendText(jid, config.kbEscalateText, { changeModeToManual: false, internal: true, source: 'claude' })
     emitAutoReplySent({ jid, ok: !!sent?.ok, mode: 'kb-escalado', reason, text: config.kbEscalateText, error: sent?.error || '' })
     return sent
@@ -997,7 +1018,12 @@ function isAuthorized(jid) {
       console.error('[whatsapp] KB error:', err?.message || err)
       audit.mode = 'kb-escalado'
       audit.reason = 'error:' + (err?.message || String(err)).slice(0, 120)
-      try { await escalateToHuman(jid, chat, 'error') } catch {}
+      // El kill switch se vuelve a mirar aquí: si Luismi pulsó BOT OFF mientras
+      // el turno estaba en vuelo, el fallo posterior no puede colar un mensaje
+      // al cliente. El chat sí se pasa a manual, que es lo que toca tras un error.
+      const notifyCustomer = canAutoReplyNow(jid, epoch)
+      if (!notifyCustomer) audit.mode = 'cancelado'
+      try { await escalateToHuman(jid, chat, 'error', { notifyCustomer }) } catch {}
     } finally {
       appendKbAudit(audit)
     }
@@ -1055,6 +1081,16 @@ function isAuthorized(jid) {
       try { kbIndex = loadKbIndex(KB_DIR) } catch {}
       if (kbIndex.length) {
         await respondFromKb({ jid, chat, msgs, promptBody, epoch, kbIndex })
+        return
+      }
+      // Sin fichas legibles. Si el directorio kb/ EXISTE, la KB estaba montada y
+      // algo se ha roto (borrada, renombrada, permisos, frontmatter inválido):
+      // en strict eso se escala, NO se cae a la persona libre. El modo existe
+      // precisamente para que el bot no invente pasos, precios ni plazos.
+      // Si kb/ no existe es una instalación sin KB: se sigue como siempre.
+      if (kbDirExists()) {
+        console.warn('[whatsapp] kbMode strict: kb/ existe pero no hay fichas legibles → escalada a humano')
+        try { await escalateToHuman(jid, chat, 'kb-ilegible') } catch {}
         return
       }
     }
@@ -1527,6 +1563,8 @@ module.exports = {
     sanitizePhoneForJid,
     deriveDisplayNumber,
     isSafeToResend,
-    bridgeFetchWithRetry
+    bridgeFetchWithRetry,
+    sanitizeAutoReplyText,
+    kbDirExists
   }
 }
