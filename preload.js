@@ -209,6 +209,11 @@ contextBridge.exposeInMainWorld('api', {
       const h = (_e, status) => cb(status)
       ipcRenderer.on('whatsapp:status-changed', h)
       return () => ipcRenderer.removeListener('whatsapp:status-changed', h)
+    },
+    onAutoReplyTyping: (cb) => {
+      const h = (_e, payload) => cb(payload)
+      ipcRenderer.on('whatsapp:auto-reply-typing', h)
+      return () => ipcRenderer.removeListener('whatsapp:auto-reply-typing', h)
     }
   }
 })

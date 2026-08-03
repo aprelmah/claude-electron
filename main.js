@@ -3042,6 +3042,7 @@ app.whenReady().then(async () => {
     })
     whatsappClient.on('new-message', (payload) => broadcastToAllWindows('whatsapp:new-message', payload))
     whatsappClient.on('chat-updated', (payload) => broadcastToAllWindows('whatsapp:chat-updated', payload))
+    whatsappClient.on('auto-reply-typing', (payload) => broadcastToAllWindows('whatsapp:auto-reply-typing', payload))
     whatsappClient.on('status-changed', (status) => {
       whatsappReachable = status !== 'disconnected'
       broadcastToAllWindows('whatsapp:status-changed', status)

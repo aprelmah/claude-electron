@@ -1245,6 +1245,14 @@ function isAuthorized(jid) {
       // Solo las respuestas automáticas se humanizan (read receipt + typing con
       // jitter en el bridge); los envíos manuales del panel son Luismi real.
       if (internal) payload.humanize = true
+      // El "escribiendo…" que ve el CLIENTE lo lanza el bridge dentro de este
+      // fetch (humanizeBeforeSend: read receipt y luego composing). Avisamos al
+      // panel justo aquí para que su burbuja pase de "haciéndose cargo" a
+      // "escribiendo…" a la vez que el cliente lo ve, en lugar de mentir
+      // enseñando "escribiendo" durante todo el pipeline.
+      if (internal) {
+        try { emitter.emit('auto-reply-typing', { jid: targetJid }) } catch {}
+      }
       const res = internal
         ? await bridgeFetchWithRetry('POST', '/send/text', payload)
         : await bridgeFetch('POST', '/send/text', payload)

@@ -43,6 +43,7 @@
   let unreadBadgeEl = null
   let searchQuery = ''
   const typingTimers = new Map()
+  const typingPhaseByJid = new Map() // jid → 'working' | 'composing'
   const TYPING_TIMEOUT_MS = 60000
 
   let chats = []
@@ -1142,22 +1143,44 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       lastAuthorKey = authorKey
       convoBodyEl.appendChild(row)
     }
-    if (currentJid && typingTimers.has(currentJid) && isAutoReplyEnabled()) appendTypingBubble()
+    if (currentJid && typingTimers.has(currentJid) && isAutoReplyEnabled()) {
+      appendTypingBubble(typingPhaseByJid.get(currentJid) || 'working')
+    }
     if (stickBottom) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
   }
 
-  function appendTypingBubble() {
+  // Dos fases distintas, y la diferencia importa:
+  //   'working'  → el pipeline está en marcha (selector, ficha, verificación).
+  //                El cliente NO ve nada durante todo este rato.
+  //   'composing'→ el bridge acaba de mandar el "escribiendo…" de verdad, así
+  //                que el cliente lo está viendo AHORA en su WhatsApp.
+  // Antes se enseñaba "escribiendo…" desde el primer instante: sugería que el
+  // cliente llevaba un minuto viendo escribir a alguien que ni había empezado.
+  const TYPING_PHASE_LABEL = {
+    working: 'el bot se está haciendo cargo',
+    composing: 'escribiendo…'
+  }
+
+  function appendTypingBubble(phase = 'working') {
     if (!convoBodyEl) return
-    if (convoBodyEl.querySelector('.wa-typing-row')) return
+    const existing = convoBodyEl.querySelector('.wa-typing-row')
+    if (existing) { setTypingBubblePhase(existing, phase); return }
     const row = el('div', { cls: 'wa-bubble-row them wa-typing-row' })
     const bubble = el('div', { cls: 'wa-bubble wa-bubble-typing' })
     bubble.innerHTML = `
       <div class="wa-bubble-bot">🤖 Claude</div>
       <div class="wa-typing-dots"><span></span><span></span><span></span></div>
-      <div class="wa-typing-label">escribiendo…</div>
+      <div class="wa-typing-label"></div>
     `
     row.appendChild(bubble)
     convoBodyEl.appendChild(row)
+    setTypingBubblePhase(row, phase)
+  }
+
+  function setTypingBubblePhase(row, phase) {
+    const label = row.querySelector('.wa-typing-label')
+    if (label) label.textContent = TYPING_PHASE_LABEL[phase] || TYPING_PHASE_LABEL.working
+    row.classList.toggle('is-composing', phase === 'composing')
   }
 
   function removeTypingBubble() {
@@ -1173,28 +1196,42 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     if (existing) clearTimeout(existing)
     const t = setTimeout(() => hideTypingFor(jid), TYPING_TIMEOUT_MS)
     typingTimers.set(jid, t)
-    // Solo indicador interno del panel — el cliente NUNCA ve esto; su
-    // "escribiendo…" real lo controla el bridge, aparte, solo unos segundos
-    // antes de enviar. Retardo cosmético para que no salte al instante de
-    // recibir el mensaje (feedback Luismi 2026-08-02: "eso canta").
+    typingPhaseByJid.set(jid, 'working')
+    // Indicador interno del panel. Retardo cosmético para que no salte en el
+    // mismo instante de recibir el mensaje (feedback Luismi 2026-08-02).
     setTimeout(() => {
       if (jid === currentJid && typingTimers.has(jid)) {
-        appendTypingBubble()
+        appendTypingBubble(typingPhaseByJid.get(jid) || 'working')
         if (convoBodyEl) convoBodyEl.scrollTop = convoBodyEl.scrollHeight
       }
     }, 1200 + Math.random() * 1500)
+  }
+
+  // Lo dispara el backend justo antes del POST /send/text, que es cuando el
+  // bridge manda el composing de verdad: a partir de aquí el panel y el
+  // WhatsApp del cliente enseñan lo mismo, con menos de 1,5s de desfase.
+  function markComposingFor(jid) {
+    if (!jid) return
+    if (!typingTimers.has(jid)) return // ya se ocultó (respuesta enviada, BOT OFF…)
+    typingPhaseByJid.set(jid, 'composing')
+    if (jid !== currentJid || !convoBodyEl) return
+    const row = convoBodyEl.querySelector('.wa-typing-row')
+    if (row) setTypingBubblePhase(row, 'composing')
+    else appendTypingBubble('composing')
   }
 
   function hideTypingFor(jid) {
     if (!jid) return
     const t = typingTimers.get(jid)
     if (t) { clearTimeout(t); typingTimers.delete(jid) }
+    typingPhaseByJid.delete(jid)
     if (jid === currentJid) removeTypingBubble()
   }
 
   function clearAllTyping() {
     for (const t of typingTimers.values()) clearTimeout(t)
     typingTimers.clear()
+    typingPhaseByJid.clear()
     removeTypingBubble()
   }
 
@@ -2546,6 +2583,14 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
         refreshChats()
       })
       if (typeof u === 'function') unsubs.push(u)
+
+      if (typeof wa.onAutoReplyTyping === 'function') {
+        const uTyping = wa.onAutoReplyTyping((payload) => {
+          const jid = payload && payload.jid
+          if (jid) markComposingFor(jid)
+        })
+        if (typeof uTyping === 'function') unsubs.push(uTyping)
+      }
     }
     if (wa.onChatUpdated) {
       const u = wa.onChatUpdated((payload) => {

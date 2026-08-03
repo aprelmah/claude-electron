@@ -2856,6 +2856,10 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
   40% { transform: translateY(-4px); opacity: 1; }
 }
 .wa-typing-label { font-size: 10px; color: var(--text2); }
+/* Fase 'composing': el cliente está viendo el "escribiendo…" en su WhatsApp
+   justo ahora. Se resalta para distinguirla del rato previo, en que el bot
+   trabaja sin que el cliente vea nada. */
+.wa-typing-row.is-composing .wa-typing-label { color: var(--text); opacity: 0.9; }
 
 /* Modal de personalidad (solo lectura) */
 .wa-persona-panel { max-width: 720px; width: 92%; max-height: 80vh; display: flex; flex-direction: column; }
