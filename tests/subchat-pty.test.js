@@ -131,6 +131,20 @@ describe('subchat-pty: write / resize / data / exit / close', () => {
     assert.deepEqual(fake.state.resized, { cols: 90, rows: 40 })
   })
 
+  test('write devuelve si el texto llegó de verdad al PTY', () => {
+    const { mgr, fake } = makeManager()
+    const { session } = makeSession()
+    mgr.start(session, { cols: 80, rows: 24 })
+    assert.strictEqual(mgr.write(7, 'hola'), true)
+    // Sin sub-chat en esa ventana no hay a dónde escribir.
+    assert.strictEqual(mgr.write(99, 'hola'), false)
+    // EPIPE: el proceso ha muerto pero la entrada sigue marcada viva. Antes se
+    // tragaba el error sin devolver nada y quien esperaba respuesta (el modo
+    // voz) daba el turno por enviado y se quedaba 180 s en silencio.
+    fake.proc.write = () => { throw new Error('EPIPE') }
+    assert.strictEqual(mgr.write(7, 'hola'), false)
+  })
+
   test('onData del pty → subchat:data al webContents (flush por bytes)', () => {
     const { mgr, fake } = makeManager()
     const { session, sends } = makeSession()

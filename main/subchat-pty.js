@@ -89,10 +89,17 @@ function createSubchatManager({
     return { ok: true }
   }
 
+  // Devuelve si el texto llegó de verdad al PTY. Antes se tragaba el error y no
+  // devolvía nada, así que un EPIPE (helper muerto con `alive` todavía a true)
+  // era indistinguible de una escritura buena: quien esperaba respuesta —el
+  // modo voz— daba el turno por enviado y se quedaba 180 s en silencio.
   function write(wcId, data) {
     const entry = byWc.get(wcId)
-    if (!entry || !entry.alive) return
-    try { entry.pty.write(data) } catch {}
+    if (!entry || !entry.alive) return false
+    try { entry.pty.write(data); return true } catch (err) {
+      trace(`no se pudo escribir en el sub-chat wc=${wcId}: ${err?.message || err}`)
+      return false
+    }
   }
 
   function resize(wcId, cols, rows) {

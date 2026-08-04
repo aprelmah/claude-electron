@@ -1442,6 +1442,28 @@ const voiceSession = createVoiceSession({
   log: (m) => console.log('[voz]', m)
 })
 
+// Todos los sessionIds de claude que YA tienen dueño: sesiones vivas, sus
+// sub-chats de voz, y las task-sessions (que es donde viven también los PTYs
+// ocultos del pool de Telegram). La detección del fork de un `--resume` los
+// necesita para no adoptar el .jsonl de otra sesión: un sub-chat abierto dentro
+// de la ventana de detección crea un fichero nuevo en el mismo proyecto y por
+// mtime es indistinguible del fork propio.
+function knownClaudeSessionIds() {
+  const ids = []
+  try {
+    for (const s of sessions.values()) {
+      if (s?.claudeSessionId) ids.push(s.claudeSessionId)
+      if (s?.voiceSubchatSessionId) ids.push(s.voiceSubchatSessionId)
+    }
+  } catch {}
+  try {
+    for (const st of taskSessionStateByWc.values()) {
+      if (st?.claudeSessionId) ids.push(st.claudeSessionId)
+    }
+  } catch {}
+  return ids
+}
+
 // El modo voz muere con la ventana que lo tenía: sin esto el helper se queda
 // escuchando y hablándole a nadie.
 function releaseVoiceMode(wcId) {
@@ -1637,23 +1659,25 @@ function startPty(session, cols, rows, cwd, args = []) {
       intentos += 1
       // Si ya lo arregló otro camino (relay, modo voz), no hay nada que hacer.
       if (s.claudeSessionId !== resumedClaudeId) { clearInterval(detectFork); return }
+      // Los proyectos candidatos se miran JUNTOS: si aparecen dos ficheros
+      // nuevos entre todos, hay otro actor en juego y no se adopta ninguno.
+      const groups = []
       for (const [cwd, before] of forkScanBefore) {
-        const sid = pickForkedSessionId({
-          rows: listClaudeSessionFilesWithMtime(cwd),
-          before,
-          excludeIds: [resumedClaudeId]
-        })
-        if (!sid) continue
-        s.claudeSessionId = sid
-        if (s.gitWorkspace) sessionGitMap.recordActive({
-          claudeSessionId: sid,
-          realCwd: s.gitWorkspace.realCwd,
-          branch: s.gitWorkspace.branch,
-          worktreePath: s.gitWorkspace.worktreePath
-        })
-        clearInterval(detectFork)
-        return
+        groups.push({ rows: listClaudeSessionFilesWithMtime(cwd), before })
       }
+      const sid = pickForkedSessionId({
+        groups,
+        excludeIds: [resumedClaudeId, ...knownClaudeSessionIds()]
+      })
+      if (!sid) return
+      s.claudeSessionId = sid
+      if (s.gitWorkspace) sessionGitMap.recordActive({
+        claudeSessionId: sid,
+        realCwd: s.gitWorkspace.realCwd,
+        branch: s.gitWorkspace.branch,
+        worktreePath: s.gitWorkspace.worktreePath
+      })
+      clearInterval(detectFork)
     }, 2000)
   }
 

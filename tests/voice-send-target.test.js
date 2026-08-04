@@ -50,7 +50,10 @@ function makeHarness(opts = {}) {
       },
       write: (wcId, data) => {
         if (opts.subchatWriteThrows) throw new Error('sub-chat muerto')
+        // Contrato real de subchat-pty: booleano. `false` = no llegó al PTY.
+        if (opts.subchatWriteFalse) return false
         escrituras.subchat.push({ wcId, data })
+        return true
       }
     },
     relayCwdCandidates: () => (opts.cwds || ['/proj']),
@@ -329,7 +332,14 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     assert.strictEqual(h.escrituras.subchat.length, 0, 'subchatManager.write se traga los errores: sin este control daba {ok:true} y 180 s de silencio')
   })
 
-  test('si write lanza (contrato futuro de subchat-pty) también se avisa', async () => {
+  test('si write devuelve false (EPIPE con la entrada aún viva) no se da el turno por enviado', async () => {
+    const h = makeHarness({ subchatHas: () => true, session: { voiceSubchatSessionId: 'fork-abc' }, subchatWriteFalse: true })
+    const res = await h.target({ text: 'hola', mode: 'charla' })
+    assert.strictEqual(res.ok, false)
+    assert.match(res.reason, /no aceptó el texto/i)
+  })
+
+  test('si write lanza también se avisa', async () => {
     const h = makeHarness({ subchatHas: () => true, session: { voiceSubchatSessionId: 'fork-abc' }, subchatWriteThrows: true })
     const res = await h.target({ text: 'hola', mode: 'charla' })
     assert.strictEqual(res.ok, false)
@@ -379,34 +389,77 @@ describe('pickForkedSessionId — el fork que crea un --resume en el spawn', () 
     { file: 'resumida.jsonl', sessionId: 'resumida', mtimeMs: 30 },
     { file: 'fork.jsonl', sessionId: 'fork', mtimeMs: 20 }
   ]
+  const grupo = (rows, before) => [{ rows, before }]
 
   test('devuelve el .jsonl que no estaba antes del spawn', () => {
     const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 10]])
-    assert.strictEqual(pickForkedSessionId({ rows: filas, before, excludeIds: ['resumida'] }), 'fork')
+    assert.strictEqual(pickForkedSessionId({ groups: grupo(filas, before), excludeIds: ['resumida'] }), 'fork')
   })
 
   test('el id resumido nunca se devuelve a sí mismo aunque sea el más reciente', () => {
     const before = new Map([['vieja.jsonl', 5]])
     const soloResumida = [{ file: 'resumida.jsonl', sessionId: 'resumida', mtimeMs: 99 }]
-    assert.strictEqual(pickForkedSessionId({ rows: soloResumida, before, excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({ groups: grupo(soloResumida, before), excludeIds: ['resumida'] }), null)
   })
 
-  test('entre varios ficheros nuevos gana el más reciente', () => {
+  test('DOS ficheros nuevos: no se adopta ninguno', () => {
     const before = new Map()
     const rows = [
       { file: 'a.jsonl', sessionId: 'a', mtimeMs: 1 },
       { file: 'b.jsonl', sessionId: 'b', mtimeMs: 9 }
     ]
-    assert.strictEqual(pickForkedSessionId({ rows, before, excludeIds: [] }), 'b')
+    assert.strictEqual(
+      pickForkedSessionId({ groups: grupo(rows, before), excludeIds: [] }),
+      null,
+      'un fork del propio spawn aparece SOLO; dos candidatos significan otro actor (otra ventana, un headless, un claude a mano) y quedarse con el más reciente es adoptar el de otro'
+    )
+  })
+
+  test('un id que ya es de otra sesión viva no se adopta aunque el fichero sea nuevo', () => {
+    const before = new Map([['resumida.jsonl', 10]])
+    const rows = [
+      { file: 'resumida.jsonl', sessionId: 'resumida', mtimeMs: 30 },
+      { file: 'subchat.jsonl', sessionId: 'subchat-de-la-madre', mtimeMs: 40 }
+    ]
+    assert.strictEqual(
+      pickForkedSessionId({ groups: grupo(rows, before), excludeIds: ['resumida', 'subchat-de-la-madre'] }),
+      null,
+      'sin esta exclusión la madre adoptaba el id de su propio sub-chat y a partir de ahí todo forkeaba del sub-chat'
+    )
+  })
+
+  test('con el sub-chat excluido, el fork legítimo sí se adopta', () => {
+    const before = new Map([['resumida.jsonl', 10]])
+    const rows = [
+      { file: 'subchat.jsonl', sessionId: 'subchat-de-la-madre', mtimeMs: 40 },
+      { file: 'fork.jsonl', sessionId: 'fork', mtimeMs: 20 }
+    ]
+    assert.strictEqual(pickForkedSessionId({ groups: grupo(rows, before), excludeIds: ['resumida', 'subchat-de-la-madre'] }), 'fork')
+  })
+
+  test('el mismo sessionId en dos proyectos candidatos cuenta como UN candidato', () => {
+    const rows = [{ file: 'fork.jsonl', sessionId: 'fork', mtimeMs: 20 }]
+    const groups = [
+      { rows, before: new Map() },
+      { rows, before: new Map() }
+    ]
+    assert.strictEqual(pickForkedSessionId({ groups, excludeIds: [] }), 'fork', 'worktree y dir real son el mismo fichero lógico')
+  })
+
+  test('un solo grupo sin snapshot invalida la adopción entera', () => {
+    const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 10]])
+    const groups = [{ rows: filas, before }, { rows: [], before: null }]
+    assert.strictEqual(pickForkedSessionId({ groups, excludeIds: ['resumida'] }), null)
   })
 
   test('sin snapshot previo no se adopta nada: todos los ficheros parecerían nuevos', () => {
-    assert.strictEqual(pickForkedSessionId({ rows: filas, before: null, excludeIds: ['resumida'] }), null)
-    assert.strictEqual(pickForkedSessionId({ rows: filas, excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({ groups: grupo(filas, null), excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({ groups: [{ rows: filas }], excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({}), null)
   })
 
   test('si no ha aparecido ningún fichero nuevo devuelve null', () => {
     const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 30], ['fork.jsonl', 20]])
-    assert.strictEqual(pickForkedSessionId({ rows: filas, before, excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({ groups: grupo(filas, before), excludeIds: ['resumida'] }), null)
   })
 })

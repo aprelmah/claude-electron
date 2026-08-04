@@ -41,27 +41,50 @@ const DEFAULT_SUBCHAT_WARMUP_MS = 1200
 const DEFAULT_SUBCHAT_FORK_WAIT_MS = 5000
 const DEFAULT_FORK_CHECK_AFTER_MS = 1200
 const DEFAULT_MOTHER_WAIT_MS = 3000
-// Tope de lectura al recalcular el offset de un fork. Un fork copia todo el
-// historial y puede pesar MBs; más allá de esto no merece la pena y se rechaza.
-const MAX_FORK_SCAN_BYTES = 50 * 1024 * 1024
+// Tope de lectura al recalcular el offset de un fork. La lectura es SÍNCRONA y
+// corre en el proceso main: bloquea IPC y PTYs mientras dura. 5 MB sobra de
+// largo para localizar la línea de un prompt y mantiene la pausa en pocos ms.
+const MAX_FORK_SCAN_BYTES = 5 * 1024 * 1024
 
-// Localiza el .jsonl que ha aparecido desde `before` y no está en `excludeIds`.
-// Vive aquí porque es la misma regla que usa el modo voz para no confundir un
-// fork con la sesión madre; main.js la reutiliza al detectar el fork que crea
-// un `--resume` en el spawn (ver § "Regla para spawns nuevos" de CLAUDE.md).
-// Ojo: solo vale cuando NO hay prompt con el que verificar (en el spawn todavía
-// no se ha escrito nada). Donde haya prompt, manda `detectForkedRelayTranscript`.
-function pickForkedSessionId({ rows = [], before = null, excludeIds = [] } = {}) {
-  if (!before || typeof before.has !== 'function') return null
+// Localiza el .jsonl del fork que crea un `--resume` en el spawn: el que ha
+// aparecido desde `before` y no pertenece ya a nadie. Se usa SOLO donde todavía
+// no hay prompt con el que verificar (en el spawn aún no se ha escrito nada);
+// donde lo hay, manda siempre `detectForkedRelayTranscript`.
+//
+// Dos guardas, porque "el fichero nuevo más reciente" es exactamente la
+// adopción a ciegas que este módulo prohíbe en su cabecera:
+//
+// - `excludeIds` trae los sessionIds que YA tienen dueño (sesiones vivas,
+//   sub-chats, PTYs ocultos de Telegram, task-sessions). Sin esto, abrir un
+//   sub-chat dentro de la ventana de detección hacía que la madre adoptase el
+//   id de su propio sub-chat: a partir de ahí el sub-chat siguiente forkea del
+//   sub-chat y `sessionGitMap` guarda el id equivocado contra el worktree.
+// - Ambigüedad ⇒ NO se adopta nada. Un fork legítimo del propio spawn aparece
+//   SOLO; dos candidatos significan que hay otro actor escribiendo en el mismo
+//   proyecto (otra ventana resumiendo, un headless, un `claude` a mano en una
+//   terminal) y no hay forma de saber cuál es el nuestro. Renunciar deja el id
+//   como estaba, que es el statu quo, y el relay o el modo voz lo repararán por
+//   prompt cuando haya turno.
+//
+//   groups: [{ rows: listClaudeSessionFilesWithMtime(cwd), before: snapshot }]
+function pickForkedSessionId({ groups = [], excludeIds = [] } = {}) {
   const excluidos = new Set(excludeIds.filter(Boolean))
-  const ordenadas = rows.slice().sort((a, b) => (b?.mtimeMs || 0) - (a?.mtimeMs || 0))
-  for (const fila of ordenadas) {
-    if (!fila || !fila.file || !fila.sessionId) continue
-    if (before.has(fila.file)) continue
-    if (excluidos.has(fila.sessionId)) continue
-    return fila.sessionId
+  const candidatos = []
+  for (const grupo of groups) {
+    const before = grupo && grupo.before
+    // Sin snapshot previo TODOS los ficheros parecerían nuevos: no se adopta
+    // nada, ni siquiera de los grupos que sí lo tienen.
+    if (!before || typeof before.has !== 'function') return null
+    for (const fila of grupo.rows || []) {
+      if (!fila || !fila.file || !fila.sessionId) continue
+      if (before.has(fila.file)) continue
+      if (excluidos.has(fila.sessionId)) continue
+      // El mismo sessionId puede estar en dos proyectos candidatos (worktree y
+      // dir real): es un solo candidato, no dos.
+      if (!candidatos.includes(fila.sessionId)) candidatos.push(fila.sessionId)
+    }
   }
-  return null
+  return candidatos.length === 1 ? candidatos[0] : null
 }
 
 function createVoiceSendTarget({
@@ -165,9 +188,11 @@ function createVoiceSendTarget({
   async function sendToMother(session, prompt, cwds) {
     if (!session.pty) return { ok: false, reason: 'la sesión no tiene proceso vivo' }
     // `relayThroughPty` (Telegram) serializa sus turnos con este flag. El modo
-    // voz lo RESPETA pero no lo toma: tomarlo obligaría a soltarlo desde el
-    // vigía, que vive en otro módulo, y un flag mal soltado deja a Telegram
-    // esperando 30 s. Limitación v1 documentada en CLAUDE.md.
+    // voz lo RESPETA pero no marca nada mientras dura el suyo, así que el orden
+    // contrario (Telegram entrando a mitad de un turno de voz) sigue sin cubrir
+    // — y es el más probable, porque un turno de voz dura decenas de segundos.
+    // Pendiente inmediato en CLAUDE.md: cerrojo con caducidad
+    // (`session.voiceTurnUntil`), no un booleano que haya que soltar a mano.
     if (session.relayActive) return { ok: false, reason: 'la sesión está ocupada con otro turno' }
 
     const expectedId = session.claudeSessionId
@@ -224,14 +249,16 @@ function createVoiceSendTarget({
     const before = snapshotAll(cwds)
     const baseOffset = conocido ? transcriptSize(conocido, cwds) : 0
 
-    // `subchatManager.write` se traga sus propios errores y devuelve undefined:
-    // preguntar por la entrada viva es la ÚNICA forma de saber si el texto va a
-    // llegar a alguna parte. Sin esto, un sub-chat muerto entre el arranque y la
-    // escritura daba {ok:true} y 180 s de silencio.
+    // Dos comprobaciones y ninguna sobra: `has` cubre el sub-chat que ya se
+    // cerró, y el booleano de `write` cubre el EPIPE (proceso muerto con la
+    // entrada todavía marcada viva). Sin ellas, un sub-chat sordo daba {ok:true}
+    // y 180 s de silencio.
     if (!subchat.has(session.wcId)) return { ok: false, reason: 'el sub-chat se cerró antes de poder escribir' }
-    try { subchat.write(session.wcId, prompt + '\r') } catch (err) {
+    let escrito
+    try { escrito = subchat.write(session.wcId, prompt + '\r') } catch (err) {
       return { ok: false, reason: `no se pudo escribir en el sub-chat: ${err?.message || err}` }
     }
+    if (escrito === false) return { ok: false, reason: 'el sub-chat no aceptó el texto' }
 
     if (conocido) return { ok: true, sessionId: conocido, cwds, baseOffset }
 
