@@ -134,9 +134,20 @@ describe('voice-router: casos límite adicionales', () => {
     assert.ok(Date.now() - antes < 500, 'no debería tardar nada con regex simples, sin backtracking catastrófico')
   })
 
-  test('texto larguísimo con el disparador al final sí es encargo', () => {
+  test('texto larguísimo con el disparador enterrado al final ya NO es encargo (debe abrir la frase)', () => {
+    // Antes de la ronda de correcciones 1 esto contaba como encargo por
+    // buscar el disparador en cualquier parte. Ahora el disparador tiene que
+    // abrir la frase: uno enterrado 300 repeticiones más allá es charla.
     const textoLargo = 'bueno pues nada, '.repeat(300) + 'aplícalo'
-    assert.strictEqual(routeVoiceText(textoLargo).mode, 'encargo')
+    assert.strictEqual(routeVoiceText(textoLargo).mode, 'charla')
+  })
+
+  test('texto larguísimo que SÍ abre con el disparador sigue siendo encargo', () => {
+    const textoLargo = 'aplícalo, ' + 'y de paso revisa que todo compile bien por favor '.repeat(300)
+    const antes = Date.now()
+    const r = routeVoiceText(textoLargo)
+    assert.strictEqual(r.mode, 'encargo')
+    assert.ok(Date.now() - antes < 500, 'no debería tardar nada con regex simples, sin backtracking catastrófico')
   })
 
   test('ante ambigüedad real (pregunta + verbo de ejecución), gana la charla', () => {
@@ -153,5 +164,60 @@ describe('voice-router: casos límite adicionales', () => {
   test('sesión sin campo pty (undefined) se trata igual que sin PTY vivo', () => {
     const r = resolveVoiceTarget({ activeCli: 'claude', claudeSessionId: 'x' }, {})
     assert.strictEqual(r.ok, false)
+  })
+
+  // Proactivo, no pedido por el revisor: mismo patrón de bug que el de
+  // forcedMode en routeVoiceText (el default `{ x } = {}` no cubre null
+  // explícito). Se arregla gratis con el mismo cambio y evita que reaparezca
+  // aquí en la próxima ronda.
+  test('opts null explícito no revienta (mismo bug que forcedMode, corregido en los dos sitios)', () => {
+    const sesionViva = { activeCli: 'claude', claudeSessionId: 'sid-3', pty: {} }
+    assert.doesNotThrow(() => resolveVoiceTarget(sesionViva, null))
+    const r = resolveVoiceTarget(sesionViva, null)
+    assert.strictEqual(r.ok, true)
+    assert.strictEqual(r.reuseSubchat, false)
+  })
+})
+
+// Ronda de correcciones 1 (revisor): el disparador contaba por sola
+// presencia de la palabra en cualquier parte de la frase, y "que"/"como"/
+// "porque" sin tilde en cualquier parte hacían pasar órdenes reales por
+// preguntas. Estos tests reproducen cada hallazgo verbatim del informe de
+// revisión (deben fallar con el código de antes de esta ronda y pasar con
+// el de después).
+describe('voice-router: ronda de correcciones 1 — el disparador tiene que abrir la frase', () => {
+  test('CRITICAL: "commit" mencionado de fondo no es una orden de commitear', () => {
+    assert.strictEqual(routeVoiceText('el último commit rompió el build').mode, 'charla')
+  })
+
+  test('CRITICAL: "cambia" usado como vocabulario normal no es una orden de cambiar algo', () => {
+    assert.strictEqual(routeVoiceText('el código cambia mucho de una versión a otra').mode, 'charla')
+    assert.strictEqual(routeVoiceText('el dólar cambia cada día').mode, 'charla')
+  })
+
+  test('CRITICAL: "adelante" dentro de "más adelante" no es una orden de seguir', () => {
+    assert.strictEqual(routeVoiceText('más adelante seguimos hablando de esto').mode, 'charla')
+  })
+
+  test('CRITICAL: "escribe" hablando de ortografía no es una orden de escribir código', () => {
+    assert.strictEqual(routeVoiceText('así se escribe en español correcto').mode, 'charla')
+  })
+
+  test('IMPORTANT: una subordinada con "que"/"como"/"porque" ya no convierte la orden en pregunta', () => {
+    for (const frase of ['aplica el cambio que te dije', 'hazlo que hace falta ya', 'commitea que ya está listo']) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'encargo', `"${frase}" debería seguir siendo encargo`)
+    }
+  })
+
+  test('IMPORTANT: forcedMode con null explícito (no undefined) no revienta', () => {
+    assert.doesNotThrow(() => routeVoiceText('hazlo', null))
+    // null no es un forcedMode válido → se ignora, cae a la detección normal.
+    assert.strictEqual(routeVoiceText('hazlo', null).mode, 'encargo')
+  })
+
+  test('los casos positivos siguen funcionando tras el arreglo', () => {
+    for (const frase of ['hazlo', 'commitea esto', 'venga, arréglalo', 'por favor aplica el cambio que te dije']) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'encargo', `"${frase}" debería seguir siendo encargo`)
+    }
   })
 })
