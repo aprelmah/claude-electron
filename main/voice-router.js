@@ -27,11 +27,25 @@
 // de PATRONES_ENCARGO_INICIO por eso: no se borran, se degradan a cortesía
 // (como "venga" o "vale"), así que siguen sirviendo delante de un disparador
 // real ("dale, arregla el login" → encargo) pero ya no ordenan por sí solas.
+//
+// Ronda de correcciones 3: dos ajustes más.
+// (a) Retractación: "commitea, no, mejor espera que aun faltan los tests" —
+// retirar una orden a mitad de frase es de lo más humano, y aquí no hay que
+// tratar "no"/"espera" pegados al disparador como si fueran contenido de la
+// orden. Si aparecen dentro de las 2-3 palabras siguientes al disparador,
+// gana la retractación.
+// (b) Las cortesías se apilan en habla real ("adelante pues, hazlo", "vale,
+// adelante, aplica...") y hacía falta una lista más amplia de vocativos de
+// España (eh, tío, majo, anda, va). Y una coletilla de confirmación al
+// final ("hazlo, ¿vale?") no debe tumbar un disparador que abre la frase
+// con toda claridad — por eso el chequeo de "¿termina en interrogación?" se
+// mueve a DESPUÉS de mirar el disparador, no antes.
 
 // Disparadores de encargo. Anclados con ^ a propósito: se evalúan sobre lo
-// que queda de la frase tras pelar signos de apertura y, como mucho, UNA
-// cortesía/muletilla inicial (ver pelarInicioParaDisparador). Si el
-// disparador no abre la frase, no cuenta — habla DE la acción, no la ordena.
+// que queda de la frase tras pelar signos de apertura y cortesías/muletillas
+// iniciales, posiblemente varias encadenadas (ver pelarInicioParaDisparador).
+// Si el disparador no abre la frase, no cuenta — habla DE la acción, no la
+// ordena.
 const PATRONES_ENCARGO_INICIO = [
   /^haz(lo|lo ya)?\b/i,
   /^hazme\b/i,
@@ -62,7 +76,28 @@ const PATRONES_ENCARGO_INICIO = [
 // dale", "dale un vistazo", "dale recuerdos", "¡adelante!", "de aquí en
 // adelante") que como orden en sí mismas. La propia palabra "dale" es
 // sinónimo de "adelante" en ese uso — mismo problema, mismo arreglo.
-const PREFIJOS_CORTESIA = ['por favor', 'porfa', 'venga', 'oye', 'ahora', 'vale', 'y', 'pues', 'dale', 'adelante']
+// "eh"/"tío"/"tio"/"majo"/"anda"/"va" son vocativos y muletillas de España
+// (ronda 3): llaman la atención o rellenan la frase, nunca ordenan nada por
+// sí solos ("eh, borra ese archivo", "tío dale, aplica el cambio", "oye
+// majo, arregla esto").
+const PREFIJOS_CORTESIA = [
+  'por favor',
+  'porfa',
+  'venga',
+  'oye',
+  'ahora',
+  'vale',
+  'y',
+  'pues',
+  'dale',
+  'adelante',
+  'eh',
+  'tío',
+  'tio',
+  'majo',
+  'anda',
+  'va'
+]
 
 // Uno por cortesía, anclado al principio, con \b para no cortar a media
 // palabra, y que se coma la puntuación/espacio que la separa del resto
@@ -71,24 +106,62 @@ const RE_PREFIJOS_CORTESIA = PREFIJOS_CORTESIA.map(
   (frase) => new RegExp('^' + frase.replace(/ /g, '\\s+') + '\\b[\\s,;:.!]*', 'i')
 )
 
-// El dictado a veces antepone signos de apertura (¡ ¿ comillas) que no
-// deben tapar un disparador o una cortesía justo después.
+// El dictado a veces antepone signos de apertura (¡ comillas) que no deben
+// tapar un disparador o una cortesía justo después. OJO: el ¿ se queda
+// FUERA de esta clase a propósito — no es un signo decorativo, es la señal
+// de que lo que sigue es una pregunta. Pelarlo aquí sería destaparla y que
+// el disparador de detrás se disparase solo ("eh, ¿aplícalo ya?" no puede
+// convertirse en "aplícalo ya" tras quitar la cortesía "eh"). Si aparece un
+// ¿, la cadena de cortesías se para ahí y esPreguntaFuerteAlInicio() lo
+// coge después.
 function pelarSignosApertura(s) {
-  return s.replace(/^[\s¡¿"'«»“”‘’]+/, '')
+  return s.replace(/^[\s¡"'«»“”‘’]+/, '')
 }
 
 function pelarInicioParaDisparador(texto) {
   let s = pelarSignosApertura(texto)
-  // Como mucho UNA cortesía inicial: "un prefijo corto", no una cadena de
-  // muletillas.
-  for (const re of RE_PREFIJOS_CORTESIA) {
-    const sinPrefijo = s.replace(re, '')
-    if (sinPrefijo !== s) {
-      s = sinPrefijo
-      break
+  // Ronda 3: las cortesías se apilan en habla real ("adelante pues,
+  // hazlo", "vale, adelante, aplica..."). Se pelan una a una, en bucle,
+  // hasta que ninguna coincida con lo que queda al principio — una palabra
+  // de contenido real para el bucle de inmediato, así que nunca se come el
+  // disparador ni nada que no esté en la lista cerrada.
+  let cambio = true
+  while (cambio) {
+    cambio = false
+    for (const re of RE_PREFIJOS_CORTESIA) {
+      const sinPrefijo = s.replace(re, '')
+      if (sinPrefijo !== s) {
+        s = pelarSignosApertura(sinPrefijo)
+        cambio = true
+        break
+      }
     }
   }
-  return pelarSignosApertura(s)
+  return s
+}
+
+// Retractación (ronda 3): si justo después del disparador —dentro de las
+// 2-3 palabras siguientes— aparece "no" o "espera", la persona se lo está
+// pensando mejor a mitad de frase ("commitea, no, mejor espera que aun
+// faltan los tests"). "mejor no"/"aún no"/"todavía no" quedan cubiertas sin
+// listarlas aparte: todas llevan "no" entre esas primeras palabras.
+const PALABRAS_RETRACTACION = new Set(['no', 'espera'])
+const VENTANA_RETRACTACION = 3
+
+function hayRetractacionInmediata(resto) {
+  const palabras = resto
+    .split(/[\s,;:.!?¡¿]+/)
+    .filter(Boolean)
+    .slice(0, VENTANA_RETRACTACION)
+  return palabras.some((palabra) => PALABRAS_RETRACTACION.has(palabra.toLowerCase()))
+}
+
+function encontrarDisparadorAlInicio(inicio) {
+  for (const re of PATRONES_ENCARGO_INICIO) {
+    const m = re.exec(inicio)
+    if (m) return m
+  }
+  return null
 }
 
 // Interrogativos sin tilde incluidos aposta: el dictado se come tildes. Pero
@@ -98,10 +171,23 @@ function pelarInicioParaDisparador(texto) {
 const RE_INTERROGATIVO_INICIO =
   /^(cómo|como|qué|que|por qué|porque|cuál|cual|deberíamos|deberias|debería|crees|opinas|piensas|merece la pena)\b/i
 
-function esPreguntaAlInicio(t) {
+// Señal FUERTE de pregunta: la frase abre de verdad con un interrogativo
+// (¿ o una palabra interrogativa). Estas ganan siempre, antes incluso de
+// mirar el disparador — por eso "¿deberíamos arreglarlo?" es charla pase lo
+// que pase después.
+function esPreguntaFuerteAlInicio(t) {
   if (/^\s*¿/.test(t)) return true
-  if (/\?\s*$/.test(t)) return true
   return RE_INTERROGATIVO_INICIO.test(t)
+}
+
+// Señal DÉBIL de pregunta: termina en "?" sin haber abierto con ninguna de
+// las señales fuertes. Se comprueba DESPUÉS del disparador (ronda 3): una
+// coletilla de confirmación al final ("hazlo, ¿vale?", "aplícalo, ¿ok?") no
+// debe tumbar un disparador que abre la frase con toda claridad. Solo actúa
+// cuando de verdad no hay disparador — como red de seguridad para preguntas
+// dictadas sin el ¿ de apertura.
+function terminaEnInterrogacion(t) {
+  return /\?\s*$/.test(t)
 }
 
 function routeVoiceText(text, opts) {
@@ -119,20 +205,43 @@ function routeVoiceText(text, opts) {
 
   const t = text.trim()
 
-  // 2) Pregunta-al-inicio, antes que nada: una pregunta sobre hacer algo
-  // nunca es la orden de hacerlo, aunque contenga el verbo de ejecución.
-  if (esPreguntaAlInicio(t)) {
+  // 2) Pregunta fuerte al inicio, antes que nada: una pregunta sobre hacer
+  // algo nunca es la orden de hacerlo, aunque contenga el verbo de
+  // ejecución.
+  if (esPreguntaFuerteAlInicio(t)) {
     return { mode: 'charla', reason: 'es una pregunta sobre hacerlo, no la orden' }
   }
 
   // 3) Disparador-al-inicio: solo cuenta si abre la frase (tras pelar signos
-  // de apertura y, como mucho, una cortesía). Un disparador de fondo —
-  // hablando DE la acción, no ordenándola— no cuenta.
+  // de apertura y cortesías encadenadas). Un disparador de fondo — hablando
+  // DE la acción, no ordenándola— no cuenta.
   const inicio = pelarInicioParaDisparador(t)
-  const esOrden = PATRONES_ENCARGO_INICIO.some((re) => re.test(inicio))
-  if (esOrden) return { mode: 'encargo', reason: 'verbo de ejecución al inicio de la frase' }
 
-  // 4) Cualquier otro caso: charla. Es el lado seguro.
+  // 3a) Pelar cortesías puede destapar un ¿ que estaba detrás de un
+  // vocativo ("eh, ¿aplícalo ya?" → tras pelar "eh, " queda "¿aplícalo
+  // ya?"). Si eso pasa, sigue siendo una pregunta — pelar cortesías nunca
+  // debe convertir una pregunta con vocativo delante en una orden.
+  if (esPreguntaFuerteAlInicio(inicio)) {
+    return { mode: 'charla', reason: 'es una pregunta sobre hacerlo, no la orden' }
+  }
+
+  const match = encontrarDisparadorAlInicio(inicio)
+  if (match) {
+    // 3b) Retractación: "no"/"espera" pegados al disparador retiran la
+    // orden antes de que llegue a ejecutarse nada.
+    const resto = inicio.slice(match.index + match[0].length)
+    if (hayRetractacionInmediata(resto)) {
+      return { mode: 'charla', reason: 'se retracta justo después de la orden' }
+    }
+    return { mode: 'encargo', reason: 'verbo de ejecución al inicio de la frase' }
+  }
+
+  // 4) Pregunta débil: sin disparador y termina en "?".
+  if (terminaEnInterrogacion(t)) {
+    return { mode: 'charla', reason: 'es una pregunta sobre hacerlo, no la orden' }
+  }
+
+  // 5) Cualquier otro caso: charla. Es el lado seguro.
   return { mode: 'charla', reason: 'sin verbo de ejecución al inicio' }
 }
 

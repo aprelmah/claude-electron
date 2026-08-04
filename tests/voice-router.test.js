@@ -271,3 +271,99 @@ describe('voice-router: ronda de correcciones 2 — dale es cortesía, no orden'
     assert.strictEqual(routeVoiceText('de aquí en adelante vamos a hacerlo distinto').mode, 'charla')
   })
 })
+
+// Ronda de correcciones 3 (re-revisor): un Critical de clase distinta —
+// retractación a mitad de frase — y varios Minor de cortesías apiladas y
+// vocativos que faltaban. Un test por caso, tal como se pidió, para que el
+// informe de fallos sea preciso si algo se rompe.
+describe('voice-router: ronda de correcciones 3 — retractación y cortesías encadenadas', () => {
+  test('CRITICAL: retractarse justo después del disparador ("no, mejor espera...") es charla', () => {
+    assert.strictEqual(routeVoiceText('commitea, no, mejor espera que aun faltan los tests').mode, 'charla')
+  })
+
+  test('MINOR: "adelante pues, hazlo cuando puedas" — dos cortesías encadenadas, es encargo', () => {
+    assert.strictEqual(routeVoiceText('adelante pues, hazlo cuando puedas').mode, 'encargo')
+  })
+
+  test('MINOR: "vale, adelante, aplica el cambio" — tres cortesías encadenadas, es encargo', () => {
+    assert.strictEqual(routeVoiceText('vale, adelante, aplica el cambio').mode, 'encargo')
+  })
+
+  test('MINOR: "eh, borra ese archivo que ya no sirve" — vocativo nuevo, es encargo', () => {
+    assert.strictEqual(routeVoiceText('eh, borra ese archivo que ya no sirve').mode, 'encargo')
+  })
+
+  test('MINOR: "tio dale, aplica el cambio de una vez" — vocativo + dale encadenados, es encargo', () => {
+    assert.strictEqual(routeVoiceText('tio dale, aplica el cambio de una vez').mode, 'encargo')
+  })
+
+  test('MINOR: "oye majo, arregla esto que llevamos media hora con el mismo bug" — vocativo nuevo, es encargo', () => {
+    assert.strictEqual(
+      routeVoiceText('oye majo, arregla esto que llevamos media hora con el mismo bug').mode,
+      'encargo'
+    )
+  })
+
+  test('MINOR: "hazlo, ¿vale?" — la coletilla de confirmación final no tumba el encargo', () => {
+    assert.strictEqual(routeVoiceText('hazlo, ¿vale?').mode, 'encargo')
+  })
+
+  test('retractación: "espera" solo, sin "no", también retira la orden', () => {
+    assert.strictEqual(routeVoiceText('arréglalo, espera, mejor no').mode, 'charla')
+  })
+
+  test('retractación: cubre "aún no"/"todavía no" sin necesidad de listarlas aparte (lo hace "no")', () => {
+    assert.strictEqual(routeVoiceText('aplícalo, aún no, espera').mode, 'charla')
+    assert.strictEqual(routeVoiceText('cámbialo, todavía no').mode, 'charla')
+  })
+
+  test('control negativo: una negación lejos del disparador NO retracta (evita sobre-disparar)', () => {
+    // "no" aquí es la 4ª palabra tras el disparador, fuera de la ventana de
+    // 2-3 palabras — sigue siendo una orden real con una subordinada.
+    assert.strictEqual(routeVoiceText('aplica el cambio que no te gusta').mode, 'encargo')
+  })
+
+  // Bug encontrado y arreglado en esta misma ronda, al ampliar la lista de
+  // cortesías: pelar un vocativo puede destapar un "¿" que estaba justo
+  // detrás ("eh, ¿aplícalo ya?" → tras pelar "eh, " queda "¿aplícalo ya?").
+  // Si lo que queda es una pregunta, sigue siendo charla — pelar cortesías
+  // nunca debe convertir una pregunta con vocativo delante en una orden.
+  test('una cortesía nueva delante de un "¿" oculto no convierte la pregunta en orden', () => {
+    for (const frase of [
+      'eh, ¿aplícalo ya?',
+      'oye, ¿lo aplico ya?',
+      'tio, ¿lo hago o no?',
+      'va, ¿lo hacemos?',
+      'anda, ¿arreglamos esto ya?',
+      'vale, ¿aplícalo?',
+      'dale, ¿arreglamos esto?'
+    ]) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'charla', `"${frase}" debería ser charla`)
+    }
+  })
+
+  test('regresión: las 5 frases de "dale" de la ronda 2 siguen en charla', () => {
+    for (const frase of [
+      'vale, dale que va, luego seguimos con el commit',
+      'venga, dale caña que se hace tarde',
+      'oye, dale recuerdos a tu hermano de mi parte',
+      'pues dale, tú mismo, yo paso del tema',
+      'dale un vistazo cuando puedas, no hay prisa'
+    ]) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'charla', `"${frase}" debería seguir siendo charla`)
+    }
+  })
+
+  test('regresión: los 6 falsos positivos de dominio de la ronda 2 siguen en encargo (no son de esta clase)', () => {
+    for (const frase of [
+      'commit y ya está, no le des más vueltas al tema',
+      'aplica tú el descuento que yo ahora no puedo',
+      'arregla tú el lío que has montado, que yo paso',
+      'escribe cuando llegues a casa, que estoy liado',
+      'ejecuta bien tu papel en la obra que hemos preparado',
+      'borra ya ese mensaje que me diste vergüenza'
+    ]) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'encargo', `"${frase}" debería seguir siendo encargo`)
+    }
+  })
+})
