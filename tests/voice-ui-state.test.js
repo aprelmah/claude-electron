@@ -5,7 +5,7 @@ const assert = require('node:assert')
 const path = require('path')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const { classNameForVoiceState, voiceCliAvailability, planForVoiceEvent } = require(path.join(REPO_ROOT, 'voice-ui-state.js'))
+const { classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent } = require(path.join(REPO_ROOT, 'voice-ui-state.js'))
 
 describe('classNameForVoiceState', () => {
   test('listening/thinking/speaking devuelven su clase CSS', () => {
@@ -32,17 +32,33 @@ describe('voiceCliAvailability', () => {
     assert.match(info.ariaLabel, /Activar/)
   })
 
-  test('codex: NO disponible, título explica el motivo', () => {
+  test('codex: NO disponible, título explica el motivo y nombra a CODEX', () => {
     const info = voiceCliAvailability('codex')
     assert.strictEqual(info.available, false)
     assert.match(info.title, /solo disponible con Claude/)
+    assert.match(info.title, /CODEX/)
     assert.match(info.ariaLabel, /no disponible/)
+  })
+
+  test('un cli no soportado que no es codex no le echa la culpa a Codex (ronda 1: no hardcodear un único "otro")', () => {
+    const info = voiceCliAvailability('gemini')
+    assert.strictEqual(info.available, false)
+    assert.match(info.title, /GEMINI/)
+    assert.doesNotMatch(info.title, /[Cc]odex/)
+    assert.match(info.ariaLabel, /GEMINI/)
+    assert.doesNotMatch(info.ariaLabel, /[Cc]odex/)
   })
 
   test('cualquier otro valor (undefined, string rara) se trata como no disponible', () => {
     assert.strictEqual(voiceCliAvailability(undefined).available, false)
     assert.strictEqual(voiceCliAvailability('').available, false)
     assert.strictEqual(voiceCliAvailability('lo-que-sea').available, false)
+  })
+
+  test('cli vacío/undefined: motivo genérico, no "undefined" ni "null"', () => {
+    assert.match(voiceCliAvailability(undefined).title, /este asistente/)
+    assert.match(voiceCliAvailability('').title, /este asistente/)
+    assert.doesNotMatch(voiceCliAvailability(undefined).title, /undefined/)
   })
 })
 
@@ -119,5 +135,44 @@ describe('planForVoiceEvent', () => {
   test('un type desconocido no hace nada', () => {
     assert.deepStrictEqual(planForVoiceEvent({ type: 'voices' }), { action: 'none' })
     assert.deepStrictEqual(planForVoiceEvent({ type: 'ready' }), { action: 'none' })
+  })
+})
+
+// Ronda 1 de revisión: el contrato de la Tarea 7 pide enseñar `broken`
+// distinto de "apagado" (helper rendido tras 3 intentos). voiceStateAppearance
+// traduce la respuesta cruda de voice:state() ({enabled,state,broken,mine}).
+describe('voiceStateAppearance', () => {
+  test('encendida y mía: on=true, clase del estado, sin título/aria-label propios', () => {
+    const appearance = voiceStateAppearance({ enabled: true, state: 'listening', broken: false, mine: true })
+    assert.deepStrictEqual(appearance, { on: true, cssClass: 'voice-listening', title: null, ariaLabel: null })
+  })
+
+  test('encendida en OTRA ventana (mine:false): on=false, sin clase — no se pinta un estado ajeno', () => {
+    const appearance = voiceStateAppearance({ enabled: true, state: 'speaking', broken: false, mine: false })
+    assert.strictEqual(appearance.on, false)
+    assert.strictEqual(appearance.cssClass, null)
+  })
+
+  test('apagada sin más: on=false, sin clase (reposo, no "broken")', () => {
+    const appearance = voiceStateAppearance({ enabled: false, state: 'idle', broken: false, mine: false })
+    assert.deepStrictEqual(appearance, { on: false, cssClass: null, title: null, ariaLabel: null })
+  })
+
+  test('broken=true: clase voice-broken, título explica y dice que pulsar reintenta', () => {
+    const appearance = voiceStateAppearance({ enabled: false, state: 'idle', broken: true, mine: false })
+    assert.strictEqual(appearance.cssClass, 'voice-broken')
+    assert.match(appearance.title, /reintenta/)
+    assert.match(appearance.ariaLabel, /fallo/)
+  })
+
+  test('broken gana a la clase de estado aunque (en teoría) coexistieran on=true y broken=true', () => {
+    const appearance = voiceStateAppearance({ enabled: true, state: 'listening', broken: true, mine: true })
+    assert.strictEqual(appearance.cssClass, 'voice-broken')
+    assert.strictEqual(appearance.on, true)
+  })
+
+  test('null/undefined: no revienta, todo apagado y sin marcar como roto', () => {
+    assert.deepStrictEqual(voiceStateAppearance(null), { on: false, cssClass: null, title: null, ariaLabel: null })
+    assert.deepStrictEqual(voiceStateAppearance(undefined), { on: false, cssClass: null, title: null, ariaLabel: null })
   })
 })

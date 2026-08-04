@@ -485,6 +485,8 @@ button:active { transform: scale(0.93); }
 #btn-voice.voice-listening { background: var(--rec) !important; color: white !important; animation: pulse 1.2s ease-in-out infinite; }
 #btn-voice.voice-thinking  { background: var(--accent) !important; color: white !important; }
 #btn-voice.voice-speaking  { background: #2d9d6b !important; color: white !important; }
+/* el helper se rindió tras 3 intentos: distinto de apagado, pulsar reintenta */
+#btn-voice.voice-broken { border: 2px solid var(--warn) !important; color: var(--warn) !important; }
 #btn-voice:disabled { opacity: 0.4; cursor: not-allowed; }
 
 #voice-hud {

@@ -2701,6 +2701,13 @@ btnSaveSettings.addEventListener('click', async () => {
 
   const currentCli = await window.api.getActiveCli()
   cliSelector.value = currentCli
+  // `save-app-config` puede haber cambiado "CLI por defecto" y aplicado el
+  // cambio a esta ventana en silencio (main.js: setActiveCli sin evento
+  // propio) — a diferencia del `cli-selector` de la topbar, aquí no hay
+  // ningún otro punto que se entere. Se sincroniza ANTES del fullRestart, no
+  // después: `s.activeCli` en main ya cambió aunque el restart del PTY falle
+  // luego, así que el gate debe reflejarlo pase lo que pase con el restart.
+  await updateVoiceCliAvailability(currentCli)
   try {
     await fullRestart()
     term.focus()
@@ -4013,6 +4020,11 @@ async function resumeSessionFromHistory(s, cwd) {
     await refreshSessionStrip(true)
     hideStatus()
     term.focus()
+    // La sesión reanudada puede ser de un CLI distinto al que tenía la
+    // ventana (este modal lista sesiones de claude Y codex). No se asume
+    // cuál: se relee el activeCli real tras el resume. Envuelto aparte para
+    // que un fallo aquí no se confunda con un fallo de resumeSession.
+    try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
   } catch (err) {
     showStatus(errorMessage(err), 'error', 6000)
   }
@@ -4891,6 +4903,12 @@ cliSelector.addEventListener('change', async (e) => {
         await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
         try { hideStatus && hideStatus() } catch {}
         try { term.focus() } catch {}
+        // Este flujo lo dispara el proceso main (p. ej. Telegram /abrir) y
+        // puede traer un `cli` explícito o ninguno; en los dos casos se
+        // relee el activeCli real en vez de fiarse del parámetro, porque el
+        // `setActiveCli` de arriba pudo fallar en silencio (su try/catch lo
+        // traga) o `cli` pudo venir vacío con el CLI ya cambiado por otra vía.
+        try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
       } catch (err) {
         try { showStatus && showStatus(err?.message || String(err), 'error', 6000) } catch {}
       }
@@ -4921,7 +4939,10 @@ function showVoiceHud(text, holdMs = 2600) {
 
 function setVoiceButtonState(state) {
   if (!btnVoice) return
-  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking')
+  // `voice-broken` también se limpia aquí: cualquier evento `state` real
+  // (idle/listening/thinking/speaking) es prueba de que el helper contestó,
+  // así que ya no está roto aunque lo estuviera hace un momento.
+  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking', 'voice-broken')
   const cls = window.VoiceUIState?.classNameForVoiceState?.(state)
   if (cls) btnVoice.classList.add(cls)
 }
@@ -4933,24 +4954,33 @@ function setVoiceOn(on) {
 }
 
 // La verdad del modo voz vive en main (voiceOwnerWcId + voiceSession). Hace
-// falta releerla en dos casos: al arrancar (la ventana pudo recargar con el
-// modo ya encendido de antes) y tras un `error` (el evento no dice si fue
+// falta releerla en tres casos: al arrancar (la ventana pudo recargar con el
+// modo ya encendido de antes), tras un `error` (el evento no dice si fue
 // fatal — solo lo fatal apaga, y asumir que sí o que no deja el botón
-// mintiendo la mitad de las veces).
+// mintiendo la mitad de las veces) y para enseñar `broken` (el helper se
+// rindió tras 3 intentos: es un aspecto distinto de "apagado", no solo un
+// booleano encendido/apagado — ver voiceStateAppearance).
 async function syncVoiceButtonFromState() {
   if (!btnVoice || typeof window.api?.voice?.state !== 'function') return
   let s = null
   try { s = await window.api.voice.state() } catch { s = null }
-  const mine = !!(s && s.mine && s.enabled)
-  setVoiceOn(mine)
-  if (mine) setVoiceButtonState(s.state)
+  const appearance = window.VoiceUIState?.voiceStateAppearance?.(s) || { on: false, cssClass: null }
+  setVoiceOn(appearance.on)
+  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking', 'voice-broken')
+  if (appearance.cssClass) btnVoice.classList.add(appearance.cssClass)
+  if (appearance.title) btnVoice.title = appearance.title
+  if (appearance.ariaLabel) btnVoice.setAttribute('aria-label', appearance.ariaLabel)
 }
 
 // El modo voz solo sirve con claude (main/voice-router.js lo rechaza con
-// codex). Si la sesión activa cambia a codex mientras está encendido, se
-// apaga aquí mismo: sin esto el botón se quedaría en "escuchando" hasta que
-// el usuario hablara y el backend lo cortara en el turno siguiente — un
-// estado zombi visible que el usuario vería antes de que nadie se lo dijera.
+// codex). Si la sesión activa cambia mientras está encendido, se apaga aquí
+// mismo: sin esto el botón se quedaría en "escuchando" hasta que el usuario
+// hablara y el backend lo cortara en el turno siguiente — un estado zombi
+// visible que el usuario vería antes de que nadie se lo dijera. Se llama
+// desde CUALQUIER sitio del renderer que pueda cambiar el CLI o resumir una
+// sesión: el selector de la topbar, el arranque, Ajustes → CLI por defecto
+// (que main.js aplica en silencio, sin evento propio) y las dos vías de
+// reanudar una sesión histórica.
 async function updateVoiceCliAvailability(cli) {
   if (!btnVoice) return
   const info = window.VoiceUIState?.voiceCliAvailability?.(cli) || { available: cli === 'claude' }
@@ -4960,7 +4990,8 @@ async function updateVoiceCliAvailability(cli) {
   if (!info.available && voiceOn) {
     try { await window.api.voice.disable() } catch {}
     setVoiceOn(false)
-    showVoiceHud('Modo voz apagado — Codex no lo soporta')
+    const label = cli ? String(cli).toUpperCase() : 'este asistente'
+    showVoiceHud(`Modo voz apagado — ${label} no lo soporta`)
   }
 }
 
@@ -4974,6 +5005,11 @@ if (btnVoice) {
     }
     const res = await window.api.voice.enable()
     if (!res?.ok) { showStatus(`Modo voz: ${res?.reason || 'no se pudo activar'}`, 'error', 4000); return }
+    // Por si venía de `broken` (el usuario reintenta a mano tras un fallo):
+    // el próximo evento `state` ya lo limpiaría, pero no hay que esperarlo
+    // para que el botón deje de anunciar un fallo que se está resolviendo.
+    btnVoice.classList.remove('voice-broken')
+    btnVoice.title = 'Modo voz — hablar con el agente'
     setVoiceOn(true)
     showVoiceHud('Modo voz activo — habla cuando quieras')
   })

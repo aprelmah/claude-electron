@@ -29,14 +29,53 @@ function classNameForVoiceState(state) {
 // lo rechaza con codex). Esto solo decide qué mostrar; la decisión real de si
 // se puede encender la toma siempre voice:enable en el proceso main — esto es
 // para que el botón no mienta *antes* de que el usuario lo pulse.
+//
+// El motivo se redacta con el CLI que llega, no con "Codex" fijo: hoy solo
+// existen claude y codex, pero si apareciera un tercero el texto no debe
+// seguir culpando a codex de algo que no hizo.
 function voiceCliAvailability(cli) {
   const available = cli === 'claude'
+  const label = cli ? String(cli).toUpperCase() : 'este asistente'
   return {
     available,
     title: available
       ? 'Modo voz — hablar con el agente'
-      : 'Modo voz — solo disponible con Claude, no con Codex',
-    ariaLabel: available ? 'Activar modo voz' : 'Modo voz no disponible con Codex'
+      : `Modo voz — solo disponible con Claude, no con ${label}`,
+    ariaLabel: available ? 'Activar modo voz' : `Modo voz no disponible con ${label}`
+  }
+}
+
+// Traduce la respuesta de `voice:state()` (contrato Tarea 7 § 6: `{enabled,
+// state, broken, mine}`) al aspecto del botón. `broken` es un eje aparte de
+// encendido/apagado: el helper se rindió tras 3 intentos (típico, permiso de
+// micrófono denegado) y "apagado" a secas sugiere que basta con pulsar una
+// vez, cuando ya lo intentó solo y falló. Pulsar SÍ reintenta (`enable()`
+// llama a `helper.reset()`), así que el título lo dice.
+//
+// `broken` gana siempre a la clase de estado: en la práctica no coexisten
+// (el helper solo queda `broken` tras un error fatal, y un error fatal ya
+// apagó el modo — `shutdown()` en voice-session.js), pero esta función no lo
+// asume, por si ese acoplamiento cambia.
+function voiceStateAppearance(s) {
+  const mine = !!(s && s.mine)
+  const enabled = !!(s && s.enabled)
+  const broken = !!(s && s.broken)
+  const on = mine && enabled
+
+  if (broken) {
+    return {
+      on,
+      cssClass: 'voice-broken',
+      title: 'Modo voz — el motor de voz no arrancó (¿permiso de micrófono?); pulsa para reintentar',
+      ariaLabel: 'Modo voz con fallo, pulsa para reintentar'
+    }
+  }
+
+  return {
+    on,
+    cssClass: on ? classNameForVoiceState(s && s.state) : null,
+    title: null,
+    ariaLabel: null
   }
 }
 
@@ -87,7 +126,7 @@ function planForVoiceEvent(evt) {
   }
 }
 
-const api = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, planForVoiceEvent }
+const api = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = api
 if (typeof window !== 'undefined') window.VoiceUIState = api
