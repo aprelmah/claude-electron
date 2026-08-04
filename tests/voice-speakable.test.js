@@ -38,10 +38,16 @@ describe('voice-speakable', () => {
     assert.ok(out.includes('Eso es todo'))
   })
 
-  test('quita líneas de diff', () => {
+  // Actualizado en la ronda de correcciones 2 (decisión explícita del
+  // revisor, ver informe): un '+'/'-' suelto sin cabecera de diff ya NO se
+  // borra por patrón de signos —eso es justo la clase de bug que esa ronda
+  // cierra—, se trata como viñeta y se conserva. El caso de un diff real
+  // SÍ eliminado queda cubierto por el test de cabeceras más abajo.
+  test('sin cabecera de diff, un + y un - sueltos son viñetas y se conservan', () => {
     const md = 'Cambio:\n+ añadido\n- quitado\nHecho.'
     const out = speakableFromMarkdown(md)
-    assert.ok(!out.includes('añadido'))
+    assert.ok(out.includes('añadido'))
+    assert.ok(out.includes('quitado'))
     assert.ok(out.includes('Hecho'))
   })
 
@@ -115,5 +121,40 @@ describe('voice-speakable', () => {
     assert.strictEqual(speakableFromMarkdown(md, { maxChars: -5 }), outDefault)
     assert.strictEqual(speakableFromMarkdown(md, { maxChars: 'muchos' }), outDefault)
     assert.strictEqual(speakableFromMarkdown(md, { maxChars: 0 }), outDefault)
+  })
+
+  // Ronda de correcciones 2: la alternancia estricta seguía siendo una
+  // heurística basada solo en el patrón de signos +/-, y una comparativa o
+  // un changelog alternan por diseño igual que un diff. Ahora solo cuenta
+  // como diff si hay un marcador inequívoco (cabecera de fichero o de
+  // hunk); sin eso, las líneas +/- son viñetas y se conservan.
+  test('no confunde una comparativa (+/- alternando) con un diff', () => {
+    const md = 'Comparativa:\n+ Opción A es más barata\n- Opción A tarda más\n+ Opción B es más rápida\n- Opción B es más cara'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('Opción A es más barata'), 'se perdió "Opción A es más barata"')
+    assert.ok(out.includes('Opción A tarda más'), 'se perdió "Opción A tarda más"')
+    assert.ok(out.includes('Opción B es más rápida'), 'se perdió "Opción B es más rápida"')
+    assert.ok(out.includes('Opción B es más cara'), 'se perdió "Opción B es más cara"')
+  })
+
+  test('no confunde un changelog (+/- alternando) con un diff', () => {
+    const md = 'Changelog:\n+ Añadido soporte para dark mode\n- Corregido el bug del login\n+ Añadido export a PDF\n- Corregido crash al abrir\n\nListo.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('Añadido soporte para dark mode'), 'se perdió la primera entrada')
+    assert.ok(out.includes('Corregido el bug del login'), 'se perdió la segunda entrada')
+    assert.ok(out.includes('Añadido export a PDF'), 'se perdió la tercera entrada')
+    assert.ok(out.includes('Corregido crash al abrir'), 'se perdió la cuarta entrada')
+    assert.ok(out.includes('Listo'), 'se perdió el cierre')
+  })
+
+  test('un diff real con cabeceras sí se elimina entero, cabeceras incluidas', () => {
+    const md = 'Parche:\ndiff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1,3 +1,4 @@\n-const x = 1\n+const x = 2\n+const y = 3\nListo.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(!out.includes('diff --git'))
+    assert.ok(!out.includes('a/x.js'))
+    assert.ok(!out.includes('const x'))
+    assert.ok(!out.includes('const y'))
+    assert.ok(out.includes('Parche'))
+    assert.ok(out.includes('Listo'))
   })
 })

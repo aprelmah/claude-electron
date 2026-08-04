@@ -27,51 +27,36 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
 
   // Tablas y diffs, línea a línea.
   //
-  // La detección de diff NO puede ser una bandera global sobre todo el
-  // mensaje: un simple "hay una línea '+' y una línea '-' en algún sitio
-  // del texto" borra viñetas legítimas con + o - en cuanto el mensaje trae
-  // las dos en cualquier parte, aunque estén en bloques sin relación
-  // ("Cosas pendientes" con viñetas '-' y aparte una nota con '+').
+  // Cualquier heurística que infiera "esto es un diff" a partir del patrón
+  // de signos +/- (aunque sea "alterna estrictamente") choca tarde o
+  // temprano con prosa humana real: una comparativa ("+ más barata / -
+  // tarda más") o un changelog ("+ añadido X / - corregido Y") alternan
+  // signo a signo exactamente igual que un diff, y no hay forma de
+  // distinguirlos mirando solo el patrón — la única heurística de signos
+  // que no falla así es no tener ninguna.
   //
-  // Tampoco basta con "bloque contiguo de líneas +/-": una lista de pros y
-  // contras agrupa varias '+' seguidas y luego varias '-' seguidas, y es
-  // tan contigua como un diff real.
-  //
-  // La señal que sí distingue un diff real (hunk tipo "- antes" / "+
-  // después") de una lista con viñetas + o -: dentro de un bloque contiguo
-  // de líneas +/-, un diff alterna signo línea a línea (nunca dos '+'
-  // seguidas ni dos '-' seguidas), mientras que una lista agrupa varias
-  // líneas del mismo signo seguidas. Solo se borra el bloque cuando tiene
-  // AMBOS signos y alterna estrictamente; ante cualquier duda se conserva
-  // el contenido (perderlo en silencio es peor que dejar pasar alguna
-  // viñeta rara con + o -).
-  const rawLines = out.split('\n')
-  const isDiffMarkerLine = (line) => /^[+-]\s/.test(line.trim())
-  const diffLineIndexes = new Set()
-  let runStart = -1
-  for (let i = 0; i <= rawLines.length; i++) {
-    const isMarker = i < rawLines.length && isDiffMarkerLine(rawLines[i])
-    if (isMarker && runStart === -1) {
-      runStart = i
-      continue
-    }
-    if (!isMarker && runStart !== -1) {
-      const run = rawLines.slice(runStart, i)
-      const signs = run.map((line) => line.trim()[0])
-      const hasBothSigns = signs.includes('+') && signs.includes('-')
-      const alternates = signs.every((sign, idx) => idx === 0 || sign !== signs[idx - 1])
-      if (hasBothSigns && alternates) {
-        for (let j = runStart; j < i; j++) diffLineIndexes.add(j)
-      }
-      runStart = -1
-    }
-  }
-  out = rawLines
-    .filter((line, idx) => {
+  // Por eso el criterio no mira el patrón: solo se trata como diff si el
+  // TEXTO trae un marcador inequívoco de diff real —una cabecera
+  // 'diff --git', una cabecera de fichero '--- a/x' / '+++ b/x', o una
+  // cabecera de hunk '@@ ... @@'—. Sin ninguno de esos marcadores, toda
+  // línea que empiece por + o - es una viñeta: se conserva y más abajo se
+  // le quita el signo igual que a '*'. Si un diff sin cabeceras se cuela
+  // sin detectarse, el usuario oye ruido de más (molesto, recuperable);
+  // perder prosa real en silencio no lo es. Ese es el lado seguro del
+  // error, y es el mismo criterio con el que ya se limpian bloques de
+  // código: nunca se adivina, se exige una marca clara.
+  const hasDiffHeader =
+    /^diff --git /m.test(out) ||
+    /^---\s+\S/m.test(out) ||
+    /^\+\+\+\s+\S/m.test(out) ||
+    /^@@[^\n]*@@/m.test(out)
+  out = out
+    .split('\n')
+    .filter((line) => {
       const t = line.trim()
       if (/^\|.*\|$/.test(t)) return false
-      if (diffLineIndexes.has(idx)) return false
       if (/^[|+\-\s:]+$/.test(t) && t.length > 2) return false
+      if (hasDiffHeader && (/^diff --git /.test(t) || /^@@/.test(t) || /^[+-]/.test(t))) return false
       return true
     })
     .join('\n')
