@@ -81,4 +81,39 @@ describe('voice-speakable', () => {
   test('colapsa espacios y líneas en blanco de sobra', () => {
     assert.strictEqual(speakableFromMarkdown('Hola\n\n\n\nqué    tal'), 'Hola. qué tal')
   })
+
+  // Ronda de correcciones 1: la heurística diff/viñeta no puede ser global
+  // sobre todo el mensaje, o borra viñetas legítimas con + o - en cuanto
+  // aparece una línea suelta del otro signo en cualquier parte del texto.
+  test('no confunde viñetas sueltas de + y - en distintos bloques con un diff', () => {
+    const md = 'Cosas pendientes:\n- revisar el log\n- avisar a Luismi\n\n+ nota aparte: tarea nueva en la cola.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('revisar el log'), 'se perdió "revisar el log"')
+    assert.ok(out.includes('avisar a Luismi'), 'se perdió "avisar a Luismi"')
+    assert.ok(out.includes('nota aparte'), 'se perdió "nota aparte"')
+  })
+
+  test('no confunde una lista de pros y contras (+ y - agrupados) con un diff', () => {
+    const md = 'Pros y contras:\n+ es más rápido\n+ es más simple\n- consume más memoria\n- no soporta undo'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('es más rápido'), 'se perdió "es más rápido"')
+    assert.ok(out.includes('es más simple'), 'se perdió "es más simple"')
+    assert.ok(out.includes('consume más memoria'), 'se perdió "consume más memoria"')
+    assert.ok(out.includes('no soporta undo'), 'se perdió "no soporta undo"')
+  })
+
+  test('normaliza CRLF antes de procesar, sin degradar la cadencia', () => {
+    const lf = speakableFromMarkdown('Linea uno\n\nLinea dos\n- item uno\n- item dos')
+    const crlf = speakableFromMarkdown('Linea uno\r\n\r\nLinea dos\r\n- item uno\r\n- item dos')
+    assert.strictEqual(crlf, lf)
+  })
+
+  test('maxChars no numérico o inválido cae al valor por defecto en vez de desactivar el recorte', () => {
+    const md = 'palabra '.repeat(300)
+    const outDefault = speakableFromMarkdown(md)
+    assert.strictEqual(speakableFromMarkdown(md, { maxChars: NaN }), outDefault)
+    assert.strictEqual(speakableFromMarkdown(md, { maxChars: -5 }), outDefault)
+    assert.strictEqual(speakableFromMarkdown(md, { maxChars: 'muchos' }), outDefault)
+    assert.strictEqual(speakableFromMarkdown(md, { maxChars: 0 }), outDefault)
+  })
 })
