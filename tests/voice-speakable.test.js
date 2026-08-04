@@ -157,4 +157,59 @@ describe('voice-speakable', () => {
     assert.ok(out.includes('Parche'))
     assert.ok(out.includes('Listo'))
   })
+
+  // Ronda de correcciones 3: '\s' en los regex de cabecera cruza saltos de
+  // línea, así que un divisor '---' suelto (sin nada real detrás) activaba
+  // hasDiffHeader para TODO el mensaje y borraba viñetas de secciones sin
+  // relación. '[ \t]+' no puede cruzar '\n', ancla la cabecera a su línea.
+  test('un divisor "---" suelto no borra las viñetas de antes y de después', () => {
+    const md = 'He hecho esto:\n- arreglado el bug\n- añadido el test\n\n---\n\nPendiente:\n- revisar en prod'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('arreglado el bug'), 'se perdió "arreglado el bug"')
+    assert.ok(out.includes('añadido el test'), 'se perdió "añadido el test"')
+    assert.ok(out.includes('revisar en prod'), 'se perdió "revisar en prod"')
+  })
+
+  test('un divisor "---" narrativo en la misma línea que un changelog no lo borra', () => {
+    const md = 'Changelog:\n+ Añadido X\n- Corregido Y\n--- separador narrativo\n+ Añadido Z'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('Añadido X'), 'se perdió "Añadido X"')
+    assert.ok(out.includes('Corregido Y'), 'se perdió "Corregido Y"')
+    assert.ok(out.includes('Añadido Z'), 'se perdió "Añadido Z"')
+  })
+
+  test('una checklist con "+++"/"++"/"+" de prioridad no se borra entera', () => {
+    const md = 'Nivel de prioridad:\n+++ urgente\n++ medio\n+ bajo'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('urgente'), 'se perdió "urgente"')
+    assert.ok(out.includes('medio'), 'se perdió "medio"')
+    assert.ok(out.includes('bajo'), 'se perdió "bajo"')
+  })
+
+  test('un divisor "---" entre dos secciones con viñetas conserva todo el contenido', () => {
+    const md = 'Sección A:\n- uno\n- dos\n\n---\n\nSección B:\n- tres\n- cuatro'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('uno'), 'se perdió "uno"')
+    assert.ok(out.includes('dos'), 'se perdió "dos"')
+    assert.ok(out.includes('tres'), 'se perdió "tres"')
+    assert.ok(out.includes('cuatro'), 'se perdió "cuatro"')
+  })
+
+  // Agujero encontrado al intentar romperlo tras el fix de esta ronda: con
+  // el borrado todavía global (por marca detectada en cualquier parte del
+  // mensaje), un resumen con viñetas normales perdía su contenido en
+  // cuanto el mensaje traía, más abajo y sin relación, un diff real con
+  // cabeceras. El borrado se acotó al bloque contiguo que contiene la
+  // marca; este test fija esa acotación como contrato.
+  test('viñetas normales antes de un diff real (con cabeceras) más abajo no se pierden', () => {
+    const md =
+      'Resumen:\n- corregido el login\n- añadido el export\n\n---\n\nParche aplicado:\ndiff --git a/auth.js b/auth.js\n--- a/auth.js\n+++ b/auth.js\n@@ -10,3 +10,4 @@\n-return null\n+return token\nListo.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('corregido el login'), 'se perdió "corregido el login"')
+    assert.ok(out.includes('añadido el export'), 'se perdió "añadido el export"')
+    assert.ok(!out.includes('diff --git'), 'el diff real no se limpió')
+    assert.ok(!out.includes('return null'), 'el diff real no se limpió')
+    assert.ok(!out.includes('return token'), 'el diff real no se limpió')
+    assert.ok(out.includes('Listo'), 'se perdió el cierre')
+  })
 })

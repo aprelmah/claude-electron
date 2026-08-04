@@ -45,18 +45,69 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   // perder prosa real en silencio no lo es. Ese es el lado seguro del
   // error, y es el mismo criterio con el que ya se limpian bloques de
   // código: nunca se adivina, se exige una marca clara.
-  const hasDiffHeader =
-    /^diff --git /m.test(out) ||
-    /^---\s+\S/m.test(out) ||
-    /^\+\+\+\s+\S/m.test(out) ||
-    /^@@[^\n]*@@/m.test(out)
-  out = out
-    .split('\n')
-    .filter((line) => {
+  //
+  // OJO con \s en estos regex de detección: \s incluye \n, así que
+  // '---\s+\S' no exige que la ruta esté en la MISMA línea que los guiones
+  // — '\s+' se traga saltos de línea y párrafos enteros hasta enganchar
+  // con cualquier carácter no blanco muchas líneas más abajo (un divisor
+  // '---' suelto, tan común entre secciones de una respuesta, activaba así
+  // 'hasDiffHeader' para todo el mensaje). Por eso aquí va '[ \t]+', que
+  // solo casa espacios y tabs: no puede cruzar un '\n', así que la cabecera
+  // queda anclada a su propia línea.
+  //
+  // Tampoco basta con "hay una palabra detrás en la misma línea": un
+  // divisor narrativo ('--- separador narrativo') o una viñeta de
+  // prioridad ('+++ urgente') también tienen una palabra detrás y no son
+  // cabeceras de diff. Lo que distingue a una cabecera real es que trae
+  // una RUTA, no una palabra cualquiera: '--- a/main.js', '+++ b/main.js',
+  // '--- /dev/null'. Por eso se exige que el token pegado a los guiones/
+  // signos contenga una '/' (todas las rutas de un diff la llevan, sea
+  // relativa 'a/x' o absoluta '/dev/null'); un divisor o una viñeta sin
+  // barra no matchea, tenga o no palabras detrás.
+  //
+  // Y el borrado no puede ser global sobre TODO el mensaje en cuanto se
+  // encuentra una marca en cualquier parte: un resumen con viñetas
+  // normales, seguido más abajo (tras un divisor u otra sección) de un
+  // diff real con sus cabeceras, perdía esas viñetas sin relación con el
+  // diff. Por eso el borrado se acota al bloque contiguo de líneas +/- (sin
+  // línea en blanco ni prosa de por medio) que contiene la marca: un
+  // bloque de +/- que no toca ninguna marca se conserva como viñetas,
+  // aunque el mensaje tenga un diff real en otra parte.
+  const isDiffHardSignalLine = (line) => {
+    const t = line.trim()
+    return (
+      /^diff --git /.test(t) ||
+      /^---[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) ||
+      /^\+\+\+[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) ||
+      /^@@[^\n]*@@/.test(t)
+    )
+  }
+  const isDiffCandidateLine = (line) => /^[+-]/.test(line.trim()) || isDiffHardSignalLine(line)
+
+  const rawLines = out.split('\n')
+  const diffLineIndexes = new Set()
+  let runStart = -1
+  for (let i = 0; i <= rawLines.length; i++) {
+    const isCandidate = i < rawLines.length && isDiffCandidateLine(rawLines[i])
+    if (isCandidate && runStart === -1) {
+      runStart = i
+      continue
+    }
+    if (!isCandidate && runStart !== -1) {
+      const run = rawLines.slice(runStart, i)
+      if (run.some(isDiffHardSignalLine)) {
+        for (let j = runStart; j < i; j++) diffLineIndexes.add(j)
+      }
+      runStart = -1
+    }
+  }
+
+  out = rawLines
+    .filter((line, idx) => {
       const t = line.trim()
       if (/^\|.*\|$/.test(t)) return false
       if (/^[|+\-\s:]+$/.test(t) && t.length > 2) return false
-      if (hasDiffHeader && (/^diff --git /.test(t) || /^@@/.test(t) || /^[+-]/.test(t))) return false
+      if (diffLineIndexes.has(idx)) return false
       return true
     })
     .join('\n')
