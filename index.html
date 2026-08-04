@@ -236,6 +236,9 @@
       <button id="btn-subchat" class="icon-btn" title="Sub-chat (pregunta lateral sin tocar el hilo) — Cmd+Shift+S" aria-label="Abrir sub-chat lateral">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H4l3-3a8 8 0 1 1 14-5z"/><path d="M8 21h8a5 5 0 0 0 5-5" opacity="0.5"/></svg>
       </button>
+      <button id="btn-voice" class="icon-btn" title="Modo voz — hablar con el agente" aria-label="Activar modo voz" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h2M20 12h2M6 8v8M10 5v14M14 7v10M18 9v6"/></svg>
+      </button>
       <button id="btn-pin" class="icon-btn" title="Fijar siempre encima" aria-label="Fijar ventana siempre encima" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-2-6V5H7v6l-2 6z"/></svg>
       </button>
@@ -801,10 +804,13 @@
     </div>
   </div>
 
+  <div id="voice-hud"></div>
+
   <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="project-picker.js"></script>
+  <script src="voice-ui-state.js"></script>
   <script src="renderer.js"></script>
   <script src="node_modules/d3/dist/d3.min.js"></script>
   <script src="graph-renderer.js"></script>

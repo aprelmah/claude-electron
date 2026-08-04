@@ -56,6 +56,7 @@
       "preload.js",
       "renderer.js",
       "project-picker.js",
+      "voice-ui-state.js",
       "index.html",
       "lan-client.html",
       "styles.css",

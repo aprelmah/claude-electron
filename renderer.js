@@ -4397,6 +4397,7 @@ cliSelector.addEventListener('change', async (e) => {
     term.focus()
     localStorage.setItem(CLI_KEY, newCli)
     showStatus(`${newCli.toUpperCase()} cargado`, 'info', 1500)
+    await updateVoiceCliAvailability(newCli)
   } catch (err) {
     showStatus(errorMessage(err), 'error', 7000)
     const rollback = await window.api.setActiveCli(previousCli)
@@ -4407,6 +4408,7 @@ cliSelector.addEventListener('change', async (e) => {
         term.focus()
       } catch {}
     }
+    await updateVoiceCliAvailability(previousCli)
   }
 })
 
@@ -4435,6 +4437,12 @@ cliSelector.addEventListener('change', async (e) => {
     }
   }
   cliSelector.value = initialCli
+  // Se sincroniza con el `initialCli` ya asentado (tras el posible restore de
+  // localStorage arriba), no con un `getActiveCli()` propio: pedirlo aparte
+  // podría leer el valor de transición y dejar el botón mintiendo si el
+  // restore cambia de CLI justo después.
+  await updateVoiceCliAvailability(initialCli)
+  await syncVoiceButtonFromState()
   renderProfileSelector()
   renderProfileReminder()
   renderTelegramStatus(await window.api.getTelegramStatus())
@@ -4892,3 +4900,94 @@ cliSelector.addEventListener('change', async (e) => {
   // Carga inicial
   refreshBadge()
 })()
+
+// ── Modo voz ──
+// Distinto del dictado (#btn-mic, arriba): el dictado transcribe y escribe en
+// el prompt sin red; esto conversa con el helper Swift (main/voice-*.js).
+// Lógica pura de estados/eventos en voice-ui-state.js (testeada); aquí solo
+// se aplica al DOM.
+const btnVoice = document.getElementById('btn-voice')
+const voiceHud = document.getElementById('voice-hud')
+let voiceOn = false
+let voiceHudTimer = null
+
+function showVoiceHud(text, holdMs = 2600) {
+  if (!voiceHud) return
+  voiceHud.textContent = text
+  voiceHud.classList.add('visible')
+  clearTimeout(voiceHudTimer)
+  if (holdMs > 0) voiceHudTimer = setTimeout(() => voiceHud.classList.remove('visible'), holdMs)
+}
+
+function setVoiceButtonState(state) {
+  if (!btnVoice) return
+  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking')
+  const cls = window.VoiceUIState?.classNameForVoiceState?.(state)
+  if (cls) btnVoice.classList.add(cls)
+}
+
+function setVoiceOn(on) {
+  voiceOn = !!on
+  if (btnVoice) btnVoice.setAttribute('aria-pressed', voiceOn ? 'true' : 'false')
+  if (!voiceOn) setVoiceButtonState('idle')
+}
+
+// La verdad del modo voz vive en main (voiceOwnerWcId + voiceSession). Hace
+// falta releerla en dos casos: al arrancar (la ventana pudo recargar con el
+// modo ya encendido de antes) y tras un `error` (el evento no dice si fue
+// fatal — solo lo fatal apaga, y asumir que sí o que no deja el botón
+// mintiendo la mitad de las veces).
+async function syncVoiceButtonFromState() {
+  if (!btnVoice || typeof window.api?.voice?.state !== 'function') return
+  let s = null
+  try { s = await window.api.voice.state() } catch { s = null }
+  const mine = !!(s && s.mine && s.enabled)
+  setVoiceOn(mine)
+  if (mine) setVoiceButtonState(s.state)
+}
+
+// El modo voz solo sirve con claude (main/voice-router.js lo rechaza con
+// codex). Si la sesión activa cambia a codex mientras está encendido, se
+// apaga aquí mismo: sin esto el botón se quedaría en "escuchando" hasta que
+// el usuario hablara y el backend lo cortara en el turno siguiente — un
+// estado zombi visible que el usuario vería antes de que nadie se lo dijera.
+async function updateVoiceCliAvailability(cli) {
+  if (!btnVoice) return
+  const info = window.VoiceUIState?.voiceCliAvailability?.(cli) || { available: cli === 'claude' }
+  btnVoice.disabled = !info.available
+  if (info.title) btnVoice.title = info.title
+  if (info.ariaLabel) btnVoice.setAttribute('aria-label', info.ariaLabel)
+  if (!info.available && voiceOn) {
+    try { await window.api.voice.disable() } catch {}
+    setVoiceOn(false)
+    showVoiceHud('Modo voz apagado — Codex no lo soporta')
+  }
+}
+
+if (btnVoice) {
+  btnVoice.addEventListener('click', async () => {
+    if (voiceOn) {
+      await window.api.voice.disable()
+      setVoiceOn(false)
+      showVoiceHud('Modo voz apagado')
+      return
+    }
+    const res = await window.api.voice.enable()
+    if (!res?.ok) { showStatus(`Modo voz: ${res?.reason || 'no se pudo activar'}`, 'error', 4000); return }
+    setVoiceOn(true)
+    showVoiceHud('Modo voz activo — habla cuando quieras')
+  })
+
+  window.api.voice.onEvent(async (evt) => {
+    const plan = window.VoiceUIState?.planForVoiceEvent?.(evt) || { action: 'none' }
+    if (plan.action === 'set-state') {
+      setVoiceButtonState(plan.state)
+      if (plan.state === 'idle') setVoiceOn(false)
+    } else if (plan.action === 'hud') {
+      showVoiceHud(plan.text, plan.holdMs)
+    } else if (plan.action === 'status') {
+      showStatus(plan.message, plan.level, plan.level === 'error' ? 5000 : 4000)
+      if (plan.recheckState) await syncVoiceButtonFromState()
+    }
+  })
+}

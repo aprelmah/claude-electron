@@ -480,6 +480,21 @@ button:active { transform: scale(0.93); }
   color: white !important;
   animation: pulse 1.2s ease-in-out infinite;
 }
+
+/* modo voz: un color por estado, para saber sin mirar el texto */
+#btn-voice.voice-listening { background: var(--rec) !important; color: white !important; animation: pulse 1.2s ease-in-out infinite; }
+#btn-voice.voice-thinking  { background: var(--accent) !important; color: white !important; }
+#btn-voice.voice-speaking  { background: #2d9d6b !important; color: white !important; }
+#btn-voice:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#voice-hud {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+  max-width: 62%; padding: 7px 14px; border-radius: 14px;
+  background: rgba(0,0,0,0.78); color: #fff; font-size: 13px;
+  pointer-events: none; opacity: 0; transition: opacity .18s ease; z-index: 60;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#voice-hud.visible { opacity: 1; }
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(255, 80, 112, 0.5); }
   50% { box-shadow: 0 0 0 8px rgba(255, 80, 112, 0); }

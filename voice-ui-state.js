@@ -1,0 +1,93 @@
+'use strict'
+
+// Lógica pura del botón de modo voz y su HUD: sin DOM, sin IPC. Vive fuera de
+// renderer.js para poder testearla con node:test (el DOM puro no se puede).
+// renderer.js solo aplica estas decisiones al DOM; esto no decide nada por sí
+// mismo, solo traduce.
+//
+// Doble carga: en el navegador (`<script src="voice-ui-state.js">`, sin
+// bundler) queda en `window.VoiceUIState`; en node (tests) se exporta con
+// `module.exports`. Mismo patrón que el resto de scripts sueltos del
+// renderer (`project-picker.js`, `graph-renderer.js`), solo que estos son
+// puros y por eso merece la pena separarlos.
+
+const VALID_STATES = ['idle', 'listening', 'thinking', 'speaking']
+
+const STATE_CLASS = {
+  listening: 'voice-listening',
+  thinking: 'voice-thinking',
+  speaking: 'voice-speaking'
+}
+
+// null para 'idle' (o cualquier cosa rara): el botón vuelve a su aspecto por
+// defecto quitando las tres clases, sin añadir ninguna.
+function classNameForVoiceState(state) {
+  return STATE_CLASS[state] || null
+}
+
+// El modo voz solo funciona con activeCli === 'claude' (main/voice-router.js
+// lo rechaza con codex). Esto solo decide qué mostrar; la decisión real de si
+// se puede encender la toma siempre voice:enable en el proceso main — esto es
+// para que el botón no mienta *antes* de que el usuario lo pulse.
+function voiceCliAvailability(cli) {
+  const available = cli === 'claude'
+  return {
+    available,
+    title: available
+      ? 'Modo voz — hablar con el agente'
+      : 'Modo voz — solo disponible con Claude, no con Codex',
+    ariaLabel: available ? 'Activar modo voz' : 'Modo voz no disponible con Codex'
+  }
+}
+
+const MODE_ICON = { encargo: '⚡', charla: '💬' }
+
+// Traduce un evento de `voice:event` (contrato en task-7-report.md § 6) a una
+// acción de UI. `error` es el caso delicado: el evento no dice si fue fatal
+// (solo lo fatal apaga el modo), así que se marca `recheckState` para que
+// renderer.js vuelva a preguntar `voice:state()` en vez de asumir nada — un
+// botón que asume está mintiendo la mitad de las veces.
+function planForVoiceEvent(evt) {
+  if (!evt || typeof evt !== 'object' || typeof evt.type !== 'string') return { action: 'none' }
+
+  switch (evt.type) {
+    case 'state':
+      if (!VALID_STATES.includes(evt.state)) return { action: 'none' }
+      return { action: 'set-state', state: evt.state }
+
+    case 'partial':
+      // Se pisa en cada evento: sin auto-ocultar (lo apaga el siguiente evento
+      // o el toggle de apagado).
+      return { action: 'hud', text: String(evt.text || ''), holdMs: 0 }
+
+    case 'heard': {
+      const icon = MODE_ICON[evt.mode] || '💬'
+      return { action: 'hud', text: `${icon} ${evt.text || ''}`, holdMs: 2600 }
+    }
+
+    case 'saying':
+      return { action: 'hud', text: `🔊 ${String(evt.text || '').slice(0, 90)}`, holdMs: 2600 }
+
+    case 'nothing-to-say':
+      return { action: 'hud', text: '(sin nada que leer en voz)', holdMs: 2600 }
+
+    case 'warn':
+      return { action: 'status', level: 'warn', message: String(evt.message || 'aviso del modo voz') }
+
+    case 'error':
+      return {
+        action: 'status',
+        level: 'error',
+        message: String(evt.message || 'error del modo voz'),
+        recheckState: true
+      }
+
+    default:
+      return { action: 'none' }
+  }
+}
+
+const api = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, planForVoiceEvent }
+
+if (typeof module !== 'undefined' && module.exports) module.exports = api
+if (typeof window !== 'undefined') window.VoiceUIState = api
