@@ -78,7 +78,7 @@ const {
   LAN_CLAUDE_EFFORT_LEVELS: _LAN_CLAUDE_EFFORT_LEVELS,
   LAN_CODEX_EFFORT_LEVELS: _LAN_CODEX_EFFORT_LEVELS
 } = require('./main/lan-helpers')
-const { createTelegramRelayBindings } = require('./main/telegram-relay-bindings')
+const { createTelegramRelayBindings, shouldAllowMacSessionFallback } = require('./main/telegram-relay-bindings')
 const { createTelegramHiddenPtyPool } = require('./main/telegram-hidden-pty-pool')
 const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
@@ -2513,7 +2513,10 @@ function initTelegramBridge() {
         return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
       }
 
-      const relaySession = pickRelaySessionForChat(opts?.chatId, !binding.bound, 'claude')
+      // Telegram manda: con proyecto elegido desde el bot no se cae a las sesiones
+      // abiertas en el Mac. Regla y motivo en shouldAllowMacSessionFallback().
+      const allowMacFallback = shouldAllowMacSessionFallback({ bindingBound: binding.bound, chatCwd })
+      const relaySession = pickRelaySessionForChat(opts?.chatId, allowMacFallback, 'claude')
       if (relaySession) {
         try {
           const relayResult = await relayThroughPty(relaySession, opts?.userPrompt || opts?.prompt, {

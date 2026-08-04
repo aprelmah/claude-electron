@@ -163,4 +163,15 @@ function createTelegramRelayBindings({
   }
 }
 
-module.exports = { createTelegramRelayBindings }
+// Telegram manda. Si el chat eligió proyecto desde el bot (/proyecto o /sesiones),
+// NO se cae al fallback de "cualquier sesión claude viva en la app": ese fallback
+// nunca miró el cwd, así que elegir un proyecto y escribir sin elegir además
+// sesión te contestaba desde lo que hubiera abierto en el Mac, con su cwd.
+// Con proyecto elegido solo hay dos destinos válidos: la sesión que elegiste, o
+// una nueva en ese proyecto.
+function shouldAllowMacSessionFallback({ bindingBound = false, chatCwd = null } = {}) {
+  if (bindingBound) return false
+  return !chatCwd
+}
+
+module.exports = { createTelegramRelayBindings, shouldAllowMacSessionFallback }
