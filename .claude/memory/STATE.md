@@ -51,17 +51,33 @@ Cuando llegues ahí: **deja la app compilada y desplegada**, escribe en este STA
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`main`**, **sincronizada con `origin`**, working tree limpio (salvo esta memoria).
-- Último commit: **`8d55387`**. **13 commits** entre el 3 y el 4 de agosto, todos pusheados.
-- Tests: **676 (670 pass / 0 fail / 6 skip pre-existentes)**. Eran 612 al empezar el 3-ago.
-- Deploy: `/Applications/POWER-AGENT.app`, build de **2026-08-04 18:59**, corriendo con ventana.
+- Rama activa: **`main`**, **5 commits por delante de `origin`** (sin push: Luismi no lo pidió), working tree limpio.
+- Último commit: **`904da4f`**. Los 5 sin pushear son de la sesión de voz y son **solo documentación + un `.swift` nuevo**: no tocan código de producción.
+- Tests: **676 (670 pass / 0 fail / 6 skip pre-existentes)**, verificado tras los cambios. Sin regresiones.
+- Deploy: `/Applications/POWER-AGENT.app`, build de **2026-08-04 18:59** — **anterior a la sesión de voz**. No se ha desplegado nada nuevo (no hacía falta: no hay código de app tocado).
 - **`autoReply` está en `false`**: el bot NO responde a nadie. Luismi lo encendió el 3-ago para aprobar el pipeline y lo volvió a apagar. La allowlist sigue vacía, así que **al encenderlo responde a cualquier número**.
 - Las 3 fichas de Turbo Energy están **validadas por Luismi**. Dejan de ser un riesgo abierto.
 - Bridge WhatsApp: **en git** (`whatsapp-bridge/` del repo). Runtime en `~/.claude/whatsapp-bridge/`, `/status` → `ready`. Se despliega con `scripts/deploy-wa-bridge.sh`.
 - Servidor LAN: **encendido**, puertos 9999 (WS) y 10000 (HTTP), IP `192.168.1.14`. 43 tests LAN en verde.
 - Electron 43.2.0, CLI codex 0.145.0 / claude 2.1.220.
 
-## Última sesión (2026-08-04) — tres bugs que los tests no podían ver
+## Última sesión (2026-08-04 noche) — modo voz: medido y planificado, sin implementar
+
+Luismi preguntó si se podía hacer un modo voz tipo ChatGPT escritorio. **Nada está implementado**: la sesión produjo el diseño, el plan y las mediciones que lo sostienen.
+
+**Las mediciones tumbaron la decisión inicial.** Luismi eligió "todo local, coste cero"; medirlo demostró que en este i7 de 2014 **ningún motor local transcribe tan rápido como se habla** (whisper base RTF 1,41; Apple on-device 2,5–7,5, desplomándose a 7,5 con audio largo). Con el dato delante cambió a los servidores de Apple: **617 ms** al primer texto, **1022 ms** desde que callas, 0 €, a cambio de que el audio salga del Mac. Tablas completas y hallazgos operativos: `tech/tech_modo_voz_mediciones.md`.
+
+**El eco no es un problema**: `VoiceProcessingIO` de CoreAudio cancela el altavoz — verificado con el TTS sonando y el micro abierto. Era el riesgo que podía matar el manos libres.
+
+- **`2adeee8`** — spec (162 líneas) con las cuatro decisiones de producto y las mediciones.
+- **`c804b94`** — plan (2001 líneas, 9 tareas TDD, 50 pasos, sin huecos) + `voice-helper/VoiceHelper.swift` (319 líneas, compila y responde a su protocolo NDJSON).
+- **`5c6824f`**, **`904da4f`** — STATE.md, AGENTS.md y CLAUDE.md apuntando al trabajo autorizado.
+
+El repaso del plan cazó dos fallos propios antes de escribir producción: el sub-chat **forkea el sessionId** (vigilar el de la madre habría dejado el turno esperando para siempre), y dos firmas de `relay-transcript-helpers.js` que había supuesto mal.
+
+⚠️ **Feedback de Luismi**: pidió "déjalo preparado" y tuvo que preguntar **dos veces** qué se había hecho, porque el `.swift` apareció sin anunciarlo. Regla nueva en `~/claude-shared/memory/02-feedback.md`: si me salgo del alcance literal, avisar antes en una línea.
+
+## Sesión previa (2026-08-04 tarde) — tres bugs que los tests no podían ver
 
 Los tres los cazó Luismi mirando la pantalla, no la suite. Vale la pena tenerlo presente: la cobertura estaba en verde en los tres casos.
 
@@ -87,7 +103,11 @@ También se explicó por qué el cliente LAN no sale de la WiFi (IP privada + NA
 
 ## Próximo paso
 
-0. **Probar los tres fixes del 4-ago**, ninguno validado por Luismi todavía: (a) abrir sesión en la app y ver que NO sale el aviso amarillo de transcript; (b) `/proyecto` en Telegram + escribir → debe contestar en ese proyecto; (c) sesión nueva desde Telegram → el título debe ser el mensaje real, no `[Sistema:…`.
+**El paso 0 es el bloque "🚦 EMPIEZA POR AQUÍ" del principio de este archivo: implementar el modo voz.** Está autorizado y no necesita preguntar. Lo de abajo es la cola heredada, que sigue viva.
+
+0bis. **Decisión pendiente de Luismi sobre el modo voz**: preguntó por qué había un `.swift` en el repo si solo pidió dejarlo preparado. Quedó sin responder si `voice-helper/VoiceHelper.swift` se queda donde está o se saca y su código vive solo dentro del plan. **Preguntárselo antes de la tarea 1.**
+
+1. **Probar los tres fixes del 4-ago**, ninguno validado por Luismi todavía: (a) abrir sesión en la app y ver que NO sale el aviso amarillo de transcript; (b) `/proyecto` en Telegram + escribir → debe contestar en ese proyecto; (c) sesión nueva desde Telegram → el título debe ser el mensaje real, no `[Sistema:…`.
 1. **Primer mensaje real del bot con todo esto puesto.** Nada del pipeline de WhatsApp se ha ejercitado de punta a punta: los arreglos de flujo están verificados por lectura y por tests de sus primitivas. Comparar contra la mediana registrada de 29 s.
 2. **Decidir la allowlist antes de volver a encender el bot**: está vacía, así que `autoReply: true` = responde a cualquier número.
 3. **Latencia restante**: quedan ~6,2 s/turno que sí son el modelo. Las palancas son `kbAnswerModel` sonnet→haiku (peor ceñido a la ficha) o CLI→API con fast mode (**factura aparte del plan Max**). Decisión de negocio, pendiente.
