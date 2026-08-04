@@ -65,6 +65,12 @@ const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
 const { createSessionGit } = require('./main/session-git')
 const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
+const { createVoiceHelperProcess } = require('./main/voice-helper-process')
+const { createVoiceTurnWatcher } = require('./main/voice-turn-watcher')
+const { createVoiceSendTarget } = require('./main/voice-send-target')
+const { createVoiceSession } = require('./main/voice-session')
+const { speakableFromMarkdown } = require('./main/voice-speakable')
+const voiceRouter = require('./main/voice-router')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -1368,6 +1374,82 @@ const subchatManager = createSubchatManager({
   log: (m) => console.log('[subchat]', m)
 })
 
+// ── Modo voz (ver docs/superpowers/specs/2026-08-04-voz-en-directo-design.md) ──
+//
+// UN helper por app, no por ventana: el micrófono es un recurso único del
+// sistema y dos procesos peleándose por él darían dos peticiones de permiso y
+// audio partido. `voiceOwnerWcId` marca de quién es el modo voz ahora mismo.
+//
+// El modo voz NO spawnea ningún PTY propio (CLAUDE.md § Regla para spawns
+// nuevos): el encargo escribe en el PTY de la sesión madre, que ya pasó por
+// `ensureSessionWorkspace`, y la charla reutiliza `subchat-pty`, que está
+// excluido a propósito y hereda el workCwd de la madre. El helper de voz es un
+// proceso Swift sin acceso al repo.
+const VOICE_HELPER_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'voice-helper')
+  : path.join(__dirname, 'resources', 'voice-helper')
+
+let voiceOwnerWcId = null
+
+function getVoiceSessionOwner() {
+  if (voiceOwnerWcId == null) return null
+  return sessions.get(voiceOwnerWcId) || null
+}
+
+const voiceHelper = createVoiceHelperProcess({
+  helperPath: VOICE_HELPER_PATH,
+  spawnFn: (bin, args, opts) => spawn(bin, args, opts),
+  onEvent: (evt) => {
+    try { voiceSession.handleHelperEvent(evt) } catch (err) { console.warn('[voz]', err?.message || err) }
+  },
+  log: (m) => console.log('[voz]', m)
+})
+
+const voiceWatcher = createVoiceTurnWatcher({
+  findRelayTranscript,
+  extractAssistantTextFromTranscript,
+  statFn: (p) => safeStat(p)
+})
+
+const voiceSendTarget = createVoiceSendTarget({
+  getSession: getVoiceSessionOwner,
+  subchat: subchatManager,
+  relayCwdCandidates,
+  findRelayTranscript,
+  snapshotClaudeSessions,
+  listClaudeSessionFilesWithMtime,
+  snapshotClaudeSessionMeta,
+  detectForkedRelayTranscript,
+  statFn: (p) => safeStat(p),
+  log: (m) => console.log('[voz]', m)
+})
+
+const voiceSession = createVoiceSession({
+  helper: voiceHelper,
+  speakable: speakableFromMarkdown,
+  watcher: voiceWatcher,
+  router: voiceRouter,
+  getSession: getVoiceSessionOwner,
+  sendToTarget: voiceSendTarget,
+  notifyRenderer: (evt) => {
+    const s = getVoiceSessionOwner()
+    try {
+      if (s?.win && !s.win.isDestroyed?.()) s.win.webContents.send('voice:event', evt)
+    } catch {}
+  },
+  log: (m) => console.log('[voz]', m)
+})
+
+// El modo voz muere con la ventana que lo tenía: sin esto el helper se queda
+// escuchando y hablándole a nadie.
+function releaseVoiceMode(wcId) {
+  const s = wcId != null ? sessions.get(wcId) : null
+  if (s) s.voiceSubchatSessionId = null
+  if (voiceOwnerWcId == null || voiceOwnerWcId !== wcId) return
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
+}
+
 // ── Git por sesión (aislamiento por worktree) ──
 // Fail-open: si sessionGit es null o prepare devuelve null, la sesión corre en
 // su cwd real sin aislamiento (comportamiento idéntico al de siempre).
@@ -1570,6 +1652,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     if (s && s.pty === proc) {
       try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
+      releaseVoiceMode(s.wcId)
       if (typeof s.relayCancel === 'function') {
         const err = new Error('PTY cerrado')
         err.name = 'RelayPtyClosed'
@@ -1593,6 +1676,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 function killPty(session) {
   if (!session) return
   try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
+  releaseVoiceMode(session.wcId)
   try { cliUpdateWatcher.forget(session.wcId) } catch {}
   if (!session.pty) return
   logSemanticForSession(session, 'pty_fin', {
@@ -3197,6 +3281,8 @@ app.on('before-quit', (event) => {
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
   try { subchatManager.closeAll() } catch {}
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
   try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}
@@ -3377,7 +3463,51 @@ ipcMain.on('subchat:resize', (event, { cols, rows } = {}) => {
 
 ipcMain.handle('subchat:close', (event) => {
   const s = getSessionByEvent(event)
-  return s ? subchatManager.close(s.wcId, 'renderer') : false
+  if (!s) return false
+  // Cerrar el sub-chat mata su fork: el sessionId guardado ya no crece nunca
+  // más y el modo voz se quedaría vigilando un fichero muerto hasta el timeout.
+  s.voiceSubchatSessionId = null
+  return subchatManager.close(s.wcId, 'renderer')
+})
+
+// ── Modo voz IPC ──
+// Solo un dueño a la vez: el micro es del sistema, no de la ventana.
+ipcMain.handle('voice:enable', (event) => {
+  const s = getSessionByEvent(event)
+  if (!s) return { ok: false, reason: 'sin sesión' }
+  if (voiceOwnerWcId != null && voiceOwnerWcId !== s.wcId) {
+    return { ok: false, reason: 'el modo voz ya está activo en otra ventana' }
+  }
+  voiceOwnerWcId = s.wcId
+  const res = voiceSession.enable()
+  if (!res.ok) { voiceOwnerWcId = null; return res }
+  // La voz elegida se manda tras arrancar: el helper nace con la del sistema.
+  const voiceId = appConfig?.cli?.voiceId || ''
+  if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
+  return res
+})
+
+ipcMain.handle('voice:disable', () => {
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
+  return { ok: true }
+})
+
+ipcMain.handle('voice:set-mode', (event, { mode } = {}) => {
+  voiceSession.setForcedMode(mode)
+  return { ok: true, mode: mode === 'charla' || mode === 'encargo' ? mode : null }
+})
+
+ipcMain.handle('voice:state', (event) => {
+  const s = getSessionByEvent(event)
+  return {
+    enabled: voiceSession.isEnabled(),
+    state: voiceSession.getState(),
+    broken: voiceHelper.isBroken(),
+    // Para que una ventana que NO es la dueña pinte el botón apagado aunque el
+    // modo voz esté encendido en otra.
+    mine: !!s && voiceOwnerWcId === s.wcId
+  }
 })
 
 // ── Audio: guarda buffer y transcribe con whisper.cpp ──
@@ -3735,7 +3865,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceEnabled', 'voiceId']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {

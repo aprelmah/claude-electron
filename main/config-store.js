@@ -126,6 +126,24 @@ function sanitizeGitSessionIsolation(value, fallback = true) {
   return fallback
 }
 
+// Modo voz. Default false: pide permiso de micrófono y de reconocimiento de
+// voz al sistema, así que no se enciende sola.
+function sanitizeVoiceEnabled(value, fallback = false) {
+  if (value === true) return true
+  if (value === false) return false
+  return fallback
+}
+
+// Identificador de voz de AVSpeechSynthesis (p. ej.
+// `com.apple.voice.premium.es-ES.Monica`). Cadena corta o vacío: viaja al
+// helper por NDJSON, así que nada de espacios ni caracteres raros.
+function sanitizeVoiceId(value) {
+  if (typeof value !== 'string') return ''
+  const v = value.trim()
+  if (!v || v.length > 200) return ''
+  return /^[A-Za-z0-9._-]+$/.test(v) ? v : ''
+}
+
 function sanitizeCliBinaryPath(value) {
   const v = typeof value === 'string' ? value.trim() : ''
   if (!v) return ''
@@ -189,7 +207,9 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         codexBin: sanitizeCliBinaryPath(cli.codexBin),
         whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
         claudeModel: sanitizeClaudeModel(cli.claudeModel),
-        gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation)
+        gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation),
+        voiceEnabled: sanitizeVoiceEnabled(cli.voiceEnabled),
+        voiceId: sanitizeVoiceId(cli.voiceId)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -221,7 +241,9 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     normalizeLanServerConfig,
     sanitizeCliBinaryPath,
     sanitizeClaudeModel,
-    sanitizeGitSessionIsolation
+    sanitizeGitSessionIsolation,
+    sanitizeVoiceEnabled,
+    sanitizeVoiceId
   }
 }
 
