@@ -104,6 +104,11 @@ Decide destino de cada `final`:
 
 Detección de intención en v1: **lista de patrones**, no clasificador ("hazlo", "aplícalo", "arréglalo", "cámbialo", "commitea", "ejecuta"…). Un clasificador añadiría un turno de LLM y latencia a cada frase. Complementado con un **toggle manual** en la UI que manda sobre la detección: si el modo está fijado, no se adivina nada.
 
+**Dos casos borde que el router debe resolver explícitamente:**
+
+- **Ya hay un sub-chat abierto en esa ventana.** El manager actual permite uno por ventana. El modo voz **reutiliza el existente** en vez de abrir otro ni matarlo: la voz entra en el mismo hilo lateral que el panel, y lo que digas aparece también escrito allí. Sin sub-chat abierto, lo crea.
+- **No hay sesión madre viva** (picker de proyecto abierto, PTY muerto). Sin sesión no hay fork posible: el modo voz **no arranca** y el botón queda deshabilitado con motivo visible. No se inventa una sesión ni se elige proyecto por voz en v1.
+
 ### 4.4 Reutilización: el relay ya resuelve lo difícil
 
 `main/relay-transcript-helpers.js` ya sabe **localizar el transcript por `sessionId`** (no por cwd), **detectar el fin de turno de verdad** (`turnComplete`: último evento `assistant` con `stop_reason: 'end_turn'`, ignorando sidechains) y **extraer el texto limpio del JSONL** en vez de raspar el TUI.
