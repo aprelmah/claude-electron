@@ -11,6 +11,7 @@ function makeHarness(opts = {}) {
   const sent = []
   const helperCmds = []
   const renderer = []
+  const timers = []
   let watchHandle = null
   let onDoneCb = null
   let onTimeoutCb = null
@@ -18,7 +19,7 @@ function makeHarness(opts = {}) {
   const session = createVoiceSession({
     helper: {
       start: () => helperCmds.push({ cmd: '__start__' }),
-      send: (c) => { helperCmds.push(c); return true },
+      send: (c) => { helperCmds.push(c); return !(opts.sendFails || []).includes(c.cmd) },
       stop: () => helperCmds.push({ cmd: '__stop__' }),
       isRunning: () => true,
       isBroken: () => !!opts.broken,
@@ -40,8 +41,13 @@ function makeHarness(opts = {}) {
       return { ok: true, sessionId: 'sid', cwds: ['/p'], baseOffset: 0 }
     },
     getSession: () => opts.session || { activeCli: 'claude', claudeSessionId: 'sid', pty: {}, wcId: 1 },
-    notifyRenderer: (e) => renderer.push(e),
-    log: () => {}
+    notifyRenderer: (e) => {
+      renderer.push(e)
+      if (opts.notifyThrows) throw new Error('webContents destruido')
+    },
+    log: () => {},
+    setTimeoutFn: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t },
+    clearTimeoutFn: (t) => { if (t) t.live = false }
   })
 
   return {
@@ -52,7 +58,11 @@ function makeHarness(opts = {}) {
     fireDone: (r) => onDoneCb && onDoneCb(r),
     fireTimeout: () => onTimeoutCb && onTimeoutCb(),
     hasWatch: () => !!watchHandle,
-    count: (cmd) => helperCmds.filter((c) => c.cmd === cmd).length
+    count: (cmd) => helperCmds.filter((c) => c.cmd === cmd).length,
+    liveTimers: () => timers.filter((t) => t.live).length,
+    timerMs: () => timers.filter((t) => t.live).map((t) => t.ms),
+    fireTimers: () => { for (const t of timers) { if (t.live) { t.live = false; t.fn() } } },
+    states: () => renderer.filter((e) => e.type === 'state').map((e) => e.state)
   }
 }
 
@@ -128,6 +138,19 @@ describe('voice-session: ciclo básico', () => {
     assert.strictEqual(h.sent.length, 0)
   })
 
+  // El de arriba (verbatim del plan) se autocumple: sin enviar nada, `sent`
+  // estaría vacío igual aunque la máquina no hiciera nada. Este ejerce lo que
+  // aquel dice probar: que el `empty` además REARMA el micro.
+  test('un final vacío se ignora, pero rearma el micro (el de arriba se autocumple)', async () => {
+    const h = makeHarness()
+    h.session.enable()
+    const antes = h.count('start')
+    await h.session.handleHelperEvent({ type: 'empty' })
+    assert.strictEqual(h.sent.length, 0)
+    assert.strictEqual(h.count('start'), antes + 1, 'el helper cerró su micro al cerrar el turno en vacío')
+    assert.strictEqual(h.session.getState(), 'listening')
+  })
+
   test('ignora un final que llega mientras piensa', async () => {
     const h = makeHarness()
     h.session.enable()
@@ -144,6 +167,23 @@ describe('voice-session: interrupción y apagado', () => {
     h.session.handleHelperEvent({ type: 'speech-start', id: 'a' })
     h.session.handleHelperEvent({ type: 'user-interrupt' })
     assert.strictEqual(h.session.getState(), 'listening')
+  })
+
+  // El de arriba (verbatim del plan) se autocumple: nunca llegó a hablar, así
+  // que ya estaba en `listening` antes del corte. Este lo ejerce de verdad,
+  // con una frase sonando.
+  test('hablarle encima la calla y reabre el micro, con una frase sonando de verdad', async () => {
+    const h = makeHarness()
+    const speak = await hastaHablando(h)
+    assert.strictEqual(h.session.getState(), 'speaking')
+    h.session.handleHelperEvent({ type: 'user-interrupt' })
+    assert.strictEqual(h.session.getState(), 'listening')
+    assert.deepStrictEqual(h.states().slice(-2), ['speaking', 'listening'], 'el salto tiene que ser speaking → listening')
+    assert.strictEqual(h.liveTimers(), 0, 'el guardia de la frase se suelta al cortar')
+    // Y el cerrojo queda echado: el speech-end de esa frase ya no manda nada.
+    const antes = h.count('start')
+    h.session.handleHelperEvent({ type: 'speech-end', id: speak.id, finished: false })
+    assert.strictEqual(h.count('start'), antes)
   })
 
   test('al apagarse para el helper y cancela el vigía', async () => {
@@ -206,7 +246,7 @@ describe('voice-session: barge-in', () => {
 
   test('el corte no cierra el micro: se perdería lo que acaba de reconocer', async () => {
     const h = makeHarness()
-    const speak = await hastaHablando(h)
+    await hastaHablando(h)
     const antes = h.count('stop')
     h.session.handleHelperEvent({ type: 'user-interrupt' })
     assert.strictEqual(h.session.getState(), 'listening')
@@ -220,6 +260,17 @@ describe('voice-session: barge-in', () => {
     const antes = h.count('start')
     h.session.handleHelperEvent({ type: 'speech-end', id: speak.id, finished: false })
     assert.strictEqual(h.count('start'), antes, 'el helper ya está escuchando: otro start resetearía el turno')
+    assert.strictEqual(h.session.getState(), 'listening')
+  })
+
+  test('un speech-end de cancelación no cierra el turno por su cuenta', async () => {
+    // Puede adelantarse a su user-interrupt: uno sale del hilo de CoreAudio y
+    // otro de la cola principal. Se ignora y se espera al que sí manda.
+    const h = makeHarness()
+    const speak = await hastaHablando(h)
+    h.session.handleHelperEvent({ type: 'speech-end', id: speak.id, finished: false })
+    assert.strictEqual(h.session.getState(), 'speaking', 'todavía no se sabe por qué se canceló')
+    h.session.handleHelperEvent({ type: 'user-interrupt' })
     assert.strictEqual(h.session.getState(), 'listening')
   })
 
@@ -241,6 +292,18 @@ describe('voice-session: barge-in', () => {
     h.session.handleHelperEvent({ type: 'user-interrupt' })
     assert.strictEqual(h.session.getState(), 'thinking')
     assert.strictEqual(h.count('start'), antes)
+  })
+
+  test('un final mientras habla se atiende como barge-in y calla la frase', async () => {
+    // El user-interrupt puede perderse; el final es prueba suficiente de que
+    // el usuario habló encima. Aquí sí hay que callar la síntesis a mano.
+    const h = makeHarness()
+    await hastaHablando(h)
+    await h.session.handleHelperEvent({ type: 'final', text: 'para, mejor otra cosa' })
+    assert.strictEqual(h.sent.length, 2)
+    assert.strictEqual(h.sent[1].text, 'para, mejor otra cosa')
+    assert.strictEqual(h.session.getState(), 'thinking')
+    assert.ok(h.helperCmds.some((c) => c.cmd === 'shutup'), 'la frase seguía sonando: hay que callarla')
   })
 })
 
@@ -305,11 +368,13 @@ describe('voice-session: reentrada y fugas', () => {
     assert.strictEqual(h.session.getState(), 'idle')
   })
 
-  test('apagar mientras habla calla la frase en el acto', async () => {
+  test('apagar mientras habla calla la frase en el acto y suelta el guardia', async () => {
     const h = makeHarness()
     await hastaHablando(h)
+    assert.strictEqual(h.liveTimers(), 1)
     h.session.disable()
     assert.ok(h.helperCmds.some((c) => c.cmd === 'shutup'), 'no se espera a que acabe la frase')
+    assert.strictEqual(h.liveTimers(), 0, 'ni un temporizador vivo tras apagar')
   })
 
   test('al reactivar tras un error fatal se le da otra oportunidad al helper', () => {
@@ -351,8 +416,6 @@ describe('voice-session: caminos que no pueden colgarla', () => {
   })
 
   test('un final en blanco rearma el micro en vez de dejarlo cerrado', async () => {
-    // El helper cierra su micro al cerrar el turno: si nadie lo rearma, se
-    // queda en escucha eterna sin escuchar nada.
     const h = makeHarness()
     h.session.enable()
     const antes = h.count('start')
@@ -378,6 +441,7 @@ describe('voice-session: caminos que no pueden colgarla', () => {
     assert.strictEqual(h.session.getState(), 'speaking')
     h.session.handleHelperEvent({ type: 'hello', pid: 2 })
     assert.strictEqual(h.session.getState(), 'listening', 'la frase murió con el proceso')
+    assert.strictEqual(h.liveTimers(), 0, 'y su guardia se suelta con ella')
   })
 
   test('si el helper resucita escuchando, le devuelve el micro', () => {
@@ -449,5 +513,231 @@ describe('voice-session: caminos que no pueden colgarla', () => {
       watcher: { watch: () => ({}) },
       router: { routeVoiceText: () => ({}), resolveVoiceTarget: () => ({}) }
     }), /sendToTarget/)
+  })
+})
+
+describe('voice-session: el renderer no puede tumbar el main', () => {
+  // Un webContents destruido con el modo voz encendido hace que notifyRenderer
+  // lance. Si el fallo sube, se lleva el proceso main de Electron entero.
+
+  test('un renderer que lanza no impide arrancar', () => {
+    const h = makeHarness({ notifyThrows: true })
+    assert.doesNotThrow(() => h.session.enable())
+    assert.strictEqual(h.session.getState(), 'listening')
+  })
+
+  test('un renderer que lanza no deja un rechazo sin dueño en el turno', async () => {
+    // onFinal es async: el safeEmit del helper solo envuelve la parte síncrona.
+    const h = makeHarness({ notifyThrows: true })
+    h.session.enable()
+    await assert.doesNotReject(() => h.session.handleHelperEvent({ type: 'final', text: 'hola' }))
+    assert.strictEqual(h.sent.length, 1, 'y el turno sale igual')
+    assert.strictEqual(h.session.getState(), 'thinking')
+  })
+
+  test('un renderer que lanza no revienta el cierre del turno', async () => {
+    // Este camino entra desde el setInterval del vigía, que no envuelve la
+    // llamada: una excepción aquí es no capturada en el main.
+    const h = makeHarness({ notifyThrows: true })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    assert.doesNotThrow(() => h.fireDone({ text: 'Todo bien.', sessionId: 'sid' }))
+    assert.strictEqual(h.session.getState(), 'speaking')
+  })
+
+  test('un renderer que lanza no revienta el vencimiento del turno', () => {
+    const h = makeHarness({ notifyThrows: true })
+    h.session.enable()
+    assert.doesNotThrow(() => h.fireTimeout())
+  })
+
+  test('un renderer que lanza no impide apagar', () => {
+    const h = makeHarness({ notifyThrows: true })
+    h.session.enable()
+    assert.doesNotThrow(() => h.session.disable())
+    assert.strictEqual(h.session.isEnabled(), false)
+  })
+})
+
+describe('voice-session: nadie se queda hablando para siempre', () => {
+  test('si el fin de la frase no llega nunca, el guardia rearma el micro', async () => {
+    // `thinking` tiene el tope de 180 s del vigía; `speaking` depende de que un
+    // proceso externo avise, y si no avisa la máquina se queda muda y sorda.
+    const h = makeHarness()
+    await hastaHablando(h)
+    assert.strictEqual(h.liveTimers(), 1)
+    h.fireTimers()
+    assert.strictEqual(h.session.getState(), 'listening')
+    assert.ok(h.helperCmds.some((c) => c.cmd === 'shutup'), 'por si seguía sonando')
+    assert.ok(h.renderer.some((e) => e.type === 'warn'))
+  })
+
+  test('el guardia se suelta al llegar el fin de la frase', async () => {
+    const h = makeHarness()
+    const speak = await hastaHablando(h)
+    h.session.handleHelperEvent({ type: 'speech-end', id: speak.id, finished: true })
+    assert.strictEqual(h.session.getState(), 'listening')
+    assert.strictEqual(h.liveTimers(), 0)
+  })
+
+  test('el guardia vencido de una carrera vieja no toca la nueva', async () => {
+    const h = makeHarness()
+    await hastaHablando(h)
+    h.session.disable()
+    h.session.enable()
+    h.fireTimers()
+    assert.strictEqual(h.session.getState(), 'listening')
+  })
+
+  test('la duración del guardia crece con la frase, no es fija', async () => {
+    // Un tope fijo cortaría las lecturas largas, que es justo lo que no puede
+    // pasar: el guardia es un antibloqueo, no un límite de UX.
+    const corta = makeHarness()
+    await hastaHablando(corta, 'Ya.')
+    const larga = makeHarness()
+    await hastaHablando(larga, 'x'.repeat(600))
+    const [msCorta] = corta.timerMs()
+    const [msLarga] = larga.timerMs()
+    assert.ok(msLarga > msCorta, 'una frase de 600 caracteres necesita más margen que "Ya."')
+    // ~62 ms/carácter es el ritmo real medido del sintetizador a rate 0,52:
+    // el margen tiene que quedar por encima o cortaría una lectura legítima.
+    assert.ok(msLarga > 600 * 62, 'el margen no puede quedarse por debajo del ritmo real de lectura')
+  })
+})
+
+describe('voice-session: órdenes que no llegan al helper', () => {
+  test('si el speak no llega, no se queda hablando sin frase', async () => {
+    const h = makeHarness({ sendFails: ['speak'] })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: 'Todo bien.', sessionId: 'sid' })
+    assert.strictEqual(h.session.getState(), 'listening', 'sin frase no habrá speech-end que esperar')
+    assert.ok(h.renderer.some((e) => e.type === 'error' && /voz alta/.test(e.message)))
+    assert.strictEqual(h.liveTimers(), 0, 'ni guardia para una frase que no existe')
+  })
+
+  test('si el micro no responde, la UI se entera de que está sorda', () => {
+    const h = makeHarness({ sendFails: ['start'] })
+    h.session.enable()
+    assert.ok(h.renderer.some((e) => e.type === 'warn' && /micrófono/i.test(e.message)))
+  })
+
+  test('un helper que rechaza todo no revienta la máquina', () => {
+    const h = makeHarness({ sendFails: ['start', 'stop', 'speak', 'shutup'] })
+    assert.doesNotThrow(() => h.session.enable())
+    assert.doesNotThrow(() => h.session.disable())
+  })
+})
+
+describe('voice-session: la sesión puede cambiar bajo los pies', () => {
+  test('si la sesión pasa a codex, el turno no se envía y el modo voz se apaga', async () => {
+    // El hot session switch de la app deja cambiar de CLI con la voz encendida.
+    // Codex no delimita el fin de turno: el vigía polearía un .jsonl que no
+    // crece hasta morir a los 180 s.
+    let cli = 'claude'
+    const h = makeHarness({ router: {
+      routeVoiceText: () => ({ mode: 'charla', reason: 'test' }),
+      resolveVoiceTarget: () => (cli === 'claude'
+        ? { ok: true, target: 'subchat', reuseSubchat: false }
+        : { ok: false, reason: 'el modo voz solo funciona con claude, no con codex' })
+    } })
+    h.session.enable()
+    assert.strictEqual(h.session.isEnabled(), true)
+    cli = 'codex'
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    assert.strictEqual(h.sent.length, 0, 'no se manda un turno a una sesión que no sirve')
+    assert.strictEqual(h.session.isEnabled(), false)
+    assert.strictEqual(h.session.getState(), 'idle')
+    assert.ok(h.renderer.some((e) => e.type === 'error' && /codex/i.test(e.message)))
+  })
+
+  test('si la sesión muere entre turnos, se apaga con motivo en vez de colgarse', async () => {
+    let viva = true
+    const h = makeHarness({ router: {
+      routeVoiceText: () => ({ mode: 'charla', reason: 'test' }),
+      resolveVoiceTarget: () => (viva
+        ? { ok: true, target: 'subchat', reuseSubchat: false }
+        : { ok: false, reason: 'la sesión no tiene un proceso vivo' })
+    } })
+    h.session.enable()
+    viva = false
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    assert.strictEqual(h.sent.length, 0)
+    assert.strictEqual(h.session.isEnabled(), false)
+    assert.ok(h.renderer.some((e) => e.type === 'error' && /proceso vivo/.test(e.message)))
+  })
+})
+
+describe('voice-session: contrato de eventos con el renderer', () => {
+  // La Tarea 7 se apoya en estos siete eventos: si cambian sin querer, aquí
+  // salta.
+
+  test('cada salto de estado se anuncia, y en orden', async () => {
+    const h = makeHarness()
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: 'Todo bien.', sessionId: 'sid' })
+    const speak = h.helperCmds.find((c) => c.cmd === 'speak')
+    h.session.handleHelperEvent({ type: 'speech-end', id: speak.id })
+    assert.deepStrictEqual(h.states(), ['listening', 'thinking', 'speaking', 'listening'])
+    h.session.disable()
+    assert.deepStrictEqual(h.states().slice(-1), ['idle'])
+  })
+
+  test('el mismo estado dos veces no se repite al renderer', async () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'listening' })
+    h.session.handleHelperEvent({ type: 'empty' })
+    assert.deepStrictEqual(h.states(), ['listening'])
+  })
+
+  test('heard lleva lo que entendió, el modo y el porqué', async () => {
+    const h = makeHarness({ router: {
+      routeVoiceText: () => ({ mode: 'encargo', reason: 'verbo de ejecución' }),
+      resolveVoiceTarget: () => ({ ok: true, target: 'subchat', reuseSubchat: false })
+    } })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: '  arréglalo  ' })
+    const heard = h.renderer.find((e) => e.type === 'heard')
+    assert.ok(heard, 'sin heard, la UI no puede enseñar a dónde fue la frase')
+    assert.strictEqual(heard.text, 'arréglalo', 'ya viene recortado')
+    assert.strictEqual(heard.mode, 'encargo')
+    assert.strictEqual(heard.reason, 'verbo de ejecución')
+  })
+
+  test('saying lleva el texto ya decible, no el markdown crudo', async () => {
+    const h = makeHarness({ speakable: () => 'Todo bien, tres tests verdes.' })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: '**Todo bien**, tres tests verdes.', sessionId: 'sid' })
+    const saying = h.renderer.find((e) => e.type === 'saying')
+    assert.ok(saying)
+    assert.strictEqual(saying.text, 'Todo bien, tres tests verdes.')
+    const speak = h.helperCmds.find((c) => c.cmd === 'speak')
+    assert.strictEqual(saying.text, speak.text, 'la UI enseña exactamente lo que se lee')
+  })
+
+  test('nothing-to-say avisa de que el turno no tenía nada que leer', async () => {
+    const h = makeHarness({ speakable: () => '' })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: '```js\nconst x = 1\n```', sessionId: 'sid' })
+    assert.ok(h.renderer.some((e) => e.type === 'nothing-to-say'))
+    assert.ok(!h.renderer.some((e) => e.type === 'saying'))
+  })
+
+  test('no se cuela ningún evento fuera del contrato', async () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'partial', text: 'arre' })
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: 'Todo bien.', sessionId: 'sid' })
+    h.session.handleHelperEvent({ type: 'warn', message: 'ojo' })
+    h.session.handleHelperEvent({ type: 'error', message: 'ojo', fatal: false })
+    const permitidos = ['state', 'partial', 'heard', 'saying', 'nothing-to-say', 'warn', 'error']
+    for (const e of h.renderer) {
+      assert.ok(permitidos.includes(e.type), `evento no documentado para la Tarea 7: ${e.type}`)
+    }
   })
 })
