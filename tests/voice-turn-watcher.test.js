@@ -112,7 +112,7 @@ describe('voice-turn-watcher', () => {
     const h = makeHarness({ timeoutMs: 900 })
     let timedOut = false
     h.watcher.watch({ sessionId: 'sid', cwds: ['/p'], baseOffset: 0, onDone: () => {}, onTimeout: () => { timedOut = true } })
-    h.clock.tick(4)   // 4 × 300 ms > 900 ms
+    h.clock.tick(4)   // al 3er tick elapsed llega a 900 (>= timeoutMs) y dispara; el 4º es margen y no debe volver a disparar
     assert.strictEqual(timedOut, true)
     assert.strictEqual(h.clock.count(), 0)
   })
@@ -127,16 +127,41 @@ describe('voice-turn-watcher', () => {
     assert.strictEqual(timedOut, true)
   })
 
-  test('un stat que lanza no tumba el vigía', () => {
+  test('un stat que lanza no tumba el vigía; el poll siguiente con stat sano completa el turno', () => {
+    // A diferencia de otros tests, aquí SÍ se dispara el handler del intervalo
+    // (clock.tick), para ejercer de verdad la rama catch de stat() dentro de
+    // poll() — no basta con comprobar que watch() devuelve un handle.
+    const clock = makeClock()
+    let size = 0
+    let statCalls = 0
+    const statFn = () => {
+      statCalls += 1
+      if (statCalls === 1) throw new Error('ENOENT')
+      return { size }
+    }
+    const extractResults = [{ text: 'ya iba a fallar', sawAssistant: true, sawEndTurn: true, lastStopReason: 'end_turn', turnComplete: true }]
     const watcher = createVoiceTurnWatcher({
-      findRelayTranscript: () => ({ filePath: '/x', sessionId: 's', size: 0, mtimeMs: 0 }),
-      extractAssistantTextFromTranscript: () => ({ turnComplete: false }),
-      statFn: () => { throw new Error('ENOENT') },
-      setIntervalFn: (fn) => ({ fn }),
-      clearIntervalFn: () => {},
+      findRelayTranscript: () => ({ filePath: '/x', sessionId: 's', size, mtimeMs: 0 }),
+      extractAssistantTextFromTranscript: () => extractResults.shift() || { text: '', turnComplete: false },
+      statFn,
+      setIntervalFn: clock.setIntervalFn,
+      clearIntervalFn: clock.clearIntervalFn,
       pollMs: 300
     })
-    const handle = watcher.watch({ sessionId: 's', cwds: [], baseOffset: 0, onDone: () => {} })
+    let done = null
+    const handle = watcher.watch({ sessionId: 's', cwds: [], baseOffset: 0, onDone: (r) => { done = r } })
     assert.ok(handle && typeof handle.cancel === 'function')
+
+    // Primer poll: stat lanza. No debe propagar ni cerrar el vigía.
+    assert.doesNotThrow(() => clock.tick())
+    assert.strictEqual(done, null, 'un stat que lanza no debe completar el turno')
+    assert.strictEqual(clock.count(), 1, 'el vigía sigue vivo tras el stat que lanza')
+
+    // Segundo poll: stat ya funciona, el fichero creció, y el turno cierra.
+    size = 50
+    clock.tick()
+    assert.ok(done, 'un poll posterior con stat sano sí debe detectar el crecimiento y completar el turno')
+    assert.strictEqual(done.text, 'ya iba a fallar')
+    assert.strictEqual(clock.count(), 0, 'al completar el turno el intervalo se limpia')
   })
 })
