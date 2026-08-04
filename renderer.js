@@ -4900,15 +4900,21 @@ cliSelector.addEventListener('change', async (e) => {
         } catch {}
         try { term.reset() } catch {}
         try { term.clear() } catch {}
-        await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
-        try { hideStatus && hideStatus() } catch {}
-        try { term.focus() } catch {}
-        // Este flujo lo dispara el proceso main (p. ej. Telegram /abrir) y
-        // puede traer un `cli` explícito o ninguno; en los dos casos se
-        // relee el activeCli real en vez de fiarse del parámetro, porque el
-        // `setActiveCli` de arriba pudo fallar en silencio (su try/catch lo
-        // traga) o `cli` pudo venir vacío con el CLI ya cambiado por otra vía.
-        try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
+        try {
+          await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
+          try { hideStatus && hideStatus() } catch {}
+          try { term.focus() } catch {}
+        } finally {
+          // En un `finally`, no tras el resume: si `setActiveCli` de arriba
+          // tuvo éxito pero `resumeSession` lanza, el CLI YA cambió en main
+          // aunque este flujo acabe en error — sin el `finally` el botón se
+          // quedaría con el gate del CLI anterior. Se relee el activeCli
+          // real en vez de fiarse del parámetro `cli`, porque el
+          // `setActiveCli` de arriba pudo fallar en silencio (su try/catch
+          // lo traga) o `cli` pudo venir vacío con el CLI ya cambiado por
+          // otra vía.
+          try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
+        }
       } catch (err) {
         try { showStatus && showStatus(err?.message || String(err), 'error', 6000) } catch {}
       }
@@ -4985,14 +4991,27 @@ async function updateVoiceCliAvailability(cli) {
   if (!btnVoice) return
   const info = window.VoiceUIState?.voiceCliAvailability?.(cli) || { available: cli === 'claude' }
   btnVoice.disabled = !info.available
-  if (info.title) btnVoice.title = info.title
-  if (info.ariaLabel) btnVoice.setAttribute('aria-label', info.ariaLabel)
-  if (!info.available && voiceOn) {
-    try { await window.api.voice.disable() } catch {}
-    setVoiceOn(false)
-    const label = cli ? String(cli).toUpperCase() : 'este asistente'
-    showVoiceHud(`Modo voz apagado — ${label} no lo soporta`)
+
+  if (!info.available) {
+    if (voiceOn) {
+      try { await window.api.voice.disable() } catch {}
+      setVoiceOn(false)
+      const label = cli ? String(cli).toUpperCase() : 'este asistente'
+      showVoiceHud(`Modo voz apagado — ${label} no lo soporta`)
+    }
+    // Fuera de claude no importa si el helper está `broken`: no se puede
+    // pulsar, así que el motivo que se ve es "no disponible con este CLI".
+    if (info.title) btnVoice.title = info.title
+    if (info.ariaLabel) btnVoice.setAttribute('aria-label', info.ariaLabel)
+    return
   }
+
+  // Disponible: el título/borde NO se ponen a mano con el texto genérico de
+  // `info` — se relee voice:state() y se deja decidir a voiceStateAppearance,
+  // que sabe de `broken`. Poner aquí "Modo voz — hablar con el agente" a
+  // ciegas pisaría el borde de aviso de un helper que sigue roto: el CLI
+  // vuelve a ser compatible, pero cambiar de CLI no arregla el helper.
+  await syncVoiceButtonFromState()
 }
 
 if (btnVoice) {
