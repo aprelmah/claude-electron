@@ -9,6 +9,9 @@ pkill -f "POWER-AGENT" 2>/dev/null || true
 pkill -f "electron \." 2>/dev/null || true
 sleep 2
 
+echo "▶ compilando helper de voz..."
+bash scripts/build-voice-helper.sh
+
 echo "▶ 2/4 compilando build x64 (solo zip, sin dmg)..."
 if ! npx electron-builder --mac zip --x64 >/tmp/deploy-build.log 2>&1; then
   echo "❌ Build falló. Últimas líneas de /tmp/deploy-build.log:"
