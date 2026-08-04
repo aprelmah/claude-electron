@@ -27,79 +27,101 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
 
   // Tablas y diffs, línea a línea.
   //
-  // Cualquier heurística que infiera "esto es un diff" a partir del patrón
-  // de signos +/- (aunque sea "alterna estrictamente") choca tarde o
-  // temprano con prosa humana real: una comparativa ("+ más barata / -
-  // tarda más") o un changelog ("+ añadido X / - corregido Y") alternan
-  // signo a signo exactamente igual que un diff, y no hay forma de
-  // distinguirlos mirando solo el patrón — la única heurística de signos
-  // que no falla así es no tener ninguna.
+  // Detectar "esto es un diff" por el patrón de signos +/- —alternancia,
+  // bandera global, o incluso una racha contigua que se expande hacia
+  // atrás hasta la marca— siempre acaba borrando prosa real: una
+  // comparativa, un changelog o un resumen con viñetas normales pegado a
+  // un diff real más abajo generan el mismo patrón de caracteres que un
+  // diff de verdad. La única heurística de signos que no falla así es no
+  // tener ninguna.
   //
-  // Por eso el criterio no mira el patrón: solo se trata como diff si el
-  // TEXTO trae un marcador inequívoco de diff real —una cabecera
-  // 'diff --git', una cabecera de fichero '--- a/x' / '+++ b/x', o una
-  // cabecera de hunk '@@ ... @@'—. Sin ninguno de esos marcadores, toda
-  // línea que empiece por + o - es una viñeta: se conserva y más abajo se
-  // le quita el signo igual que a '*'. Si un diff sin cabeceras se cuela
-  // sin detectarse, el usuario oye ruido de más (molesto, recuperable);
-  // perder prosa real en silencio no lo es. Ese es el lado seguro del
-  // error, y es el mismo criterio con el que ya se limpian bloques de
-  // código: nunca se adivina, se exige una marca clara.
-  //
-  // OJO con \s en estos regex de detección: \s incluye \n, así que
-  // '---\s+\S' no exige que la ruta esté en la MISMA línea que los guiones
-  // — '\s+' se traga saltos de línea y párrafos enteros hasta enganchar
-  // con cualquier carácter no blanco muchas líneas más abajo (un divisor
-  // '---' suelto, tan común entre secciones de una respuesta, activaba así
-  // 'hasDiffHeader' para todo el mensaje). Por eso aquí va '[ \t]+', que
-  // solo casa espacios y tabs: no puede cruzar un '\n', así que la cabecera
-  // queda anclada a su propia línea.
-  //
-  // Tampoco basta con "hay una palabra detrás en la misma línea": un
-  // divisor narrativo ('--- separador narrativo') o una viñeta de
-  // prioridad ('+++ urgente') también tienen una palabra detrás y no son
-  // cabeceras de diff. Lo que distingue a una cabecera real es que trae
-  // una RUTA, no una palabra cualquiera: '--- a/main.js', '+++ b/main.js',
-  // '--- /dev/null'. Por eso se exige que el token pegado a los guiones/
-  // signos contenga una '/' (todas las rutas de un diff la llevan, sea
-  // relativa 'a/x' o absoluta '/dev/null'); un divisor o una viñeta sin
-  // barra no matchea, tenga o no palabras detrás.
-  //
-  // Y el borrado no puede ser global sobre TODO el mensaje en cuanto se
-  // encuentra una marca en cualquier parte: un resumen con viñetas
-  // normales, seguido más abajo (tras un divisor u otra sección) de un
-  // diff real con sus cabeceras, perdía esas viñetas sin relación con el
-  // diff. Por eso el borrado se acota al bloque contiguo de líneas +/- (sin
-  // línea en blanco ni prosa de por medio) que contiene la marca: un
-  // bloque de +/- que no toca ninguna marca se conserva como viñetas,
-  // aunque el mensaje tenga un diff real en otra parte.
-  const isDiffHardSignalLine = (line) => {
+  // Por eso el bloque a borrar se delimita como lo haría un parser de diff
+  // real, no por adyacencia de texto:
+  //   1. Un bloque SOLO puede EMPEZAR en una marca dura inequívoca
+  //      ('diff --git ', cabecera de fichero '--- ruta/con/barra' o
+  //      '+++ ruta/con/barra' en su propia línea, o cabecera de hunk
+  //      '@@ -a,b +c,d @@'). Nunca se extiende hacia atrás: cualquier
+  //      viñeta anterior queda fuera por construcción, esté pegada o no.
+  //   2. El FINAL del bloque lo dicen los contadores del propio hunk, no
+  //      la adyacencia: 'b' líneas de lado viejo (contexto ' ' o borrado
+  //      '-') y 'd' líneas de lado nuevo (contexto ' ' o añadido '+'). En
+  //      cuanto los dos contadores llegan a cero el hunk ha terminado ahí
+  //      mismo, aunque la línea siguiente también empiece por '-' o '+':
+  //      una viñeta de conclusión pegada al diff no es parte del hunk si
+  //      el hunk ya dijo que había acabado. Si hay más de un hunk ('@@'
+  //      tras '@@'), se repite el cálculo para cada uno.
+  //   3. Camino degradado: si la cabecera de hunk no trae contadores
+  //      parseables (o hay cabeceras de fichero sin ningún '@@' detrás),
+  //      no hay con qué medir el bloque — se avanza mientras las líneas
+  //      sigan siendo candidatas (empiezan por +/- o son ellas mismas una
+  //      marca dura) hasta la primera que no lo sea, como en la ronda
+  //      anterior.
+  const isDiffGitLine = (line) => /^diff --git /.test(line.trim())
+  const isFileHeaderLine = (line) => {
     const t = line.trim()
-    return (
-      /^diff --git /.test(t) ||
-      /^---[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) ||
-      /^\+\+\+[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) ||
-      /^@@[^\n]*@@/.test(t)
-    )
+    return /^---[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) || /^\+\+\+[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t)
   }
+  const isHunkMarkerLine = (line) => /^@@[^\n]*@@/.test(line.trim())
+  const isDiffHardSignalLine = (line) => isDiffGitLine(line) || isFileHeaderLine(line) || isHunkMarkerLine(line)
   const isDiffCandidateLine = (line) => /^[+-]/.test(line.trim()) || isDiffHardSignalLine(line)
+
+  // 'b' y 'd' son opcionales en '@@ -a,b +c,d @@' (1 si faltan: hunk de una
+  // sola línea). Si la línea no matchea el formato canónico, no hay
+  // contadores fiables y toca el camino degradado del punto 3.
+  const parseHunkCounts = (line) => {
+    const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line.trim())
+    if (!m) return null
+    return {
+      oldCount: m[1] !== undefined ? parseInt(m[1], 10) : 1,
+      newCount: m[2] !== undefined ? parseInt(m[2], 10) : 1,
+    }
+  }
 
   const rawLines = out.split('\n')
   const diffLineIndexes = new Set()
-  let runStart = -1
-  for (let i = 0; i <= rawLines.length; i++) {
-    const isCandidate = i < rawLines.length && isDiffCandidateLine(rawLines[i])
-    if (isCandidate && runStart === -1) {
-      runStart = i
+  let i = 0
+  while (i < rawLines.length) {
+    if (!isDiffHardSignalLine(rawLines[i])) {
+      i++
       continue
     }
-    if (!isCandidate && runStart !== -1) {
-      const run = rawLines.slice(runStart, i)
-      if (run.some(isDiffHardSignalLine)) {
-        for (let j = runStart; j < i; j++) diffLineIndexes.add(j)
+    const blockStart = i
+    let j = i
+    // 'diff --git' / '---' / '+++': cabeceras de fichero, se tragan tal cual.
+    while (j < rawLines.length && (isDiffGitLine(rawLines[j]) || isFileHeaderLine(rawLines[j]))) j++
+    // Cero o más hunks, cada uno medido por sus propios contadores.
+    let sawValidHunk = false
+    while (j < rawLines.length && isHunkMarkerLine(rawLines[j])) {
+      const counts = parseHunkCounts(rawLines[j])
+      if (!counts) break
+      sawValidHunk = true
+      j++
+      let oldRemaining = counts.oldCount
+      let newRemaining = counts.newCount
+      while (j < rawLines.length && (oldRemaining > 0 || newRemaining > 0)) {
+        // Una línea de contexto que perdió su espacio inicial (recorte de
+        // trailing whitespace, algo habitual al copiar) también cuenta
+        // para los dos lados.
+        const first = rawLines[j].length === 0 ? ' ' : rawLines[j][0]
+        if (first === ' ') {
+          oldRemaining--
+          newRemaining--
+        } else if (first === '-') {
+          oldRemaining--
+        } else if (first === '+') {
+          newRemaining--
+        } else {
+          break
+        }
+        j++
       }
-      runStart = -1
     }
+    if (!sawValidHunk) {
+      while (j < rawLines.length && isDiffCandidateLine(rawLines[j])) j++
+    }
+    if (j === blockStart) j = blockStart + 1 // salvaguarda: el bloque siempre avanza
+    for (let k = blockStart; k < j; k++) diffLineIndexes.add(k)
+    i = j
   }
 
   out = rawLines

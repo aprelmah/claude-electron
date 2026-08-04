@@ -212,4 +212,47 @@ describe('voice-speakable', () => {
     assert.ok(!out.includes('return token'), 'el diff real no se limpió')
     assert.ok(out.includes('Listo'), 'se perdió el cierre')
   })
+
+  // Ronda de correcciones 4: el mecanismo de "racha contigua hacia atrás"
+  // de la ronda 3 seguía siendo adyacencia textual disfrazada — si las
+  // viñetas estaban PEGADAS al diff real (sin línea en blanco de por
+  // medio), entraban en la misma racha y se borraban con él. El bloque
+  // ahora se delimita de forma estructural: empieza solo en la marca dura
+  // y termina cuando los contadores del hunk dicen que ha terminado, nunca
+  // por adyacencia. Repro mínimo del revisor tal cual, más 3 variantes de
+  // la misma clase de bug (viñetas antes, viñetas después, ambas).
+  test('viñetas pegadas justo antes de un diff real (sin línea en blanco) se conservan', () => {
+    const md =
+      'Cambios aplicados:\n- arreglado el login\n- añadido el export\ndiff --git a/auth.js b/auth.js\n--- a/auth.js\n+++ b/auth.js\n@@ -1,2 +1,2 @@\n-old code\n+new code'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('arreglado el login'), 'se perdió "arreglado el login"')
+    assert.ok(out.includes('añadido el export'), 'se perdió "añadido el export"')
+    assert.ok(!out.includes('old code'), 'el diff real no se limpió')
+    assert.ok(!out.includes('new code'), 'el diff real no se limpió')
+  })
+
+  test('un diff real pegado a una viñeta de conclusión después la conserva', () => {
+    const md = 'diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,1 @@\n-old\n+new\n- conclusión final'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('conclusión final'), 'se perdió "conclusión final"')
+    assert.ok(!out.includes('diff --git'), 'el diff real no se limpió')
+    assert.ok(!out.includes('-old'), 'el diff real no se limpió')
+  })
+
+  test('viñetas antes y después del diff, todo pegado, se conservan las dos', () => {
+    const md =
+      'Antes:\n- viñeta previa\ndiff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,1 @@\n-old\n+new\n- viñeta posterior'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('viñeta previa'), 'se perdió "viñeta previa"')
+    assert.ok(out.includes('viñeta posterior'), 'se perdió "viñeta posterior"')
+    assert.ok(!out.includes('diff --git'), 'el diff real no se limpió')
+  })
+
+  test('línea en blanco antes del diff, pero diff y conclusión pegados entre sí, conserva la conclusión', () => {
+    const md = 'Cambios:\n\ndiff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,1 @@\n-old\n+new\n- nota final\nHecho.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('nota final'), 'se perdió "nota final"')
+    assert.ok(out.includes('Hecho'), 'se perdió el cierre')
+    assert.ok(!out.includes('diff --git'), 'el diff real no se limpió')
+  })
 })
