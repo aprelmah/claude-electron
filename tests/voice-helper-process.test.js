@@ -20,7 +20,13 @@ function makeFakeProc() {
   stdin.write = (d) => { proc.written.push(d); return true }
   stdin.end = () => {}
   proc.stdin = stdin
-  proc.kill = () => { proc.killed = true; proc.emit('close', 0) }
+  // kill() NO dispara 'close' síncrono: en un proceso real, matar es async
+  // (el 'close' llega más tarde, cuando el SO confirma que murió). Hace
+  // falta ese hueco temporal para reproducir carreras stop()+start() donde
+  // el close tardío del proceso viejo llega después de que ya hay uno nuevo
+  // (ronda de revisión 2). Los tests que necesiten el 'close' lo emiten a
+  // mano sobre la referencia guardada al proceso.
+  proc.kill = () => { proc.killed = true }
   return proc
 }
 
@@ -214,5 +220,32 @@ describe('voice-helper-process: blindajes ronda de revisión 1', () => {
     })
     assert.doesNotThrow(() => helper.start())
     assert.strictEqual(helper.isRunning(), false)
+  })
+})
+
+describe('voice-helper-process: blindajes ronda de revisión 2', () => {
+  test('un crash real del proceso nuevo tras stop()+start() sí respawnea y avisa (stopping no debe quedar pegado a la generación vieja)', () => {
+    const h = makeHarness()
+    h.helper.start()
+    const oldProc = h.proc()
+    h.helper.stop()
+    // kill() no cierra síncrono (ver makeFakeProc): el close asíncrono del
+    // proceso viejo aún no ha llegado cuando arrancamos el nuevo — la
+    // carrera real que dejaba 'stopping' pegado a true.
+    h.helper.start()
+    const newProc = h.proc()
+    assert.notStrictEqual(oldProc, newProc)
+
+    // Close tardío del viejo: se ignora por generación (ronda 1). No debe
+    // dejar ningún resto de "estamos parando" para la generación nueva.
+    oldProc.emit('close', 1)
+
+    // El proceso NUEVO cae de verdad: nadie pidió stop de esta generación.
+    newProc.emit('close', 1)
+
+    assert.strictEqual(h.spawned.length, 3, 'el crash real debe disparar un respawn, no tragárselo en silencio')
+    assert.strictEqual(h.helper.isRunning(), true, 'debe quedar vivo tras el respawn')
+    const avisos = h.logs.filter((m) => /cayó/i.test(m))
+    assert.strictEqual(avisos.length, 1, 'debe avisar del crash real de la generación nueva')
   })
 })

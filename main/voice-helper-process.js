@@ -27,6 +27,17 @@
 //   el callback del consumidor lanza, no puede tumbar el parser de stdout ni
 //   el flujo de arranque/caída. Mismo patrón que main/native-notify.js con
 //   su `fallback` (try/catch alrededor de la llamada al consumidor).
+//
+// Blindaje añadido en la ronda de revisión 2:
+// - `stoppingGen` (antes un booleano `stopping` global) escopa el "esto lo
+//   paramos nosotros" a la generación que lo pidió. Con un booleano simple,
+//   el guard de generación de onClose devolvía ANTES de resetearlo cuando
+//   llegaba el close tardío de la generación vieja — así que `stopping`
+//   quedaba pegado a `true` para la generación nueva, y un crash real de
+//   ESA generación se tragaba en silencio (sin respawn, sin aviso) por
+//   confundirse con el stop deliberado de la generación anterior. Guardar
+//   la generación exacta que se detuvo, en vez de un booleano compartido,
+//   hace que cada generación se juzgue solo por lo que le pasó a ella.
 
 const DEFAULT_MAX_RESTARTS = 3
 
@@ -48,7 +59,7 @@ function createVoiceHelperProcess({
   let buffer = ''
   let restarts = 0
   let broken = false
-  let stopping = false
+  let stoppingGen = null
   let generation = 0
 
   function safeEmit(obj) {
@@ -81,7 +92,7 @@ function createVoiceHelperProcess({
     if (myGen !== generation) return
     proc = null
     buffer = ''
-    if (stopping) { stopping = false; return }
+    if (stoppingGen === myGen) { stoppingGen = null; return }
     if (restarts >= MAX) {
       if (!broken) {
         broken = true
@@ -127,7 +138,7 @@ function createVoiceHelperProcess({
 
   function stop() {
     if (!proc) return
-    stopping = true
+    stoppingGen = generation
     send({ cmd: 'quit' })
     try { proc.kill() } catch {}
     proc = null
