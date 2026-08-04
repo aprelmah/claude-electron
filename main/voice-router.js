@@ -19,6 +19,14 @@
 // solo cuenta si ABRE la frase — igual que "pregunta" solo cuenta si el
 // interrogativo abre la frase, no si aparece en una subordinada ("aplica el
 // cambio QUE te dije" ya no se confunde con una pregunta por el "que").
+//
+// Ronda de correcciones 2: anclar al inicio no basta si la propia palabra
+// FUNCIONA como muletilla en español coloquial — esas son justo las que más
+// abren frases sin ser una orden ("dale un vistazo", "dale recuerdos",
+// "dale que dale", "adelante, te escucho"). "dale" y "adelante" están fuera
+// de PATRONES_ENCARGO_INICIO por eso: no se borran, se degradan a cortesía
+// (como "venga" o "vale"), así que siguen sirviendo delante de un disparador
+// real ("dale, arregla el login" → encargo) pero ya no ordenan por sí solas.
 
 // Disparadores de encargo. Anclados con ^ a propósito: se evalúan sobre lo
 // que queda de la frase tras pelar signos de apertura y, como mucho, UNA
@@ -40,9 +48,7 @@ const PATRONES_ENCARGO_INICIO = [
   /^implementa(lo)?\b/i,
   /^escribe(lo)?\b/i,
   /^bórra(lo)?\b/i,
-  /^borra(lo)?\b/i,
-  /^adelante\b/i,
-  /^dale\b/i
+  /^borra(lo)?\b/i
 ]
 
 // Cortesías/muletillas que pueden abrir la frase sin contar como parte del
@@ -50,7 +56,13 @@ const PATRONES_ENCARGO_INICIO = [
 // corta y cerrada a propósito: cualquier otra palabra al principio bloquea
 // la detección de disparador-al-inicio. Más falsos negativos, cero falsos
 // positivos — el lado seguro.
-const PREFIJOS_CORTESIA = ['por favor', 'porfa', 'venga', 'oye', 'ahora', 'vale', 'y', 'pues']
+//
+// "dale" y "adelante" viven aquí, no en los disparadores: en español
+// coloquial se usan más como interjección de ánimo/permiso ("dale que
+// dale", "dale un vistazo", "dale recuerdos", "¡adelante!", "de aquí en
+// adelante") que como orden en sí mismas. La propia palabra "dale" es
+// sinónimo de "adelante" en ese uso — mismo problema, mismo arreglo.
+const PREFIJOS_CORTESIA = ['por favor', 'porfa', 'venga', 'oye', 'ahora', 'vale', 'y', 'pues', 'dale', 'adelante']
 
 // Uno por cortesía, anclado al principio, con \b para no cortar a media
 // palabra, y que se coma la puntuación/espacio que la separa del resto

@@ -221,3 +221,53 @@ describe('voice-router: ronda de correcciones 1 — el disparador tiene que abri
     }
   })
 })
+
+// Ronda de correcciones 2 (re-revisor): "dale" es de las palabras más
+// polisémicas del español coloquial (despedida, ánimo, "adelante tú",
+// "dale que dale", "dale un vistazo", "dale recuerdos"...) y el anclaje al
+// inicio de la ronda 1 no lo arregla — mitiga los "dale" de fondo, pero los
+// que abren frase son justo los más frecuentes en habla real. Se saca de
+// los disparadores y se mueve a cortesías: sigue sirviendo delante de un
+// disparador real, pero deja de ordenar por sí sola.
+describe('voice-router: ronda de correcciones 2 — dale es cortesía, no orden', () => {
+  test('las cinco frases de la tabla del re-revisor son charla', () => {
+    for (const frase of [
+      'vale, dale que va, luego seguimos con el commit',
+      'venga, dale caña que se hace tarde',
+      'oye, dale recuerdos a tu hermano de mi parte',
+      'pues dale, tú mismo, yo paso del tema',
+      'dale un vistazo cuando puedas, no hay prisa'
+    ]) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'charla', `"${frase}" debería ser charla`)
+    }
+  })
+
+  test('"dale" delante de un disparador real sigue siendo encargo (no se pierde el uso útil)', () => {
+    assert.strictEqual(routeVoiceText('dale, arregla el login').mode, 'encargo')
+    assert.strictEqual(routeVoiceText('dale, commitea esto').mode, 'encargo')
+  })
+
+  // Hallazgo propio de esta ronda (pedido explícitamente: revisar si hay
+  // otro disparador con el mismo problema): "adelante" es prácticamente
+  // sinónimo de "dale" en su uso como interjección de permiso/ánimo — el
+  // propio re-revisor lo cita como uno de los significados de "dale" ("dale
+  // = adelante tú"). Mismo criterio, mismo arreglo.
+  test('"adelante" como interjección de conversación normal también es charla', () => {
+    for (const frase of [
+      'adelante, te escucho, dime qué tal',
+      'adelante con lo que decías, que yo termino esto',
+      'adelante, pasa, que la puerta está abierta'
+    ]) {
+      assert.strictEqual(routeVoiceText(frase).mode, 'charla', `"${frase}" debería ser charla`)
+    }
+  })
+
+  test('"adelante" delante de un disparador real sigue siendo encargo', () => {
+    assert.strictEqual(routeVoiceText('adelante, arregla el login').mode, 'encargo')
+  })
+
+  test('"más adelante"/"de aquí en adelante" (no abre la frase) sigue siendo charla, sin cambios', () => {
+    assert.strictEqual(routeVoiceText('más adelante seguimos hablando de esto').mode, 'charla')
+    assert.strictEqual(routeVoiceText('de aquí en adelante vamos a hacerlo distinto').mode, 'charla')
+  })
+})
