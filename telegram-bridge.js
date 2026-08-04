@@ -3,6 +3,12 @@ const https = require('https')
 const path = require('path')
 const os = require('os')
 
+// Instrucción de la app para las consultas que llegan por Telegram. Va como
+// system prompt (--append-system-prompt), nunca concatenada al mensaje: pegada
+// delante se convertía en el primer turno de la conversación y Claude Code
+// titulaba la sesión con ella.
+const TELEGRAM_FILE_HINT = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]'
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -589,10 +595,15 @@ class TelegramBridge {
     let resolvedSessionId = sessionId || null
 
     try {
-      const fileHint = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]\n\n'
+      // Instrucción de la app, no mensaje del usuario: viaja como system prompt.
+      // Pegada delante del prompt se convertía en el primer turno de la
+      // conversación, y Claude Code titula la sesión con él — todas las sesiones
+      // abiertas desde Telegram salían llamadas "[Sistema: si el usuario pide un
+      // archivo…" y no se distinguían en el picker.
       const result = await this.onRunQuery?.({
         cli,
-        prompt: fileHint + prompt,
+        prompt,
+        appendSystemPrompt: TELEGRAM_FILE_HINT,
         userPrompt: prompt,
         chatId: String(chatId),
         sessionId,

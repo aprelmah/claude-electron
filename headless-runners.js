@@ -38,7 +38,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     try { onAuditEvent({ action, ts: Date.now(), ...details }) } catch {}
   }
 
-  function runClaudeHeadless({ prompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+  function runClaudeHeadless({ prompt, appendSystemPrompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs, origin }) {
     _audit('headless-claude-invoked', {
       cli: 'claude',
       origin: origin || 'unknown',
@@ -61,6 +61,13 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       '--verbose',
       '--permission-mode', 'bypassPermissions'
     ]
+    // Las instrucciones de la app (p.ej. cómo localizar un archivo que pide el
+    // usuario) van como system prompt, NO pegadas al mensaje. Concatenarlas
+    // delante convertía ese texto en el primer prompt de la conversación, y
+    // Claude Code titula la sesión con él: todas las sesiones abiertas desde
+    // Telegram acababan llamándose "[Sistema: si el usuario pide un archivo…"
+    // y eran indistinguibles en el picker.
+    if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt)
     if (model) args.push('--model', model)
     if (effort) args.push('--effort', effort)
     if (sessionId) args.push('--resume', sessionId)
@@ -164,15 +171,21 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     })
   }
 
-  function runCodexHeadless({ prompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+  function runCodexHeadless({ prompt, appendSystemPrompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+    // codex exec no tiene equivalente a --append-system-prompt, así que aquí la
+    // instrucción de la app sí se antepone al mensaje (como se hacía antes para
+    // los dos CLIs). El coste es el mismo que tenía claude — el título de la
+    // sesión sale del texto de sistema — pero codex no expone esos títulos en el
+    // picker, así que no molesta. Si algún día lo hace, hay que revisarlo.
+    const effectivePrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${prompt}` : prompt
     _audit('headless-codex-invoked', {
       cli: 'codex',
       origin: origin || 'unknown',
       sessionId: sessionId || null,
       model: model || null,
       effort: effort || null,
-      prompt_hash: hashPromptTruncated(prompt),
-      prompt_len: String(prompt || '').length
+      prompt_hash: hashPromptTruncated(effectivePrompt),
+      prompt_len: String(effectivePrompt || '').length
     })
     const meta = cliMeta('codex')
     const env = buildRuntimeEnv()
@@ -185,8 +198,8 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     if (effort) baseFlags.push('-c', `model_reasoning_effort=${effort}`)
 
     const args = sessionId
-      ? ['exec', 'resume', sessionId, ...baseFlags, prompt]
-      : ['exec', ...baseFlags, prompt]
+      ? ['exec', 'resume', sessionId, ...baseFlags, effectivePrompt]
+      : ['exec', ...baseFlags, effectivePrompt]
 
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
