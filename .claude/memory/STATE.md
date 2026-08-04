@@ -4,21 +4,31 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-03 (verificado contra git, los tests, la app desplegada y el estado en disco)._
+_Última actualización: 2026-08-04 (verificado contra git, los tests, la app desplegada y el estado en disco)._
 
 ## Estado de entrega (verificado)
 
 - Rama activa: **`main`**, **sincronizada con `origin`**, working tree limpio (salvo esta memoria).
-- Último commit: **`80a1ccd`** — perf del bot de WhatsApp. **10 commits hoy**, todos pusheados.
-- Tests: **663 (657 pass / 0 fail / 6 skip pre-existentes)**. Eran 612 al empezar el día.
-- Deploy: `/Applications/POWER-AGENT.app`, build de **2026-08-03 19:07**, corriendo con ventana.
-- **`autoReply` está en `true` y la allowlist está VACÍA**: el bot responde a cualquier número. Lo encendió Luismi el 3-ago para aprobar el pipeline, y funciona.
+- Último commit: **`8d55387`**. **13 commits** entre el 3 y el 4 de agosto, todos pusheados.
+- Tests: **676 (670 pass / 0 fail / 6 skip pre-existentes)**. Eran 612 al empezar el 3-ago.
+- Deploy: `/Applications/POWER-AGENT.app`, build de **2026-08-04 18:59**, corriendo con ventana.
+- **`autoReply` está en `false`**: el bot NO responde a nadie. Luismi lo encendió el 3-ago para aprobar el pipeline y lo volvió a apagar. La allowlist sigue vacía, así que **al encenderlo responde a cualquier número**.
 - Las 3 fichas de Turbo Energy están **validadas por Luismi**. Dejan de ser un riesgo abierto.
 - Bridge WhatsApp: **en git** (`whatsapp-bridge/` del repo). Runtime en `~/.claude/whatsapp-bridge/`, `/status` → `ready`. Se despliega con `scripts/deploy-wa-bridge.sh`.
 - Servidor LAN: **encendido**, puertos 9999 (WS) y 10000 (HTTP), IP `192.168.1.14`. 43 tests LAN en verde.
 - Electron 43.2.0, CLI codex 0.145.0 / claude 2.1.220.
 
-## Última sesión (2026-08-03) — revisión multi-agente, bridge en git y caza de latencia
+## Última sesión (2026-08-04) — tres bugs que los tests no podían ver
+
+Los tres los cazó Luismi mirando la pantalla, no la suite. Vale la pena tenerlo presente: la cobertura estaba en verde en los tres casos.
+
+- **`127f98a`** — la app **contaminaba a sus PTYs**. Lanzada desde una sesión de Claude Code (un `npm run deploy`), heredaba su identidad y los PTYs desactivaban el guardado del transcript: sin `.jsonl` no hay `--resume`, ni historial, ni relay de Telegram, ni pool de PTYs ocultos. El único aviso era una línea amarilla al fondo del TUI. Detalle: `bugs/bug_pty_hereda_sesion_2026_08_03.md`.
+- **`74e09b5`** — **Telegram no respetaba el proyecto elegido**. `/proyecto` TURBO-ENERGY + escribir → contestaba la sesión de eatBook abierta en el Mac, con su cwd y `bypassPermissions`. Regla nueva y arqueología de por qué parecía funcionar a veces: `decisions/telegram_proyecto_manda_2026_08_04.md`.
+- **`8d55387`** — la instrucción de la app **secuestraba el título** de las sesiones de Telegram: todas se llamaban `[Sistema: si el usuario pide un archivo…`. Detalle: `bugs/bug_telegram_titulo_sesion_2026_08_04.md`.
+
+También se explicó por qué el cliente LAN no sale de la WiFi (IP privada + NAT; y `http.createServer` **sin TLS** en `0.0.0.0` con el token en el query string). Propuesta: Tailscale. Luismi lo está pensando.
+
+## Sesión previa (2026-08-03) — revisión multi-agente, bridge en git y caza de latencia
 
 **15 defectos de la KB, todos cerrados.** Una `/code-review` en xhigh sobre los 4 commits sin pushear del día anterior encontró 15 defectos verificados en el pipeline de la KB. Cerrados en `4cd89eb`, `3a6a868`, `3c5466c`, `7145789`, `3913eca`. Detalle y reglas: `.claude/memory/audit_code_review_2026_08_03.md`.
 
@@ -34,8 +44,9 @@ _Última actualización: 2026-08-03 (verificado contra git, los tests, la app de
 
 ## Próximo paso
 
-1. **Primer mensaje real con todo esto puesto.** Nada del pipeline se ha ejercitado de punta a punta: los arreglos de flujo están verificados por lectura y por tests de sus primitivas. Comparar contra la mediana registrada de 29 s.
-2. **Decidir si la allowlist sigue vacía** ahora que el bot está encendido y responde a cualquiera.
+0. **Probar los tres fixes del 4-ago**, ninguno validado por Luismi todavía: (a) abrir sesión en la app y ver que NO sale el aviso amarillo de transcript; (b) `/proyecto` en Telegram + escribir → debe contestar en ese proyecto; (c) sesión nueva desde Telegram → el título debe ser el mensaje real, no `[Sistema:…`.
+1. **Primer mensaje real del bot con todo esto puesto.** Nada del pipeline de WhatsApp se ha ejercitado de punta a punta: los arreglos de flujo están verificados por lectura y por tests de sus primitivas. Comparar contra la mediana registrada de 29 s.
+2. **Decidir la allowlist antes de volver a encender el bot**: está vacía, así que `autoReply: true` = responde a cualquier número.
 3. **Latencia restante**: quedan ~6,2 s/turno que sí son el modelo. Las palancas son `kbAnswerModel` sonnet→haiku (peor ceñido a la ficha) o CLI→API con fast mode (**factura aparte del plan Max**). Decisión de negocio, pendiente.
 4. **LAN fuera de la WiFi**: Luismi lo está pensando. Propuesta = Tailscale (sin abrir puertos, sin tocar código). ⚠️ Nunca por port forwarding a pelo: el server es `http.createServer` **sin TLS** escuchando en `0.0.0.0` con el token en el query string.
 5. Probar el cliente LAN (URL con token en Configuración → LAN, o el QR).
@@ -49,6 +60,9 @@ _Última actualización: 2026-08-03 (verificado contra git, los tests, la app de
 - Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → **nunca pueden convivir**.
 - **Editar el bridge en el repo y desplegar con `scripts/deploy-wa-bridge.sh`.** Editarlo directo en el runtime vuelve a divergir las copias.
 - **Un `loggedOut` de WhatsApp no se arregla reiniciando**: hay que borrar `.baileys_auth/`. Desde el 3-ago lo hace solo.
+- **Lanzar la app desde una sesión de Claude Code le pega su identidad.** Mitigado en `buildRuntimeEnv()` (los PTYs salen limpios), pero cualquier variable nueva de identidad que aparezca en el CLI hay que añadirla a `CLAUDE_SESSION_IDENTITY_VARS`.
+- **Todo lo que la app añada a un turno va como system prompt**, nunca pegado al mensaje del usuario: además de secuestrar el título de la sesión, entra en el historial como si lo hubiera escrito él.
+- **Con proyecto elegido desde Telegram no hay fallback a las sesiones del Mac.** Reactivarlo "para reaprovechar una sesión caliente" reabre el bug de contestar desde otro proyecto.
 - **Todo spawn del CLI que no sea sesión interactiva de Luismi va aislado** (`--strict-mcp-config --setting-sources ''`). Quitarlos duplica la latencia y reabre el camino del cliente hacia los MCP personales.
 - **Tras cada `npm run deploy` se cortan las conexiones LAN** y las pestañas del operador quedan con JS viejo en caché: hay que **cerrar y reabrir la pestaña**, no solo recargar.
 - El "escribiendo…" del panel es **para Luismi**; el que ve el cliente lo gobierna el bridge, solo segundos antes de enviar.
