@@ -11,41 +11,68 @@
 // 1. EL sessionId DE LA SESIÓN SE PUDRE. Un `--resume` FORKEA: Claude Code crea
 //    un sessionId nuevo con el historial copiado y escribe ahí; el .jsonl viejo
 //    no vuelve a crecer jamás. Pasa con el `/resume` del TUI y pasa también con
-//    el resume que lanza la propia app (main.js fija `claudeSessionId` desde los
-//    args del spawn y el poll de detección se salta la actualización porque el
-//    campo ya viene relleno). El vigía usa un sessionId fijo, así que sin esto
-//    el turno muere en el timeout de 180 s. Se resuelve como en `relayThroughPty`:
-//    snapshot PRE-escritura + `detectForkedRelayTranscript` exigiendo que el
-//    fichero contenga el prompt (sin esa exigencia se secuestraría la sesión
-//    concurrente de otra ventana).
+//    el resume que lanza la propia app. El vigía usa un sessionId fijo, así que
+//    sin esto el turno muere en el timeout de 180 s. Se resuelve como en
+//    `relayThroughPty`: snapshot PRE-escritura + `detectForkedRelayTranscript`
+//    exigiendo que el fichero contenga el prompt (sin esa exigencia se
+//    secuestraría la sesión concurrente de otra ventana).
 //
 // 2. EL baseOffset NO PUEDE SER 0 EN UN FORK. Un fork nace con TODO el historial
-//    copiado, y ese historial acaba en `end_turn`. Con offset 0 el vigía cerraría
-//    el turno al instante y la app leería en voz alta la respuesta anterior. Por
-//    eso el tamaño se anota SIEMPRE antes de escribir.
+//    copiado, y ese historial acaba en `end_turn`. El vigía llama a
+//    `extractAssistantTextFromTranscript` con `minTimestampMs = 0` (a diferencia
+//    de `relayThroughPty`, que pasa `startedAt`), así que con offset 0 cerraría
+//    el turno en el primer poll: la app leería en voz alta la respuesta ANTERIOR
+//    y dejaría de vigilar, con lo que la respuesta de verdad no se lee nunca.
+//    `detectForkedRelayTranscript` devuelve exactamente 0 cuando el fichero no
+//    estaba en el snapshot, así que ese 0 NO se propaga: se recalcula el offset
+//    buscando la línea del propio prompt (`safeForkOffset`) y, si no se puede,
+//    el fork se rechaza. Mejor un timeout ruidoso que leer la respuesta de otro
+//    turno como si fuera esta.
 //
-// 3. EL SUB-CHAT DE LA CHARLA TIENE SU PROPIO sessionId. `--fork-session` crea
-//    uno nuevo: devolver el de la madre deja al vigía mirando un fichero que no
-//    crece. Se localiza como "el .jsonl que no estaba antes de arrancar el
-//    sub-chat", descartando explícitamente el de la madre (que puede ser el más
-//    reciente si la sesión principal está trabajando).
+// 3. TODO SE IDENTIFICA POR EL PROMPT, NUNCA POR "EL FICHERO MÁS NUEVO". El
+//    sub-chat de la charla tiene su propio sessionId (`--fork-session`), pero
+//    adoptarlo por "el .jsonl que no estaba antes" secuestra la sesión de otra
+//    ventana, un PTY oculto de Telegram o una task-session que naciera en el
+//    mismo proyecto durante el arranque. Es la regla escrita en
+//    `relay-transcript-helpers.js`: sin coincidencia de prompt no se adopta nada.
 
 const DEFAULT_POLL_MS = 200
 const DEFAULT_SUBCHAT_WARMUP_MS = 1200
 const DEFAULT_SUBCHAT_FORK_WAIT_MS = 5000
 const DEFAULT_FORK_CHECK_AFTER_MS = 1200
 const DEFAULT_MOTHER_WAIT_MS = 3000
+// Tope de lectura al recalcular el offset de un fork. Un fork copia todo el
+// historial y puede pesar MBs; más allá de esto no merece la pena y se rechaza.
+const MAX_FORK_SCAN_BYTES = 50 * 1024 * 1024
+
+// Localiza el .jsonl que ha aparecido desde `before` y no está en `excludeIds`.
+// Vive aquí porque es la misma regla que usa el modo voz para no confundir un
+// fork con la sesión madre; main.js la reutiliza al detectar el fork que crea
+// un `--resume` en el spawn (ver § "Regla para spawns nuevos" de CLAUDE.md).
+// Ojo: solo vale cuando NO hay prompt con el que verificar (en el spawn todavía
+// no se ha escrito nada). Donde haya prompt, manda `detectForkedRelayTranscript`.
+function pickForkedSessionId({ rows = [], before = null, excludeIds = [] } = {}) {
+  if (!before || typeof before.has !== 'function') return null
+  const excluidos = new Set(excludeIds.filter(Boolean))
+  const ordenadas = rows.slice().sort((a, b) => (b?.mtimeMs || 0) - (a?.mtimeMs || 0))
+  for (const fila of ordenadas) {
+    if (!fila || !fila.file || !fila.sessionId) continue
+    if (before.has(fila.file)) continue
+    if (excluidos.has(fila.sessionId)) continue
+    return fila.sessionId
+  }
+  return null
+}
 
 function createVoiceSendTarget({
   getSession,
   subchat,
   relayCwdCandidates,
   findRelayTranscript,
-  snapshotClaudeSessions,
-  listClaudeSessionFilesWithMtime,
   snapshotClaudeSessionMeta,
   detectForkedRelayTranscript,
   statFn,
+  readFileFn,
   sleep,
   pollMs,
   subchatWarmupMs,
@@ -60,12 +87,11 @@ function createVoiceSendTarget({
   }
   if (typeof relayCwdCandidates !== 'function') throw new Error('voice-send-target: relayCwdCandidates requerido')
   if (typeof findRelayTranscript !== 'function') throw new Error('voice-send-target: findRelayTranscript requerido')
-  if (typeof snapshotClaudeSessions !== 'function') throw new Error('voice-send-target: snapshotClaudeSessions requerido')
-  if (typeof listClaudeSessionFilesWithMtime !== 'function') throw new Error('voice-send-target: listClaudeSessionFilesWithMtime requerido')
   if (typeof snapshotClaudeSessionMeta !== 'function') throw new Error('voice-send-target: snapshotClaudeSessionMeta requerido')
   if (typeof detectForkedRelayTranscript !== 'function') throw new Error('voice-send-target: detectForkedRelayTranscript requerido')
 
   const stat = typeof statFn === 'function' ? statFn : () => null
+  const readFile = typeof readFileFn === 'function' ? readFileFn : (p) => require('fs').readFileSync(p, 'utf8')
   const wait = typeof sleep === 'function' ? sleep : (ms) => new Promise((r) => setTimeout(r, ms))
   const trace = typeof log === 'function' ? log : () => {}
   const POLL = num(pollMs, DEFAULT_POLL_MS)
@@ -96,9 +122,53 @@ function createVoiceSendTarget({
     return out
   }
 
+  // Un `baseOffset` de 0 sobre un fork significa "no sé por dónde empieza este
+  // turno", y el vigía no sabe distinguir el historial copiado de la respuesta
+  // nueva. Se recalcula: la última aparición del prompt marca el principio del
+  // turno, así que el offset es el inicio de ESA línea. Si no se encuentra, se
+  // devuelve null y el fork se descarta.
+  function safeForkOffset(forked, prompt) {
+    if (!forked) return null
+    if (Number.isFinite(forked.baseOffset) && forked.baseOffset > 0) return forked.baseOffset
+
+    const marker = String(prompt || '').split('\n')[0].trim().slice(0, 64)
+    if (!marker) return null
+    const escaped = JSON.stringify(marker).slice(1, -1)
+
+    const st = stat(forked.filePath)
+    if (st && Number.isFinite(st.size) && st.size > MAX_FORK_SCAN_BYTES) {
+      trace(`el transcript forkeado es demasiado grande para localizar el prompt: ${forked.filePath}`)
+      return null
+    }
+    let contenido = ''
+    try { contenido = String(readFile(forked.filePath) || '') } catch { return null }
+    // La ÚLTIMA aparición: si el usuario ya había dicho lo mismo antes, el
+    // historial copiado lo lleva dentro y la buena es la de ahora.
+    const idx = contenido.lastIndexOf(escaped)
+    if (idx < 0) return null
+    const inicioLinea = contenido.lastIndexOf('\n', idx) + 1
+    // Bytes, no caracteres: el transcript lleva acentos y el vigía lee con
+    // offsets de fichero.
+    return Buffer.byteLength(contenido.slice(0, inicioLinea), 'utf8')
+  }
+
+  function adoptFork(forked, prompt, cwds) {
+    const baseOffset = safeForkOffset(forked, prompt)
+    if (baseOffset === null) {
+      trace(`fork descartado por no poder situar el turno dentro de ${forked?.filePath || 'el fichero'}`)
+      return null
+    }
+    return { ok: true, sessionId: forked.sessionId, cwds, baseOffset }
+  }
+
   // ── Encargo: al PTY de la sesión madre, con efectos reales en el proyecto ──
   async function sendToMother(session, prompt, cwds) {
     if (!session.pty) return { ok: false, reason: 'la sesión no tiene proceso vivo' }
+    // `relayThroughPty` (Telegram) serializa sus turnos con este flag. El modo
+    // voz lo RESPETA pero no lo toma: tomarlo obligaría a soltarlo desde el
+    // vigía, que vive en otro módulo, y un flag mal soltado deja a Telegram
+    // esperando 30 s. Limitación v1 documentada en CLAUDE.md.
+    if (session.relayActive) return { ok: false, reason: 'la sesión está ocupada con otro turno' }
 
     const expectedId = session.claudeSessionId
     const baseOffset = transcriptSize(expectedId, cwds)
@@ -124,9 +194,11 @@ function createVoiceSendTarget({
         forked = detectForkedRelayTranscript({ cwds, before, excludeSessionId: expectedId, promptMarker: prompt })
       } catch { forked = null }
       if (!forked) continue
+      const adoptado = adoptFork(forked, prompt, cwds)
+      if (!adoptado) break
       trace(`la sesión estaba forkeada: ${expectedId} → ${forked.sessionId}`)
       session.claudeSessionId = forked.sessionId
-      return { ok: true, sessionId: forked.sessionId, cwds, baseOffset: forked.baseOffset }
+      return adoptado
     }
 
     // Ni creció ni se detectó fork: se devuelve lo esperado. El vigía tiene 180 s
@@ -134,38 +206,11 @@ function createVoiceSendTarget({
     return { ok: true, sessionId: expectedId, cwds, baseOffset }
   }
 
-  // El sub-chat nace con `--fork-session`: su .jsonl no existía antes de
-  // arrancarlo. Se busca por ausencia previa, no por mtime: la madre puede tener
-  // el fichero más reciente si está trabajando, y adoptarla dejaría al vigía
-  // leyendo el turno equivocado.
-  async function waitForSubchatSessionId(session, cwds, antes) {
-    let waited = 0
-    for (;;) {
-      for (const cwd of cwds) {
-        const previos = antes.get(cwd)
-        let filas = []
-        try { filas = listClaudeSessionFilesWithMtime(cwd) } catch { filas = [] }
-        for (const fila of filas) {
-          if (previos && previos.has(fila.file)) continue
-          if (!fila.sessionId || fila.sessionId === session.claudeSessionId) continue
-          return fila.sessionId
-        }
-      }
-      if (waited >= SUBCHAT_WAIT) return null
-      await wait(POLL)
-      waited += POLL
-    }
-  }
-
   // ── Charla: al sub-chat desechable, sin tocar la sesión de trabajo ──
   async function sendToSubchat(session, prompt, cwds) {
     if (!subchat.has(session.wcId)) {
       // Sub-chat nuevo ⇒ el sessionId que hubiera guardado ya no vale.
       session.voiceSubchatSessionId = null
-      const antes = new Map()
-      for (const cwd of cwds) {
-        try { antes.set(cwd, snapshotClaudeSessions(cwd)) } catch {}
-      }
       const started = subchat.start(session, { cols: 100, rows: 30 })
       if (!started || !started.ok) {
         return { ok: false, reason: (started && started.error) || 'no se pudo abrir el sub-chat' }
@@ -173,22 +218,27 @@ function createVoiceSendTarget({
       // El TUI del fork no acepta texto nada más nacer: sin esta espera el
       // prompt se pierde y el turno no llega a existir.
       await wait(WARMUP)
-      session.voiceSubchatSessionId = await waitForSubchatSessionId(session, cwds, antes)
     }
 
     const conocido = session.voiceSubchatSessionId || null
     const before = snapshotAll(cwds)
     const baseOffset = conocido ? transcriptSize(conocido, cwds) : 0
 
+    // `subchatManager.write` se traga sus propios errores y devuelve undefined:
+    // preguntar por la entrada viva es la ÚNICA forma de saber si el texto va a
+    // llegar a alguna parte. Sin esto, un sub-chat muerto entre el arranque y la
+    // escritura daba {ok:true} y 180 s de silencio.
+    if (!subchat.has(session.wcId)) return { ok: false, reason: 'el sub-chat se cerró antes de poder escribir' }
     try { subchat.write(session.wcId, prompt + '\r') } catch (err) {
       return { ok: false, reason: `no se pudo escribir en el sub-chat: ${err?.message || err}` }
     }
 
     if (conocido) return { ok: true, sessionId: conocido, cwds, baseOffset }
 
-    // Sub-chat que ya estaba abierto (lo abrió el usuario desde la UI) o fork
-    // que no llegó a verse al arrancar: se identifica por el prompt, igual que
-    // en el camino de la madre.
+    // Sub-chat recién nacido (o abierto por el usuario desde la UI): su
+    // sessionId se identifica SIEMPRE por el prompt. "El .jsonl más nuevo" no
+    // vale: otra ventana, un PTY oculto de Telegram o una task-session pueden
+    // crear sesión en el mismo proyecto justo ahora.
     let waited = 0
     while (waited < SUBCHAT_WAIT) {
       await wait(POLL)
@@ -198,8 +248,10 @@ function createVoiceSendTarget({
         forked = detectForkedRelayTranscript({ cwds, before, excludeSessionId: session.claudeSessionId, promptMarker: prompt })
       } catch { forked = null }
       if (!forked) continue
+      const adoptado = adoptFork(forked, prompt, cwds)
+      if (!adoptado) break
       session.voiceSubchatSessionId = forked.sessionId
-      return { ok: true, sessionId: forked.sessionId, cwds, baseOffset: forked.baseOffset }
+      return adoptado
     }
 
     return { ok: false, reason: 'no se encontró el transcript del sub-chat' }
@@ -228,9 +280,11 @@ function createVoiceSendTarget({
 
 module.exports = {
   createVoiceSendTarget,
+  pickForkedSessionId,
   DEFAULT_POLL_MS,
   DEFAULT_SUBCHAT_WARMUP_MS,
   DEFAULT_SUBCHAT_FORK_WAIT_MS,
   DEFAULT_FORK_CHECK_AFTER_MS,
-  DEFAULT_MOTHER_WAIT_MS
+  DEFAULT_MOTHER_WAIT_MS,
+  MAX_FORK_SCAN_BYTES
 }

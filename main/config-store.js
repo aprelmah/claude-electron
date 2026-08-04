@@ -135,13 +135,18 @@ function sanitizeVoiceEnabled(value, fallback = false) {
 }
 
 // Identificador de voz de AVSpeechSynthesis (p. ej.
-// `com.apple.voice.premium.es-ES.Monica`). Cadena corta o vacío: viaja al
-// helper por NDJSON, así que nada de espacios ni caracteres raros.
+// `com.apple.voice.premium.es-ES.Monica`). Viaja al helper como valor de un
+// JSON por NDJSON, así que lo único intolerable son los saltos de línea (parten
+// el protocolo) y los controles. Sí se admiten acentos y espacios: hay voces
+// que se llaman `Mónica` o `Eddy (Español)` y descartarlas en silencio dejaba
+// al usuario cambiando una voz que nunca se aplicaba.
 function sanitizeVoiceId(value) {
   if (typeof value !== 'string') return ''
   const v = value.trim()
   if (!v || v.length > 200) return ''
-  return /^[A-Za-z0-9._-]+$/.test(v) ? v : ''
+  // Saltos de línea y controles: partirían el NDJSON del helper.
+  if (/[\u0000-\u001f\u007f]/.test(v)) return ''
+  return /^[\p{L}\p{N}._\-: ()]+$/u.test(v) ? v : ''
 }
 
 function sanitizeCliBinaryPath(value) {
@@ -278,5 +283,7 @@ module.exports = {
   writeConfigToFile,
   sanitizeCliBinaryPath,
   sanitizeClaudeModel,
-  sanitizeGitSessionIsolation
+  sanitizeGitSessionIsolation,
+  sanitizeVoiceEnabled,
+  sanitizeVoiceId
 }

@@ -67,7 +67,7 @@ const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
 const { createVoiceHelperProcess } = require('./main/voice-helper-process')
 const { createVoiceTurnWatcher } = require('./main/voice-turn-watcher')
-const { createVoiceSendTarget } = require('./main/voice-send-target')
+const { createVoiceSendTarget, pickForkedSessionId } = require('./main/voice-send-target')
 const { createVoiceSession } = require('./main/voice-session')
 const { speakableFromMarkdown } = require('./main/voice-speakable')
 const voiceRouter = require('./main/voice-router')
@@ -1412,15 +1412,17 @@ const voiceWatcher = createVoiceTurnWatcher({
 })
 
 const voiceSendTarget = createVoiceSendTarget({
+  // Sesión VIVA en cada consulta (nada de copias cacheadas): voice-session
+  // revalida el destino turno a turno, y con una copia el cambio de sesión o de
+  // CLI en esa ventana pasaría desapercibido.
   getSession: getVoiceSessionOwner,
   subchat: subchatManager,
   relayCwdCandidates,
   findRelayTranscript,
-  snapshotClaudeSessions,
-  listClaudeSessionFilesWithMtime,
   snapshotClaudeSessionMeta,
   detectForkedRelayTranscript,
   statFn: (p) => safeStat(p),
+  readFileFn: (p) => fs.readFileSync(p, 'utf8'),
   log: (m) => console.log('[voz]', m)
 })
 
@@ -1559,8 +1561,19 @@ function startPty(session, cols, rows, cwd, args = []) {
   const sessionFilesBefore = session.activeCli === 'claude'
     ? snapshotClaudeSessions(session.gitWorkspace?.workCwd || session.cwd)
     : null
+  // Un `--resume` FORKEA (regla dura, CLAUDE.md § Relay de Telegram): claude
+  // abre un sessionId NUEVO con el historial copiado y escribe ahí, y el
+  // fichero del id resumido no vuelve a crecer. Quedarse con el id de los args
+  // deja apuntando a un fichero muerto a TODO lo que dependa de él: el
+  // `--fork-session` del sub-chat (que heredaría un contexto congelado en el
+  // instante del resume), el modo voz y el relay. Se snapshotean los proyectos
+  // candidatos para reconocer el fichero que aparezca.
+  const resumedClaudeId = session.activeCli === 'claude' ? extractClaudeResumeId(args) : ''
+  const forkScanBefore = resumedClaudeId
+    ? new Map(relayCwdCandidates(session).map((c) => [c, snapshotClaudeSessions(c)]))
+    : null
   if (session.activeCli === 'claude') {
-    session.claudeSessionId = extractClaudeResumeId(args)
+    session.claudeSessionId = resumedClaudeId
   } else if (session.activeCli === 'codex') {
     session.codexSessionId = extractCodexResumeId(args)
   }
@@ -1607,6 +1620,39 @@ function startPty(session, cols, rows, cwd, args = []) {
           worktreePath: s.gitWorkspace.worktreePath
         })
         clearInterval(detect)
+      }
+    }, 2000)
+  }
+
+  // Gemelo del anterior para la sesión resumida: aquí el id no está vacío, está
+  // PODRIDO. Se busca el .jsonl que no existía antes del spawn y no es el
+  // resumido; sin prompt con el que verificar no hay otra señal (donde sí lo
+  // hay, manda `detectForkedRelayTranscript`). Ventana acotada: si en 60 s no
+  // apareció, no lo hará.
+  if (forkScanBefore) {
+    let intentos = 0
+    const detectFork = setInterval(() => {
+      const s = sessions.get(myWcId)
+      if (!s || !s.pty || s.pty !== proc || intentos >= 30) { clearInterval(detectFork); return }
+      intentos += 1
+      // Si ya lo arregló otro camino (relay, modo voz), no hay nada que hacer.
+      if (s.claudeSessionId !== resumedClaudeId) { clearInterval(detectFork); return }
+      for (const [cwd, before] of forkScanBefore) {
+        const sid = pickForkedSessionId({
+          rows: listClaudeSessionFilesWithMtime(cwd),
+          before,
+          excludeIds: [resumedClaudeId]
+        })
+        if (!sid) continue
+        s.claudeSessionId = sid
+        if (s.gitWorkspace) sessionGitMap.recordActive({
+          claudeSessionId: sid,
+          realCwd: s.gitWorkspace.realCwd,
+          branch: s.gitWorkspace.branch,
+          worktreePath: s.gitWorkspace.worktreePath
+        })
+        clearInterval(detectFork)
+        return
       }
     }, 2000)
   }
@@ -3479,21 +3525,38 @@ ipcMain.handle('voice:enable', (event) => {
     return { ok: false, reason: 'el modo voz ya está activo en otra ventana' }
   }
   voiceOwnerWcId = s.wcId
-  const res = voiceSession.enable()
-  if (!res.ok) { voiceOwnerWcId = null; return res }
+  let res
+  // Si enable() lanza y no se suelta la propiedad, el modo voz queda pegado a
+  // una ventana que no lo tiene y TODAS las demás ven "ya está activo en otra
+  // ventana" hasta reiniciar la app.
+  try { res = voiceSession.enable() } catch (err) {
+    voiceOwnerWcId = null
+    return { ok: false, reason: `no se pudo arrancar el modo voz: ${err?.message || err}` }
+  }
+  if (!res || !res.ok) {
+    voiceOwnerWcId = null
+    return res || { ok: false, reason: 'no se pudo arrancar el modo voz' }
+  }
   // La voz elegida se manda tras arrancar: el helper nace con la del sistema.
   const voiceId = appConfig?.cli?.voiceId || ''
   if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
   return res
 })
 
-ipcMain.handle('voice:disable', () => {
+// Apagar y cambiar de modo son del DUEÑO. Sin esta comprobación, cualquier otra
+// ventana (o una vista LAN) apaga el micro de quien lo está usando.
+ipcMain.handle('voice:disable', (event) => {
+  if (voiceOwnerWcId == null) return { ok: true }
+  const s = getSessionByEvent(event)
+  if (!s || voiceOwnerWcId !== s.wcId) return { ok: false, reason: 'el modo voz es de otra ventana' }
   try { voiceSession.disable() } catch {}
   voiceOwnerWcId = null
   return { ok: true }
 })
 
 ipcMain.handle('voice:set-mode', (event, { mode } = {}) => {
+  const s = getSessionByEvent(event)
+  if (!s || voiceOwnerWcId !== s.wcId) return { ok: false, reason: 'el modo voz es de otra ventana' }
   voiceSession.setForcedMode(mode)
   return { ok: true, mode: mode === 'charla' || mode === 'encargo' ? mode : null }
 })

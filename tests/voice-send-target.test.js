@@ -5,14 +5,14 @@ const assert = require('node:assert')
 const path = require('path')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const { createVoiceSendTarget } = require(path.join(REPO_ROOT, 'main', 'voice-send-target.js'))
+const { createVoiceSendTarget, pickForkedSessionId } = require(path.join(REPO_ROOT, 'main', 'voice-send-target.js'))
 
 // Banco de pruebas: disco y sub-chat de mentira, sin temporizadores reales.
 // `sleep` no duerme, solo cuenta: los bucles del módulo avanzan por
 // contador (waited += pollMs), así que el tiempo simulado es exacto.
 function makeHarness(opts = {}) {
   const escrituras = { madre: [], subchat: [] }
-  const llamadas = { detectFork: [], subchatStart: 0, sleeps: 0 }
+  const llamadas = { detectFork: [], subchatStart: 0, sleeps: 0, has: 0, lecturas: [] }
 
   const session = {
     wcId: 7,
@@ -25,17 +25,28 @@ function makeHarness(opts = {}) {
 
   // filePath → tamaño. `tamanos` puede mutarse desde los tests.
   const tamanos = new Map(Object.entries(opts.tamanos || { '/proj-dir/madre-1.jsonl': 100 }))
-  // cwd → [{ file, sessionId, mtimeMs }]
-  let ficheros = opts.ficheros || { '/proj': [{ file: 'madre-1.jsonl', sessionId: 'madre-1', mtimeMs: 10 }] }
+  // filePath → contenido, para el recálculo de offset de un fork.
+  const contenidos = new Map(Object.entries(opts.contenidos || {}))
+  // El sub-chat puede morirse entre una comprobación y la siguiente.
+  const hasSeq = Array.isArray(opts.subchatHasSeq) ? [...opts.subchatHasSeq] : null
+  // Un start() con éxito deja el sub-chat vivo, como el manager de verdad.
+  let arrancado = false
 
   const target = createVoiceSendTarget({
     getSession: () => (opts.sinSesion ? null : session),
     subchat: {
-      has: () => (typeof opts.subchatHas === 'function' ? opts.subchatHas() : !!opts.subchatHas),
+      has: () => {
+        llamadas.has += 1
+        if (hasSeq) return hasSeq.length ? hasSeq.shift() : false
+        if (arrancado) return true
+        return typeof opts.subchatHas === 'function' ? opts.subchatHas() : !!opts.subchatHas
+      },
       start: () => {
         llamadas.subchatStart += 1
         if (opts.onSubchatStart) opts.onSubchatStart()
-        return opts.subchatStart || { ok: true }
+        const r = opts.subchatStart || { ok: true }
+        if (r.ok && !opts.muereTrasArrancar) arrancado = true
+        return r
       },
       write: (wcId, data) => {
         if (opts.subchatWriteThrows) throw new Error('sub-chat muerto')
@@ -48,26 +59,34 @@ function makeHarness(opts = {}) {
       if (!tamanos.has(filePath)) return null
       return { filePath, sessionId, size: tamanos.get(filePath), mtimeMs: 1 }
     },
-    snapshotClaudeSessions: (cwd) => new Map((ficheros[cwd] || []).map((r) => [r.file, r.mtimeMs])),
-    listClaudeSessionFilesWithMtime: (cwd) => (ficheros[cwd] || []).slice().sort((a, b) => b.mtimeMs - a.mtimeMs),
-    snapshotClaudeSessionMeta: (cwd) => new Map((ficheros[cwd] || []).map((r) => [r.file, { size: tamanos.get(`/proj-dir/${r.file}`) || 0, mtimeMs: r.mtimeMs }])),
+    snapshotClaudeSessionMeta: (cwd) => new Map([[cwd, { size: 0, mtimeMs: 0 }]]),
     detectForkedRelayTranscript: (args) => {
       llamadas.detectFork.push({ ...args, sleeps: llamadas.sleeps })
       return typeof opts.detectFork === 'function' ? opts.detectFork(args, llamadas.detectFork.length) : (opts.detectFork || null)
     },
-    statFn: (p) => (tamanos.has(p) ? { size: tamanos.get(p) } : null),
+    statFn: (p) => {
+      if (tamanos.has(p)) return { size: tamanos.get(p) }
+      if (contenidos.has(p)) return { size: Buffer.byteLength(contenidos.get(p), 'utf8') }
+      return null
+    },
+    readFileFn: (p) => {
+      llamadas.lecturas.push(p)
+      if (opts.readThrows) throw new Error('EACCES')
+      if (!contenidos.has(p)) throw new Error('ENOENT')
+      return contenidos.get(p)
+    },
     sleep: async () => { llamadas.sleeps += 1; if (opts.onSleep) opts.onSleep(llamadas.sleeps) },
     log: () => {}
   })
 
-  return {
-    target,
-    session,
-    escrituras,
-    llamadas,
-    tamanos,
-    setFicheros: (f) => { ficheros = f }
-  }
+  return { target, session, escrituras, llamadas, tamanos, contenidos }
+}
+
+// Transcript de mentira: historial copiado que YA cierra con end_turn (lo que
+// leería la app si el offset fuese 0) y debajo la línea del turno de ahora.
+const LINEA_VIEJA = '{"type":"assistant","isSidechain":false,"message":{"stop_reason":"end_turn","content":[{"type":"text","text":"café con leche"}]}}'
+function transcriptConHistorial(prompt) {
+  return `${LINEA_VIEJA}\n{"type":"user","message":{"content":"${prompt}"}}\n`
 }
 
 describe('voice-send-target — validaciones de entrada', () => {
@@ -110,7 +129,6 @@ describe('voice-send-target — validaciones de entrada', () => {
 describe('voice-send-target — encargo (PTY de la sesión madre)', () => {
   test('escribe el prompt con retorno de carro y devuelve el offset PREVIO al envío', async () => {
     const h = makeHarness()
-    // El transcript crece nada más escribir: caso normal, sin fork.
     h.tamanos.set('/proj-dir/madre-1.jsonl', 100)
     const p = h.target({ text: 'arréglalo', mode: 'encargo' })
     h.tamanos.set('/proj-dir/madre-1.jsonl', 180)
@@ -127,6 +145,14 @@ describe('voice-send-target — encargo (PTY de la sesión madre)', () => {
     const res = await h.target({ text: 'hazlo', mode: 'encargo' })
     assert.strictEqual(res.ok, false)
     assert.match(res.reason, /proceso vivo/i)
+  })
+
+  test('con un turno de Telegram en vuelo NO se escribe en el mismo PTY', async () => {
+    const h = makeHarness({ session: { relayActive: true } })
+    const res = await h.target({ text: 'hazlo', mode: 'encargo' })
+    assert.strictEqual(res.ok, false)
+    assert.match(res.reason, /ocupada/i)
+    assert.strictEqual(h.escrituras.madre.length, 0, 'dos turnos interleavados en el mismo PTY dan una respuesta a medias a cada uno')
   })
 
   test('si el PTY revienta al escribir se avisa en vez de colgarse', async () => {
@@ -185,44 +211,90 @@ describe('voice-send-target — encargo (PTY de la sesión madre)', () => {
   })
 })
 
+describe('voice-send-target — un baseOffset de 0 nunca se propaga al vigía', () => {
+  test('fork sin snapshot previo: el offset se recalcula en la línea del prompt', async () => {
+    const prompt = 'aplícalo ya'
+    const h = makeHarness({
+      contenidos: { '/proj-dir/fork-nuevo.jsonl': transcriptConHistorial(prompt) },
+      detectFork: () => ({ filePath: '/proj-dir/fork-nuevo.jsonl', sessionId: 'fork-nuevo', baseOffset: 0 })
+    })
+    const res = await h.target({ text: prompt, mode: 'encargo' })
+    assert.strictEqual(res.ok, true)
+    assert.strictEqual(res.sessionId, 'fork-nuevo')
+    assert.strictEqual(
+      res.baseOffset,
+      Buffer.byteLength(LINEA_VIEJA + '\n', 'utf8'),
+      'con offset 0 el vigía cerraría el turno con el end_turn del historial COPIADO y leería en voz alta la respuesta anterior'
+    )
+  })
+
+  test('el offset recalculado va en BYTES, no en caracteres', async () => {
+    const prompt = 'hazlo'
+    const contenido = transcriptConHistorial(prompt)
+    const h = makeHarness({
+      contenidos: { '/proj-dir/fork-nuevo.jsonl': contenido },
+      detectFork: () => ({ filePath: '/proj-dir/fork-nuevo.jsonl', sessionId: 'fork-nuevo', baseOffset: 0 })
+    })
+    const res = await h.target({ text: prompt, mode: 'encargo' })
+    const enCaracteres = contenido.indexOf(`"${prompt}`) >= 0 ? (LINEA_VIEJA + '\n').length : -1
+    assert.notStrictEqual(res.baseOffset, enCaracteres, 'el transcript lleva acentos: contar caracteres desplaza el offset y parte una línea JSON')
+    assert.strictEqual(res.baseOffset, Buffer.byteLength(LINEA_VIEJA + '\n', 'utf8'))
+  })
+
+  test('fork con offset 0 y prompt ilocalizable: se descarta el fork en vez de leer a ciegas', async () => {
+    const h = makeHarness({
+      contenidos: { '/proj-dir/fork-nuevo.jsonl': `${LINEA_VIEJA}\n` },
+      detectFork: () => ({ filePath: '/proj-dir/fork-nuevo.jsonl', sessionId: 'fork-nuevo', baseOffset: 0 })
+    })
+    const res = await h.target({ text: 'hazlo', mode: 'encargo' })
+    assert.strictEqual(res.ok, true)
+    assert.strictEqual(res.sessionId, 'madre-1', 'mejor un timeout ruidoso que hablar de la respuesta de otro turno')
+    assert.strictEqual(h.session.claudeSessionId, 'madre-1', 'un fork descartado no puede quedarse en la sesión')
+  })
+
+  test('fork con offset 0 e ilegible: se descarta', async () => {
+    const h = makeHarness({
+      readThrows: true,
+      detectFork: () => ({ filePath: '/proj-dir/fork-nuevo.jsonl', sessionId: 'fork-nuevo', baseOffset: 0 })
+    })
+    const res = await h.target({ text: 'hazlo', mode: 'encargo' })
+    assert.strictEqual(res.sessionId, 'madre-1')
+  })
+
+  test('fork con offset > 0: se respeta y no se lee el fichero', async () => {
+    const h = makeHarness({ detectFork: () => ({ filePath: '/proj-dir/fork-9.jsonl', sessionId: 'fork-9', baseOffset: 12 }) })
+    const res = await h.target({ text: 'hazlo', mode: 'encargo' })
+    assert.strictEqual(res.baseOffset, 12)
+    assert.strictEqual(h.llamadas.lecturas.length, 0, 'releer el transcript entero cuando el snapshot ya da el offset es trabajo en balde')
+  })
+})
+
 describe('voice-send-target — charla (sub-chat forkeado)', () => {
-  test('abre el sub-chat, espera al fork y devuelve SU sessionId, no el de la madre', async () => {
+  test('abre el sub-chat y devuelve SU sessionId, identificado por el prompt', async () => {
     const h = makeHarness({
       subchatHas: () => false,
-      onSubchatStart: () => {
-        // El fork aparece en disco en cuanto arranca el sub-chat.
-        h.setFicheros({
-          '/proj': [
-            { file: 'madre-1.jsonl', sessionId: 'madre-1', mtimeMs: 10 },
-            { file: 'fork-abc.jsonl', sessionId: 'fork-abc', mtimeMs: 20 }
-          ]
-        })
-        h.tamanos.set('/proj-dir/fork-abc.jsonl', 4096)
-      }
+      detectFork: () => ({ filePath: '/proj-dir/fork-abc.jsonl', sessionId: 'fork-abc', baseOffset: 4096 })
     })
     const res = await h.target({ text: '¿qué opinas?', mode: 'charla' })
     assert.strictEqual(res.ok, true)
     assert.strictEqual(res.sessionId, 'fork-abc')
+    assert.strictEqual(res.baseOffset, 4096, 'el historial copiado por el fork queda por debajo del offset')
     assert.strictEqual(h.llamadas.subchatStart, 1)
     assert.deepStrictEqual(h.escrituras.subchat, [{ wcId: 7, data: '¿qué opinas?\r' }])
     assert.strictEqual(h.escrituras.madre.length, 0, 'la charla no toca el PTY de la madre')
+    assert.strictEqual(h.session.voiceSubchatSessionId, 'fork-abc', 'se recuerda para no repetir la búsqueda en cada turno')
   })
 
-  test('el baseOffset del fork es su tamaño ANTES de escribir, nunca 0', async () => {
-    const h = makeHarness({
-      subchatHas: () => false,
-      onSubchatStart: () => {
-        h.setFicheros({
-          '/proj': [
-            { file: 'madre-1.jsonl', sessionId: 'madre-1', mtimeMs: 10 },
-            { file: 'fork-abc.jsonl', sessionId: 'fork-abc', mtimeMs: 20 }
-          ]
-        })
-        h.tamanos.set('/proj-dir/fork-abc.jsonl', 4096)
-      }
-    })
-    const res = await h.target({ text: 'cuéntame', mode: 'charla' })
-    assert.strictEqual(res.baseOffset, 4096, 'con offset 0 el vigía leería el historial COPIADO por el fork y hablaría del turno anterior')
+  test('el sub-chat se identifica por el prompt, nunca por "el .jsonl más nuevo"', async () => {
+    const h = makeHarness({ subchatHas: () => false, detectFork: () => null })
+    const res = await h.target({ text: 'una duda', mode: 'charla' })
+    assert.strictEqual(res.ok, false, 'sin coincidencia de prompt no se adopta nada: el fichero nuevo puede ser de otra ventana o de un PTY oculto de Telegram')
+    assert.strictEqual(h.session.voiceSubchatSessionId, null)
+    assert.ok(h.llamadas.detectFork.length > 0)
+    for (const args of h.llamadas.detectFork) {
+      assert.strictEqual(args.promptMarker, 'una duda')
+      assert.strictEqual(args.excludeSessionId, 'madre-1', 'la madre nunca puede colarse como sub-chat')
+    }
   })
 
   test('reutiliza el sub-chat abierto y su sessionId ya conocido, sin arrancar nada', async () => {
@@ -237,6 +309,7 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     assert.strictEqual(res.baseOffset, 900)
     assert.strictEqual(h.llamadas.subchatStart, 0)
     assert.strictEqual(h.llamadas.sleeps, 0, 'el camino corto no debe esperar nada')
+    assert.strictEqual(h.llamadas.detectFork.length, 0)
   })
 
   test('si el sub-chat no arranca, se devuelve el motivo tal cual', async () => {
@@ -247,47 +320,93 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     assert.strictEqual(h.escrituras.subchat.length, 0)
   })
 
-  test('si el fork no aparece nunca, error claro y sin escribir a ciegas', async () => {
-    const h = makeHarness({ subchatHas: () => false, detectFork: () => null })
+  test('si el sub-chat muere entre el arranque y la escritura, se avisa y NO se escribe', async () => {
+    // has(): true al entrar (ya había sub-chat), false justo antes de escribir.
+    const h = makeHarness({ subchatHasSeq: [true, false] })
     const res = await h.target({ text: 'hola', mode: 'charla' })
     assert.strictEqual(res.ok, false)
-    assert.match(res.reason, /transcript del sub-chat/i)
+    assert.match(res.reason, /se cerró antes de poder escribir/i)
+    assert.strictEqual(h.escrituras.subchat.length, 0, 'subchatManager.write se traga los errores: sin este control daba {ok:true} y 180 s de silencio')
   })
 
-  test('sub-chat abierto por el usuario (sessionId desconocido): se identifica por el prompt', async () => {
-    const h = makeHarness({
-      subchatHas: () => true,
-      detectFork: () => ({ filePath: '/proj-dir/fork-ui.jsonl', sessionId: 'fork-ui', baseOffset: 2048 })
-    })
-    const res = await h.target({ text: 'una duda', mode: 'charla' })
-    assert.strictEqual(res.ok, true)
-    assert.strictEqual(res.sessionId, 'fork-ui')
-    assert.strictEqual(res.baseOffset, 2048)
-    assert.strictEqual(h.session.voiceSubchatSessionId, 'fork-ui', 'se recuerda para no repetir la búsqueda en cada turno')
-    assert.strictEqual(h.llamadas.detectFork[0].excludeSessionId, 'madre-1')
-  })
-
-  test('si el sub-chat revienta al escribir se avisa', async () => {
-    const h = makeHarness({
-      subchatHas: () => true,
-      session: { voiceSubchatSessionId: 'fork-abc' },
-      subchatWriteThrows: true
-    })
+  test('si write lanza (contrato futuro de subchat-pty) también se avisa', async () => {
+    const h = makeHarness({ subchatHas: () => true, session: { voiceSubchatSessionId: 'fork-abc' }, subchatWriteThrows: true })
     const res = await h.target({ text: 'hola', mode: 'charla' })
     assert.strictEqual(res.ok, false)
     assert.match(res.reason, /no se pudo escribir/i)
   })
 
-  test('el fork nunca puede ser el de la madre aunque sea el fichero más reciente', async () => {
+  test('si el fork no aparece nunca: error claro, una sola escritura y nada adoptado', async () => {
+    const h = makeHarness({ subchatHas: () => false, detectFork: () => null })
+    const res = await h.target({ text: 'hola', mode: 'charla' })
+    assert.strictEqual(res.ok, false)
+    assert.match(res.reason, /transcript del sub-chat/i)
+    // Escribir es obligatorio ANTES de buscar: sin prompt en el fichero no hay
+    // forma legítima de identificar el sub-chat. Lo que no puede haber es más
+    // de una escritura ni una adopción a ciegas.
+    assert.strictEqual(h.escrituras.subchat.length, 1)
+    assert.strictEqual(h.session.voiceSubchatSessionId, null)
+    // subchatForkWaitMs=5000 / pollMs=200 ⇒ 25 vueltas como mucho.
+    assert.ok(h.llamadas.sleeps <= 26, `demasiadas vueltas: ${h.llamadas.sleeps}`)
+  })
+
+  test('charla con fork de offset 0: también se recalcula por la línea del prompt', async () => {
+    const prompt = 'cuéntame'
     const h = makeHarness({
       subchatHas: () => false,
-      detectFork: () => null,
-      onSubchatStart: () => {
-        // La madre está viva y su .jsonl es el más nuevo, pero ya estaba antes.
-        h.setFicheros({ '/proj': [{ file: 'madre-1.jsonl', sessionId: 'madre-1', mtimeMs: 99 }] })
-      }
+      contenidos: { '/proj-dir/fork-abc.jsonl': transcriptConHistorial(prompt) },
+      detectFork: () => ({ filePath: '/proj-dir/fork-abc.jsonl', sessionId: 'fork-abc', baseOffset: 0 })
     })
-    const res = await h.target({ text: 'hola', mode: 'charla' })
-    assert.strictEqual(res.ok, false, 'mejor fallar que vigilar el transcript de la madre creyendo que es el sub-chat')
+    const res = await h.target({ text: prompt, mode: 'charla' })
+    assert.strictEqual(res.baseOffset, Buffer.byteLength(LINEA_VIEJA + '\n', 'utf8'))
+  })
+
+  test('charla con fork de offset 0 e ilocalizable: se descarta y no se inventa un sessionId', async () => {
+    const h = makeHarness({
+      subchatHas: () => false,
+      contenidos: { '/proj-dir/fork-abc.jsonl': `${LINEA_VIEJA}\n` },
+      detectFork: () => ({ filePath: '/proj-dir/fork-abc.jsonl', sessionId: 'fork-abc', baseOffset: 0 })
+    })
+    const res = await h.target({ text: 'cuéntame', mode: 'charla' })
+    assert.strictEqual(res.ok, false)
+    assert.strictEqual(h.session.voiceSubchatSessionId, null)
+  })
+})
+
+describe('pickForkedSessionId — el fork que crea un --resume en el spawn', () => {
+  const filas = [
+    { file: 'vieja.jsonl', sessionId: 'vieja', mtimeMs: 5 },
+    { file: 'resumida.jsonl', sessionId: 'resumida', mtimeMs: 30 },
+    { file: 'fork.jsonl', sessionId: 'fork', mtimeMs: 20 }
+  ]
+
+  test('devuelve el .jsonl que no estaba antes del spawn', () => {
+    const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 10]])
+    assert.strictEqual(pickForkedSessionId({ rows: filas, before, excludeIds: ['resumida'] }), 'fork')
+  })
+
+  test('el id resumido nunca se devuelve a sí mismo aunque sea el más reciente', () => {
+    const before = new Map([['vieja.jsonl', 5]])
+    const soloResumida = [{ file: 'resumida.jsonl', sessionId: 'resumida', mtimeMs: 99 }]
+    assert.strictEqual(pickForkedSessionId({ rows: soloResumida, before, excludeIds: ['resumida'] }), null)
+  })
+
+  test('entre varios ficheros nuevos gana el más reciente', () => {
+    const before = new Map()
+    const rows = [
+      { file: 'a.jsonl', sessionId: 'a', mtimeMs: 1 },
+      { file: 'b.jsonl', sessionId: 'b', mtimeMs: 9 }
+    ]
+    assert.strictEqual(pickForkedSessionId({ rows, before, excludeIds: [] }), 'b')
+  })
+
+  test('sin snapshot previo no se adopta nada: todos los ficheros parecerían nuevos', () => {
+    assert.strictEqual(pickForkedSessionId({ rows: filas, before: null, excludeIds: ['resumida'] }), null)
+    assert.strictEqual(pickForkedSessionId({ rows: filas, excludeIds: ['resumida'] }), null)
+  })
+
+  test('si no ha aparecido ningún fichero nuevo devuelve null', () => {
+    const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 30], ['fork.jsonl', 20]])
+    assert.strictEqual(pickForkedSessionId({ rows: filas, before, excludeIds: ['resumida'] }), null)
   })
 })
