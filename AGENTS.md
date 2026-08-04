@@ -5,6 +5,7 @@ Punto de entrada para cualquier agente CLI (Claude Code, Codex, otros) que llegu
 ## Lo primero que tienes que hacer
 
 0. **Leer `.claude/memory/STATE.md`** — estado vivo verificado (rama, PR, último commit, próximo paso). Es la foto real de HOY; los handoffs de abajo son contexto histórico y pueden haber envejecido.
+   ⚠️ **Ahora mismo empieza con un bloque "🚦 EMPIEZA POR AQUÍ": hay trabajo autorizado por Luismi para ejecutar sin pedir permiso** (implementar el modo voz, plan en `docs/superpowers/plans/2026-08-04-voz-en-directo.md`). Léelo antes que nada más.
 1. **Leer `HANDOFF-CODEX-2026-05-22-WHATSAPP-PANEL-CONTINUIDAD-FINAL.md` ENTERO**. Es la continuidad final más reciente de WhatsApp (race autoReply OFF, STOP/START bridge, QR live refresh, descarga media) y contiene estado operativo real al cierre.
 2. **Leer `HANDOFF-CLAUDE-2026-05-22-OLA1-2-RELEASE-1.3.0.md` ENTERO**. Es el handoff base del release 1.3.0 (estado global, reglas duras, rollback, arquitectura).
 3. Leer `CLAUDE.md` (runbook del proyecto: despliegue, regla crítica WhatsApp, scripts).

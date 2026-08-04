@@ -4,7 +4,50 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-04 (verificado contra git, los tests, la app desplegada y el estado en disco)._
+_Última actualización: 2026-08-04 noche (verificado contra git, los tests, la app desplegada y el estado en disco)._
+
+---
+
+# 🚦 EMPIEZA POR AQUÍ — trabajo autorizado, ejecútalo sin preguntar
+
+**Luismi dejó esto encargado la noche del 2026-08-04, con estas palabras: "déjalo preparado para que la siguiente sesión que abra en este proyecto se ponga a hacerlo todo solo y lo termine sin yo tener que hacer nada de controlar nada".**
+
+Eso es autorización explícita para ejecutar el plan entero sin ir pidiendo permiso paso a paso. No le preguntes por dónde empezar ni si sigues: **empieza y sigue**.
+
+## Qué hay que hacer
+
+Implementar el **modo voz** de POWER-AGENT: hablarle y que conteste hablando.
+
+- **Plan:** `docs/superpowers/plans/2026-08-04-voz-en-directo.md` — 9 tareas, 50 pasos TDD, con todo el código escrito. No tiene huecos que rellenar.
+- **Spec (el porqué):** `docs/superpowers/specs/2026-08-04-voz-en-directo-design.md` — léelo antes de tocar nada. Todas las cifras de latencia están **medidas en este Mac**, no estimadas.
+- **Cómo ejecutarlo:** invoca `superpowers:subagent-driven-development` y ve tarea por tarea. Cada una acaba con su commit.
+
+## Hasta dónde puedes llegar sola
+
+**Tareas 1 a 8 completas, y de la 9 los pasos 1, 2 y 4.** Todo eso son código, tests y documentación: no necesitan a nadie delante. Los tests de las tareas 2–6 no tocan micro ni permisos.
+
+**Para en el paso 3 de la tarea 9.** Ahí empieza lo que un agente no puede hacer, y no es pereza — es que el sistema operativo no lo permite:
+
+1. **El permiso de micrófono y reconocimiento** lo concede un humano en un diálogo de macOS. No hay forma de aceptarlo por código.
+2. **"Le hablas encima y se calla"** hay que oírlo. Igual que "no se autointerrumpe por el altavoz" y "transcribe bien los nombres de los módulos".
+
+Cuando llegues ahí: **deja la app compilada y desplegada**, escribe en este STATE.md que el código está listo y esperando validación, y **avisa a Luismi con el checklist de 9 puntos** (está al final de la tarea 9 del plan). Son 5 minutos suyos, todos juntos al final, no repartidos por el camino.
+
+## Reglas que no puedes saltarte
+
+- **Los tests, en el repo real, nunca en el worktree.** El worktree no tiene `node_modules` y fallan 12 por `Cannot find module 'node-pty'`. Y **jamás symlinkes `node_modules` dentro de un worktree**: ya provocó un commit de basura (CLAUDE.md § Limitaciones).
+- **No "optimices" el reconocimiento a on-device.** Está medido: RTF 2,5–7,5 en este i7 de 2014, inservible. La decisión de usar los servidores de Apple la tomó Luismi con las cifras delante.
+- Si un test falla por un detalle de formato, **arregla la implementación, no el test.** El test es el contrato.
+- **No hagas `push`.** Luismi no lo ha pedido.
+- Si te topas con algo que contradice el plan, **anótalo en el propio plan y sigue**. No pares a preguntar salvo que sea destructivo o irreversible.
+
+## Estado ahora mismo
+
+- Spec, plan y `voice-helper/VoiceHelper.swift` están en `main` (commits `2adeee8`, `0ab1dc3`, `c804b94`). Sin push.
+- **`voice-helper/VoiceHelper.swift` ya está escrito y validado**: compila con `swiftc -O` y responde a su protocolo NDJSON. No lo reescribas. Sus tres trampas (emit asíncrono, drenar antes de salir, permisos en perezoso) están resueltas y comentadas dentro.
+- Nada más está hecho: los 6 módulos de `main/`, el cableado y la UI están por escribir.
+
+---
 
 ## Estado de entrega (verificado)
 
