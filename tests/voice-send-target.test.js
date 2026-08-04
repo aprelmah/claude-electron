@@ -437,6 +437,18 @@ describe('pickForkedSessionId — el fork que crea un --resume en el spawn', () 
     assert.strictEqual(pickForkedSessionId({ groups: grupo(rows, before), excludeIds: ['resumida', 'subchat-de-la-madre'] }), 'fork')
   })
 
+  test('dos ids DISTINTOS en dos grupos distintos: tampoco se adopta ninguno', () => {
+    const groups = [
+      { rows: [{ file: 'a.jsonl', sessionId: 'a', mtimeMs: 1 }], before: new Map() },
+      { rows: [{ file: 'b.jsonl', sessionId: 'b', mtimeMs: 9 }], before: new Map() }
+    ]
+    assert.strictEqual(
+      pickForkedSessionId({ groups, excludeIds: [] }),
+      null,
+      'la ambigüedad se mide entre TODOS los proyectos, no dentro de cada uno'
+    )
+  })
+
   test('el mismo sessionId en dos proyectos candidatos cuenta como UN candidato', () => {
     const rows = [{ file: 'fork.jsonl', sessionId: 'fork', mtimeMs: 20 }]
     const groups = [

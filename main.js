@@ -1371,6 +1371,13 @@ const subchatManager = createSubchatManager({
   ensureCliAvailable,
   buildFdLimitCommand,
   getClaudeModel,
+  snapshotSessions: (cwd) => snapshotClaudeSessions(cwd),
+  // Misma regla que la detección del fork del `--resume`, incluida la renuncia
+  // ante ambigüedad: si aparecen dos ficheros nuevos, ninguno es adoptable.
+  detectNewSessionId: (cwd, before, excludeIds = []) => pickForkedSessionId({
+    groups: [{ rows: listClaudeSessionFilesWithMtime(cwd), before }],
+    excludeIds: [...excludeIds, ...knownClaudeSessionIds()]
+  }),
   log: (m) => console.log('[subchat]', m)
 })
 
@@ -1460,6 +1467,11 @@ function knownClaudeSessionIds() {
     for (const st of taskSessionStateByWc.values()) {
       if (st?.claudeSessionId) ids.push(st.claudeSessionId)
     }
+  } catch {}
+  // Los sub-chats abiertos desde el botón: el suyo es un fork con sessionId
+  // propio que no está en ninguna sesión ni task-session.
+  try {
+    for (const sid of subchatManager.sessionIds()) ids.push(sid)
   } catch {}
   return ids
 }
@@ -1659,6 +1671,14 @@ function startPty(session, cols, rows, cwd, args = []) {
       intentos += 1
       // Si ya lo arregló otro camino (relay, modo voz), no hay nada que hacer.
       if (s.claudeSessionId !== resumedClaudeId) { clearInterval(detectFork); return }
+      // Con un sub-chat vivo NO se adopta nada, aunque el candidato sea único:
+      // `--fork-session` escribe un .jsonl nuevo en estos mismos proyectos y,
+      // si la madre aún no ha escrito nada, es el ÚNICO fichero nuevo — la
+      // guarda de ambigüedad no lo tapa y la madre acabaría adoptando el id de
+      // su propio sub-chat (y `recordActive` guardándolo contra su worktree).
+      // El sub-chat aprende su id por su cuenta, pero tarda hasta 1 s en
+      // saberlo: esto cubre ese hueco y el de cualquier sub-chat de otra ventana.
+      if (subchatManager.hasAny()) return
       // Los proyectos candidatos se miran JUNTOS: si aparecen dos ficheros
       // nuevos entre todos, hay otro actor en juego y no se adopta ninguno.
       const groups = []

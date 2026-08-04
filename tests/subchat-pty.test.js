@@ -144,6 +144,121 @@ describe('subchat-pty: write / resize / data / exit / close', () => {
     fake.proc.write = () => { throw new Error('EPIPE') }
     assert.strictEqual(mgr.write(7, 'hola'), false)
   })
+})
+
+// Reloj de mentira: el poll del sessionId no puede depender de timers reales.
+function makeClock() {
+  let handlers = []
+  return {
+    setIntervalFn: (fn) => { const h = { fn }; handlers.push(h); return h },
+    clearIntervalFn: (h) => { handlers = handlers.filter((x) => x !== h) },
+    tick: (n = 1) => { for (let i = 0; i < n; i++) handlers.slice().forEach((h) => h.fn()) },
+    vivos: () => handlers.length
+  }
+}
+
+describe('subchat-pty: el fork aprende su propio sessionId', () => {
+  test('sin las deps opcionales todo sigue igual y sessionIds() sale vacío', () => {
+    const { mgr } = makeManager()
+    const { session } = makeSession()
+    assert.equal(mgr.start(session, {}).ok, true)
+    assert.deepEqual(mgr.sessionIds(), [])
+    assert.equal(mgr.hasAny(), true)
+  })
+
+  test('hasAny() distingue "hay alguno vivo" de "hay uno en ESTA ventana"', () => {
+    const { mgr } = makeManager()
+    assert.equal(mgr.hasAny(), false)
+    const { session } = makeSession({ wcId: 42 })
+    mgr.start(session, {})
+    assert.equal(mgr.hasAny(), true)
+    assert.equal(mgr.has(7), false, 'otra ventana no tiene sub-chat...')
+    assert.equal(mgr.has(42), true, '...pero hay uno vivo en la app')
+    mgr.close(42, 'test')
+    assert.equal(mgr.hasAny(), false)
+  })
+
+  test('el .jsonl que aparece tras el spawn se guarda como sessionId del sub-chat', () => {
+    const clock = makeClock()
+    const detectados = []
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: (cwd) => { detectados.push(cwd); return new Map([['madre.jsonl', 1]]) },
+      detectNewSessionId: (cwd, before, excludeIds) => {
+        detectados.push({ cwd, before, excludeIds })
+        return 'fork-del-subchat'
+      }
+    })
+    const { session } = makeSession()
+    mgr.start(session, {})
+    assert.deepEqual(mgr.sessionIds(), [], 'todavía no ha corrido ningún tick')
+    clock.tick()
+    assert.deepEqual(mgr.sessionIds(), ['fork-del-subchat'])
+    // El snapshot se toma con el cwd del worktree, no con el dir real.
+    assert.equal(detectados[0], '/wt')
+    // La madre se excluye siempre: adoptar su .jsonl sería el mismo error en espejo.
+    assert.deepEqual(detectados[1].excludeIds, ['abc-123'])
+    // Encontrado ⇒ el poll se para.
+    assert.equal(clock.vivos(), 0)
+  })
+
+  test('si el fork no aparece, el poll se rinde en vez de quedarse vivo para siempre', () => {
+    const clock = makeClock()
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => null
+    })
+    const { session } = makeSession()
+    mgr.start(session, {})
+    clock.tick(25)   // SID_POLL_TRIES = 20
+    assert.deepEqual(mgr.sessionIds(), [])
+    assert.equal(clock.vivos(), 0, 'un intervalo huérfano poleando el disco cada segundo para siempre')
+  })
+
+  test('cerrar el sub-chat para el poll y olvida su id', () => {
+    const clock = makeClock()
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => 'fork-del-subchat'
+    })
+    const { session } = makeSession()
+    mgr.start(session, {})
+    mgr.close(7, 'test')
+    assert.equal(clock.vivos(), 0)
+    assert.deepEqual(mgr.sessionIds(), [])
+  })
+
+  test('si el detector lanza, ni tumba el poll ni el sub-chat', () => {
+    const clock = makeClock()
+    let veces = 0
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => { veces += 1; if (veces === 1) throw new Error('EACCES'); return 'fork-tardio' }
+    })
+    const { session } = makeSession()
+    mgr.start(session, {})
+    clock.tick()
+    assert.deepEqual(mgr.sessionIds(), [])
+    clock.tick()
+    assert.deepEqual(mgr.sessionIds(), ['fork-tardio'])
+  })
+
+  test('si snapshotSessions lanza, el sub-chat arranca igual (sin detección)', () => {
+    const clock = makeClock()
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => { throw new Error('ENOENT') },
+      detectNewSessionId: () => 'no-deberia'
+    })
+    const { session } = makeSession()
+    assert.equal(mgr.start(session, {}).ok, true)
+    assert.equal(clock.vivos(), 0, 'sin foto previa no hay nada con lo que comparar')
+    clock.tick()
+    assert.deepEqual(mgr.sessionIds(), [])
+  })
 
   test('onData del pty → subchat:data al webContents (flush por bytes)', () => {
     const { mgr, fake } = makeManager()
