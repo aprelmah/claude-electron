@@ -1,5 +1,14 @@
 # POWER-AGENT Runbook
 
+## 🚦 TRABAJO EN CURSO AUTORIZADO (2026-08-04)
+
+**Antes que nada, lee `.claude/memory/STATE.md`: abre con un bloque "EMPIEZA POR AQUÍ".** Luismi dejó autorizado implementar el **modo voz** sin pedirle permiso paso a paso.
+
+- Plan: `docs/superpowers/plans/2026-08-04-voz-en-directo.md` (9 tareas TDD, 50 pasos, sin huecos).
+- Spec: `docs/superpowers/specs/2026-08-04-voz-en-directo-design.md` (el porqué, con las latencias **medidas** en este Mac).
+- Ejecútalo con `superpowers:subagent-driven-development`, tarea por tarea.
+- Puedes hacer sola las tareas 1–8. **Para en la tarea 9 paso 3**: el permiso de micrófono lo concede un humano en un diálogo de macOS, y el barge-in hay que oírlo. Deja la app desplegada y pásale a Luismi el checklist de 9 puntos.
+
 ## Latest Handoff
 - **UPGRADE ELECTRON 2026-07-28 (rama `chore/electron-43`)** — Electron **32.3.3 → 43.2.0** (Chromium 128 → 150, Node interno 24.18.0, ABI 148), electron-builder 24 → 26.15.3, @electron/rebuild 3 → 4.2.0. Cierra **SEC-C3**, pendiente desde mayo: la 32 llevaba EOL desde ~marzo 2025. Tests 525 (519 pass / 0 fail / 6 skip). `npm audit --omit=dev`: 0 vulnerabilidades. Notas y trampas: `ELECTRON-43-UPGRADE-NOTES.md`. **Techo: Electron 43 es la última que soporta macOS 12 Monterey; la 44 exige Ventura.**
 - **AUDITORÍA 2026-05-24 (commit `9f7f06a`, PR #1, rama `audit-fixes-2026-05-24`)** — 27 hallazgos cerrados (5 CRITICAL + 18 HIGH + 4 mejoras). Tests **254 → 418, 0 fail, 10 runs estables**. Detalle: `.claude/memory/audit_2026_05_24.md` + informes en `/tmp/audit-poweragent-2026-05-24/`. Nuevos módulos: `main/dir-helpers.js`, `main/pty-data-batcher.js`, `main/telegram-open-task-session.js`, `automations/security.js`, `vendor/xterm/*`. CI/CD añadido (`.github/workflows/test.yml`). Deployado a `/Applications/POWER-AGENT.app` 21:56. **SEC-C3 upgrade Electron sigue pendiente** (breaking, sesión humana). Reglas técnicas nuevas en MEMORY.md (LAN Bearer, `looksRemotePath`, `atomic-writes` 0o600, allowlist `save-app-config`, pool `notifyPtyExit`/`touchHiddenPty`/`chatId`, headless `origin`, índices con `flush()`, `vendor/`, batcher único).
