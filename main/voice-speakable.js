@@ -56,11 +56,39 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   //      sigan siendo candidatas (empiezan por +/- o son ellas mismas una
   //      marca dura) hasta la primera que no lo sea, como en la ronda
   //      anterior.
+  // Entre 'diff --git' y '---'/'+++' (o incluso sin ellas, en un rename o
+  // un cambio de permisos puro) 'git diff' mete líneas de metadatos que
+  // salen en prácticamente cualquier diff real: 'index <hash>..<hash>
+  // [modo]', 'similarity index NN%', 'rename from/to <ruta>',
+  // '(deleted|new) file mode <modo>', 'old/new mode <modo>'. Si no se
+  // reconocen, rompen la contigüidad de cabeceras: el resto del diff se
+  // limpia igual (empieza en marca dura, termina por contadores), pero
+  // estas líneas sueltas quedan fuera y se leen en voz alta tal cual. Cada
+  // patrón va anclado al formato exacto de git (no a la palabra suelta:
+  // 'index' o 'mode' aparecen en prosa normal constantemente) para no
+  // tragarse texto que no tiene nada que ver con un diff.
   const isDiffGitLine = (line) => /^diff --git /.test(line.trim())
   const isFileHeaderLine = (line) => {
     const t = line.trim()
     return /^---[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t) || /^\+\+\+[ \t]+\S*\/\S*(?:[ \t]|$)/.test(t)
   }
+  const isGitExtendedHeaderLine = (line) => {
+    const t = line.trim()
+    return (
+      /^index [0-9a-f]+\.\.[0-9a-f]+(?:[ \t]+\d+)?$/.test(t) ||
+      /^similarity index \d+%$/.test(t) ||
+      /^rename (?:from|to) .+/.test(t) ||
+      /^deleted file mode \d+$/.test(t) ||
+      /^new file mode \d+$/.test(t) ||
+      /^old mode \d+$/.test(t) ||
+      /^new mode \d+$/.test(t)
+    )
+  }
+  // '\ No newline at end of file': no es de lado viejo ni de lado nuevo,
+  // es una nota sobre la línea de contenido que la precede (puede salir
+  // dos veces en el mismo hunk, una tras un '-' y otra tras un '+', si a
+  // ambos lados les falta el salto final). No cuenta para los contadores.
+  const isNoNewlineMarker = (line) => /^\\ No newline at end of file$/.test(line.trim())
   const isHunkMarkerLine = (line) => /^@@[^\n]*@@/.test(line.trim())
   const isDiffHardSignalLine = (line) => isDiffGitLine(line) || isFileHeaderLine(line) || isHunkMarkerLine(line)
   const isDiffCandidateLine = (line) => /^[+-]/.test(line.trim()) || isDiffHardSignalLine(line)
@@ -87,8 +115,13 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
     }
     const blockStart = i
     let j = i
-    // 'diff --git' / '---' / '+++': cabeceras de fichero, se tragan tal cual.
-    while (j < rawLines.length && (isDiffGitLine(rawLines[j]) || isFileHeaderLine(rawLines[j]))) j++
+    // 'diff --git' / '---' / '+++' / metadatos extendidos: cabeceras de
+    // fichero, se tragan tal cual, en cualquier orden en que aparezcan.
+    while (
+      j < rawLines.length &&
+      (isDiffGitLine(rawLines[j]) || isFileHeaderLine(rawLines[j]) || isGitExtendedHeaderLine(rawLines[j]))
+    )
+      j++
     // Cero o más hunks, cada uno medido por sus propios contadores.
     let sawValidHunk = false
     while (j < rawLines.length && isHunkMarkerLine(rawLines[j])) {
@@ -114,6 +147,9 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
           break
         }
         j++
+        // El aviso de "sin salto de línea final" cuelga de la línea que
+        // acabamos de consumir, no cuenta como una línea más del hunk.
+        if (j < rawLines.length && isNoNewlineMarker(rawLines[j])) j++
       }
     }
     if (!sawValidHunk) {

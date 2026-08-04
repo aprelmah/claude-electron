@@ -255,4 +255,64 @@ describe('voice-speakable', () => {
     assert.ok(out.includes('Hecho'), 'se perdió el cierre')
     assert.ok(!out.includes('diff --git'), 'el diff real no se limpió')
   })
+
+  // Ronda de correcciones 5: 'git diff' mete líneas de metadatos entre
+  // 'diff --git' y '---'/'+++' (o incluso sin ellas) que no se reconocían
+  // como cabecera: rompían la contigüidad y se leían en voz alta tal
+  // cual, aunque el resto del diff sí se limpiaba. Un test por familia.
+  test('la línea "index <hash>..<hash> <modo>" se limpia con el resto del diff', () => {
+    const md =
+      'He cambiado esto:\ndiff --git a/config.js b/config.js\nindex 1a2b3c4..5d6e7f8 100644\n--- a/config.js\n+++ b/config.js\n@@ -2,1 +2,1 @@\n-old value\n+new value\nListo.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(!out.includes('index 1a2b3c4'), 'quedó residuo de la línea index')
+    assert.ok(!out.includes('old value'), 'el diff real no se limpió')
+    assert.ok(out.includes('He cambiado esto'), 'se perdió la prosa previa')
+    assert.ok(out.includes('Listo'), 'se perdió el cierre')
+  })
+
+  test('el aviso "\\ No newline at end of file" se limpia con el resto del diff', () => {
+    const md =
+      'Corregido:\ndiff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-old text\n\\ No newline at end of file\n+new text\nHecho.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(!out.includes('No newline'), 'quedó residuo del aviso de salto de línea')
+    assert.ok(!out.includes('old text'), 'el diff real no se limpió')
+    assert.ok(out.includes('Corregido'), 'se perdió la prosa previa')
+    assert.ok(out.includes('Hecho'), 'se perdió el cierre')
+  })
+
+  test('un rename ("similarity index" + "rename from/to") se limpia entero', () => {
+    const md = 'He movido el fichero:\ndiff --git a/old.js b/new.js\nsimilarity index 100%\nrename from old.js\nrename to new.js\nListo.'
+    const out = speakableFromMarkdown(md)
+    assert.ok(!out.includes('similarity index'), 'quedó residuo de similarity index')
+    assert.ok(!out.includes('rename from'), 'quedó residuo de rename from')
+    assert.ok(!out.includes('rename to'), 'quedó residuo de rename to')
+    assert.ok(out.includes('He movido el fichero'), 'se perdió la prosa previa')
+    assert.ok(out.includes('Listo'), 'se perdió el cierre')
+  })
+
+  test('"new file mode" / "deleted file mode" se limpian con el resto del diff', () => {
+    const nuevo = speakableFromMarkdown(
+      'Fichero nuevo:\ndiff --git a/new.js b/new.js\nnew file mode 100644\nindex 0000000..1a2b3c4\n--- /dev/null\n+++ b/new.js\n@@ -0,0 +1,1 @@\n+contenido nuevo\nCreado.'
+    )
+    assert.ok(!nuevo.includes('new file mode'), 'quedó residuo de new file mode')
+    assert.ok(!nuevo.includes('contenido nuevo'), 'el diff real no se limpió')
+    assert.ok(nuevo.includes('Fichero nuevo'), 'se perdió la prosa previa')
+    assert.ok(nuevo.includes('Creado'), 'se perdió el cierre')
+
+    const borrado = speakableFromMarkdown(
+      'Fichero borrado:\ndiff --git a/old.js b/old.js\ndeleted file mode 100644\nindex 1a2b3c4..0000000\n--- a/old.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-contenido antiguo\nBorrado.'
+    )
+    assert.ok(!borrado.includes('deleted file mode'), 'quedó residuo de deleted file mode')
+    assert.ok(!borrado.includes('contenido antiguo'), 'el diff real no se limpió')
+    assert.ok(borrado.includes('Fichero borrado'), 'se perdió la prosa previa')
+    assert.ok(borrado.includes('Borrado'), 'se perdió el cierre')
+  })
+
+  test('prosa normal que menciona "index", "rename" o "mode" fuera de un diff se conserva intacta', () => {
+    const md = 'Plan:\nindex del glosario al final\nrename de variables pendiente\nmode oscuro activado por defecto'
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.includes('index del glosario al final'), 'se perdió la línea de "index"')
+    assert.ok(out.includes('rename de variables pendiente'), 'se perdió la línea de "rename"')
+    assert.ok(out.includes('mode oscuro activado por defecto'), 'se perdió la línea de "mode"')
+  })
 })
