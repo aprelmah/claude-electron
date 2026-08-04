@@ -216,7 +216,7 @@ describe('subchat-pty: el fork aprende su propio sessionId', () => {
     assert.equal(clock.vivos(), 0, 'un intervalo huérfano poleando el disco cada segundo para siempre')
   })
 
-  test('cerrar el sub-chat para el poll y olvida su id', () => {
+  test('cerrar el sub-chat para el poll pero NO olvida su id', () => {
     const clock = makeClock()
     const { mgr } = makeManager({
       ...clock,
@@ -225,9 +225,60 @@ describe('subchat-pty: el fork aprende su propio sessionId', () => {
     })
     const { session } = makeSession()
     mgr.start(session, {})
+    clock.tick()                                   // aquí SÍ se aprende el id
+    assert.deepEqual(mgr.sessionIds(), ['fork-del-subchat'])
     mgr.close(7, 'test')
+    assert.equal(clock.vivos(), 0, 'el poll se para')
+    assert.equal(mgr.hasAny(), false)
+    assert.deepEqual(
+      mgr.sessionIds(),
+      ['fork-del-subchat'],
+      'el .jsonl del sub-chat sigue en disco: si su id sale de la exclusión al cerrarse, la madre acaba adoptando el id de un sub-chat MUERTO'
+    )
+  })
+
+  test('el id aprendido no se duplica al seguir vivo el sub-chat', () => {
+    const clock = makeClock()
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => 'fork-del-subchat'
+    })
+    mgr.start(makeSession().session, {})
+    clock.tick()
+    assert.deepEqual(mgr.sessionIds(), ['fork-del-subchat'], 'vivo y retenido son el mismo id, no dos')
+  })
+
+  test('el id sobrevive también a un exit del propio PTY', () => {
+    const clock = makeClock()
+    const { mgr, fake } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => 'fork-del-subchat'
+    })
+    mgr.start(makeSession().session, {})
+    clock.tick()
+    fake.state.onExitCb({ exitCode: 0 })
+    assert.equal(mgr.hasAny(), false)
     assert.equal(clock.vivos(), 0)
-    assert.deepEqual(mgr.sessionIds(), [])
+    assert.deepEqual(mgr.sessionIds(), ['fork-del-subchat'])
+  })
+
+  test('los ids de varios sub-chats se acumulan aunque se cierren', () => {
+    const clock = makeClock()
+    let n = 0
+    const { mgr } = makeManager({
+      ...clock,
+      snapshotSessions: () => new Map(),
+      detectNewSessionId: () => `fork-${++n}`
+    })
+    mgr.start(makeSession({ wcId: 1 }).session, {})
+    clock.tick()
+    mgr.close(1, 'test')
+    mgr.start(makeSession({ wcId: 2 }).session, {})
+    clock.tick()
+    mgr.close(2, 'test')
+    assert.deepEqual(mgr.sessionIds().sort(), ['fork-1', 'fork-2'])
   })
 
   test('si el detector lanza, ni tumba el poll ni el sub-chat', () => {

@@ -40,6 +40,15 @@ function createSubchatManager({
   // wcId → { pty, alive, win, wcId, _ptyBuf, claudeSessionId, _sidPoll }
   const byWc = new Map()
 
+  // Los sessionIds forkeados que hemos aprendido, RETENIDOS aunque el sub-chat
+  // se cierre. `byWc.delete()` saca la entrada del mapa, pero el `.jsonl` sigue
+  // en disco y sigue siendo un fichero "nuevo" para cualquier detector que
+  // fotografiara el proyecto antes: sin retenerlos, cerrar el sub-chat volvía a
+  // dejar su id adoptable y la madre acababa apuntando a un sub-chat MUERTO.
+  // Se acumulan durante la vida del proceso (una cadena corta por sub-chat
+  // abierto); no se purgan a propósito, porque olvidar uno es reabrir el bug.
+  const forkedSessionIdsVistos = new Set()
+
   const batcher = makeBatcher({
     sendFn: (entry, payload) => {
       try {
@@ -78,6 +87,7 @@ function createSubchatManager({
       }
       if (!sid) return
       entry.claudeSessionId = sid
+      forkedSessionIdsVistos.add(sid)
       trace(`subchat wc=${entry.wcId} forkeó a ${sid}`)
       stopSessionIdPoll(entry)
     }, SID_POLL_MS)
@@ -194,13 +204,15 @@ function createSubchatManager({
     return byWc.size > 0
   }
 
-  // Los sessionIds forkeados que ya conocemos, para que nadie los adopte.
+  // Todos los sessionIds forkeados que conocemos, para que nadie los adopte:
+  // los de los sub-chats vivos Y los de los ya cerrados. Un sub-chat muerto
+  // deja su .jsonl en disco, así que su id sigue siendo peligroso.
   function sessionIds() {
-    const ids = []
+    const ids = new Set(forkedSessionIdsVistos)
     for (const entry of byWc.values()) {
-      if (entry.claudeSessionId) ids.push(entry.claudeSessionId)
+      if (entry.claudeSessionId) ids.add(entry.claudeSessionId)
     }
-    return ids
+    return [...ids]
   }
 
   function closeAll() {

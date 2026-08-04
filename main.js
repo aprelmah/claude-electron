@@ -1678,7 +1678,19 @@ function startPty(session, cols, rows, cwd, args = []) {
       // su propio sub-chat (y `recordActive` guardándolo contra su worktree).
       // El sub-chat aprende su id por su cuenta, pero tarda hasta 1 s en
       // saberlo: esto cubre ese hueco y el de cualquier sub-chat de otra ventana.
-      if (subchatManager.hasAny()) return
+      if (subchatManager.hasAny()) {
+        // Y además se refresca la foto: lo que hay en disco AHORA deja de ser
+        // "nuevo". Sin esto, al cerrar el sub-chat su .jsonl seguía contando
+        // como candidato y la madre acababa adoptando el id de un sub-chat ya
+        // muerto. Cubre también al sub-chat que nunca llegó a aprender su id.
+        // Precio consciente: si el fork propio de la madre nació en esta misma
+        // ventana, se absorbe y ya no se adoptará por esta vía — el id se
+        // repara en el primer turno con prompt, que es la ruta fiable.
+        for (const cwd of forkScanBefore.keys()) {
+          try { forkScanBefore.set(cwd, snapshotClaudeSessions(cwd)) } catch {}
+        }
+        return
+      }
       // Los proyectos candidatos se miran JUNTOS: si aparecen dos ficheros
       // nuevos entre todos, hay otro actor en juego y no se adopta ninguno.
       const groups = []
