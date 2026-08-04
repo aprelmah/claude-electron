@@ -62,6 +62,11 @@ function makeHarness(opts = {}) {
     liveTimers: () => timers.filter((t) => t.live).length,
     timerMs: () => timers.filter((t) => t.live).map((t) => t.ms),
     fireTimers: () => { for (const t of timers) { if (t.live) { t.live = false; t.fn() } } },
+    // Dispara UNO concreto, vivo o cancelado. Sin esto no hay forma de simular
+    // un temporizador que ya estaba en vuelo cuando lo cancelaron: clearTimeout
+    // no desconvoca una callback que el bucle de eventos ya sacó de la cola, y
+    // ese es justo el caso que el corte por carrera tiene que aguantar solo.
+    fireTimerRaw: (i) => { const t = timers[i]; if (t) { t.live = false; t.fn() } },
     states: () => renderer.filter((e) => e.type === 'state').map((e) => e.state)
   }
 }
@@ -545,10 +550,15 @@ describe('voice-session: el renderer no puede tumbar el main', () => {
     assert.strictEqual(h.session.getState(), 'speaking')
   })
 
-  test('un renderer que lanza no revienta el vencimiento del turno', () => {
+  test('un renderer que lanza no revienta el vencimiento del turno', async () => {
+    // Hay que mandar un final primero: el onTimeout no existe hasta que
+    // `onFinal` levanta el vigía. Sin eso, fireTimeout() es un no-op y el test
+    // no prueba nada.
     const h = makeHarness({ notifyThrows: true })
     h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
     assert.doesNotThrow(() => h.fireTimeout())
+    assert.strictEqual(h.session.getState(), 'listening', 'y aun así vuelve a escuchar')
   })
 
   test('un renderer que lanza no impide apagar', () => {
@@ -581,12 +591,20 @@ describe('voice-session: nadie se queda hablando para siempre', () => {
   })
 
   test('el guardia vencido de una carrera vieja no toca la nueva', async () => {
+    // El guardia viejo se dispara IGNORANDO su cancelación (clearTimeout no
+    // desconvoca una callback que el bucle de eventos ya sacó de la cola), y
+    // con la carrera nueva hablando también: así el único cerrojo que queda en
+    // pie es el de la carrera, no el del estado.
     const h = makeHarness()
     await hastaHablando(h)
     h.session.disable()
-    h.session.enable()
-    h.fireTimers()
-    assert.strictEqual(h.session.getState(), 'listening')
+    await hastaHablando(h, 'La respuesta de la carrera nueva.')
+    assert.strictEqual(h.session.getState(), 'speaking')
+    const shutupsAntes = h.count('shutup')
+    h.fireTimerRaw(0)
+    assert.strictEqual(h.session.getState(), 'speaking', 'el guardia viejo no puede cortar la frase de la carrera nueva')
+    assert.strictEqual(h.count('shutup'), shutupsAntes, 'ni callarla')
+    assert.strictEqual(h.liveTimers(), 1, 'ni llevarse por delante el guardia de la frase que sí está sonando')
   })
 
   test('la duración del guardia crece con la frase, no es fija', async () => {
