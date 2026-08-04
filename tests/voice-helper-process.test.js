@@ -113,8 +113,14 @@ describe('voice-helper-process: caídas', () => {
   test('no reinicia tras un stop pedido', () => {
     const h = makeHarness()
     h.helper.start()
+    // stop() pone proc=null de inmediato: hay que guardar la referencia
+    // ANTES de llamar, para poder emitir su 'close' tardío a mano (kill()
+    // del fake ya no lo dispara solo — ver makeFakeProc) y así ejercer de
+    // verdad el guard de onClose/stoppingGen, no solo la asignación directa.
+    const proc = h.proc()
     h.helper.stop()
-    assert.strictEqual(h.spawned.length, 1)
+    proc.emit('close', 0)
+    assert.strictEqual(h.spawned.length, 1, 'el close del propio stop no debe disparar un respawn')
     assert.strictEqual(h.helper.isRunning(), false)
   })
 
