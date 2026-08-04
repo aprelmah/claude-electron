@@ -14,7 +14,12 @@ function makeFakeProc() {
   proc.stderr = new EventEmitter()
   proc.killed = false
   proc.written = []
-  proc.stdin = { write: (d) => { proc.written.push(d); return true }, end: () => {} }
+  // stdin como EventEmitter real (no un objeto plano): hace falta para poder
+  // simular el 'error' asíncrono de un pipe roto (ronda de revisión 1).
+  const stdin = new EventEmitter()
+  stdin.write = (d) => { proc.written.push(d); return true }
+  stdin.end = () => {}
+  proc.stdin = stdin
   proc.kill = () => { proc.killed = true; proc.emit('close', 0) }
   return proc
 }
@@ -141,5 +146,73 @@ describe('voice-helper-process: caídas', () => {
     assert.doesNotThrow(() => helper.start())
     assert.strictEqual(helper.isRunning(), false)
     assert.ok(events.some((e) => e.type === 'error' && e.fatal === true))
+  })
+})
+
+describe('voice-helper-process: blindajes ronda de revisión 1', () => {
+  test('un error asíncrono en stdin (pipe roto) no tumba el proceso main', () => {
+    // Un write() sobre un pipe ya roto dispara 'error' de forma asíncrona en
+    // el stream. Sin listener, Node lo trata como excepción no capturada.
+    const h = makeHarness()
+    h.helper.start()
+    assert.doesNotThrow(() => {
+      h.proc().stdin.emit('error', new Error('EPIPE'))
+    })
+    const avisos = h.logs.filter((m) => /stdin/i.test(m))
+    assert.strictEqual(avisos.length, 1, 'debe registrar el error de stdin sin propagarlo')
+  })
+
+  test('un close tardío del proceso viejo tras stop()+start() no pisa el proceso nuevo (carrera de identidad)', () => {
+    const h = makeHarness()
+    h.helper.start()
+    const oldProc = h.proc()
+    h.helper.stop()
+    h.helper.start()
+    const newProc = h.proc()
+    assert.notStrictEqual(oldProc, newProc)
+
+    // El proceso nuevo ya tiene un JSON a medias en su buffer cuando llega
+    // el close tardío del viejo (carrera real: en un proceso de verdad el
+    // close es asíncrono y puede llegar después de que ya se haya respawneado).
+    newProc.stdout.emit('data', Buffer.from('{"type":"par'))
+
+    oldProc.emit('close', 1)
+
+    assert.strictEqual(h.spawned.length, 2, 'el close tardío no debe disparar un respawn extra')
+    assert.strictEqual(h.helper.isRunning(), true, 'el proceso nuevo debe seguir vivo')
+    assert.strictEqual(h.helper.send({ cmd: 'ping' }), true)
+    assert.deepStrictEqual(newProc.written, ['{"cmd":"ping"}\n'], 'el ping debe llegar al proceso nuevo, no a uno espurio')
+
+    // El buffer a medias del proceso nuevo debe seguir intacto pese al close tardío.
+    newProc.stdout.emit('data', Buffer.from('tial"}\n'))
+    assert.deepStrictEqual(h.events, [{ type: 'partial' }])
+  })
+
+  test('un onEvent que lanza no tumba el parseo de las siguientes líneas del chunk', () => {
+    const events = []
+    let current = null
+    const helper = createVoiceHelperProcess({
+      helperPath: '/fake/voice-helper',
+      spawnFn: () => { current = makeFakeProc(); return current },
+      onEvent: (e) => {
+        events.push(e)
+        if (e.type === 'a') throw new Error('boom consumidor')
+      }
+    })
+    helper.start()
+    assert.doesNotThrow(() => {
+      current.stdout.emit('data', Buffer.from('{"type":"a"}\n{"type":"b"}\n'))
+    })
+    assert.deepStrictEqual(events.map((e) => e.type), ['a', 'b'])
+  })
+
+  test('un onEvent que lanza al fallar el spawn no propaga (protegido con safeEmit)', () => {
+    const helper = createVoiceHelperProcess({
+      helperPath: '/fake/voice-helper',
+      spawnFn: () => { throw new Error('ENOENT') },
+      onEvent: () => { throw new Error('el consumidor también revienta') }
+    })
+    assert.doesNotThrow(() => helper.start())
+    assert.strictEqual(helper.isRunning(), false)
   })
 })
