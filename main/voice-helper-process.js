@@ -46,6 +46,24 @@ const DEFAULT_MAX_RESTARTS = 3
 // y ahí la app está esperando para cerrarse.
 const DEFAULT_QUIT_GRACE_MS = 250
 
+// Cuánto tiene que aguantar de pie un proceso para que su caída cuente como
+// "incidente aislado" y no como parte de un bucle de respawn.
+//
+// La medida es el TIEMPO VIVO, no un evento del helper, y eso es a propósito.
+// Ningún evento sirve: `hello` sale en el top-level (VoiceHelper.swift:317),
+// antes de tocar audio ni permisos, y `ready` sale dentro del flujo de permisos
+// (VoiceHelper.swift:96) — los DOS llegan ANTES de `openMic()`, que es justo
+// donde revienta el crash típico de este código (`installTap` tras
+// `setVoiceProcessingEnabled(true)`: NSException de AVAudioEngine, incapturable
+// en Swift, SIGABRT). Resetear el contador con cualquiera de los dos convierte
+// el freno en un bucle infinito: saluda, reinicia la cuenta, muere, repite —
+// nunca se llega a MAX, nunca hay `broken`, nunca hay error fatal, y el botón se
+// queda en "escuchando" para siempre con el micro cerrado.
+//
+// 10 s es holgado: el arranque hasta `ready` se mide en decenas de ms, así que
+// un proceso que llega aquí es uno que estuvo escuchando de verdad.
+const DEFAULT_STABLE_MS = 10000
+
 // `child_process.spawn` NO lanza con un binario que no existe o que no es
 // ejecutable: emite 'error' de forma ASÍNCRONA. Así que el try/catch del spawn
 // no lo ve nunca, el fallo se cuela por 'close' y hacen falta los tres respawns
@@ -82,6 +100,8 @@ function createVoiceHelperProcess({
   log,
   maxRestarts,
   quitGraceMs,
+  stableMs,
+  nowFn,
   setTimeoutFn,
   clearTimeoutFn
 } = {}) {
@@ -92,6 +112,8 @@ function createVoiceHelperProcess({
   const trace = typeof log === 'function' ? log : () => {}
   const MAX = Number.isFinite(maxRestarts) && maxRestarts >= 0 ? maxRestarts : DEFAULT_MAX_RESTARTS
   const GRACE = Number.isFinite(quitGraceMs) && quitGraceMs >= 0 ? quitGraceMs : DEFAULT_QUIT_GRACE_MS
+  const STABLE = Number.isFinite(stableMs) && stableMs >= 0 ? stableMs : DEFAULT_STABLE_MS
+  const now = typeof nowFn === 'function' ? nowFn : () => Date.now()
   const setTimer = typeof setTimeoutFn === 'function' ? setTimeoutFn : setTimeout
   const clearTimer = typeof clearTimeoutFn === 'function' ? clearTimeoutFn : clearTimeout
 
@@ -102,6 +124,7 @@ function createVoiceHelperProcess({
   let stoppingGen = null
   let generation = 0
   let killTimer = null
+  let startedAt = 0
 
   function safeEmit(obj) {
     // onEvent es código del consumidor sobre JSON no confiable de un binario
@@ -122,15 +145,7 @@ function createVoiceHelperProcess({
       if (!trimmed) continue
       let obj = null
       try { obj = JSON.parse(trimmed) } catch { continue }
-      if (!obj || typeof obj !== 'object') continue
-      // El `hello` es la prueba de que ESTE proceso arrancó de verdad (abrió su
-      // stdout y habló). El contador de reintentos existe para frenar un bucle
-      // de respawn, no para acumular caídas sueltas: sin reiniciarlo, tres
-      // crashes repartidos a lo largo de horas —cada uno con su recuperación
-      // buena por medio— acaban marcando el helper como `broken` y dejan el modo
-      // voz muerto hasta reiniciar la app.
-      if (obj.type === 'hello') restarts = 0
-      safeEmit(obj)
+      if (obj && typeof obj === 'object') safeEmit(obj)
     }
   }
 
@@ -143,6 +158,13 @@ function createVoiceHelperProcess({
     buffer = ''
     // Salió solo tras el `quit`: el SIGTERM de respaldo ya no hace falta.
     if (stoppingGen === myGen) { stoppingGen = null; clearKillTimer(); return }
+    // El que aguantó STABLE de pie no formaba parte de un bucle: su caída es un
+    // incidente aislado y la cuenta anterior no le pertenece. Sin esto, tres
+    // crashes repartidos a lo largo de horas —cada uno con horas de servicio
+    // bueno por medio— acaban marcando el helper como `broken` y dejan el modo
+    // voz muerto hasta reiniciar la app. Ver DEFAULT_STABLE_MS para por qué se
+    // mide el tiempo vivo y no se escucha ningún evento del helper.
+    if (startedAt && (now() - startedAt) >= STABLE) restarts = 0
     if (restarts >= MAX) {
       if (!broken) {
         broken = true
@@ -170,6 +192,7 @@ function createVoiceHelperProcess({
       return
     }
     buffer = ''
+    startedAt = now()
     proc.stdout?.on('data', handleChunk)
     proc.stderr?.on('data', (d) => trace(`[helper] ${String(d).trim()}`))
     proc.on('error', (err) => trace(`error del helper: ${err?.message || err}`))
@@ -224,4 +247,4 @@ function createVoiceHelperProcess({
   }
 }
 
-module.exports = { createVoiceHelperProcess, checkHelperBinary, DEFAULT_QUIT_GRACE_MS }
+module.exports = { createVoiceHelperProcess, checkHelperBinary, DEFAULT_QUIT_GRACE_MS, DEFAULT_STABLE_MS }

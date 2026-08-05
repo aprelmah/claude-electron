@@ -42,12 +42,17 @@ function makeHarness(opts = {}) {
   const logs = []
   const timers = []
   let current = null
+  // Reloj de mentira: la vida del proceso decide si su caída cuenta como
+  // incidente aislado o como parte de un bucle, así que hay que poder mentir.
+  let ahora = 1000
   const helper = createVoiceHelperProcess({
     helperPath: '/fake/voice-helper',
     spawnFn: (bin, args, o) => { spawned.push({ bin, args, o }); current = makeFakeProc(); return current },
     onEvent: (e) => events.push(e),
     log: (m) => logs.push(m),
     maxRestarts: opts.maxRestarts,
+    stableMs: opts.stableMs,
+    nowFn: () => ahora,
     // Sin temporizadores reales: el kill de respaldo de stop() se dispara a mano.
     setTimeoutFn: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t },
     clearTimeoutFn: (t) => { if (t) t.live = false }
@@ -58,6 +63,7 @@ function makeHarness(opts = {}) {
     events,
     logs,
     timers,
+    avanzar: (ms) => { ahora += ms },
     proc: () => current,
     fireTimers: () => { for (const t of timers) { if (t.live) { t.live = false; t.fn() } } },
     liveTimers: () => timers.filter((t) => t.live).length
@@ -317,28 +323,67 @@ describe('voice-helper-process: blindajes ronda de revisión 2', () => {
 })
 
 describe('voice-helper-process: correcciones del review final', () => {
-  test('una caída con recuperación buena por medio no cuenta para rendirse', () => {
+  test('una caída tras horas de servicio bueno no cuenta para rendirse', () => {
     // El freno existe para cortar un BUCLE de respawn, no para acumular caídas
     // sueltas: sin reiniciar el contador, tres crashes repartidos a lo largo de
     // horas dejan el modo voz muerto hasta reiniciar la app.
-    const h = makeHarness({ maxRestarts: 2 })
+    const h = makeHarness({ maxRestarts: 2, stableMs: 10000 })
     h.helper.start()
     for (let i = 0; i < 6; i += 1) {
+      h.avanzar(60 * 60 * 1000)
       h.proc().emit('close', 1)
-      // El proceso nuevo saluda: arrancó de verdad, abrió su stdout y habló.
-      h.proc().stdout.emit('data', Buffer.from('{"type":"hello","pid":1}\n'))
     }
-    assert.strictEqual(h.helper.isBroken(), false, 'cada recuperación buena borra la cuenta anterior')
+    assert.strictEqual(h.helper.isBroken(), false, 'cada proceso que aguantó de pie borra la cuenta anterior')
     assert.strictEqual(h.helper.isRunning(), true)
   })
 
-  test('un bucle de respawn sin un solo hello sí se corta', () => {
-    // La otra cara: el reinicio del contador no puede desactivar el freno.
-    const h = makeHarness({ maxRestarts: 2 })
+  test('un helper que SALUDA y muere en el acto sigue rindiéndose: el hello no prueba nada', () => {
+    // `hello` sale en el top-level de VoiceHelper.swift, antes de tocar audio ni
+    // permisos, y `ready` sale dentro del flujo de permisos: los dos llegan ANTES
+    // de openMic(), que es donde revienta el crash típico (installTap tras
+    // setVoiceProcessingEnabled). Resetear la cuenta con cualquiera de los dos
+    // hace el bucle infinito: saluda, reinicia, muere, repite — sin llegar nunca
+    // a MAX, sin `broken`, sin error fatal, con el botón en "escuchando" para
+    // siempre y respawneando a varios procesos por segundo.
+    const h = makeHarness({ maxRestarts: 2, stableMs: 10000 })
+    h.helper.start()
+    for (let i = 0; i < 3; i += 1) {
+      h.proc().stdout.emit('data', Buffer.from('{"type":"hello","pid":1}\n'))
+      h.avanzar(20)
+      h.proc().emit('close', 1)
+    }
+    assert.strictEqual(h.helper.isBroken(), true, 'el bucle tiene que cortarse pese a los saludos')
+    assert.strictEqual(h.spawned.length, 3, 'arranque + 2 reintentos, y para')
+    assert.ok(h.events.some((e) => e.type === 'error' && e.fatal === true), 'y sube el fatal que apaga el modo voz')
+  })
+
+  test('un helper que llega a `ready` y muere tampoco desarma el freno', () => {
+    const h = makeHarness({ maxRestarts: 2, stableMs: 10000 })
+    h.helper.start()
+    for (let i = 0; i < 3; i += 1) {
+      h.proc().stdout.emit('data', Buffer.from('{"type":"hello"}\n{"type":"ready","locale":"es-ES"}\n'))
+      h.avanzar(120)
+      h.proc().emit('close', 1)
+    }
+    assert.strictEqual(h.helper.isBroken(), true)
+  })
+
+  test('un bucle de respawn rápido se corta', () => {
+    const h = makeHarness({ maxRestarts: 2, stableMs: 10000 })
     h.helper.start()
     h.proc().emit('close', 1)
     h.proc().emit('close', 1)
     h.proc().emit('close', 1)
+    assert.strictEqual(h.helper.isBroken(), true)
+  })
+
+  test('aguantar de pie no da barra libre: tras el reset se vuelve a contar desde cero', () => {
+    const h = makeHarness({ maxRestarts: 2, stableMs: 10000 })
+    h.helper.start()
+    h.avanzar(60 * 60 * 1000)
+    h.proc().emit('close', 1)   // incidente aislado: la cuenta se borra y sube a 1
+    h.proc().emit('close', 1)   // ya en bucle: 2
+    h.proc().emit('close', 1)   // 2 >= MAX
     assert.strictEqual(h.helper.isBroken(), true)
   })
 
