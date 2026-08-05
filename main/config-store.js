@@ -126,14 +126,12 @@ function sanitizeGitSessionIsolation(value, fallback = true) {
   return fallback
 }
 
-// Modo voz. Default false: pide permiso de micrófono y de reconocimiento de
-// voz al sistema, así que no se enciende sola.
-function sanitizeVoiceEnabled(value, fallback = false) {
-  if (value === true) return true
-  if (value === false) return false
-  return fallback
-}
-
+// El modo voz NO tiene clave de "arrancado": se enciende siempre desde el botón
+// de la ventana, nunca al abrir la app. Persistir un `voiceEnabled` obligaría a
+// pedir micrófono y reconocimiento de voz en el arranque sin que nadie lo haya
+// pedido, y el dueño del micro es una ventana concreta (`voiceOwnerWcId`), no la
+// app: no hay a quién devolvérselo al restaurar la config.
+//
 // Identificador de voz de AVSpeechSynthesis (p. ej.
 // `com.apple.voice.premium.es-ES.Monica`). Viaja al helper como valor de un
 // JSON por NDJSON, así que lo único intolerable son los saltos de línea (parten
@@ -213,7 +211,6 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
         claudeModel: sanitizeClaudeModel(cli.claudeModel),
         gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation),
-        voiceEnabled: sanitizeVoiceEnabled(cli.voiceEnabled),
         voiceId: sanitizeVoiceId(cli.voiceId)
       },
       telegram: {
@@ -247,7 +244,6 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     sanitizeCliBinaryPath,
     sanitizeClaudeModel,
     sanitizeGitSessionIsolation,
-    sanitizeVoiceEnabled,
     sanitizeVoiceId
   }
 }
@@ -284,6 +280,5 @@ module.exports = {
   sanitizeCliBinaryPath,
   sanitizeClaudeModel,
   sanitizeGitSessionIsolation,
-  sanitizeVoiceEnabled,
   sanitizeVoiceId
 }

@@ -41,12 +41,49 @@
 
 const DEFAULT_MAX_RESTARTS = 3
 
+// Margen que se le da al helper para atender su `quit` y salir por su cuenta
+// antes del SIGTERM. Corto a propósito: `stop()` corre también en `before-quit`,
+// y ahí la app está esperando para cerrarse.
+const DEFAULT_QUIT_GRACE_MS = 250
+
+// `child_process.spawn` NO lanza con un binario que no existe o que no es
+// ejecutable: emite 'error' de forma ASÍNCRONA. Así que el try/catch del spawn
+// no lo ve nunca, el fallo se cuela por 'close' y hacen falta los tres respawns
+// para que alguien se entere — mientras tanto el consumidor ya recibió su
+// {ok:true} y el botón dice "escuchando" con el micro cerrado. Comprobar el
+// binario ANTES de arrancar convierte ese diagnóstico de 3 caídas en una frase.
+//
+// Es justo lo que hará falta si el binario no sobrevive al empaquetado: en dev
+// vive en `resources/`, en la app empaquetada en `process.resourcesPath`.
+function checkHelperBinary(helperPath, accessFn) {
+  if (!helperPath) return { ok: false, reason: 'no hay ruta para el helper de voz' }
+  const check = typeof accessFn === 'function'
+    ? accessFn
+    : (p) => { const fs = require('fs'); fs.accessSync(p, fs.constants.X_OK) }
+  try {
+    check(helperPath)
+    return { ok: true }
+  } catch (err) {
+    const code = err && err.code
+    if (code === 'ENOENT') {
+      return { ok: false, reason: `falta el helper de voz (${helperPath}): compílalo con npm run build:voice-helper` }
+    }
+    if (code === 'EACCES') {
+      return { ok: false, reason: `el helper de voz no es ejecutable (${helperPath}): chmod +x` }
+    }
+    return { ok: false, reason: `no se puede usar el helper de voz (${helperPath}): ${err?.message || err}` }
+  }
+}
+
 function createVoiceHelperProcess({
   helperPath,
   spawnFn,
   onEvent,
   log,
-  maxRestarts
+  maxRestarts,
+  quitGraceMs,
+  setTimeoutFn,
+  clearTimeoutFn
 } = {}) {
   if (!helperPath) throw new Error('voice-helper-process: helperPath requerido')
   if (typeof spawnFn !== 'function') throw new Error('voice-helper-process: spawnFn requerido')
@@ -54,6 +91,9 @@ function createVoiceHelperProcess({
   const emit = typeof onEvent === 'function' ? onEvent : () => {}
   const trace = typeof log === 'function' ? log : () => {}
   const MAX = Number.isFinite(maxRestarts) && maxRestarts >= 0 ? maxRestarts : DEFAULT_MAX_RESTARTS
+  const GRACE = Number.isFinite(quitGraceMs) && quitGraceMs >= 0 ? quitGraceMs : DEFAULT_QUIT_GRACE_MS
+  const setTimer = typeof setTimeoutFn === 'function' ? setTimeoutFn : setTimeout
+  const clearTimer = typeof clearTimeoutFn === 'function' ? clearTimeoutFn : clearTimeout
 
   let proc = null
   let buffer = ''
@@ -61,6 +101,7 @@ function createVoiceHelperProcess({
   let broken = false
   let stoppingGen = null
   let generation = 0
+  let killTimer = null
 
   function safeEmit(obj) {
     // onEvent es código del consumidor sobre JSON no confiable de un binario
@@ -81,7 +122,15 @@ function createVoiceHelperProcess({
       if (!trimmed) continue
       let obj = null
       try { obj = JSON.parse(trimmed) } catch { continue }
-      if (obj && typeof obj === 'object') safeEmit(obj)
+      if (!obj || typeof obj !== 'object') continue
+      // El `hello` es la prueba de que ESTE proceso arrancó de verdad (abrió su
+      // stdout y habló). El contador de reintentos existe para frenar un bucle
+      // de respawn, no para acumular caídas sueltas: sin reiniciarlo, tres
+      // crashes repartidos a lo largo de horas —cada uno con su recuperación
+      // buena por medio— acaban marcando el helper como `broken` y dejan el modo
+      // voz muerto hasta reiniciar la app.
+      if (obj.type === 'hello') restarts = 0
+      safeEmit(obj)
     }
   }
 
@@ -92,7 +141,8 @@ function createVoiceHelperProcess({
     if (myGen !== generation) return
     proc = null
     buffer = ''
-    if (stoppingGen === myGen) { stoppingGen = null; return }
+    // Salió solo tras el `quit`: el SIGTERM de respaldo ya no hace falta.
+    if (stoppingGen === myGen) { stoppingGen = null; clearKillTimer(); return }
     if (restarts >= MAX) {
       if (!broken) {
         broken = true
@@ -136,22 +186,42 @@ function createVoiceHelperProcess({
     catch (err) { trace(`no se pudo escribir al helper: ${err?.message || err}`); return false }
   }
 
+  function clearKillTimer() {
+    if (killTimer === null) return
+    try { clearTimer(killTimer) } catch {}
+    killTimer = null
+  }
+
+  // Mandar `quit` y matar en la misma vuelta del bucle de eventos es mandar solo
+  // SIGTERM: el helper no ha llegado ni a leer su stdin. El `quit` existe para
+  // que salga por su cuenta cerrando el motor de audio (soltar el micro, parar
+  // la síntesis); a lo bruto eso queda al SO. Se le da una vuelta de reloj y el
+  // kill se queda de red de seguridad, cancelable si el proceso muere antes.
   function stop() {
     if (!proc) return
+    const victima = proc
     stoppingGen = generation
     send({ cmd: 'quit' })
-    try { proc.kill() } catch {}
     proc = null
+    clearKillTimer()
+    killTimer = setTimer(() => {
+      killTimer = null
+      try { victima.kill() } catch {}
+    }, GRACE)
+    // Node deja el timer suelto si el proceso ya salió solo; sin unref, un
+    // `stop()` en before-quit retrasaría el cierre de la app hasta que venza.
+    if (killTimer && typeof killTimer.unref === 'function') killTimer.unref()
   }
 
   return {
     start,
     send,
     stop,
+    checkBinary: (accessFn) => checkHelperBinary(helperPath, accessFn),
     isRunning: () => !!proc,
     isBroken: () => broken,
     reset: () => { broken = false; restarts = 0 }
   }
 }
 
-module.exports = { createVoiceHelperProcess }
+module.exports = { createVoiceHelperProcess, checkHelperBinary, DEFAULT_QUIT_GRACE_MS }

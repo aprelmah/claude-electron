@@ -6,7 +6,13 @@ const { EventEmitter } = require('events')
 const path = require('path')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const { createVoiceHelperProcess } = require(path.join(REPO_ROOT, 'main', 'voice-helper-process.js'))
+const { createVoiceHelperProcess, checkHelperBinary } = require(path.join(REPO_ROOT, 'main', 'voice-helper-process.js'))
+
+function errCon(code) {
+  const e = new Error(code)
+  e.code = code
+  return e
+}
 
 function makeFakeProc() {
   const proc = new EventEmitter()
@@ -34,15 +40,28 @@ function makeHarness(opts = {}) {
   const spawned = []
   const events = []
   const logs = []
+  const timers = []
   let current = null
   const helper = createVoiceHelperProcess({
     helperPath: '/fake/voice-helper',
     spawnFn: (bin, args, o) => { spawned.push({ bin, args, o }); current = makeFakeProc(); return current },
     onEvent: (e) => events.push(e),
     log: (m) => logs.push(m),
-    maxRestarts: opts.maxRestarts
+    maxRestarts: opts.maxRestarts,
+    // Sin temporizadores reales: el kill de respaldo de stop() se dispara a mano.
+    setTimeoutFn: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t },
+    clearTimeoutFn: (t) => { if (t) t.live = false }
   })
-  return { helper, spawned, events, logs, proc: () => current }
+  return {
+    helper,
+    spawned,
+    events,
+    logs,
+    timers,
+    proc: () => current,
+    fireTimers: () => { for (const t of timers) { if (t.live) { t.live = false; t.fn() } } },
+    liveTimers: () => timers.filter((t) => t.live).length
+  }
 }
 
 describe('voice-helper-process: arranque y parseo', () => {
@@ -229,6 +248,47 @@ describe('voice-helper-process: blindajes ronda de revisión 1', () => {
   })
 })
 
+describe('voice-helper-process: el binario que no está', () => {
+  // spawn() NO lanza con ENOENT/EACCES: emite 'error' asíncrono. Sin comprobar
+  // antes, el fallo tarda tres respawns en salir a la luz y mientras tanto el
+  // consumidor ya recibió su ok y el botón dice "escuchando" con el micro cerrado.
+  test('un binario que no existe se explica con su ruta y cómo arreglarlo', () => {
+    const r = checkHelperBinary('/fake/voice-helper', () => { throw errCon('ENOENT') })
+    assert.strictEqual(r.ok, false)
+    assert.match(r.reason, /falta el helper de voz/i)
+    assert.match(r.reason, /\/fake\/voice-helper/)
+    assert.match(r.reason, /build:voice-helper/)
+  })
+
+  test('un binario sin permiso de ejecución se distingue del que falta', () => {
+    const r = checkHelperBinary('/fake/voice-helper', () => { throw errCon('EACCES') })
+    assert.strictEqual(r.ok, false)
+    assert.match(r.reason, /no es ejecutable/i)
+    assert.match(r.reason, /chmod/)
+  })
+
+  test('cualquier otro fallo del filesystem también sale con motivo, no en silencio', () => {
+    const r = checkHelperBinary('/fake/voice-helper', () => { throw new Error('EIO raro') })
+    assert.strictEqual(r.ok, false)
+    assert.match(r.reason, /EIO raro/)
+  })
+
+  test('sin ruta no se intenta nada', () => {
+    assert.strictEqual(checkHelperBinary('').ok, false)
+  })
+
+  test('un binario ejecutable pasa', () => {
+    assert.deepStrictEqual(checkHelperBinary('/fake/voice-helper', () => {}), { ok: true })
+  })
+
+  test('checkBinary del proceso comprueba SU ruta, no otra', () => {
+    const h = makeHarness()
+    const vistas = []
+    assert.strictEqual(h.helper.checkBinary((p) => { vistas.push(p) }).ok, true)
+    assert.deepStrictEqual(vistas, ['/fake/voice-helper'])
+  })
+})
+
 describe('voice-helper-process: blindajes ronda de revisión 2', () => {
   test('un crash real del proceso nuevo tras stop()+start() sí respawnea y avisa (stopping no debe quedar pegado a la generación vieja)', () => {
     const h = makeHarness()
@@ -253,5 +313,69 @@ describe('voice-helper-process: blindajes ronda de revisión 2', () => {
     assert.strictEqual(h.helper.isRunning(), true, 'debe quedar vivo tras el respawn')
     const avisos = h.logs.filter((m) => /cayó/i.test(m))
     assert.strictEqual(avisos.length, 1, 'debe avisar del crash real de la generación nueva')
+  })
+})
+
+describe('voice-helper-process: correcciones del review final', () => {
+  test('una caída con recuperación buena por medio no cuenta para rendirse', () => {
+    // El freno existe para cortar un BUCLE de respawn, no para acumular caídas
+    // sueltas: sin reiniciar el contador, tres crashes repartidos a lo largo de
+    // horas dejan el modo voz muerto hasta reiniciar la app.
+    const h = makeHarness({ maxRestarts: 2 })
+    h.helper.start()
+    for (let i = 0; i < 6; i += 1) {
+      h.proc().emit('close', 1)
+      // El proceso nuevo saluda: arrancó de verdad, abrió su stdout y habló.
+      h.proc().stdout.emit('data', Buffer.from('{"type":"hello","pid":1}\n'))
+    }
+    assert.strictEqual(h.helper.isBroken(), false, 'cada recuperación buena borra la cuenta anterior')
+    assert.strictEqual(h.helper.isRunning(), true)
+  })
+
+  test('un bucle de respawn sin un solo hello sí se corta', () => {
+    // La otra cara: el reinicio del contador no puede desactivar el freno.
+    const h = makeHarness({ maxRestarts: 2 })
+    h.helper.start()
+    h.proc().emit('close', 1)
+    h.proc().emit('close', 1)
+    h.proc().emit('close', 1)
+    assert.strictEqual(h.helper.isBroken(), true)
+  })
+
+  test('stop() le da una vuelta de reloj al quit antes del SIGTERM', () => {
+    // Mandar `quit` y matar en la misma vuelta es mandar solo SIGTERM: el helper
+    // no ha llegado a leer su stdin y el motor de audio queda sin cerrar.
+    const h = makeHarness()
+    h.helper.start()
+    const proc = h.proc()
+    h.helper.stop()
+    assert.deepStrictEqual(proc.written, ['{"cmd":"quit"}\n'])
+    assert.strictEqual(proc.killed, false, 'todavía no: se le deja procesar el quit')
+    h.fireTimers()
+    assert.strictEqual(proc.killed, true, 'si no salió solo, el kill sigue de red de seguridad')
+  })
+
+  test('si sale solo tras el quit, el kill de respaldo se cancela', () => {
+    const h = makeHarness()
+    h.helper.start()
+    const proc = h.proc()
+    h.helper.stop()
+    proc.emit('close', 0)
+    assert.strictEqual(h.liveTimers(), 0, 'no queda un temporizador suelto apuntando a un pid muerto')
+    h.fireTimers()
+    assert.strictEqual(proc.killed, false)
+  })
+
+  test('el kill diferido apunta al proceso que se paró, no al que arrancó después', () => {
+    const h = makeHarness()
+    h.helper.start()
+    const viejo = h.proc()
+    h.helper.stop()
+    h.helper.start()
+    const nuevo = h.proc()
+    h.fireTimers()
+    assert.strictEqual(viejo.killed, true)
+    assert.strictEqual(nuevo.killed, false, 'matar el proceso nuevo dejaría el modo voz sordo')
+    assert.strictEqual(h.helper.isRunning(), true)
   })
 })

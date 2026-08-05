@@ -50,7 +50,9 @@ function createVoiceSession({
   router,
   sendToTarget,
   getSession,
+  getVoiceId,
   notifyRenderer,
+  onShutdown,
   log,
   setTimeoutFn,
   clearTimeoutFn
@@ -66,6 +68,8 @@ function createVoiceSession({
   const emitToRenderer = typeof notifyRenderer === 'function' ? notifyRenderer : () => {}
   const trace = typeof log === 'function' ? log : () => {}
   const getSess = typeof getSession === 'function' ? getSession : () => null
+  const getVoz = typeof getVoiceId === 'function' ? getVoiceId : () => ''
+  const announceShutdown = typeof onShutdown === 'function' ? onShutdown : () => {}
   const setTimer = typeof setTimeoutFn === 'function' ? setTimeoutFn : setTimeout
   const clearTimer = typeof clearTimeoutFn === 'function' ? clearTimeoutFn : clearTimeout
 
@@ -168,7 +172,17 @@ function createVoiceSession({
   // Único camino de apagado (toggle del usuario, error fatal del helper, sesión
   // que deja de servir). Con dos caminos, uno acabaría dejándose algo vivo: el
   // vigía polea el transcript cada 300 ms hasta que se cancela.
+  //
+  // De los tres motivos, DOS se disparan solos desde dentro (el error fatal y la
+  // sesión que deja de servir) y quien nos construyó no se entera por ninguna
+  // otra vía. main.js apunta al dueño del micro en `voiceOwnerWcId` y solo lo
+  // suelta en los caminos que pasan por él (toggle, muerte del PTY, before-quit):
+  // sin este aviso, un apagado interno deja el micro marcado como ocupado por una
+  // ventana que ya no lo tiene y TODAS las demás ven "el modo voz ya está activo
+  // en otra ventana" hasta reiniciar la app. Es lo más probable en la primera
+  // prueba real: el helper que no arranca emite `error` con `fatal: true`.
   function shutdown() {
+    const estabaEncendida = enabled
     const estabaHablando = state === 'speaking'
     enabled = false
     runId += 1
@@ -180,7 +194,17 @@ function createVoiceSession({
     if (estabaHablando) sendCmd({ cmd: 'shutup' })
     sendCmd({ cmd: 'stop' })
     if (typeof helper.stop === 'function') helper.stop()
+    // El `idle` va ANTES del aviso: notify() resuelve la ventana a través del
+    // dueño que main.js está a punto de soltar, así que al revés el renderer se
+    // quedaría pintando el último estado que le llegó.
     setState('idle')
+    // Solo si de verdad estaba encendida: así un disable() sobre una sesión ya
+    // apagada no reavisa, y un onShutdown que llamara a disable() no entra en
+    // bucle. Blindado como notify() — es código del consumidor.
+    if (!estabaEncendida) return
+    try { announceShutdown() } catch (err) {
+      trace(`el aviso de apagado del modo voz lanzó: ${err?.message || err}`)
+    }
   }
 
   function enable() {
@@ -351,6 +375,12 @@ function createVoiceSession({
         // lo relanzó, y el proceso nuevo nace mudo y sin micro.
         if (!enabled) return
         if (!helperUp) { helperUp = true; return }
+        // El proceso nuevo nace con la voz del SISTEMA: la que eligió el usuario
+        // se la mandó main.js una sola vez, justo tras enable(), y esa orden se
+        // fue con el proceso muerto. Sin reenviarla, una caída del helper cambia
+        // de voz a media conversación y en silencio.
+        const voz = String(getVoz() || '')
+        if (voz) sendCmd({ cmd: 'voice', id: voz })
         if (state === 'speaking') {
           // La frase murió con el proceso: no llegará ningún speech-end.
           leaveSpeaking({ silence: false })

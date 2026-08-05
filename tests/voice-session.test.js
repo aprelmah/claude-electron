@@ -12,6 +12,7 @@ function makeHarness(opts = {}) {
   const helperCmds = []
   const renderer = []
   const timers = []
+  const apagados = []
   let watchHandle = null
   let onDoneCb = null
   let onTimeoutCb = null
@@ -41,6 +42,11 @@ function makeHarness(opts = {}) {
       return { ok: true, sessionId: 'sid', cwds: ['/p'], baseOffset: 0 }
     },
     getSession: () => opts.session || { activeCli: 'claude', claudeSessionId: 'sid', pty: {}, wcId: 1 },
+    getVoiceId: () => (opts.voiceId === undefined ? '' : opts.voiceId),
+    onShutdown: () => {
+      apagados.push(true)
+      if (opts.onShutdownThrows) throw new Error('main.js reventó al soltar el micro')
+    },
     notifyRenderer: (e) => {
       renderer.push(e)
       if (opts.notifyThrows) throw new Error('webContents destruido')
@@ -55,6 +61,7 @@ function makeHarness(opts = {}) {
     sent,
     helperCmds,
     renderer,
+    apagados,
     fireDone: (r) => onDoneCb && onDoneCb(r),
     fireTimeout: () => onTimeoutCb && onTimeoutCb(),
     hasWatch: () => !!watchHandle,
@@ -757,5 +764,132 @@ describe('voice-session: contrato de eventos con el renderer', () => {
     for (const e of h.renderer) {
       assert.ok(permitidos.includes(e.type), `evento no documentado para la Tarea 7: ${e.type}`)
     }
+  })
+})
+
+describe('voice-session: el modo voz que se apaga solo tiene que avisar', () => {
+  // `voiceOwnerWcId` de main.js apunta a la ventana dueña del micro y solo se
+  // suelta en los caminos que pasan por él (toggle, muerte del PTY, before-quit).
+  // Dos de los tres apagados se disparan DESDE DENTRO: sin este aviso el micro
+  // queda marcado como ocupado por una ventana que ya no lo tiene y las demás ven
+  // "el modo voz ya está activo en otra ventana" hasta reiniciar la app.
+  test('un error fatal del helper suelta el micro, no solo lo apaga', () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'error', message: 'el helper de voz no arranca', fatal: true })
+    assert.strictEqual(h.session.isEnabled(), false)
+    assert.strictEqual(h.apagados.length, 1, 'el dueño del micro tiene que enterarse')
+  })
+
+  test('la sesión que deja de servir también lo suelta', async () => {
+    let cli = 'claude'
+    const h = makeHarness({
+      router: {
+        routeVoiceText: () => ({ mode: 'encargo', reason: 'test' }),
+        resolveVoiceTarget: () => (cli === 'claude' ? { ok: true, target: 'mother' } : { ok: false, reason: 'codex no delimita el fin de turno' })
+      }
+    })
+    h.session.enable()
+    cli = 'codex'
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    assert.strictEqual(h.session.isEnabled(), false)
+    assert.strictEqual(h.apagados.length, 1)
+  })
+
+  test('el toggle del usuario avisa igual: main.js suelta por un solo camino', () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.disable()
+    assert.strictEqual(h.apagados.length, 1)
+  })
+
+  test('apagar dos veces no reavisa (y un onShutdown que llamara a disable no haría bucle)', () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.disable()
+    h.session.disable()
+    assert.strictEqual(h.apagados.length, 1)
+  })
+
+  test('apagar sin haber encendido nunca no avisa a nadie', () => {
+    const h = makeHarness()
+    h.session.disable()
+    assert.strictEqual(h.apagados.length, 0)
+  })
+
+  test('el idle llega al renderer ANTES de soltar el dueño', () => {
+    // notify() resuelve la ventana a través del dueño que main.js va a soltar:
+    // al revés, el renderer se quedaría pintando el último estado que le llegó.
+    const orden = []
+    const h = makeHarness()
+    h.session.enable()
+    const antes = h.renderer.length
+    h.session.disable()
+    for (let i = antes; i < h.renderer.length; i += 1) {
+      if (h.renderer[i].type === 'state') orden.push(h.renderer[i].state)
+    }
+    assert.deepStrictEqual(orden, ['idle'], 'el idle se anuncia dentro del apagado')
+    assert.strictEqual(h.apagados.length, 1)
+  })
+
+  test('un onShutdown que lanza no tumba el apagado', () => {
+    const h = makeHarness({ onShutdownThrows: true })
+    h.session.enable()
+    assert.doesNotThrow(() => h.session.disable())
+    assert.strictEqual(h.session.isEnabled(), false)
+    assert.strictEqual(h.session.getState(), 'idle')
+  })
+
+  test('sin onShutdown la sesión sigue funcionando igual', () => {
+    const s = createVoiceSession({
+      helper: { send: () => true, start: () => {}, stop: () => {} },
+      speakable: (m) => m,
+      watcher: { watch: () => ({ cancel: () => {} }) },
+      router: { routeVoiceText: () => ({ mode: 'charla' }), resolveVoiceTarget: () => ({ ok: true }) },
+      sendToTarget: async () => ({ ok: true })
+    })
+    s.enable()
+    assert.doesNotThrow(() => s.disable())
+    assert.strictEqual(s.isEnabled(), false)
+  })
+})
+
+describe('voice-session: la voz elegida sobrevive a una caída del helper', () => {
+  test('el proceso resucitado recibe la voz otra vez, no la del sistema', () => {
+    // main.js manda la voz UNA vez, justo tras enable(): esa orden se fue con el
+    // proceso muerto. Sin reenviarla, el helper cambia de voz a media
+    // conversación y en silencio.
+    const h = makeHarness({ voiceId: 'com.apple.voice.premium.es-ES.Monica' })
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'hello', pid: 1 })
+    assert.strictEqual(h.count('voice'), 0, 'el primer saludo no: main.js ya la mandó')
+    h.session.handleHelperEvent({ type: 'hello', pid: 2 })
+    const voces = h.helperCmds.filter((c) => c.cmd === 'voice')
+    assert.deepStrictEqual(voces, [{ cmd: 'voice', id: 'com.apple.voice.premium.es-ES.Monica' }])
+  })
+
+  test('la voz va antes de reabrir el micro: si no, la primera frase saldría con la de antes', () => {
+    const h = makeHarness({ voiceId: 'Mónica' })
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'hello', pid: 1 })
+    const marca = h.helperCmds.length
+    h.session.handleHelperEvent({ type: 'hello', pid: 2 })
+    const despues = h.helperCmds.slice(marca).map((c) => c.cmd)
+    assert.deepStrictEqual(despues, ['voice', 'start'])
+  })
+
+  test('sin voz elegida no se manda nada: el helper se queda con la del sistema', () => {
+    const h = makeHarness()
+    h.session.enable()
+    h.session.handleHelperEvent({ type: 'hello', pid: 1 })
+    h.session.handleHelperEvent({ type: 'hello', pid: 2 })
+    assert.strictEqual(h.count('voice'), 0)
+  })
+
+  test('un helper que resucita con la voz apagada tampoco recibe la voz', () => {
+    const h = makeHarness({ voiceId: 'Mónica' })
+    h.session.handleHelperEvent({ type: 'hello', pid: 1 })
+    h.session.handleHelperEvent({ type: 'hello', pid: 2 })
+    assert.strictEqual(h.count('voice'), 0)
   })
 })

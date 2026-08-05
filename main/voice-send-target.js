@@ -87,6 +87,19 @@ function pickForkedSessionId({ groups = [], excludeIds = [] } = {}) {
   return candidatos.length === 1 ? candidatos[0] : null
 }
 
+// El prompt acaba en `pty.write(prompt + '\r')`. Un salto de línea INTERNO es
+// un ENTER a mitad de frase: el turno se enviaría partido y el resto quedaría
+// escrito suelto en el prompt siguiente (o lo interpretaría el TUI como otra
+// cosa). `trim()` solo pela los extremos, así que no cubre esto.
+//
+// El dictado no produce saltos, pero el texto llega de un proceso externo y de
+// aquí sale una escritura ciega en un terminal: se normaliza en la puerta, no en
+// cada uno de los dos caminos de envío. Además el marcador de detección de fork
+// se saca del prompt, así que tiene que ser exactamente lo que se escribió.
+function unaSolaLinea(text) {
+  return String(text || '').replace(/[\r\n\u2028\u2029]+/g, ' ').trim()
+}
+
 function createVoiceSendTarget({
   getSession,
   subchat,
@@ -285,7 +298,7 @@ function createVoiceSendTarget({
   }
 
   async function sendToTarget({ text, mode } = {}) {
-    const prompt = String(text || '').trim()
+    const prompt = unaSolaLinea(text)
     if (!prompt) return { ok: false, reason: 'no hay nada que enviar' }
 
     const session = getSession()

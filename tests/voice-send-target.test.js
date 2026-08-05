@@ -114,6 +114,25 @@ describe('voice-send-target — validaciones de entrada', () => {
     assert.match(res.reason, /id de conversación/i)
   })
 
+  test('un salto de línea interno no parte el turno en dos', async () => {
+    // El prompt acaba en `pty.write(prompt + '\r')`: un \n interno es un ENTER
+    // a mitad de frase y enviaría el turno a medias. trim() solo pela extremos.
+    const h = makeHarness()
+    await h.target({ text: '  arregla el bug\ny corre los tests\r\nluego commitea  ', mode: 'encargo' })
+    assert.deepStrictEqual(
+      h.escrituras.madre,
+      ['arregla el bug y corre los tests luego commitea\r'],
+      'todo el dictado va en UNA sola línea'
+    )
+  })
+
+  test('un texto que solo son saltos de línea no llega al PTY', async () => {
+    const h = makeHarness()
+    const res = await h.target({ text: '\n\r\n  \n', mode: 'encargo' })
+    assert.strictEqual(res.ok, false)
+    assert.deepStrictEqual(h.escrituras.madre, [], 'no se escribe un ENTER suelto en la sesión')
+  })
+
   test('texto vacío no llega al PTY', async () => {
     const h = makeHarness()
     const res = await h.target({ text: '   ', mode: 'encargo' })

@@ -5,26 +5,8 @@ const assert = require('node:assert')
 const path = require('path')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const { sanitizeVoiceEnabled, sanitizeVoiceId, createConfigNormalizers } = require(path.join(REPO_ROOT, 'main', 'config-store.js'))
-
-describe('config del modo voz — sanitizeVoiceEnabled', () => {
-  test('default false: pide micrófono y reconocimiento de voz, no se enciende sola', () => {
-    assert.strictEqual(sanitizeVoiceEnabled(undefined), false)
-    assert.strictEqual(sanitizeVoiceEnabled(null), false)
-    assert.strictEqual(sanitizeVoiceEnabled('true'), false)
-    assert.strictEqual(sanitizeVoiceEnabled(1), false)
-  })
-
-  test('solo los booleanos de verdad mandan', () => {
-    assert.strictEqual(sanitizeVoiceEnabled(true), true)
-    assert.strictEqual(sanitizeVoiceEnabled(false), false)
-  })
-
-  test('el fallback se respeta cuando el valor no dice nada', () => {
-    assert.strictEqual(sanitizeVoiceEnabled(undefined, true), true)
-    assert.strictEqual(sanitizeVoiceEnabled(false, true), false)
-  })
-})
+const configStore = require(path.join(REPO_ROOT, 'main', 'config-store.js'))
+const { sanitizeVoiceId, createConfigNormalizers } = configStore
 
 describe('config del modo voz — sanitizeVoiceId', () => {
   test('acepta los identificadores reales de AVSpeechSynthesis', () => {
@@ -61,21 +43,28 @@ describe('config del modo voz — normalizeAppConfig', () => {
     defaultEnterpriseRoleId: 'admin'
   })
 
-  test('las dos claves nuevas viven en el bloque cli con sus defaults', () => {
+  test('la clave nueva vive en el bloque cli con su default', () => {
     const cfg = normalizeAppConfig({})
-    assert.strictEqual(cfg.cli.voiceEnabled, false)
     assert.strictEqual(cfg.cli.voiceId, '')
   })
 
   test('los valores válidos sobreviven a la normalización', () => {
-    const cfg = normalizeAppConfig({ cli: { voiceEnabled: true, voiceId: 'com.apple.voice.premium.es-ES.Monica' } })
-    assert.strictEqual(cfg.cli.voiceEnabled, true)
+    const cfg = normalizeAppConfig({ cli: { voiceId: 'com.apple.voice.premium.es-ES.Monica' } })
     assert.strictEqual(cfg.cli.voiceId, 'com.apple.voice.premium.es-ES.Monica')
   })
 
   test('los valores basura caen al default en vez de viajar al helper', () => {
-    const cfg = normalizeAppConfig({ cli: { voiceEnabled: 'sí', voiceId: 'x\n{"cmd":"quit"}' } })
-    assert.strictEqual(cfg.cli.voiceEnabled, false)
+    const cfg = normalizeAppConfig({ cli: { voiceId: 'x\n{"cmd":"quit"}' } })
     assert.strictEqual(cfg.cli.voiceId, '')
+  })
+
+  // El modo voz se enciende SIEMPRE desde el botón de la ventana. Persistir un
+  // `voiceEnabled` obligaría a pedir micrófono y reconocimiento de voz al
+  // arrancar sin que nadie lo haya pedido, y el dueño del micro es una ventana
+  // concreta (`voiceOwnerWcId`), no la app: no hay a quién devolvérselo.
+  test('NO existe una clave para arrancar la app escuchando', () => {
+    const cfg = normalizeAppConfig({ cli: { voiceEnabled: true } })
+    assert.ok(!('voiceEnabled' in cfg.cli), 'una config muerta acaba cableándose por error')
+    assert.strictEqual(configStore.sanitizeVoiceEnabled, undefined, 'y su sanitizador tampoco sigue por ahí')
   })
 })

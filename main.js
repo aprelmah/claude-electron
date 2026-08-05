@@ -1440,6 +1440,14 @@ const voiceSession = createVoiceSession({
   router: voiceRouter,
   getSession: getVoiceSessionOwner,
   sendToTarget: voiceSendTarget,
+  // La voz elegida, LEÍDA en cada consulta: voice-session la reenvía cuando el
+  // helper resucita, y el usuario puede haberla cambiado entre medias.
+  getVoiceId: () => appConfig?.cli?.voiceId || '',
+  // El modo voz también se apaga SOLO (error fatal del helper, sesión que deja
+  // de servir) y por esos caminos no pasa nadie que suelte `voiceOwnerWcId`.
+  // Sin esto, el micro queda marcado como ocupado por una ventana que ya no lo
+  // tiene y ninguna otra puede encender la voz hasta reiniciar la app.
+  onShutdown: () => { voiceOwnerWcId = null },
   notifyRenderer: (evt) => {
     const s = getVoiceSessionOwner()
     try {
@@ -3580,6 +3588,12 @@ ipcMain.handle('voice:enable', (event) => {
   if (voiceOwnerWcId != null && voiceOwnerWcId !== s.wcId) {
     return { ok: false, reason: 'el modo voz ya está activo en otra ventana' }
   }
+  // `spawn` no lanza con un binario ausente o sin permiso de ejecución: emite
+  // 'error' de forma asíncrona, así que el fallo tardaría tres respawns en
+  // salir a la luz mientras el botón ya dice "escuchando". Se comprueba aquí,
+  // antes de tocar nada, y el motivo llega entero al renderer.
+  const bin = voiceHelper.checkBinary()
+  if (!bin.ok) return bin
   voiceOwnerWcId = s.wcId
   let res
   // Si enable() lanza y no se suelta la propiedad, el modo voz queda pegado a
@@ -3593,6 +3607,10 @@ ipcMain.handle('voice:enable', (event) => {
     voiceOwnerWcId = null
     return res || { ok: false, reason: 'no se pudo arrancar el modo voz' }
   }
+  // enable() puede haberse apagado a sí misma por el camino (un fatal del helper
+  // llega síncrono desde helper.start()). Devolver ok con la voz apagada deja el
+  // botón en rojo y el micro cerrado; `voiceOwnerWcId` ya lo soltó el onShutdown.
+  if (!voiceSession.isEnabled()) return { ok: false, reason: 'el modo voz no llegó a arrancar' }
   // La voz elegida se manda tras arrancar: el helper nace con la del sistema.
   const voiceId = appConfig?.cli?.voiceId || ''
   if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
@@ -3984,7 +4002,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceEnabled', 'voiceId']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
