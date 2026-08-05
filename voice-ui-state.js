@@ -126,7 +126,13 @@ function planForVoiceEvent(evt) {
   }
 }
 
-const api = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent }
+// OJO con el nombre: en el navegador esto NO es un módulo, es un `<script>`
+// clásico, así que sus `const` de primer nivel caen en el mismo ámbito que los
+// de renderer.js. Llamarlo `api` chocaba con el `api` de renderer.js y el
+// fichero moría con `Identifier 'api' has already been declared`, dejando la
+// página a medio cargar y TODOS los botones sin sus manejadores. Los tests no
+// lo veían porque en node esto se carga con require, en su propio ámbito.
+const voiceUiState = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = api
-if (typeof window !== 'undefined') window.VoiceUIState = api
+if (typeof module !== 'undefined' && module.exports) module.exports = voiceUiState
+if (typeof window !== 'undefined') window.VoiceUIState = voiceUiState
