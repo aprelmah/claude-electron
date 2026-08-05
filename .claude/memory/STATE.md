@@ -4,57 +4,46 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-04 noche (verificado contra git, los tests, la app desplegada y el estado en disco)._
+_Última actualización: 2026-08-05 (verificado contra git, los tests y el estado en disco — pendiente aún la comprobación contra la app desplegada, ver más abajo)._
 
 ---
 
-# 🚦 EMPIEZA POR AQUÍ — trabajo autorizado, ejecútalo sin preguntar
+# 🚦 EMPIEZA POR AQUÍ — modo voz: código y documentación cerrados, falta un humano
 
-**Luismi dejó esto encargado la noche del 2026-08-04, con estas palabras: "déjalo preparado para que la siguiente sesión que abra en este proyecto se ponga a hacerlo todo solo y lo termine sin yo tener que hacer nada de controlar nada".**
+**Luismi dejó autorizado implementar el modo voz sin pedir permiso paso a paso (noche del 2026-08-04). Ese trabajo está prácticamente terminado.**
 
-Eso es autorización explícita para ejecutar el plan entero sin ir pidiendo permiso paso a paso. No le preguntes por dónde empezar ni si sigues: **empieza y sigue**.
+## Qué hay hecho
 
-## Qué hay que hacer
+En la rama **`feat/modo-voz`** (28 commits sobre `main` @ `0a9c459`, árbol limpio, **sin push**):
 
-Implementar el **modo voz** de POWER-AGENT: hablarle y que conteste hablando.
+- **Las 8 tareas de implementación, completas**, cada una con revisión limpia tras sus rondas de correcciones (detalle de cada ronda: `.superpowers/sdd/2026-08-04-voz-en-directo/progress.md`).
+- **Tarea 9, pasos 1, 2 y 4 (documentación), completos**: sección "## Modo voz" en `CLAUDE.md`, nota técnica `.claude/memory/tech/tech_modo_voz.md`, y el checklist manual en `CHECKLIST-VOZ-MANUAL.md` (raíz del repo).
+- **Tests: 943 (937 pass / 0 fail / 6 skip)**, verificado en el repo real (no en un worktree).
 
-- **Plan:** `docs/superpowers/plans/2026-08-04-voz-en-directo.md` — 9 tareas, 50 pasos TDD, con todo el código escrito. No tiene huecos que rellenar.
-- **Spec (el porqué):** `docs/superpowers/specs/2026-08-04-voz-en-directo-design.md` — léelo antes de tocar nada. Todas las cifras de latencia están **medidas en este Mac**, no estimadas.
-- **Cómo ejecutarlo:** invoca `superpowers:subagent-driven-development` y ve tarea por tarea. Cada una acaba con su commit.
+## Qué falta (y por qué no lo puede cerrar un agente)
 
-## Hasta dónde puedes llegar sola
+1. **Review final de la rama completa** (paquete de diff generado en `.superpowers/sdd/2026-08-04-voz-en-directo/review-0a9c459..1fe7f07.diff`, 28 commits) — coherencia entre módulos, impacto fuera del modo voz (`startPty` y `main/subchat-pty.js` son ruta caliente de TODAS las sesiones claude, no solo voz), y triaje de los pendientes conocidos (ver `tech_modo_voz.md`).
+2. **`npm run deploy`** después de ese review, no antes.
+3. **El paso 3 de la Tarea 9: la prueba manual con micrófono.** No es pereza — el sistema operativo no lo permite de otra forma: el permiso de micrófono y reconocimiento lo concede un humano en un diálogo de macOS, y "se calla cuando le hablas encima" (barge-in) hay que oírlo. Checklist completo, en español llano, para Luismi: **`CHECKLIST-VOZ-MANUAL.md`**.
 
-**Tareas 1 a 8 completas, y de la 9 los pasos 1, 2 y 4.** Todo eso son código, tests y documentación: no necesitan a nadie delante. Los tests de las tareas 2–6 no tocan micro ni permisos.
+Cuando el review y el deploy estén hechos: pasarle a Luismi el checklist y esperar su validación antes de dar el modo voz por cerrado y mergeable a `main`.
 
-**Para en el paso 3 de la tarea 9.** Ahí empieza lo que un agente no puede hacer, y no es pereza — es que el sistema operativo no lo permite:
-
-1. **El permiso de micrófono y reconocimiento** lo concede un humano en un diálogo de macOS. No hay forma de aceptarlo por código.
-2. **"Le hablas encima y se calla"** hay que oírlo. Igual que "no se autointerrumpe por el altavoz" y "transcribe bien los nombres de los módulos".
-
-Cuando llegues ahí: **deja la app compilada y desplegada**, escribe en este STATE.md que el código está listo y esperando validación, y **avisa a Luismi con el checklist de 9 puntos** (está al final de la tarea 9 del plan). Son 5 minutos suyos, todos juntos al final, no repartidos por el camino.
-
-## Reglas que no puedes saltarte
+## Reglas que no te puedes saltar si sigues tocando esta rama
 
 - **Los tests, en el repo real, nunca en el worktree.** El worktree no tiene `node_modules` y fallan 12 por `Cannot find module 'node-pty'`. Y **jamás symlinkes `node_modules` dentro de un worktree**: ya provocó un commit de basura (CLAUDE.md § Limitaciones).
 - **No "optimices" el reconocimiento a on-device.** Está medido: RTF 2,5–7,5 en este i7 de 2014, inservible. La decisión de usar los servidores de Apple la tomó Luismi con las cifras delante.
 - Si un test falla por un detalle de formato, **arregla la implementación, no el test.** El test es el contrato.
 - **No hagas `push`.** Luismi no lo ha pedido.
-- Si te topas con algo que contradice el plan, **anótalo en el propio plan y sigue**. No pares a preguntar salvo que sea destructivo o irreversible.
-
-## Estado ahora mismo
-
-- Spec, plan y `voice-helper/VoiceHelper.swift` están en `main` (commits `2adeee8`, `0ab1dc3`, `c804b94`). Sin push.
-- **`voice-helper/VoiceHelper.swift` ya está escrito y validado**: compila con `swiftc -O` y responde a su protocolo NDJSON. No lo reescribas. Sus tres trampas (emit asíncrono, drenar antes de salir, permisos en perezoso) están resueltas y comentadas dentro.
-- Nada más está hecho: los 6 módulos de `main/`, el cableado y la UI están por escribir.
+- **No hagas `npm run deploy` antes del review final de la rama** (punto 1 de arriba): está pendiente y es lo que decide si hace falta algo más antes de que Luismi lo pruebe.
 
 ---
 
 ## Estado de entrega (verificado)
 
-- Rama activa: **`main`**, **5 commits por delante de `origin`** (sin push: Luismi no lo pidió), working tree limpio.
-- Último commit: **`904da4f`**. Los 5 sin pushear son de la sesión de voz y son **solo documentación + un `.swift` nuevo**: no tocan código de producción.
-- Tests: **676 (670 pass / 0 fail / 6 skip pre-existentes)**, verificado tras los cambios. Sin regresiones.
-- Deploy: `/Applications/POWER-AGENT.app`, build de **2026-08-04 18:59** — **anterior a la sesión de voz**. No se ha desplegado nada nuevo (no hacía falta: no hay código de app tocado).
+- Rama `main`: sigue con los mismos **5 commits por delante de `origin`** de la sesión de planificación (sin push), working tree limpio si te sitúas ahí. Último commit: `0a9c459`.
+- **Rama de trabajo activa ahora: `feat/modo-voz`** — 28 commits sobre ese `main` (implementación completa de las 8 tareas + documentación de la Tarea 9), árbol limpio, sin push, **sin mergear a `main` todavía**: pendiente el review final de la rama (bloque "EMPIEZA POR AQUÍ" de arriba).
+- Tests: **943 (937 pass / 0 fail / 6 skip)**, verificado en `feat/modo-voz`, en el repo real. Sin regresiones sobre los 676 de partida.
+- Deploy: `/Applications/POWER-AGENT.app` sigue en el build de **2026-08-04 18:59** — **anterior a toda la implementación del modo voz**. `npm run deploy` está pendiente, después del review final, no antes.
 - **`autoReply` está en `false`**: el bot NO responde a nadie. Luismi lo encendió el 3-ago para aprobar el pipeline y lo volvió a apagar. La allowlist sigue vacía, así que **al encenderlo responde a cualquier número**.
 - Las 3 fichas de Turbo Energy están **validadas por Luismi**. Dejan de ser un riesgo abierto.
 - Bridge WhatsApp: **en git** (`whatsapp-bridge/` del repo). Runtime en `~/.claude/whatsapp-bridge/`, `/status` → `ready`. Se despliega con `scripts/deploy-wa-bridge.sh`.
@@ -105,7 +94,7 @@ También se explicó por qué el cliente LAN no sale de la WiFi (IP privada + NA
 
 **El paso 0 es el bloque "🚦 EMPIEZA POR AQUÍ" del principio de este archivo: implementar el modo voz.** Está autorizado y no necesita preguntar. Lo de abajo es la cola heredada, que sigue viva.
 
-0bis. **Decisión pendiente de Luismi sobre el modo voz**: preguntó por qué había un `.swift` en el repo si solo pidió dejarlo preparado. Quedó sin responder si `voice-helper/VoiceHelper.swift` se queda donde está o se saca y su código vive solo dentro del plan. **Preguntárselo antes de la tarea 1.**
+0bis. **Resuelto por la vía de los hechos**: la pregunta de Luismi sobre si `voice-helper/VoiceHelper.swift` se quedaba en el repo quedó respondida al ejecutar la Tarea 1 — se usó tal cual estaba, sin tocarlo, y sigue ahí (`voice-helper/VoiceHelper.swift`). No se le llegó a preguntar explícitamente; si vuelve a salir el tema, decírselo así.
 
 1. **Probar los tres fixes del 4-ago**, ninguno validado por Luismi todavía: (a) abrir sesión en la app y ver que NO sale el aviso amarillo de transcript; (b) `/proyecto` en Telegram + escribir → debe contestar en ese proyecto; (c) sesión nueva desde Telegram → el título debe ser el mensaje real, no `[Sistema:…`.
 1. **Primer mensaje real del bot con todo esto puesto.** Nada del pipeline de WhatsApp se ha ejercitado de punta a punta: los arreglos de flujo están verificados por lectura y por tests de sus primitivas. Comparar contra la mediana registrada de 29 s.
