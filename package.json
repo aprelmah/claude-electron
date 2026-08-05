@@ -11,6 +11,12 @@
     "dev": "electron .",
     "dev:trace": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
     "postinstall": "electron-rebuild -f -w node-pty || true",
+    "build:voice-helper": "bash ./scripts/build-voice-helper.sh",
+    "prebuild:zip": "npm run build:voice-helper",
+    "prebuild:dmg": "npm run build:voice-helper",
+    "predist": "npm run build:voice-helper",
+    "predist:signed": "npm run build:voice-helper",
+    "predist:unsigned": "npm run build:voice-helper",
     "dist": "electron-builder --mac --arm64 --x64",
     "dist:signed": "electron-builder --mac --arm64 --x64",
     "dist:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --x64",
@@ -53,6 +59,7 @@
       "preload.js",
       "renderer.js",
       "project-picker.js",
+      "voice-ui-state.js",
       "index.html",
       "lan-client.html",
       "styles.css",
@@ -90,6 +97,9 @@
       "vendor/**/*",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      { "from": "resources/voice-helper", "to": "voice-helper" }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
@@ -114,7 +124,8 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": false,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Dictado por voz con Whisper local.",
+        "NSMicrophoneUsageDescription": "POWER-AGENT usa el micrófono para hablar con el agente.",
+        "NSSpeechRecognitionUsageDescription": "POWER-AGENT transcribe tu voz para enviársela al agente.",
         "NSApplicationSupportsSecureRestorableState": true
       }
     },

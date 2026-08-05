@@ -69,6 +69,9 @@ const cfgClaudeModel = document.getElementById('cfg-claude-model')
 const cfgGitIsolation = document.getElementById('cfg-git-isolation')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
+const cfgVoiceId = document.getElementById('cfg-voice-id')
+const cfgVoiceRate = document.getElementById('cfg-voice-rate')
+const cfgVoiceRateLabel = document.getElementById('cfg-voice-rate-label')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
@@ -2248,6 +2251,63 @@ async function refreshLanServerStatus(force = false) {
   }
 }
 
+// Etiqueta humana del slider de velocidad. La escala es la de AVSpeechUtterance
+// (0,5 = normal del sistema); los números a secas no le dicen nada a nadie.
+function voiceRateLabelText(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 'normal'
+  if (n < 0.42) return 'lenta'
+  if (n < 0.48) return 'algo lenta'
+  if (n <= 0.56) return 'normal'
+  if (n <= 0.62) return 'algo rápida'
+  return 'rápida'
+}
+
+async function refreshVoiceSettings(config) {
+  if (!cfgVoiceId || !cfgVoiceRate) return
+  const actual = config?.cli?.voiceId || ''
+  const rate = Number(config?.cli?.voiceRate)
+  cfgVoiceRate.value = Number.isFinite(rate) ? String(rate) : '0.52'
+  if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+
+  // Voces del sistema. Si el helper no contesta (binario ausente, timeout), el
+  // selector se queda con "Voz del sistema" + la guardada: nunca se pierde en
+  // silencio una voz ya elegida por no poder listar.
+  let res = null
+  try { res = await window.api.voice.voices() } catch { res = null }
+  const voces = res?.ok && Array.isArray(res.voices) ? res.voices : []
+  cfgVoiceId.innerHTML = ''
+  const porDefecto = document.createElement('option')
+  porDefecto.value = ''
+  porDefecto.textContent = 'Voz del sistema'
+  cfgVoiceId.appendChild(porDefecto)
+  const QUALITY_LABEL = { premium: 'premium', enhanced: 'mejorada', default: 'básica' }
+  for (const v of voces) {
+    if (!v || !v.id) continue
+    const opt = document.createElement('option')
+    opt.value = v.id
+    const calidad = QUALITY_LABEL[v.quality] || v.quality || ''
+    opt.textContent = calidad ? `${v.name} (${calidad})` : v.name
+    cfgVoiceId.appendChild(opt)
+  }
+  if (actual && !voces.some((v) => v && v.id === actual)) {
+    const opt = document.createElement('option')
+    opt.value = actual
+    opt.textContent = `${actual} (guardada)`
+    cfgVoiceId.appendChild(opt)
+  }
+  cfgVoiceId.value = actual
+  // Un value que no casa con ninguna option deja el select en blanco: caer a
+  // "Voz del sistema" explícitamente.
+  if (cfgVoiceId.value !== actual) cfgVoiceId.value = ''
+}
+
+if (cfgVoiceRate) {
+  cfgVoiceRate.addEventListener('input', () => {
+    if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+  })
+}
+
 async function refreshSettings() {
   const config = await window.api.getAppConfig()
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
@@ -2256,6 +2316,7 @@ async function refreshSettings() {
   if (cfgGitIsolation) cfgGitIsolation.checked = config?.cli?.gitSessionIsolation !== false
   cfgCodexBin.value = config?.cli?.codexBin || ''
   cfgWhisperBin.value = config?.cli?.whisperBin || ''
+  await refreshVoiceSettings(config)
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
   cfgTelegramToken.value = config?.telegram?.botToken || ''
   cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
@@ -2672,7 +2733,9 @@ btnSaveSettings.addEventListener('click', async () => {
       claudeModel: cfgClaudeModel ? cfgClaudeModel.value.trim() : '',
       gitSessionIsolation: cfgGitIsolation ? Boolean(cfgGitIsolation.checked) : true,
       codexBin: cfgCodexBin.value.trim(),
-      whisperBin: cfgWhisperBin.value.trim()
+      whisperBin: cfgWhisperBin.value.trim(),
+      voiceId: cfgVoiceId ? cfgVoiceId.value : '',
+      voiceRate: cfgVoiceRate ? cfgVoiceRate.value : ''
     },
     telegram: {
       enabled: cfgTelegramEnabled.checked,
@@ -2701,6 +2764,13 @@ btnSaveSettings.addEventListener('click', async () => {
 
   const currentCli = await window.api.getActiveCli()
   cliSelector.value = currentCli
+  // `save-app-config` puede haber cambiado "CLI por defecto" y aplicado el
+  // cambio a esta ventana en silencio (main.js: setActiveCli sin evento
+  // propio) — a diferencia del `cli-selector` de la topbar, aquí no hay
+  // ningún otro punto que se entere. Se sincroniza ANTES del fullRestart, no
+  // después: `s.activeCli` en main ya cambió aunque el restart del PTY falle
+  // luego, así que el gate debe reflejarlo pase lo que pase con el restart.
+  await updateVoiceCliAvailability(currentCli)
   try {
     await fullRestart()
     term.focus()
@@ -4013,6 +4083,11 @@ async function resumeSessionFromHistory(s, cwd) {
     await refreshSessionStrip(true)
     hideStatus()
     term.focus()
+    // La sesión reanudada puede ser de un CLI distinto al que tenía la
+    // ventana (este modal lista sesiones de claude Y codex). No se asume
+    // cuál: se relee el activeCli real tras el resume. Envuelto aparte para
+    // que un fallo aquí no se confunda con un fallo de resumeSession.
+    try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
   } catch (err) {
     showStatus(errorMessage(err), 'error', 6000)
   }
@@ -4397,6 +4472,7 @@ cliSelector.addEventListener('change', async (e) => {
     term.focus()
     localStorage.setItem(CLI_KEY, newCli)
     showStatus(`${newCli.toUpperCase()} cargado`, 'info', 1500)
+    await updateVoiceCliAvailability(newCli)
   } catch (err) {
     showStatus(errorMessage(err), 'error', 7000)
     const rollback = await window.api.setActiveCli(previousCli)
@@ -4407,6 +4483,7 @@ cliSelector.addEventListener('change', async (e) => {
         term.focus()
       } catch {}
     }
+    await updateVoiceCliAvailability(previousCli)
   }
 })
 
@@ -4435,6 +4512,12 @@ cliSelector.addEventListener('change', async (e) => {
     }
   }
   cliSelector.value = initialCli
+  // Se sincroniza con el `initialCli` ya asentado (tras el posible restore de
+  // localStorage arriba), no con un `getActiveCli()` propio: pedirlo aparte
+  // podría leer el valor de transición y dejar el botón mintiendo si el
+  // restore cambia de CLI justo después.
+  await updateVoiceCliAvailability(initialCli)
+  await syncVoiceButtonFromState()
   renderProfileSelector()
   renderProfileReminder()
   renderTelegramStatus(await window.api.getTelegramStatus())
@@ -4880,9 +4963,21 @@ cliSelector.addEventListener('change', async (e) => {
         } catch {}
         try { term.reset() } catch {}
         try { term.clear() } catch {}
-        await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
-        try { hideStatus && hideStatus() } catch {}
-        try { term.focus() } catch {}
+        try {
+          await window.api.resumeSession(sessionId, cwd, term.cols, term.rows)
+          try { hideStatus && hideStatus() } catch {}
+          try { term.focus() } catch {}
+        } finally {
+          // En un `finally`, no tras el resume: si `setActiveCli` de arriba
+          // tuvo éxito pero `resumeSession` lanza, el CLI YA cambió en main
+          // aunque este flujo acabe en error — sin el `finally` el botón se
+          // quedaría con el gate del CLI anterior. Se relee el activeCli
+          // real en vez de fiarse del parámetro `cli`, porque el
+          // `setActiveCli` de arriba pudo fallar en silencio (su try/catch
+          // lo traga) o `cli` pudo venir vacío con el CLI ya cambiado por
+          // otra vía.
+          try { await updateVoiceCliAvailability(await window.api.getActiveCli()) } catch {}
+        }
       } catch (err) {
         try { showStatus && showStatus(err?.message || String(err), 'error', 6000) } catch {}
       }
@@ -4892,3 +4987,164 @@ cliSelector.addEventListener('change', async (e) => {
   // Carga inicial
   refreshBadge()
 })()
+
+// ── Modo voz ──
+// Distinto del dictado (#btn-mic, arriba): el dictado transcribe y escribe en
+// el prompt sin red; esto conversa con el helper Swift (main/voice-*.js).
+// Lógica pura de estados/eventos en voice-ui-state.js (testeada); aquí solo
+// se aplica al DOM.
+const btnVoice = document.getElementById('btn-voice')
+const btnVoiceMode = document.getElementById('btn-voice-mode')
+const voiceHud = document.getElementById('voice-hud')
+let voiceOn = false
+let voiceHudTimer = null
+// Destino de lo que dices. 'encargo' (la sesión de trabajo) es el defecto del
+// router desde 2026-08-05; este botón es la ÚNICA forma de mandar un turno al
+// sub-chat, porque ya no hay detección automática de intención.
+let voiceMode = 'encargo'
+
+function showVoiceHud(text, holdMs = 2600) {
+  if (!voiceHud) return
+  voiceHud.textContent = text
+  voiceHud.classList.add('visible')
+  clearTimeout(voiceHudTimer)
+  if (holdMs > 0) voiceHudTimer = setTimeout(() => voiceHud.classList.remove('visible'), holdMs)
+}
+
+function setVoiceButtonState(state) {
+  if (!btnVoice) return
+  // `voice-broken` también se limpia aquí: cualquier evento `state` real
+  // (idle/listening/thinking/speaking) es prueba de que el helper contestó,
+  // así que ya no está roto aunque lo estuviera hace un momento.
+  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking', 'voice-broken')
+  const cls = window.VoiceUIState?.classNameForVoiceState?.(state)
+  if (cls) btnVoice.classList.add(cls)
+}
+
+function applyVoiceMode(mode) {
+  const look = window.VoiceUIState?.voiceModeAppearance?.(mode) || { mode: 'encargo', icon: '⚡', title: '', ariaLabel: '' }
+  voiceMode = look.mode
+  if (!btnVoiceMode) return
+  const icono = btnVoiceMode.querySelector('.voice-mode-icon')
+  if (icono) icono.textContent = look.icon
+  btnVoiceMode.title = look.title
+  btnVoiceMode.setAttribute('aria-label', look.ariaLabel)
+  btnVoiceMode.classList.toggle('voice-mode-charla', look.mode === 'charla')
+}
+
+function setVoiceOn(on) {
+  voiceOn = !!on
+  if (btnVoice) btnVoice.setAttribute('aria-pressed', voiceOn ? 'true' : 'false')
+  // El toggle de destino solo tiene sentido con el modo voz encendido.
+  if (btnVoiceMode) btnVoiceMode.hidden = !voiceOn
+  if (!voiceOn) setVoiceButtonState('idle')
+}
+
+// La verdad del modo voz vive en main (voiceOwnerWcId + voiceSession). Hace
+// falta releerla en tres casos: al arrancar (la ventana pudo recargar con el
+// modo ya encendido de antes), tras un `error` (el evento no dice si fue
+// fatal — solo lo fatal apaga, y asumir que sí o que no deja el botón
+// mintiendo la mitad de las veces) y para enseñar `broken` (el helper se
+// rindió tras 3 intentos: es un aspecto distinto de "apagado", no solo un
+// booleano encendido/apagado — ver voiceStateAppearance).
+async function syncVoiceButtonFromState() {
+  if (!btnVoice || typeof window.api?.voice?.state !== 'function') return
+  let s = null
+  try { s = await window.api.voice.state() } catch { s = null }
+  const appearance = window.VoiceUIState?.voiceStateAppearance?.(s) || { on: false, cssClass: null }
+  setVoiceOn(appearance.on)
+  btnVoice.classList.remove('voice-listening', 'voice-thinking', 'voice-speaking', 'voice-broken')
+  if (appearance.cssClass) btnVoice.classList.add(appearance.cssClass)
+  if (appearance.title) btnVoice.title = appearance.title
+  if (appearance.ariaLabel) btnVoice.setAttribute('aria-label', appearance.ariaLabel)
+}
+
+// El modo voz solo sirve con claude (main/voice-router.js lo rechaza con
+// codex). Si la sesión activa cambia mientras está encendido, se apaga aquí
+// mismo: sin esto el botón se quedaría en "escuchando" hasta que el usuario
+// hablara y el backend lo cortara en el turno siguiente — un estado zombi
+// visible que el usuario vería antes de que nadie se lo dijera. Se llama
+// desde CUALQUIER sitio del renderer que pueda cambiar el CLI o resumir una
+// sesión: el selector de la topbar, el arranque, Ajustes → CLI por defecto
+// (que main.js aplica en silencio, sin evento propio) y las dos vías de
+// reanudar una sesión histórica.
+async function updateVoiceCliAvailability(cli) {
+  if (!btnVoice) return
+  const info = window.VoiceUIState?.voiceCliAvailability?.(cli) || { available: cli === 'claude' }
+  btnVoice.disabled = !info.available
+
+  if (!info.available) {
+    if (voiceOn) {
+      try { await window.api.voice.disable() } catch {}
+      setVoiceOn(false)
+      const label = cli ? String(cli).toUpperCase() : 'este asistente'
+      showVoiceHud(`Modo voz apagado — ${label} no lo soporta`)
+    }
+    // Fuera de claude no importa si el helper está `broken`: no se puede
+    // pulsar, así que el motivo que se ve es "no disponible con este CLI".
+    if (info.title) btnVoice.title = info.title
+    if (info.ariaLabel) btnVoice.setAttribute('aria-label', info.ariaLabel)
+    return
+  }
+
+  // Disponible: el título/borde NO se ponen a mano con el texto genérico de
+  // `info` — se relee voice:state() y se deja decidir a voiceStateAppearance,
+  // que sabe de `broken`. Poner aquí "Modo voz — hablar con el agente" a
+  // ciegas pisaría el borde de aviso de un helper que sigue roto: el CLI
+  // vuelve a ser compatible, pero cambiar de CLI no arregla el helper.
+  await syncVoiceButtonFromState()
+}
+
+if (btnVoice) {
+  btnVoice.addEventListener('click', async () => {
+    if (voiceOn) {
+      await window.api.voice.disable()
+      setVoiceOn(false)
+      showVoiceHud('Modo voz apagado')
+      return
+    }
+    const res = await window.api.voice.enable()
+    if (!res?.ok) { showStatus(`Modo voz: ${res?.reason || 'no se pudo activar'}`, 'error', 4000); return }
+    // Por si venía de `broken` (el usuario reintenta a mano tras un fallo):
+    // el próximo evento `state` ya lo limpiaría, pero no hay que esperarlo
+    // para que el botón deje de anunciar un fallo que se está resolviendo.
+    btnVoice.classList.remove('voice-broken')
+    btnVoice.title = 'Modo voz — hablar con el agente'
+    setVoiceOn(true)
+    // Cada encendido arranca hablándole a la sesión de trabajo. `setForcedMode`
+    // vive en el proceso main y sobrevive a un apagado, así que hay que fijarlo
+    // explícitamente o el botón diría ⚡ mientras el backend sigue en charla.
+    applyVoiceMode('encargo')
+    try { await window.api.voice.setMode('encargo') } catch {}
+    showVoiceHud('Modo voz activo — habla cuando quieras')
+  })
+
+  if (btnVoiceMode) {
+    btnVoiceMode.addEventListener('click', async () => {
+      const siguiente = window.VoiceUIState?.nextVoiceMode?.(voiceMode) || 'charla'
+      let res = null
+      try { res = await window.api.voice.setMode(siguiente) } catch { res = null }
+      if (!res?.ok) {
+        // El backend rechaza si el modo voz es de otra ventana: el botón NO se
+        // mueve, o mentiría sobre dónde va a caer el turno siguiente.
+        showStatus(`Modo voz: ${res?.reason || 'no se pudo cambiar el destino'}`, 'error', 4000)
+        return
+      }
+      applyVoiceMode(siguiente)
+      showVoiceHud(siguiente === 'charla' ? '💬 lo próximo va al sub-chat' : '⚡ lo próximo va a la sesión de trabajo')
+    })
+  }
+
+  window.api.voice.onEvent(async (evt) => {
+    const plan = window.VoiceUIState?.planForVoiceEvent?.(evt) || { action: 'none' }
+    if (plan.action === 'set-state') {
+      setVoiceButtonState(plan.state)
+      if (plan.state === 'idle') setVoiceOn(false)
+    } else if (plan.action === 'hud') {
+      showVoiceHud(plan.text, plan.holdMs)
+    } else if (plan.action === 'status') {
+      showStatus(plan.message, plan.level, plan.level === 'error' ? 5000 : 4000)
+      if (plan.recheckState) await syncVoiceButtonFromState()
+    }
+  })
+}

@@ -480,6 +480,57 @@ button:active { transform: scale(0.93); }
   color: white !important;
   animation: pulse 1.2s ease-in-out infinite;
 }
+
+/* modo voz: un color Y un latido por estado. Luismi pidió que el botón "lata"
+   porque el color solo no bastaba para saber si estaba en marcha — cada
+   estado late a un ritmo distinto para leerse de reojo sin mirar el texto:
+   escuchando = aro calmado y continuo (ya existía), pensando = respiración
+   corta (trabajo en curso), hablando = pulso rápido (cadencia de habla). */
+#btn-voice.voice-listening { background: var(--rec) !important; color: white !important; animation: pulse 1.2s ease-in-out infinite; }
+#btn-voice.voice-thinking  { background: var(--accent) !important; color: white !important; animation: voice-thinking-pulse 1s ease-in-out infinite; }
+#btn-voice.voice-speaking  { background: #2d9d6b !important; color: white !important; animation: voice-speaking-pulse 0.6s ease-in-out infinite; }
+/* el helper se rindió tras 3 intentos: distinto de apagado, pulsar reintenta */
+#btn-voice.voice-broken { border: 2px solid var(--warn) !important; color: var(--warn) !important; }
+#btn-voice:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Toggle de destino de la voz. Solo aparece con el modo voz encendido: apagado
+   no hay nada que enrutar y sería un botón más que no hace nada. Lleva emoji
+   en vez de SVG a propósito — es el MISMO icono que sale en el HUD al oírte
+   (⚡/💬), y esa correspondencia es la que enseña qué significa. */
+#btn-voice-mode[hidden] { display: none; }
+#btn-voice-mode .voice-mode-icon { font-size: 14px; line-height: 1; }
+#btn-voice-mode.voice-mode-charla { border: 1px solid var(--accent); }
+
+@keyframes voice-thinking-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.88; }
+  50% { transform: scale(1.16); opacity: 1; }
+}
+
+@keyframes voice-speaking-pulse {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.18); }
+  60% { transform: scale(1.04); }
+  85% { transform: scale(1.14); }
+}
+
+/* accesibilidad: sin movimiento con reduced-motion — el color sólido de cada
+   estado (rojo/morado/verde) ya distingue sin necesidad de latido */
+@media (prefers-reduced-motion: reduce) {
+  #btn-voice.voice-listening,
+  #btn-voice.voice-thinking,
+  #btn-voice.voice-speaking {
+    animation: none;
+  }
+}
+
+#voice-hud {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+  max-width: 62%; padding: 7px 14px; border-radius: 14px;
+  background: rgba(0,0,0,0.78); color: #fff; font-size: 13px;
+  pointer-events: none; opacity: 0; transition: opacity .18s ease; z-index: 60;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#voice-hud.visible { opacity: 1; }
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(255, 80, 112, 0.5); }
   50% { box-shadow: 0 0 0 8px rgba(255, 80, 112, 0); }
@@ -1476,6 +1527,15 @@ body.layout-split #terminal-wrap { flex: 1; }
   flex-direction: column;
   gap: 4px;
 }
+
+/* Slider + etiqueta en la misma línea (velocidad de la voz). */
+.settings-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-inline input[type="range"] { flex: 1; }
+.settings-inline .settings-note { min-width: 64px; text-align: right; }
 
 .settings-row {
   display: flex;

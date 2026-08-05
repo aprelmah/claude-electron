@@ -126,6 +126,39 @@ function sanitizeGitSessionIsolation(value, fallback = true) {
   return fallback
 }
 
+// El modo voz NO tiene clave de "arrancado": se enciende siempre desde el botón
+// de la ventana, nunca al abrir la app. Persistir un `voiceEnabled` obligaría a
+// pedir micrófono y reconocimiento de voz en el arranque sin que nadie lo haya
+// pedido, y el dueño del micro es una ventana concreta (`voiceOwnerWcId`), no la
+// app: no hay a quién devolvérselo al restaurar la config.
+//
+// Velocidad de la voz del modo voz. Escala de AVSpeechUtterance.rate: 0..1,
+// con 0.5 como "normal" del sistema. Se acota a un rango audible-útil: por
+// debajo de 0.3 arrastra las sílabas, por encima de 0.7 no se entiende.
+// '' = sin preferencia (el helper usa su 0.52 por defecto).
+function sanitizeVoiceRate(value) {
+  // Ojo: Number('') === 0. El vacío es "sin preferencia", no "al mínimo".
+  if (typeof value === 'string' && !value.trim()) return ''
+  const n = typeof value === 'string' ? Number(value) : value
+  if (typeof n !== 'number' || !Number.isFinite(n)) return ''
+  return String(Math.min(0.7, Math.max(0.3, Math.round(n * 100) / 100)))
+}
+
+// Identificador de voz de AVSpeechSynthesis (p. ej.
+// `com.apple.voice.premium.es-ES.Monica`). Viaja al helper como valor de un
+// JSON por NDJSON, así que lo único intolerable son los saltos de línea (parten
+// el protocolo) y los controles. Sí se admiten acentos y espacios: hay voces
+// que se llaman `Mónica` o `Eddy (Español)` y descartarlas en silencio dejaba
+// al usuario cambiando una voz que nunca se aplicaba.
+function sanitizeVoiceId(value) {
+  if (typeof value !== 'string') return ''
+  const v = value.trim()
+  if (!v || v.length > 200) return ''
+  // Saltos de línea y controles: partirían el NDJSON del helper.
+  if (/[\u0000-\u001f\u007f]/.test(v)) return ''
+  return /^[\p{L}\p{N}._\-: ()]+$/u.test(v) ? v : ''
+}
+
 function sanitizeCliBinaryPath(value) {
   const v = typeof value === 'string' ? value.trim() : ''
   if (!v) return ''
@@ -189,7 +222,9 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         codexBin: sanitizeCliBinaryPath(cli.codexBin),
         whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
         claudeModel: sanitizeClaudeModel(cli.claudeModel),
-        gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation)
+        gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation),
+        voiceId: sanitizeVoiceId(cli.voiceId),
+        voiceRate: sanitizeVoiceRate(cli.voiceRate)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -221,7 +256,9 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     normalizeLanServerConfig,
     sanitizeCliBinaryPath,
     sanitizeClaudeModel,
-    sanitizeGitSessionIsolation
+    sanitizeGitSessionIsolation,
+    sanitizeVoiceId,
+    sanitizeVoiceRate
   }
 }
 
@@ -256,5 +293,7 @@ module.exports = {
   writeConfigToFile,
   sanitizeCliBinaryPath,
   sanitizeClaudeModel,
-  sanitizeGitSessionIsolation
+  sanitizeGitSessionIsolation,
+  sanitizeVoiceId,
+  sanitizeVoiceRate
 }

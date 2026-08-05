@@ -65,6 +65,12 @@ const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
 const { createSessionGit } = require('./main/session-git')
 const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
+const { createVoiceHelperProcess } = require('./main/voice-helper-process')
+const { createVoiceTurnWatcher } = require('./main/voice-turn-watcher')
+const { createVoiceSendTarget, pickForkedSessionId } = require('./main/voice-send-target')
+const { createVoiceSession } = require('./main/voice-session')
+const { speakableFromMarkdown } = require('./main/voice-speakable')
+const voiceRouter = require('./main/voice-router')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
   buildLanSessionLegacyRoots,
@@ -1365,8 +1371,135 @@ const subchatManager = createSubchatManager({
   ensureCliAvailable,
   buildFdLimitCommand,
   getClaudeModel,
+  snapshotSessions: (cwd) => snapshotClaudeSessions(cwd),
+  // Misma regla que la detección del fork del `--resume`, incluida la renuncia
+  // ante ambigüedad: si aparecen dos ficheros nuevos, ninguno es adoptable.
+  detectNewSessionId: (cwd, before, excludeIds = []) => pickForkedSessionId({
+    groups: [{ rows: listClaudeSessionFilesWithMtime(cwd), before }],
+    excludeIds: [...excludeIds, ...knownClaudeSessionIds()]
+  }),
   log: (m) => console.log('[subchat]', m)
 })
+
+// ── Modo voz (ver docs/superpowers/specs/2026-08-04-voz-en-directo-design.md) ──
+//
+// UN helper por app, no por ventana: el micrófono es un recurso único del
+// sistema y dos procesos peleándose por él darían dos peticiones de permiso y
+// audio partido. `voiceOwnerWcId` marca de quién es el modo voz ahora mismo.
+//
+// El modo voz NO spawnea ningún PTY propio (CLAUDE.md § Regla para spawns
+// nuevos): el encargo escribe en el PTY de la sesión madre, que ya pasó por
+// `ensureSessionWorkspace`, y la charla reutiliza `subchat-pty`, que está
+// excluido a propósito y hereda el workCwd de la madre. El helper de voz es un
+// proceso Swift sin acceso al repo.
+const VOICE_HELPER_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'voice-helper')
+  : path.join(__dirname, 'resources', 'voice-helper')
+
+let voiceOwnerWcId = null
+
+function getVoiceSessionOwner() {
+  if (voiceOwnerWcId == null) return null
+  return sessions.get(voiceOwnerWcId) || null
+}
+
+// Resolutor pendiente de `voice:voices`: el listado llega como evento por el
+// stream general del helper, no como respuesta directa al send.
+let voiceVoicesWaiter = null
+
+const voiceHelper = createVoiceHelperProcess({
+  helperPath: VOICE_HELPER_PATH,
+  spawnFn: (bin, args, opts) => spawn(bin, args, opts),
+  onEvent: (evt) => {
+    if (evt && evt.type === 'voices' && typeof voiceVoicesWaiter === 'function') {
+      voiceVoicesWaiter(Array.isArray(evt.voices) ? evt.voices : [])
+    }
+    try { voiceSession.handleHelperEvent(evt) } catch (err) { console.warn('[voz]', err?.message || err) }
+  },
+  log: (m) => console.log('[voz]', m)
+})
+
+const voiceWatcher = createVoiceTurnWatcher({
+  findRelayTranscript,
+  extractAssistantTextFromTranscript,
+  statFn: (p) => safeStat(p)
+})
+
+const voiceSendTarget = createVoiceSendTarget({
+  // Sesión VIVA en cada consulta (nada de copias cacheadas): voice-session
+  // revalida el destino turno a turno, y con una copia el cambio de sesión o de
+  // CLI en esa ventana pasaría desapercibido.
+  getSession: getVoiceSessionOwner,
+  subchat: subchatManager,
+  relayCwdCandidates,
+  findRelayTranscript,
+  snapshotClaudeSessionMeta,
+  detectForkedRelayTranscript,
+  statFn: (p) => safeStat(p),
+  readFileFn: (p) => fs.readFileSync(p, 'utf8'),
+  log: (m) => console.log('[voz]', m)
+})
+
+const voiceSession = createVoiceSession({
+  helper: voiceHelper,
+  speakable: speakableFromMarkdown,
+  watcher: voiceWatcher,
+  router: voiceRouter,
+  getSession: getVoiceSessionOwner,
+  sendToTarget: voiceSendTarget,
+  // La voz elegida, LEÍDA en cada consulta: voice-session la reenvía cuando el
+  // helper resucita, y el usuario puede haberla cambiado entre medias.
+  getVoiceId: () => appConfig?.cli?.voiceId || '',
+  // El modo voz también se apaga SOLO (error fatal del helper, sesión que deja
+  // de servir) y por esos caminos no pasa nadie que suelte `voiceOwnerWcId`.
+  // Sin esto, el micro queda marcado como ocupado por una ventana que ya no lo
+  // tiene y ninguna otra puede encender la voz hasta reiniciar la app.
+  onShutdown: () => { voiceOwnerWcId = null },
+  notifyRenderer: (evt) => {
+    const s = getVoiceSessionOwner()
+    try {
+      if (s?.win && !s.win.isDestroyed?.()) s.win.webContents.send('voice:event', evt)
+    } catch {}
+  },
+  log: (m) => console.log('[voz]', m)
+})
+
+// Todos los sessionIds de claude que YA tienen dueño: sesiones vivas, sus
+// sub-chats de voz, y las task-sessions (que es donde viven también los PTYs
+// ocultos del pool de Telegram). La detección del fork de un `--resume` los
+// necesita para no adoptar el .jsonl de otra sesión: un sub-chat abierto dentro
+// de la ventana de detección crea un fichero nuevo en el mismo proyecto y por
+// mtime es indistinguible del fork propio.
+function knownClaudeSessionIds() {
+  const ids = []
+  try {
+    for (const s of sessions.values()) {
+      if (s?.claudeSessionId) ids.push(s.claudeSessionId)
+      if (s?.voiceSubchatSessionId) ids.push(s.voiceSubchatSessionId)
+    }
+  } catch {}
+  try {
+    for (const st of taskSessionStateByWc.values()) {
+      if (st?.claudeSessionId) ids.push(st.claudeSessionId)
+    }
+  } catch {}
+  // Los sub-chats abiertos desde el botón: el suyo es un fork con sessionId
+  // propio que no está en ninguna sesión ni task-session.
+  try {
+    for (const sid of subchatManager.sessionIds()) ids.push(sid)
+  } catch {}
+  return ids
+}
+
+// El modo voz muere con la ventana que lo tenía: sin esto el helper se queda
+// escuchando y hablándole a nadie.
+function releaseVoiceMode(wcId) {
+  const s = wcId != null ? sessions.get(wcId) : null
+  if (s) s.voiceSubchatSessionId = null
+  if (voiceOwnerWcId == null || voiceOwnerWcId !== wcId) return
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
+}
 
 // ── Git por sesión (aislamiento por worktree) ──
 // Fail-open: si sessionGit es null o prepare devuelve null, la sesión corre en
@@ -1477,8 +1610,19 @@ function startPty(session, cols, rows, cwd, args = []) {
   const sessionFilesBefore = session.activeCli === 'claude'
     ? snapshotClaudeSessions(session.gitWorkspace?.workCwd || session.cwd)
     : null
+  // Un `--resume` FORKEA (regla dura, CLAUDE.md § Relay de Telegram): claude
+  // abre un sessionId NUEVO con el historial copiado y escribe ahí, y el
+  // fichero del id resumido no vuelve a crecer. Quedarse con el id de los args
+  // deja apuntando a un fichero muerto a TODO lo que dependa de él: el
+  // `--fork-session` del sub-chat (que heredaría un contexto congelado en el
+  // instante del resume), el modo voz y el relay. Se snapshotean los proyectos
+  // candidatos para reconocer el fichero que aparezca.
+  const resumedClaudeId = session.activeCli === 'claude' ? extractClaudeResumeId(args) : ''
+  const forkScanBefore = resumedClaudeId
+    ? new Map(relayCwdCandidates(session).map((c) => [c, snapshotClaudeSessions(c)]))
+    : null
   if (session.activeCli === 'claude') {
-    session.claudeSessionId = extractClaudeResumeId(args)
+    session.claudeSessionId = resumedClaudeId
   } else if (session.activeCli === 'codex') {
     session.codexSessionId = extractCodexResumeId(args)
   }
@@ -1529,6 +1673,61 @@ function startPty(session, cols, rows, cwd, args = []) {
     }, 2000)
   }
 
+  // Gemelo del anterior para la sesión resumida: aquí el id no está vacío, está
+  // PODRIDO. Se busca el .jsonl que no existía antes del spawn y no es el
+  // resumido; sin prompt con el que verificar no hay otra señal (donde sí lo
+  // hay, manda `detectForkedRelayTranscript`). Ventana acotada: si en 60 s no
+  // apareció, no lo hará.
+  if (forkScanBefore) {
+    let intentos = 0
+    const detectFork = setInterval(() => {
+      const s = sessions.get(myWcId)
+      if (!s || !s.pty || s.pty !== proc || intentos >= 30) { clearInterval(detectFork); return }
+      intentos += 1
+      // Si ya lo arregló otro camino (relay, modo voz), no hay nada que hacer.
+      if (s.claudeSessionId !== resumedClaudeId) { clearInterval(detectFork); return }
+      // Con un sub-chat vivo NO se adopta nada, aunque el candidato sea único:
+      // `--fork-session` escribe un .jsonl nuevo en estos mismos proyectos y,
+      // si la madre aún no ha escrito nada, es el ÚNICO fichero nuevo — la
+      // guarda de ambigüedad no lo tapa y la madre acabaría adoptando el id de
+      // su propio sub-chat (y `recordActive` guardándolo contra su worktree).
+      // El sub-chat aprende su id por su cuenta, pero tarda hasta 1 s en
+      // saberlo: esto cubre ese hueco y el de cualquier sub-chat de otra ventana.
+      if (subchatManager.hasAny()) {
+        // Y además se refresca la foto: lo que hay en disco AHORA deja de ser
+        // "nuevo". Sin esto, al cerrar el sub-chat su .jsonl seguía contando
+        // como candidato y la madre acababa adoptando el id de un sub-chat ya
+        // muerto. Cubre también al sub-chat que nunca llegó a aprender su id.
+        // Precio consciente: si el fork propio de la madre nació en esta misma
+        // ventana, se absorbe y ya no se adoptará por esta vía — el id se
+        // repara en el primer turno con prompt, que es la ruta fiable.
+        for (const cwd of forkScanBefore.keys()) {
+          try { forkScanBefore.set(cwd, snapshotClaudeSessions(cwd)) } catch {}
+        }
+        return
+      }
+      // Los proyectos candidatos se miran JUNTOS: si aparecen dos ficheros
+      // nuevos entre todos, hay otro actor en juego y no se adopta ninguno.
+      const groups = []
+      for (const [cwd, before] of forkScanBefore) {
+        groups.push({ rows: listClaudeSessionFilesWithMtime(cwd), before })
+      }
+      const sid = pickForkedSessionId({
+        groups,
+        excludeIds: [resumedClaudeId, ...knownClaudeSessionIds()]
+      })
+      if (!sid) return
+      s.claudeSessionId = sid
+      if (s.gitWorkspace) sessionGitMap.recordActive({
+        claudeSessionId: sid,
+        realCwd: s.gitWorkspace.realCwd,
+        branch: s.gitWorkspace.branch,
+        worktreePath: s.gitWorkspace.worktreePath
+      })
+      clearInterval(detectFork)
+    }, 2000)
+  }
+
   proc.onData((data) => {
     if (!proc._alive) return
     const s = sessions.get(myWcId)
@@ -1570,6 +1769,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     }
     if (s && s.pty === proc) {
       try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
+      releaseVoiceMode(s.wcId)
       if (typeof s.relayCancel === 'function') {
         const err = new Error('PTY cerrado')
         err.name = 'RelayPtyClosed'
@@ -1593,6 +1793,7 @@ function startPty(session, cols, rows, cwd, args = []) {
 function killPty(session) {
   if (!session) return
   try { subchatManager.close(session.wcId, 'parent-pty-closed') } catch {}
+  releaseVoiceMode(session.wcId)
   try { cliUpdateWatcher.forget(session.wcId) } catch {}
   if (!session.pty) return
   logSemanticForSession(session, 'pty_fin', {
@@ -3197,6 +3398,8 @@ app.on('before-quit', (event) => {
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
   try { subchatManager.closeAll() } catch {}
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
   try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
   try { whatsappClient?.stop() } catch {}
@@ -3377,7 +3580,116 @@ ipcMain.on('subchat:resize', (event, { cols, rows } = {}) => {
 
 ipcMain.handle('subchat:close', (event) => {
   const s = getSessionByEvent(event)
-  return s ? subchatManager.close(s.wcId, 'renderer') : false
+  if (!s) return false
+  // Cerrar el sub-chat mata su fork: el sessionId guardado ya no crece nunca
+  // más y el modo voz se quedaría vigilando un fichero muerto hasta el timeout.
+  s.voiceSubchatSessionId = null
+  return subchatManager.close(s.wcId, 'renderer')
+})
+
+// ── Modo voz IPC ──
+// Solo un dueño a la vez: el micro es del sistema, no de la ventana.
+ipcMain.handle('voice:enable', (event) => {
+  const s = getSessionByEvent(event)
+  if (!s) return { ok: false, reason: 'sin sesión' }
+  if (voiceOwnerWcId != null && voiceOwnerWcId !== s.wcId) {
+    return { ok: false, reason: 'el modo voz ya está activo en otra ventana' }
+  }
+  // `spawn` no lanza con un binario ausente o sin permiso de ejecución: emite
+  // 'error' de forma asíncrona, así que el fallo tardaría tres respawns en
+  // salir a la luz mientras el botón ya dice "escuchando". Se comprueba aquí,
+  // antes de tocar nada, y el motivo llega entero al renderer.
+  const bin = voiceHelper.checkBinary()
+  if (!bin.ok) return bin
+  voiceOwnerWcId = s.wcId
+  let res
+  // Si enable() lanza y no se suelta la propiedad, el modo voz queda pegado a
+  // una ventana que no lo tiene y TODAS las demás ven "ya está activo en otra
+  // ventana" hasta reiniciar la app.
+  try { res = voiceSession.enable() } catch (err) {
+    voiceOwnerWcId = null
+    return { ok: false, reason: `no se pudo arrancar el modo voz: ${err?.message || err}` }
+  }
+  if (!res || !res.ok) {
+    voiceOwnerWcId = null
+    return res || { ok: false, reason: 'no se pudo arrancar el modo voz' }
+  }
+  // enable() puede haberse apagado a sí misma por el camino (un fatal del helper
+  // llega síncrono desde helper.start()). Devolver ok con la voz apagada deja el
+  // botón en rojo y el micro cerrado; `voiceOwnerWcId` ya lo soltó el onShutdown.
+  if (!voiceSession.isEnabled()) return { ok: false, reason: 'el modo voz no llegó a arrancar' }
+  // La voz y la velocidad elegidas se mandan tras arrancar: el helper nace con
+  // las del sistema.
+  applyVoicePrefsToHelper()
+  return res
+})
+
+// Empuja voz y velocidad de la config al helper. Se llama tras cada enable() y
+// al guardar Configuración con el helper vivo — así el cambio se oye en la
+// frase siguiente, sin apagar y encender el modo voz.
+function applyVoicePrefsToHelper() {
+  if (!voiceHelper.isRunning()) return
+  const voiceId = appConfig?.cli?.voiceId || ''
+  if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
+  const rate = Number(appConfig?.cli?.voiceRate)
+  if (Number.isFinite(rate)) voiceHelper.send({ cmd: 'rate', value: rate })
+}
+
+// Lista de voces del sistema para el selector de Configuración. El helper puede
+// arrancarse solo para esto (los permisos son perezosos: listar voces no toca
+// el micrófono ni dispara ningún diálogo). Si lo hemos arrancado nosotros y el
+// modo voz no está en uso, se para al terminar para no dejar un proceso vivo.
+ipcMain.handle('voice:voices', async () => {
+  const bin = voiceHelper.checkBinary()
+  if (!bin.ok) return { ok: false, reason: bin.reason || 'no hay helper de voz', voices: [] }
+  const arrancadoParaEsto = !voiceHelper.isRunning()
+  if (arrancadoParaEsto) {
+    try { voiceHelper.start() } catch (err) {
+      return { ok: false, reason: `no se pudo arrancar el helper: ${err?.message || err}`, voices: [] }
+    }
+  }
+  const voces = await new Promise((resolve) => {
+    const timer = setTimeout(() => { voiceVoicesWaiter = null; resolve(null) }, 4000)
+    voiceVoicesWaiter = (list) => { clearTimeout(timer); voiceVoicesWaiter = null; resolve(list) }
+    if (!voiceHelper.send({ cmd: 'voices' })) {
+      clearTimeout(timer); voiceVoicesWaiter = null; resolve(null)
+    }
+  })
+  if (arrancadoParaEsto && !voiceSession.isEnabled()) {
+    try { voiceHelper.stop() } catch {}
+  }
+  if (!Array.isArray(voces)) return { ok: false, reason: 'el helper no contestó', voices: [] }
+  return { ok: true, voices: voces }
+})
+
+// Apagar y cambiar de modo son del DUEÑO. Sin esta comprobación, cualquier otra
+// ventana (o una vista LAN) apaga el micro de quien lo está usando.
+ipcMain.handle('voice:disable', (event) => {
+  if (voiceOwnerWcId == null) return { ok: true }
+  const s = getSessionByEvent(event)
+  if (!s || voiceOwnerWcId !== s.wcId) return { ok: false, reason: 'el modo voz es de otra ventana' }
+  try { voiceSession.disable() } catch {}
+  voiceOwnerWcId = null
+  return { ok: true }
+})
+
+ipcMain.handle('voice:set-mode', (event, { mode } = {}) => {
+  const s = getSessionByEvent(event)
+  if (!s || voiceOwnerWcId !== s.wcId) return { ok: false, reason: 'el modo voz es de otra ventana' }
+  voiceSession.setForcedMode(mode)
+  return { ok: true, mode: mode === 'charla' || mode === 'encargo' ? mode : null }
+})
+
+ipcMain.handle('voice:state', (event) => {
+  const s = getSessionByEvent(event)
+  return {
+    enabled: voiceSession.isEnabled(),
+    state: voiceSession.getState(),
+    broken: voiceHelper.isBroken(),
+    // Para que una ventana que NO es la dueña pinte el botón apagado aunque el
+    // modo voz esté encendido en otra.
+    mine: !!s && voiceOwnerWcId === s.wcId
+  }
 })
 
 // ── Audio: guarda buffer y transcribe con whisper.cpp ──
@@ -3735,7 +4047,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
@@ -3758,6 +4070,9 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   })
   saveAppConfig(merged)
   const warnings = []
+
+  // Voz/velocidad del modo voz: aplicar en caliente si el helper está vivo.
+  try { applyVoicePrefsToHelper() } catch {}
 
   // decision: si cambió defaultCli, aplica a la ventana que guarda (compatibilidad con flujo previo)
   const s = getSessionByEvent(event)

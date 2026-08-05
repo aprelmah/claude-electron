@@ -151,6 +151,18 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('subchat:exit', h)
     }
   },
+  voice: {
+    enable: () => ipcRenderer.invoke('voice:enable'),
+    disable: () => ipcRenderer.invoke('voice:disable'),
+    setMode: (mode) => ipcRenderer.invoke('voice:set-mode', { mode }),
+    state: () => ipcRenderer.invoke('voice:state'),
+    voices: () => ipcRenderer.invoke('voice:voices'),
+    onEvent: (cb) => {
+      const h = (_e, payload) => cb(payload)
+      ipcRenderer.on('voice:event', h)
+      return () => ipcRenderer.removeListener('voice:event', h)
+    }
+  },
   openBitacoraWindow: () => ipcRenderer.invoke('bitacora:open'),
   onTaskRunStarted: (cb) => {
     const h = (_e, p) => cb(p)
