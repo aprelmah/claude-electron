@@ -316,3 +316,32 @@ describe('voice-speakable', () => {
     assert.ok(out.includes('mode oscuro activado por defecto'), 'se perdió la línea de "mode"')
   })
 })
+
+// Caso real 2026-08-05: una respuesta de 935 caracteres se cortaba en
+// "…te suena metálico…" a media frase con el tope antiguo de 700. El tope sube
+// a 2000 y, cuando aun así hay que cortar, se corta en fin de frase.
+describe('recorte largo (tope 2000 y corte en fin de frase)', () => {
+  test('una respuesta de ~900 caracteres ya no se recorta con el defecto', () => {
+    const frase = 'Esta frase tiene unas cuantas palabras para abultar el texto. '
+    const md = frase.repeat(15) // ~945 chars
+    const out = speakableFromMarkdown(md)
+    assert.ok(!out.endsWith('…'), 'no debe recortarse')
+    assert.ok(out.length > 900)
+  })
+
+  test('si hay que cortar y hay un fin de frase pasada la mitad, corta ahí, sin puntos suspensivos', () => {
+    const frase = 'Cada una de estas frases termina con su punto y sigue la siguiente. '
+    const md = frase.repeat(40) // ~2720 chars
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.length <= 2000)
+    assert.ok(out.endsWith('.'), `debe acabar en frase completa, acaba en: ${JSON.stringify(out.slice(-30))}`)
+    assert.ok(!out.endsWith('…'))
+  })
+
+  test('prosa sin puntos: sigue el corte por palabra con puntos suspensivos', () => {
+    const md = ('palabra '.repeat(300)).trim() // ~2400 chars, ni un punto
+    const out = speakableFromMarkdown(md)
+    assert.ok(out.length <= 2001)
+    assert.ok(out.endsWith('…'), 'sin frases, se corta por palabra y se avisa con …')
+  })
+})

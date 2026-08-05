@@ -5,7 +5,12 @@
 // turno. Si tras limpiar no queda prosa, devuelve '' y quien llame decide
 // (un tono corto en vez de leer basura).
 
-const DEFAULT_MAX_CHARS = 700
+// Tope anti-parrafada: que el agente no lea monólogos eternos con el micro
+// cerrado. Era 700 y se quedaba corto — caso real 2026-08-05: una respuesta de
+// 935 caracteres se cortó en "te suena metálico…" a media frase, y quien
+// escucha no sabe si la app se rompió o si faltaba texto. 2000 ≈ dos minutos
+// de lectura a la velocidad por defecto; para cortar antes está el botón.
+const DEFAULT_MAX_CHARS = 2000
 
 function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   if (typeof md !== 'string' || !md) return ''
@@ -196,8 +201,17 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
 
   if (out.length > safeMaxChars) {
     const cut = out.slice(0, safeMaxChars)
-    const lastSpace = cut.lastIndexOf(' ')
-    out = (lastSpace > safeMaxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trim() + '…'
+    // Cortar en FIN DE FRASE si hay uno pasada la mitad del tope: oído, un
+    // corte a media idea suena a fallo ("…te suena metálico…" y silencio);
+    // una frase completa suena a final. El espacio queda de red de seguridad
+    // para prosa sin puntos.
+    const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+    if (lastSentence > safeMaxChars * 0.5) {
+      out = cut.slice(0, lastSentence + 1).trim()
+    } else {
+      const lastSpace = cut.lastIndexOf(' ')
+      out = (lastSpace > safeMaxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trim() + '…'
+    }
   }
 
   return out
