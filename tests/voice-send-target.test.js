@@ -79,7 +79,18 @@ function makeHarness(opts = {}) {
       return contenidos.get(p)
     },
     sleep: async () => { llamadas.sleeps += 1; if (opts.onSleep) opts.onSleep(llamadas.sleeps) },
-    log: () => {}
+    log: () => {},
+    maxForkScanBytes: opts.maxForkScanBytes,
+    // Cola del fichero: mismo contrato que el default de fs (texto + offset
+    // absoluto desde el que se leyó).
+    readTailFn: (p, bytes) => {
+      llamadas.lecturas.push(p)
+      if (opts.readThrows) throw new Error('EACCES')
+      if (!contenidos.has(p)) throw new Error('ENOENT')
+      const buf = Buffer.from(contenidos.get(p), 'utf8')
+      const from = Math.max(0, buf.length - bytes)
+      return { text: buf.toString('utf8', from), from }
+    }
   })
 
   return { target, session, escrituras, llamadas, tamanos, contenidos }
@@ -121,8 +132,8 @@ describe('voice-send-target — validaciones de entrada', () => {
     await h.target({ text: '  arregla el bug\ny corre los tests\r\nluego commitea  ', mode: 'encargo' })
     assert.deepStrictEqual(
       h.escrituras.madre,
-      ['arregla el bug y corre los tests luego commitea\r'],
-      'todo el dictado va en UNA sola línea'
+      ['arregla el bug y corre los tests luego commitea', '\r'],
+      'todo el dictado va en UNA sola línea, y el ENTER aparte'
     )
   })
 
@@ -155,7 +166,9 @@ describe('voice-send-target — encargo (PTY de la sesión madre)', () => {
     const p = h.target({ text: 'arréglalo', mode: 'encargo' })
     h.tamanos.set('/proj-dir/madre-1.jsonl', 180)
     const res = await p
-    assert.deepStrictEqual(h.escrituras.madre, ['arréglalo\r'])
+    // El ENTER va en su propia escritura: pegado al texto, el TUI lo mete como
+    // salto de línea dentro del prompt y el turno se queda sin enviar.
+    assert.deepStrictEqual(h.escrituras.madre, ['arréglalo', '\r'])
     assert.strictEqual(res.ok, true)
     assert.strictEqual(res.sessionId, 'madre-1')
     assert.strictEqual(res.baseOffset, 100, 'el offset debe ser el de antes de escribir, o el vigía leería la respuesta anterior')
@@ -228,8 +241,8 @@ describe('voice-send-target — encargo (PTY de la sesión madre)', () => {
     assert.strictEqual(res.ok, true)
     assert.strictEqual(res.sessionId, 'madre-1')
     assert.strictEqual(res.baseOffset, 100)
-    // motherWaitMs=3000 / pollMs=200 ⇒ 15 vueltas como mucho.
-    assert.ok(h.llamadas.sleeps <= 15, `demasiadas vueltas: ${h.llamadas.sleeps}`)
+    // motherWaitMs=3000 / pollMs=200 ⇒ 15 vueltas, +1 la pausa del ENTER.
+    assert.ok(h.llamadas.sleeps <= 16, `demasiadas vueltas: ${h.llamadas.sleeps}`)
   })
 })
 
@@ -302,7 +315,7 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     assert.strictEqual(res.sessionId, 'fork-abc')
     assert.strictEqual(res.baseOffset, 4096, 'el historial copiado por el fork queda por debajo del offset')
     assert.strictEqual(h.llamadas.subchatStart, 1)
-    assert.deepStrictEqual(h.escrituras.subchat, [{ wcId: 7, data: '¿qué opinas?\r' }])
+    assert.deepStrictEqual(h.escrituras.subchat, [{ wcId: 7, data: '¿qué opinas?' }, { wcId: 7, data: '\r' }])
     assert.strictEqual(h.escrituras.madre.length, 0, 'la charla no toca el PTY de la madre')
     assert.strictEqual(h.session.voiceSubchatSessionId, 'fork-abc', 'se recuerda para no repetir la búsqueda en cada turno')
   })
@@ -330,7 +343,8 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     assert.strictEqual(res.sessionId, 'fork-abc')
     assert.strictEqual(res.baseOffset, 900)
     assert.strictEqual(h.llamadas.subchatStart, 0)
-    assert.strictEqual(h.llamadas.sleeps, 0, 'el camino corto no debe esperar nada')
+    // La única espera del camino corto es la pausa entre el texto y su ENTER.
+    assert.strictEqual(h.llamadas.sleeps, 1, 'el camino corto solo espera la pausa del ENTER')
     assert.strictEqual(h.llamadas.detectFork.length, 0)
   })
 
@@ -373,10 +387,11 @@ describe('voice-send-target — charla (sub-chat forkeado)', () => {
     // Escribir es obligatorio ANTES de buscar: sin prompt en el fichero no hay
     // forma legítima de identificar el sub-chat. Lo que no puede haber es más
     // de una escritura ni una adopción a ciegas.
-    assert.strictEqual(h.escrituras.subchat.length, 1)
+    assert.strictEqual(h.escrituras.subchat.length, 2, 'texto y ENTER, una escritura cada uno')
     assert.strictEqual(h.session.voiceSubchatSessionId, null)
-    // subchatForkWaitMs=5000 / pollMs=200 ⇒ 25 vueltas como mucho.
-    assert.ok(h.llamadas.sleeps <= 26, `demasiadas vueltas: ${h.llamadas.sleeps}`)
+    // subchatForkWaitMs=5000 / pollMs=200 ⇒ 25 vueltas, más el arranque y la
+    // pausa del ENTER.
+    assert.ok(h.llamadas.sleeps <= 27, `demasiadas vueltas: ${h.llamadas.sleeps}`)
   })
 
   test('charla con fork de offset 0: también se recalcula por la línea del prompt', async () => {
@@ -492,5 +507,61 @@ describe('pickForkedSessionId — el fork que crea un --resume en el spawn', () 
   test('si no ha aparecido ningún fichero nuevo devuelve null', () => {
     const before = new Map([['vieja.jsonl', 5], ['resumida.jsonl', 30], ['fork.jsonl', 20]])
     assert.strictEqual(pickForkedSessionId({ groups: grupo(filas, before), excludeIds: ['resumida'] }), null)
+  })
+})
+
+// Bug real 2026-08-05 (prueba en vivo del modo voz): el sub-chat contestaba y
+// la app decía "no se encontró el transcript del sub-chat". La causa raíz
+// estaba en el detector (leía solo el primer MB del fork), pero este módulo
+// tenía el mismo defecto esperando su turno: si el fork pasaba del tope de
+// escaneo, `safeForkOffset` se rendía y el fork se descartaba igual. Los
+// transcripts de Luismi ya rondan los 3-4 MB. Un fork nace con TODO el
+// historial delante y el prompt AL FINAL, así que la cola siempre lo tiene.
+describe('voice-send-target — forks más grandes que el tope de escaneo', () => {
+  const FORK = '/proj-dir/fork-1.jsonl'
+
+  function conFork(contenido, maxForkScanBytes) {
+    return makeHarness({
+      subchatHas: true,
+      contenidos: { [FORK]: contenido },
+      maxForkScanBytes,
+      detectFork: () => ({ filePath: FORK, sessionId: 'fork-1', baseOffset: 0 })
+    })
+  }
+
+  test('el offset sale de la cola cuando el fichero supera el tope', async () => {
+    const relleno = `{"type":"user","message":{"content":"${'z'.repeat(400)}"}}\n`
+    const historial = relleno.repeat(20)
+    const contenido = historial + '{"type":"user","message":{"content":"hola qué tal"}}\n'
+    const h = conFork(contenido, 512)
+
+    const res = await h.target({ text: 'hola qué tal', mode: 'charla' })
+    assert.strictEqual(res.ok, true, res.reason)
+    assert.strictEqual(res.sessionId, 'fork-1')
+    assert.strictEqual(
+      res.baseOffset,
+      Buffer.byteLength(historial, 'utf8'),
+      'el offset es absoluto en el fichero, no relativo al trozo leído'
+    )
+  })
+
+  test('si la cola parte la línea del prompt se descarta el fork en vez de inventar un offset', async () => {
+    // El marcador cae tan al principio de la cola que no hay salto de línea
+    // antes: no se puede saber dónde empieza su línea de verdad.
+    const contenido = '{"type":"user","message":{"content":"relleno viejo"}}\n{"type":"user","message":{"content":"hola qué tal"}}\n'
+    const h = conFork(contenido, 30)
+
+    const res = await h.target({ text: 'hola qué tal', mode: 'charla' })
+    assert.strictEqual(res.ok, false)
+    assert.match(res.reason, /transcript del sub-chat/i)
+  })
+
+  test('por debajo del tope se sigue leyendo el fichero entero', async () => {
+    const contenido = transcriptConHistorial('hola qué tal')
+    const h = conFork(contenido, 5 * 1024 * 1024)
+
+    const res = await h.target({ text: 'hola qué tal', mode: 'charla' })
+    assert.strictEqual(res.ok, true, res.reason)
+    assert.strictEqual(res.baseOffset, Buffer.byteLength(LINEA_VIEJA + '\n', 'utf8'))
   })
 })

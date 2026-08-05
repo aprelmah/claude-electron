@@ -37,6 +37,10 @@
 //    `relay-transcript-helpers.js`: sin coincidencia de prompt no se adopta nada.
 
 const DEFAULT_POLL_MS = 200
+// Pausa entre el texto y su ENTER. El TUI de Claude Code agrupa lo que llega
+// de golpe como un pegado: con el '\r' pegado al texto, lo mete como salto de
+// línea DENTRO del prompt y el turno se queda escrito sin enviar.
+const DEFAULT_ENTER_DELAY_MS = 150
 const DEFAULT_SUBCHAT_WARMUP_MS = 1200
 const DEFAULT_SUBCHAT_FORK_WAIT_MS = 5000
 const DEFAULT_FORK_CHECK_AFTER_MS = 1200
@@ -100,6 +104,25 @@ function unaSolaLinea(text) {
   return String(text || '').replace(/[\r\n\u2028\u2029]+/g, ' ').trim()
 }
 
+// Últimos `bytes` del fichero, con el offset absoluto desde el que se leyó.
+// Síncrona a propósito (como el resto de lecturas de transcript del repo), pero
+// acotada: nunca trae el fichero entero a memoria.
+function leerCola(filePath, bytes) {
+  const fs = require('fs')
+  const st = fs.statSync(filePath)
+  const from = Math.max(0, st.size - bytes)
+  const len = st.size - from
+  if (len <= 0) return { text: '', from: st.size }
+  const fd = fs.openSync(filePath, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(len)
+    const read = fs.readSync(fd, buf, 0, len, from)
+    return { text: buf.toString('utf8', 0, read), from }
+  } finally {
+    try { fs.closeSync(fd) } catch {}
+  }
+}
+
 function createVoiceSendTarget({
   getSession,
   subchat,
@@ -109,8 +132,11 @@ function createVoiceSendTarget({
   detectForkedRelayTranscript,
   statFn,
   readFileFn,
+  readTailFn,
+  maxForkScanBytes,
   sleep,
   pollMs,
+  enterDelayMs,
   subchatWarmupMs,
   subchatForkWaitMs,
   forkCheckAfterMs,
@@ -128,9 +154,12 @@ function createVoiceSendTarget({
 
   const stat = typeof statFn === 'function' ? statFn : () => null
   const readFile = typeof readFileFn === 'function' ? readFileFn : (p) => require('fs').readFileSync(p, 'utf8')
+  const readTail = typeof readTailFn === 'function' ? readTailFn : leerCola
+  const MAX_SCAN = num(maxForkScanBytes, MAX_FORK_SCAN_BYTES)
   const wait = typeof sleep === 'function' ? sleep : (ms) => new Promise((r) => setTimeout(r, ms))
   const trace = typeof log === 'function' ? log : () => {}
   const POLL = num(pollMs, DEFAULT_POLL_MS)
+  const ENTER_DELAY = num(enterDelayMs, DEFAULT_ENTER_DELAY_MS)
   const WARMUP = num(subchatWarmupMs, DEFAULT_SUBCHAT_WARMUP_MS)
   const SUBCHAT_WAIT = num(subchatForkWaitMs, DEFAULT_SUBCHAT_FORK_WAIT_MS)
   const FORK_AFTER = num(forkCheckAfterMs, DEFAULT_FORK_CHECK_AFTER_MS)
@@ -172,20 +201,40 @@ function createVoiceSendTarget({
     const escaped = JSON.stringify(marker).slice(1, -1)
 
     const st = stat(forked.filePath)
-    if (st && Number.isFinite(st.size) && st.size > MAX_FORK_SCAN_BYTES) {
-      trace(`el transcript forkeado es demasiado grande para localizar el prompt: ${forked.filePath}`)
-      return null
-    }
+    const size = st && Number.isFinite(st.size) ? st.size : null
+
+    // Por encima del tope se lee solo la COLA, no se descarta el fork: el
+    // prompt de este turno es lo último que hay en el fichero, y rendirse aquí
+    // devolvía "no se encontró el transcript del sub-chat" con la respuesta ya
+    // escrita en disco. Los transcripts de una sesión larga pasan de 5 MB.
     let contenido = ''
-    try { contenido = String(readFile(forked.filePath) || '') } catch { return null }
+    let desde = 0
+    if (size !== null && size > MAX_SCAN) {
+      let cola = null
+      try { cola = readTail(forked.filePath, MAX_SCAN) } catch { return null }
+      if (!cola || typeof cola.text !== 'string') return null
+      contenido = cola.text
+      desde = Number.isFinite(cola.from) ? cola.from : 0
+      trace(`transcript forkeado de ${size} bytes: se busca el prompt en la cola desde ${desde}`)
+    } else {
+      try { contenido = String(readFile(forked.filePath) || '') } catch { return null }
+    }
+
     // La ÚLTIMA aparición: si el usuario ya había dicho lo mismo antes, el
     // historial copiado lo lleva dentro y la buena es la de ahora.
     const idx = contenido.lastIndexOf(escaped)
     if (idx < 0) return null
-    const inicioLinea = contenido.lastIndexOf('\n', idx) + 1
+    const nl = contenido.lastIndexOf('\n', idx)
+    // Con recorte, la primera línea del trozo está partida: si el marcador cae
+    // ahí no se sabe dónde empieza su línea de verdad. Descartar es correcto —
+    // un offset a ojo haría que el vigía leyera basura como si fuera el turno.
+    if (desde > 0 && nl < 0) {
+      trace('el prompt cae en la línea partida por el recorte: fork descartado')
+      return null
+    }
     // Bytes, no caracteres: el transcript lleva acentos y el vigía lee con
     // offsets de fichero.
-    return Buffer.byteLength(contenido.slice(0, inicioLinea), 'utf8')
+    return desde + Buffer.byteLength(contenido.slice(0, nl + 1), 'utf8')
   }
 
   function adoptFork(forked, prompt, cwds) {
@@ -212,8 +261,16 @@ function createVoiceSendTarget({
     const baseOffset = transcriptSize(expectedId, cwds)
     const before = snapshotAll(cwds)
 
-    try { session.pty.write(prompt + '\r') } catch (err) {
+    try { session.pty.write(prompt) } catch (err) {
       return { ok: false, reason: `no se pudo escribir en la sesión: ${err?.message || err}` }
+    }
+    // El ENTER va APARTE y con una pausa. Pegado al texto (`prompt + '\r'`) el
+    // TUI lo trata como parte del bloque pegado y lo mete como salto de línea
+    // dentro del prompt: la frase se queda escrita y sin enviar, esperando a
+    // que la mandes tú a mano. Visto en la primera prueba real (2026-08-05).
+    await wait(ENTER_DELAY)
+    try { session.pty.write('\r') } catch (err) {
+      return { ok: false, reason: `no se pudo enviar el turno: ${err?.message || err}` }
     }
 
     let waited = 0
@@ -268,10 +325,18 @@ function createVoiceSendTarget({
     // y 180 s de silencio.
     if (!subchat.has(session.wcId)) return { ok: false, reason: 'el sub-chat se cerró antes de poder escribir' }
     let escrito
-    try { escrito = subchat.write(session.wcId, prompt + '\r') } catch (err) {
+    try { escrito = subchat.write(session.wcId, prompt) } catch (err) {
       return { ok: false, reason: `no se pudo escribir en el sub-chat: ${err?.message || err}` }
     }
     if (escrito === false) return { ok: false, reason: 'el sub-chat no aceptó el texto' }
+    // Mismo motivo que en la sesión madre: el ENTER pegado al texto se queda
+    // como salto de línea dentro del prompt y el turno no llega a enviarse.
+    await wait(ENTER_DELAY)
+    if (!subchat.has(session.wcId)) return { ok: false, reason: 'el sub-chat se cerró antes de enviar el turno' }
+    try { escrito = subchat.write(session.wcId, '\r') } catch (err) {
+      return { ok: false, reason: `no se pudo enviar el turno al sub-chat: ${err?.message || err}` }
+    }
+    if (escrito === false) return { ok: false, reason: 'el sub-chat no aceptó el envío' }
 
     if (conocido) return { ok: true, sessionId: conocido, cwds, baseOffset }
 

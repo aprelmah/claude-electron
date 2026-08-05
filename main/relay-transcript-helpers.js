@@ -275,26 +275,56 @@ function createRelayTranscriptHelpers({
 
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
     for (const c of candidates) {
-      let slice = ''
-      try {
-        const fd = fs.openSync(c.filePath, 'r')
-        try {
-          const len = Math.min(c.size - c.baseOffset, 1024 * 1024)
-          if (len <= 0) continue
-          const buf = Buffer.allocUnsafe(len)
-          const read = fs.readSync(fd, buf, 0, len, c.baseOffset)
-          slice = buf.toString('utf8', 0, read)
-        } finally {
-          try { fs.closeSync(fd) } catch {}
-        }
-      } catch {
-        continue
-      }
-      if (slice.includes(escapedMarker)) {
-        return { filePath: c.filePath, sessionId: c.sessionId, baseOffset: c.baseOffset }
-      }
+      if (!contieneMarcador(c, escapedMarker)) continue
+      return { filePath: c.filePath, sessionId: c.sessionId, baseOffset: c.baseOffset }
     }
     return null
+  }
+
+  // Busca el prompt en el fichero candidato SIN leerlo entero: la lectura es
+  // síncrona y corre en el proceso main, así que un transcript de varios MB
+  // bloquearía IPC y PTYs en cada poll.
+  //
+  // Mira dos ventanas de 1 MB, y las dos hacen falta porque el prompt cae en un
+  // sitio distinto según cómo aparezca el fichero:
+  //
+  // - CABEZA (desde baseOffset): fichero que YA existía y crece con el turno.
+  //   El prompt es lo primero que se escribe del crecimiento.
+  // - COLA (último MB): fichero NUEVO de un `--fork-session`/`--resume`. Nace
+  //   con TODO el historial copiado delante y el prompt al final.
+  //
+  // Bug real 2026-08-05: solo se leía la cabeza. En la sesión de Luismi el fork
+  // del sub-chat medía 3.375.116 bytes con el prompt en el 3.371.413, así que
+  // el marcador quedaba fuera del primer MB, el fork no se adoptaba nunca y el
+  // modo voz moría en "no se encontró el transcript del sub-chat" — pese a que
+  // el sub-chat había respondido. Con historiales de más de 1 MB le pasaba lo
+  // mismo al relay de Telegram: es el mismo detector.
+  function contieneMarcador(c, escapedMarker) {
+    const VENTANA = 1024 * 1024
+    const rango = c.size - c.baseOffset
+    if (rango <= 0) return false
+    const desdes = [c.baseOffset]
+    // Solo hay segunda lectura si la cola no está ya dentro de la cabeza.
+    if (rango > VENTANA) desdes.push(c.size - VENTANA)
+
+    let fd
+    try { fd = fs.openSync(c.filePath, 'r') } catch { return false }
+    try {
+      for (const desde of desdes) {
+        const len = Math.min(c.size - desde, VENTANA)
+        if (len <= 0) continue
+        const buf = Buffer.allocUnsafe(len)
+        let read = 0
+        try { read = fs.readSync(fd, buf, 0, len, desde) } catch { return false }
+        // toString sobre un corte arbitrario puede partir un carácter UTF-8 en
+        // los bordes; da igual, el marcador solo tiene que aparecer entero una
+        // vez y las dos ventanas se solapan con el resto del fichero.
+        if (buf.toString('utf8', 0, read).includes(escapedMarker)) return true
+      }
+    } finally {
+      try { fs.closeSync(fd) } catch {}
+    }
+    return false
   }
 
   function pickRelayTranscriptCandidate(cwd, beforeMeta, preferredSessionId) {

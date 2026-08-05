@@ -70,6 +70,71 @@ test('detecta el fichero forkeado que contiene el prompt del turno', () => {
   assert.strictEqual(hit.baseOffset, 0)
 })
 
+// Bug real 2026-08-05 (modo voz, charla): el sub-chat respondía perfectamente
+// pero la app decía "no se encontró el transcript del sub-chat". Un fork nace
+// con TODO el historial copiado y el prompt del turno al FINAL: en la sesión de
+// Luismi el fichero medía 3.375.116 bytes y el prompt empezaba en el 3.371.413.
+// La búsqueda del marcador leía solo el primer MB desde baseOffset, así que en
+// cuanto el historial pasa de 1 MB el fork deja de detectarse. Afecta igual al
+// relay de Telegram: es el mismo detector.
+test('encuentra el prompt aunque el fork nazca con megas de historial delante', () => {
+  const root = tmpRoot()
+  const h = makeHelpers(root)
+  const dir = h.claudeProjectSessionsDir(CWD)
+
+  writeTranscript(dir, OLD_SID, [{ type: 'user', cwd: CWD, message: { content: 'historial viejo' } }])
+  const before = [{ cwd: CWD, snap: h.snapshotClaudeSessionMeta(CWD) }]
+
+  // ~3 MB de historial copiado, y el prompt del turno en la última línea.
+  const relleno = 'x'.repeat(3500)
+  const lineas = []
+  for (let i = 0; i < 1000; i += 1) {
+    lineas.push({ type: 'user', cwd: CWD, message: { content: `${relleno} ${i}` } })
+  }
+  lineas.push({ type: 'user', cwd: CWD, message: { content: 'Esto es una prueba del transcriptor de voz' } })
+  const forkPath = writeTranscript(dir, FORK_SID, lineas)
+  assert.ok(fs.statSync(forkPath).size > 3 * 1024 * 1024, 'el fixture debe superar el MB que leía el detector')
+
+  const hit = h.detectForkedRelayTranscript({
+    cwds: [CWD],
+    before,
+    excludeSessionId: OLD_SID,
+    promptMarker: 'Esto es una prueba del transcriptor de voz'
+  })
+  assert.ok(hit, 'el fork con historial grande debe detectarse')
+  assert.strictEqual(hit.sessionId, FORK_SID)
+  assert.strictEqual(hit.baseOffset, 0)
+})
+
+// La otra mitad del mismo riesgo: un fichero YA conocido que crece más de 1 MB
+// en el turno. El prompt está al principio del crecimiento, no al final del
+// fichero, así que mirar solo la cola tampoco basta.
+test('encuentra el prompt cuando el turno hace crecer el fichero más de 1 MB', () => {
+  const root = tmpRoot()
+  const h = makeHelpers(root)
+  const dir = h.claudeProjectSessionsDir(CWD)
+
+  writeTranscript(dir, OLD_SID, [{ type: 'user', cwd: CWD, message: { content: 'historial viejo' } }])
+  writeTranscript(dir, FORK_SID, [{ type: 'user', cwd: CWD, message: { content: 'arranque del fork' } }])
+  const before = [{ cwd: CWD, snap: h.snapshotClaudeSessionMeta(CWD) }]
+
+  const relleno = 'y'.repeat(3000)
+  let extra = JSON.stringify({ type: 'user', cwd: CWD, message: { content: 'marcador al inicio del turno' } }) + '\n'
+  for (let i = 0; i < 800; i += 1) {
+    extra += JSON.stringify({ type: 'assistant', message: { content: `${relleno} ${i}` } }) + '\n'
+  }
+  fs.appendFileSync(path.join(dir, `${FORK_SID}.jsonl`), extra)
+
+  const hit = h.detectForkedRelayTranscript({
+    cwds: [CWD],
+    before,
+    excludeSessionId: OLD_SID,
+    promptMarker: 'marcador al inicio del turno'
+  })
+  assert.ok(hit, 'el prompt al inicio de un crecimiento grande debe detectarse')
+  assert.strictEqual(hit.sessionId, FORK_SID)
+})
+
 test('ignora ficheros nuevos que NO contienen el prompt (otra sesión concurrente)', () => {
   const root = tmpRoot()
   const h = makeHelpers(root)
