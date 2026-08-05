@@ -1403,10 +1403,17 @@ function getVoiceSessionOwner() {
   return sessions.get(voiceOwnerWcId) || null
 }
 
+// Resolutor pendiente de `voice:voices`: el listado llega como evento por el
+// stream general del helper, no como respuesta directa al send.
+let voiceVoicesWaiter = null
+
 const voiceHelper = createVoiceHelperProcess({
   helperPath: VOICE_HELPER_PATH,
   spawnFn: (bin, args, opts) => spawn(bin, args, opts),
   onEvent: (evt) => {
+    if (evt && evt.type === 'voices' && typeof voiceVoicesWaiter === 'function') {
+      voiceVoicesWaiter(Array.isArray(evt.voices) ? evt.voices : [])
+    }
     try { voiceSession.handleHelperEvent(evt) } catch (err) { console.warn('[voz]', err?.message || err) }
   },
   log: (m) => console.log('[voz]', m)
@@ -3611,10 +3618,48 @@ ipcMain.handle('voice:enable', (event) => {
   // llega síncrono desde helper.start()). Devolver ok con la voz apagada deja el
   // botón en rojo y el micro cerrado; `voiceOwnerWcId` ya lo soltó el onShutdown.
   if (!voiceSession.isEnabled()) return { ok: false, reason: 'el modo voz no llegó a arrancar' }
-  // La voz elegida se manda tras arrancar: el helper nace con la del sistema.
+  // La voz y la velocidad elegidas se mandan tras arrancar: el helper nace con
+  // las del sistema.
+  applyVoicePrefsToHelper()
+  return res
+})
+
+// Empuja voz y velocidad de la config al helper. Se llama tras cada enable() y
+// al guardar Configuración con el helper vivo — así el cambio se oye en la
+// frase siguiente, sin apagar y encender el modo voz.
+function applyVoicePrefsToHelper() {
+  if (!voiceHelper.isRunning()) return
   const voiceId = appConfig?.cli?.voiceId || ''
   if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
-  return res
+  const rate = Number(appConfig?.cli?.voiceRate)
+  if (Number.isFinite(rate)) voiceHelper.send({ cmd: 'rate', value: rate })
+}
+
+// Lista de voces del sistema para el selector de Configuración. El helper puede
+// arrancarse solo para esto (los permisos son perezosos: listar voces no toca
+// el micrófono ni dispara ningún diálogo). Si lo hemos arrancado nosotros y el
+// modo voz no está en uso, se para al terminar para no dejar un proceso vivo.
+ipcMain.handle('voice:voices', async () => {
+  const bin = voiceHelper.checkBinary()
+  if (!bin.ok) return { ok: false, reason: bin.reason || 'no hay helper de voz', voices: [] }
+  const arrancadoParaEsto = !voiceHelper.isRunning()
+  if (arrancadoParaEsto) {
+    try { voiceHelper.start() } catch (err) {
+      return { ok: false, reason: `no se pudo arrancar el helper: ${err?.message || err}`, voices: [] }
+    }
+  }
+  const voces = await new Promise((resolve) => {
+    const timer = setTimeout(() => { voiceVoicesWaiter = null; resolve(null) }, 4000)
+    voiceVoicesWaiter = (list) => { clearTimeout(timer); voiceVoicesWaiter = null; resolve(list) }
+    if (!voiceHelper.send({ cmd: 'voices' })) {
+      clearTimeout(timer); voiceVoicesWaiter = null; resolve(null)
+    }
+  })
+  if (arrancadoParaEsto && !voiceSession.isEnabled()) {
+    try { voiceHelper.stop() } catch {}
+  }
+  if (!Array.isArray(voces)) return { ok: false, reason: 'el helper no contestó', voices: [] }
+  return { ok: true, voices: voces }
 })
 
 // Apagar y cambiar de modo son del DUEÑO. Sin esta comprobación, cualquier otra
@@ -4002,7 +4047,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
@@ -4025,6 +4070,9 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   })
   saveAppConfig(merged)
   const warnings = []
+
+  // Voz/velocidad del modo voz: aplicar en caliente si el helper está vivo.
+  try { applyVoicePrefsToHelper() } catch {}
 
   // decision: si cambió defaultCli, aplica a la ventana que guarda (compatibilidad con flujo previo)
   const s = getSessionByEvent(event)

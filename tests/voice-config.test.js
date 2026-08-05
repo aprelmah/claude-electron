@@ -68,3 +68,43 @@ describe('config del modo voz — normalizeAppConfig', () => {
     assert.strictEqual(configStore.sanitizeVoiceEnabled, undefined, 'y su sanitizador tampoco sigue por ahí')
   })
 })
+
+describe('config del modo voz — sanitizeVoiceRate (velocidad de la voz, 2026-08-05)', () => {
+  const { sanitizeVoiceRate } = configStore
+
+  test('valores dentro del rango pasan tal cual, como texto', () => {
+    assert.strictEqual(sanitizeVoiceRate(0.52), '0.52')
+    assert.strictEqual(sanitizeVoiceRate('0.4'), '0.4')
+    assert.strictEqual(sanitizeVoiceRate(0.7), '0.7')
+  })
+
+  test('fuera de rango se acota, no se descarta: el usuario movió el slider a un extremo', () => {
+    assert.strictEqual(sanitizeVoiceRate(0.05), '0.3')
+    assert.strictEqual(sanitizeVoiceRate(1), '0.7')
+    assert.strictEqual(sanitizeVoiceRate('999'), '0.7')
+  })
+
+  test('basura devuelve "": sin preferencia, el helper usa su defecto', () => {
+    for (const v of ['', 'rápida', null, undefined, NaN, Infinity, {}]) {
+      assert.strictEqual(sanitizeVoiceRate(v), '', String(v))
+    }
+  })
+
+  test('se redondea a dos decimales: es lo que produce el slider y evita colas de float', () => {
+    assert.strictEqual(sanitizeVoiceRate(0.5199999), '0.52')
+  })
+})
+
+describe('config del modo voz — voiceRate en normalizeAppConfig', () => {
+  const { normalizeAppConfig } = createConfigNormalizers({
+    clampLanPort: (p) => Number(p) || 9999,
+    normalizeEnterpriseConfig: () => ({}),
+    defaultEnterpriseRoleId: 'role'
+  })
+
+  test('voiceRate viaja por la normalización y la basura cae a ""', () => {
+    assert.strictEqual(normalizeAppConfig({ cli: { voiceRate: '0.6' } }).cli.voiceRate, '0.6')
+    assert.strictEqual(normalizeAppConfig({ cli: { voiceRate: 'no' } }).cli.voiceRate, '')
+    assert.strictEqual(normalizeAppConfig({}).cli.voiceRate, '')
+  })
+})
