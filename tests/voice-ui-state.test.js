@@ -5,7 +5,14 @@ const assert = require('node:assert')
 const path = require('path')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const { classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent } = require(path.join(REPO_ROOT, 'voice-ui-state.js'))
+const {
+  classNameForVoiceState,
+  voiceCliAvailability,
+  voiceStateAppearance,
+  planForVoiceEvent,
+  nextVoiceMode,
+  voiceModeAppearance
+} = require(path.join(REPO_ROOT, 'voice-ui-state.js'))
 
 describe('classNameForVoiceState', () => {
   test('listening/thinking/speaking devuelven su clase CSS', () => {
@@ -98,9 +105,12 @@ describe('planForVoiceEvent', () => {
     assert.strictEqual(plan.text, '💬 qué tal el tiempo')
   })
 
-  test('heard con mode desconocido: cae a bocadillo por defecto, no revienta', () => {
+  test('heard con mode desconocido: cae al icono del destino por defecto, no revienta', () => {
+    // Desde 2026-08-05 el destino por defecto es la sesión de trabajo, así que
+    // el fallback es el rayo. Pintar el bocadillo diría que el turno se fue al
+    // sub-chat cuando no es verdad.
     const plan = planForVoiceEvent({ type: 'heard', text: 'algo', mode: 'raro' })
-    assert.strictEqual(plan.text, '💬 algo')
+    assert.strictEqual(plan.text, '⚡ algo')
   })
 
   test('saying: prefijo de altavoz y recorte a 90 caracteres', () => {
@@ -174,5 +184,43 @@ describe('voiceStateAppearance', () => {
   test('null/undefined: no revienta, todo apagado y sin marcar como roto', () => {
     assert.deepStrictEqual(voiceStateAppearance(null), { on: false, cssClass: null, title: null, ariaLabel: null })
     assert.deepStrictEqual(voiceStateAppearance(undefined), { on: false, cssClass: null, title: null, ariaLabel: null })
+  })
+})
+
+// Toggle de destino, añadido el 2026-08-05 con el cambio de defecto: sin él no
+// hay forma de mandar nada al sub-chat, porque el router ya no decide solo.
+describe('nextVoiceMode / voiceModeAppearance', () => {
+  test('alterna entre los dos destinos', () => {
+    assert.strictEqual(nextVoiceMode('encargo'), 'charla')
+    assert.strictEqual(nextVoiceMode('charla'), 'encargo')
+  })
+
+  test('desde un valor raro o vacío se va a charla (el defecto ya es encargo)', () => {
+    for (const v of [null, undefined, '', 'otra-cosa']) {
+      assert.strictEqual(nextVoiceMode(v), 'charla', String(v))
+    }
+  })
+
+  test('el aspecto dice a dónde va lo PRÓXIMO, no dónde fue lo último', () => {
+    const encargo = voiceModeAppearance('encargo')
+    assert.strictEqual(encargo.icon, '⚡')
+    assert.match(encargo.title, /sesión de trabajo/i)
+
+    const charla = voiceModeAppearance('charla')
+    assert.strictEqual(charla.icon, '💬')
+    assert.match(charla.title, /sub-chat/i)
+  })
+
+  test('un modo inválido se pinta como sesión de trabajo, que es el destino real', () => {
+    for (const v of [null, undefined, 'raro', 42]) {
+      const a = voiceModeAppearance(v)
+      assert.strictEqual(a.mode, 'encargo', String(v))
+      assert.strictEqual(a.icon, '⚡')
+    }
+  })
+
+  test('siempre trae etiqueta accesible', () => {
+    assert.ok(voiceModeAppearance('encargo').ariaLabel.length > 0)
+    assert.ok(voiceModeAppearance('charla').ariaLabel.length > 0)
   })
 })

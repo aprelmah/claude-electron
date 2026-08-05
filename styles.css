@@ -493,6 +493,14 @@ button:active { transform: scale(0.93); }
 #btn-voice.voice-broken { border: 2px solid var(--warn) !important; color: var(--warn) !important; }
 #btn-voice:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Toggle de destino de la voz. Solo aparece con el modo voz encendido: apagado
+   no hay nada que enrutar y sería un botón más que no hace nada. Lleva emoji
+   en vez de SVG a propósito — es el MISMO icono que sale en el HUD al oírte
+   (⚡/💬), y esa correspondencia es la que enseña qué significa. */
+#btn-voice-mode[hidden] { display: none; }
+#btn-voice-mode .voice-mode-icon { font-size: 14px; line-height: 1; }
+#btn-voice-mode.voice-mode-charla { border: 1px solid var(--accent); }
+
 @keyframes voice-thinking-pulse {
   0%, 100% { transform: scale(1); opacity: 0.88; }
   50% { transform: scale(1.16); opacity: 1; }
@@ -1519,6 +1527,15 @@ body.layout-split #terminal-wrap { flex: 1; }
   flex-direction: column;
   gap: 4px;
 }
+
+/* Slider + etiqueta en la misma línea (velocidad de la voz). */
+.settings-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-inline input[type="range"] { flex: 1; }
+.settings-inline .settings-note { min-width: 64px; text-align: right; }
 
 .settings-row {
   display: flex;

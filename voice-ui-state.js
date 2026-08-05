@@ -100,7 +100,10 @@ function planForVoiceEvent(evt) {
       return { action: 'hud', text: String(evt.text || ''), holdMs: 0 }
 
     case 'heard': {
-      const icon = MODE_ICON[evt.mode] || '💬'
+      // El fallback es el destino por defecto (la sesión de trabajo), no el
+      // sub-chat: un icono que miente sobre dónde ha ido el turno es peor que
+      // ninguno, y ahí van los turnos salvo toggle manual.
+      const icon = MODE_ICON[evt.mode] || '⚡'
       return { action: 'hud', text: `${icon} ${evt.text || ''}`, holdMs: 2600 }
     }
 
@@ -126,13 +129,51 @@ function planForVoiceEvent(evt) {
   }
 }
 
+// ── Toggle de destino (⚡ sesión de trabajo / 💬 sub-chat) ────────────────
+// El destino por defecto es la sesión de trabajo (main/voice-router.js). Este
+// toggle es la única forma de mandar un turno al sub-chat, así que tiene que
+// decir SIEMPRE dónde va a caer lo próximo que digas — no dónde cayó lo
+// último.
+//
+// Nombres largos a propósito: este fichero comparte ámbito global con
+// renderer.js (ver el comentario del export, más abajo).
+const VOICE_MODE_ICON = { encargo: '⚡', charla: '💬' }
+
+function nextVoiceMode(actual) {
+  return actual === 'charla' ? 'encargo' : 'charla'
+}
+
+// Cualquier valor raro cae en 'encargo': es el defecto real del router, y un
+// botón que anuncia sub-chat cuando el turno va a la sesión de trabajo es peor
+// que uno que se queda corto.
+function voiceModeAppearance(mode) {
+  const m = mode === 'charla' ? 'charla' : 'encargo'
+  const esCharla = m === 'charla'
+  return {
+    mode: m,
+    icon: VOICE_MODE_ICON[m],
+    title: esCharla
+      ? 'Lo que digas va al sub-chat lateral — pulsa para hablarle a la sesión de trabajo'
+      : 'Lo que digas va a la sesión de trabajo — pulsa para hablarle al sub-chat',
+    ariaLabel: esCharla ? 'Destino de la voz: sub-chat lateral' : 'Destino de la voz: sesión de trabajo'
+  }
+}
+
 // OJO con el nombre: en el navegador esto NO es un módulo, es un `<script>`
 // clásico, así que sus `const` de primer nivel caen en el mismo ámbito que los
 // de renderer.js. Llamarlo `api` chocaba con el `api` de renderer.js y el
 // fichero moría con `Identifier 'api' has already been declared`, dejando la
 // página a medio cargar y TODOS los botones sin sus manejadores. Los tests no
 // lo veían porque en node esto se carga con require, en su propio ámbito.
-const voiceUiState = { VALID_STATES, classNameForVoiceState, voiceCliAvailability, voiceStateAppearance, planForVoiceEvent }
+const voiceUiState = {
+  VALID_STATES,
+  classNameForVoiceState,
+  voiceCliAvailability,
+  voiceStateAppearance,
+  planForVoiceEvent,
+  nextVoiceMode,
+  voiceModeAppearance
+}
 
 if (typeof module !== 'undefined' && module.exports) module.exports = voiceUiState
 if (typeof window !== 'undefined') window.VoiceUIState = voiceUiState

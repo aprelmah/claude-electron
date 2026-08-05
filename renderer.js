@@ -69,6 +69,9 @@ const cfgClaudeModel = document.getElementById('cfg-claude-model')
 const cfgGitIsolation = document.getElementById('cfg-git-isolation')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
+const cfgVoiceId = document.getElementById('cfg-voice-id')
+const cfgVoiceRate = document.getElementById('cfg-voice-rate')
+const cfgVoiceRateLabel = document.getElementById('cfg-voice-rate-label')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
@@ -2248,6 +2251,63 @@ async function refreshLanServerStatus(force = false) {
   }
 }
 
+// Etiqueta humana del slider de velocidad. La escala es la de AVSpeechUtterance
+// (0,5 = normal del sistema); los números a secas no le dicen nada a nadie.
+function voiceRateLabelText(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 'normal'
+  if (n < 0.42) return 'lenta'
+  if (n < 0.48) return 'algo lenta'
+  if (n <= 0.56) return 'normal'
+  if (n <= 0.62) return 'algo rápida'
+  return 'rápida'
+}
+
+async function refreshVoiceSettings(config) {
+  if (!cfgVoiceId || !cfgVoiceRate) return
+  const actual = config?.cli?.voiceId || ''
+  const rate = Number(config?.cli?.voiceRate)
+  cfgVoiceRate.value = Number.isFinite(rate) ? String(rate) : '0.52'
+  if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+
+  // Voces del sistema. Si el helper no contesta (binario ausente, timeout), el
+  // selector se queda con "Voz del sistema" + la guardada: nunca se pierde en
+  // silencio una voz ya elegida por no poder listar.
+  let res = null
+  try { res = await window.api.voice.voices() } catch { res = null }
+  const voces = res?.ok && Array.isArray(res.voices) ? res.voices : []
+  cfgVoiceId.innerHTML = ''
+  const porDefecto = document.createElement('option')
+  porDefecto.value = ''
+  porDefecto.textContent = 'Voz del sistema'
+  cfgVoiceId.appendChild(porDefecto)
+  const QUALITY_LABEL = { premium: 'premium', enhanced: 'mejorada', default: 'básica' }
+  for (const v of voces) {
+    if (!v || !v.id) continue
+    const opt = document.createElement('option')
+    opt.value = v.id
+    const calidad = QUALITY_LABEL[v.quality] || v.quality || ''
+    opt.textContent = calidad ? `${v.name} (${calidad})` : v.name
+    cfgVoiceId.appendChild(opt)
+  }
+  if (actual && !voces.some((v) => v && v.id === actual)) {
+    const opt = document.createElement('option')
+    opt.value = actual
+    opt.textContent = `${actual} (guardada)`
+    cfgVoiceId.appendChild(opt)
+  }
+  cfgVoiceId.value = actual
+  // Un value que no casa con ninguna option deja el select en blanco: caer a
+  // "Voz del sistema" explícitamente.
+  if (cfgVoiceId.value !== actual) cfgVoiceId.value = ''
+}
+
+if (cfgVoiceRate) {
+  cfgVoiceRate.addEventListener('input', () => {
+    if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+  })
+}
+
 async function refreshSettings() {
   const config = await window.api.getAppConfig()
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
@@ -2256,6 +2316,7 @@ async function refreshSettings() {
   if (cfgGitIsolation) cfgGitIsolation.checked = config?.cli?.gitSessionIsolation !== false
   cfgCodexBin.value = config?.cli?.codexBin || ''
   cfgWhisperBin.value = config?.cli?.whisperBin || ''
+  await refreshVoiceSettings(config)
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
   cfgTelegramToken.value = config?.telegram?.botToken || ''
   cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
@@ -2672,7 +2733,9 @@ btnSaveSettings.addEventListener('click', async () => {
       claudeModel: cfgClaudeModel ? cfgClaudeModel.value.trim() : '',
       gitSessionIsolation: cfgGitIsolation ? Boolean(cfgGitIsolation.checked) : true,
       codexBin: cfgCodexBin.value.trim(),
-      whisperBin: cfgWhisperBin.value.trim()
+      whisperBin: cfgWhisperBin.value.trim(),
+      voiceId: cfgVoiceId ? cfgVoiceId.value : '',
+      voiceRate: cfgVoiceRate ? cfgVoiceRate.value : ''
     },
     telegram: {
       enabled: cfgTelegramEnabled.checked,
@@ -4931,9 +4994,14 @@ cliSelector.addEventListener('change', async (e) => {
 // Lógica pura de estados/eventos en voice-ui-state.js (testeada); aquí solo
 // se aplica al DOM.
 const btnVoice = document.getElementById('btn-voice')
+const btnVoiceMode = document.getElementById('btn-voice-mode')
 const voiceHud = document.getElementById('voice-hud')
 let voiceOn = false
 let voiceHudTimer = null
+// Destino de lo que dices. 'encargo' (la sesión de trabajo) es el defecto del
+// router desde 2026-08-05; este botón es la ÚNICA forma de mandar un turno al
+// sub-chat, porque ya no hay detección automática de intención.
+let voiceMode = 'encargo'
 
 function showVoiceHud(text, holdMs = 2600) {
   if (!voiceHud) return
@@ -4953,9 +5021,22 @@ function setVoiceButtonState(state) {
   if (cls) btnVoice.classList.add(cls)
 }
 
+function applyVoiceMode(mode) {
+  const look = window.VoiceUIState?.voiceModeAppearance?.(mode) || { mode: 'encargo', icon: '⚡', title: '', ariaLabel: '' }
+  voiceMode = look.mode
+  if (!btnVoiceMode) return
+  const icono = btnVoiceMode.querySelector('.voice-mode-icon')
+  if (icono) icono.textContent = look.icon
+  btnVoiceMode.title = look.title
+  btnVoiceMode.setAttribute('aria-label', look.ariaLabel)
+  btnVoiceMode.classList.toggle('voice-mode-charla', look.mode === 'charla')
+}
+
 function setVoiceOn(on) {
   voiceOn = !!on
   if (btnVoice) btnVoice.setAttribute('aria-pressed', voiceOn ? 'true' : 'false')
+  // El toggle de destino solo tiene sentido con el modo voz encendido.
+  if (btnVoiceMode) btnVoiceMode.hidden = !voiceOn
   if (!voiceOn) setVoiceButtonState('idle')
 }
 
@@ -5030,8 +5111,29 @@ if (btnVoice) {
     btnVoice.classList.remove('voice-broken')
     btnVoice.title = 'Modo voz — hablar con el agente'
     setVoiceOn(true)
+    // Cada encendido arranca hablándole a la sesión de trabajo. `setForcedMode`
+    // vive en el proceso main y sobrevive a un apagado, así que hay que fijarlo
+    // explícitamente o el botón diría ⚡ mientras el backend sigue en charla.
+    applyVoiceMode('encargo')
+    try { await window.api.voice.setMode('encargo') } catch {}
     showVoiceHud('Modo voz activo — habla cuando quieras')
   })
+
+  if (btnVoiceMode) {
+    btnVoiceMode.addEventListener('click', async () => {
+      const siguiente = window.VoiceUIState?.nextVoiceMode?.(voiceMode) || 'charla'
+      let res = null
+      try { res = await window.api.voice.setMode(siguiente) } catch { res = null }
+      if (!res?.ok) {
+        // El backend rechaza si el modo voz es de otra ventana: el botón NO se
+        // mueve, o mentiría sobre dónde va a caer el turno siguiente.
+        showStatus(`Modo voz: ${res?.reason || 'no se pudo cambiar el destino'}`, 'error', 4000)
+        return
+      }
+      applyVoiceMode(siguiente)
+      showVoiceHud(siguiente === 'charla' ? '💬 lo próximo va al sub-chat' : '⚡ lo próximo va a la sesión de trabajo')
+    })
+  }
 
   window.api.voice.onEvent(async (evt) => {
     const plan = window.VoiceUIState?.planForVoiceEvent?.(evt) || { action: 'none' }

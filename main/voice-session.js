@@ -358,9 +358,22 @@ function createVoiceSession({
     setState('speaking')
     notify({ type: 'saying', text: texto })
     armSpeakGuard(texto.length)
-    // Micro abierto mientras habla, a propósito: sin él no hay barge-in
-    // (ver cabecera). El helper ignora un `start` si ya está escuchando.
-    sendCmd({ cmd: 'start' })
+    // MICRO CERRADO MIENTRAS HABLA (cambiado el 2026-08-05 tras la primera
+    // prueba real; antes se reabría aquí para tener barge-in por voz).
+    //
+    // Medido en la app, no supuesto: con el micro abierto el helper captaba su
+    // propia voz por encima del umbral y se cortaba a sí mismo al segundo, dos
+    // veces de dos —
+    //   SPEAK id=s1 chars=43  → BARGE-IN (level=0,031; umbral 0,012)
+    //   SPEAK id=s2 chars=693 → BARGE-IN (level=0,029)
+    // La cancelación de eco no basta con el altavoz del propio Mac, y encima
+    // VoiceProcessingIO aplica ducking mientras el micro está abierto: lo poco
+    // que sonaba, sonaba bajísimo.
+    //
+    // Precio asumido: se pierde el barge-in por voz (hablarle encima para
+    // cortarle). Para cortar, el botón del modo voz. El micro se reabre solo
+    // en `speech-end` vía `listen()`, y el guardia de tiempo cubre el caso de
+    // que ese aviso no llegue nunca.
   }
 
   function handleHelperEvent(evt) {

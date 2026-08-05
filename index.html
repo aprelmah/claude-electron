@@ -239,6 +239,9 @@
       <button id="btn-voice" class="icon-btn" title="Modo voz — hablar con el agente" aria-label="Activar modo voz" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h2M20 12h2M6 8v8M10 5v14M14 7v10M18 9v6"/></svg>
       </button>
+      <button id="btn-voice-mode" class="icon-btn voice-mode-btn" title="Lo que digas va a la sesión de trabajo — pulsa para hablarle al sub-chat" aria-label="Destino de la voz: sesión de trabajo" hidden>
+        <span class="voice-mode-icon" aria-hidden="true">⚡</span>
+      </button>
       <button id="btn-pin" class="icon-btn" title="Fijar siempre encima" aria-label="Fijar ventana siempre encima" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-2-6V5H7v6l-2 6z"/></svg>
       </button>
@@ -501,6 +504,19 @@
           <label class="settings-field">
             <span>WHISPER_BIN</span>
             <input id="cfg-whisper-bin" type="text" placeholder="/ruta/a/whisper o comando" />
+          </label>
+          <label class="settings-field">
+            <span>Voz del modo voz</span>
+            <select id="cfg-voice-id">
+              <option value="">Voz del sistema</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>Velocidad de la voz</span>
+            <div class="settings-inline">
+              <input id="cfg-voice-rate" type="range" min="0.3" max="0.7" step="0.01" value="0.52" />
+              <span id="cfg-voice-rate-label" class="settings-note">normal</span>
+            </div>
           </label>
         </div>
 
