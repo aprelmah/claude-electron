@@ -54,6 +54,9 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     private var vocabulary: [String] = []
     private var voiceId: String?
     private var speakingId: String?
+    // Escala de AVSpeechUtterance.rate (0..1, 0,5 = normal del sistema).
+    // 0,52 medido como el punto cómodo por defecto en es-ES.
+    private var speechRate: Float = 0.52
 
     // Endpointing propio. 1,1 s sale de la medición: el texto se estabiliza a
     // ~1,0 s de callar. El de Apple es más lento y no es configurable.
@@ -148,20 +151,48 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
     private func openMic() throws {
         let input = engine.inputNode
-        // Cancelación de eco: sin esto el micro capta el propio TTS y el manos
-        // libres se autointerrumpe sin parar. Verificado que funciona.
-        do { try input.setVoiceProcessingEnabled(true) }
-        catch { emit(["type": "warn", "message": "sin cancelación de eco: usa auriculares"]) }
+        // SIN cancelación de eco (setVoiceProcessingEnabled), decidido el
+        // 2026-08-05 con las pruebas reales delante. VoiceProcessingIO existía
+        // para el barge-in (hablarle encima con el TTS sonando), pero el micro
+        // ya se cierra mientras habla (main/voice-session.js), así que no
+        // protegía nada — y cobraba caro: pasa el nodo a 4 canales (el
+        // reconocedor no los digiere → error 1110 "no speech detected") y mete
+        // el proceso en modo comunicación, con macOS bajando TODO el audio del
+        // sistema (ducking) mientras el micro esté abierto. Verificado en vivo:
+        // sin VP transcribe igual y la música no baja. Precio asumido: con
+        // música alta de fondo el reconocimiento pierde — se baja la música.
 
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
-            self.request?.append(buffer)
+            // El reconocedor solo digiere mono/estéreo. Ver monoCopy.
+            self.request?.append(VoiceEngine.monoCopy(buffer) ?? buffer)
             self.onAudio(level: VoiceEngine.rms(buffer))
         }
         engine.prepare()
         try engine.start()
+    }
+
+    // Guarda defensiva: SFSpeechAudioBufferRecognitionRequest solo digiere
+    // mono/estéreo. Con más canales acepta los buffers sin rechistar y devuelve
+    // `kAFAssistantErrorDomain 1110` ("no speech detected") con el audio lleno
+    // de voz — lo hacía VoiceProcessingIO (4 canales, bug real 2026-08-05,
+    // 912 buffers con rms 0,07 y ni una palabra) y lo puede hacer cualquier
+    // interfaz de audio externa multicanal. El canal 0 es el del micro; basta
+    // copiarlo a mono (mismo sample rate, mismo float32 no entrelazado).
+    private static func monoCopy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.format.channelCount > 2 else { return buffer }
+        guard let src = buffer.floatChannelData?[0] else { return nil }
+        guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                      sampleRate: buffer.format.sampleRate,
+                                      channels: 1,
+                                      interleaved: false),
+              let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: buffer.frameLength),
+              let dst = out.floatChannelData?[0] else { return nil }
+        out.frameLength = buffer.frameLength
+        dst.assign(from: src, count: Int(buffer.frameLength))
+        return out
     }
 
     private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
@@ -221,6 +252,11 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         endTimer?.invalidate(); endTimer = nil
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
+        // Cinturón: si algún día vuelve VoiceProcessing, soltarlo aquí es lo
+        // que evita que el proceso se quede en "modo comunicación" con macOS
+        // bajando todo el audio del sistema (pasó el 2026-08-05). Hoy es un
+        // no-op porque openMic ya no lo activa.
+        try? engine.inputNode.setVoiceProcessingEnabled(false)
         request?.endAudio()
         task?.cancel()
         request = nil; task = nil
@@ -236,7 +272,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         let u = AVSpeechUtterance(string: text)
         if let vid = voiceId, let v = AVSpeechSynthesisVoice(identifier: vid) { u.voice = v }
         else { u.voice = AVSpeechSynthesisVoice(language: locale) }
-        u.rate = 0.52
+        u.rate = speechRate
         speakingId = id
         emit(["type": "speech-start", "id": id])
         synth.speak(u)
@@ -253,6 +289,14 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func setVoice(_ identifier: String?) { voiceId = identifier }
+
+    // Mismo tope que sanitizeVoiceRate en Node (main/config-store.js): aunque
+    // Node ya acota, el helper no se fía de su entrada — cualquier proceso
+    // puede hablarle por stdin.
+    func setRate(_ value: Double?) {
+        guard let v = value, v.isFinite else { return }
+        speechRate = Float(min(0.7, max(0.3, v)))
+    }
 
     func listVoices() {
         let voices = AVSpeechSynthesisVoice.speechVoices()
@@ -297,6 +341,7 @@ func handle(_ line: String) {
         case "shutup": engine.shutUp()
         case "vocab":  engine.setVocabulary(msg["words"] as? [String] ?? [])
         case "voice":  engine.setVoice(msg["id"] as? String)
+        case "rate":   engine.setRate(msg["value"] as? Double)
         case "voices": engine.listVoices()
         case "quit":   exitDraining(0)
         default:       fail("comando desconocido: \(cmd)")

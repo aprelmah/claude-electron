@@ -247,13 +247,20 @@ async function hastaHablando(h, texto = 'Todo bien.') {
 }
 
 describe('voice-session: barge-in', () => {
-  test('mientras habla el micro sigue abierto: si no, el barge-in no existe', async () => {
-    // El corte lo detecta el tap de audio del helper (onAudio). Con el micro
-    // cerrado ese código no se ejecuta nunca y hablarle encima no hace nada.
+  test('mientras habla el micro se queda CERRADO: si no, se corta a sí mismo', async () => {
+    // Cambiado el 2026-08-05 con la primera prueba real delante. Antes se
+    // reabría aquí para poder cortarle hablándole encima; medido en la app, el
+    // helper captaba su propia voz por el altavoz del Mac (level 0,031 contra
+    // un umbral de 0,012) y se auto-interrumpía al segundo, las dos veces que
+    // habló. Y VoiceProcessingIO, con el micro abierto, hace ducking de la
+    // salida: encima sonaba bajísimo. El micro vuelve solo en `speech-end`.
     const h = makeHarness()
     const speak = await hastaHablando(h)
     const iSpeak = h.helperCmds.indexOf(speak)
-    assert.ok(h.helperCmds.slice(iSpeak).some((c) => c.cmd === 'start'), 'debe reabrir el micro al empezar a hablar')
+    assert.ok(
+      !h.helperCmds.slice(iSpeak).some((c) => c.cmd === 'start'),
+      'no debe reabrir el micro mientras habla'
+    )
   })
 
   test('el corte no cierra el micro: se perdería lo que acaba de reconocer', async () => {
