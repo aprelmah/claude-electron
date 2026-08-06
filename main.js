@@ -66,6 +66,9 @@ const { createSessionGit } = require('./main/session-git')
 const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
 const { createVoiceHelperProcess } = require('./main/voice-helper-process')
+const { createAppleFileTranscriber } = require('./main/apple-transcribe')
+const { writePromptThenEnter } = require('./main/pty-prompt-write')
+const { createVoiceNoteMaker } = require('./main/voice-note')
 const { createVoiceTurnWatcher } = require('./main/voice-turn-watcher')
 const { createVoiceSendTarget, pickForkedSessionId, voiceTurnLockActive } = require('./main/voice-send-target')
 const { createTaskSessionForkWatch } = require('./main/task-session-fork-watch')
@@ -403,10 +406,20 @@ const {
 const cliResolver = createCliResolver(() => appConfig)
 const { getConfiguredBin, getConfiguredWhisperBin, buildRuntimeEnv, cliMeta, ensureCliAvailable } = cliResolver
 
+// Vía Apple (helper de voz) para transcribir audios: se crea más abajo, junto
+// al voiceHelper — late binding a propósito, mismo patrón que los índices de
+// createSessionListing. Si aún no existe, el transcriber cae a whisper.
+let appleFileTranscriber = null
+
 const { transcribeAudioFile } = createTranscriber({
   getWhisperBin: () => getConfiguredWhisperBin(),
   modelPath: WHISPER_CPP_MODEL,
-  tmpDir: TMP_DIR
+  tmpDir: TMP_DIR,
+  appleTranscribe: (wavPath, meta) => {
+    if (!appleFileTranscriber) return Promise.reject(new Error('helper de voz aún no inicializado'))
+    return appleFileTranscriber.transcribeWav(wavPath, meta)
+  },
+  log: (m) => console.log('[transcribe]', m)
 })
 
 function shellQuote(s) {
@@ -1304,7 +1317,11 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       }
 
       armSilenceTimer()
-      try { session.pty.write(message + '\r') } catch (err) { finishErr(err); return }
+      // El ENTER va APARTE del texto (main/pty-prompt-write.js): pegados en el
+      // mismo write, el TUI lo trata como pegado y el turno queda escrito sin
+      // enviar. Con textos cortos colaba; una transcripción de voz lo destapó.
+      writePromptThenEnter((chunk) => session.pty.write(chunk), message)
+        .catch((err) => finishErr(err))
     }, PRE_DRAIN_MS)
   })
 }
@@ -1418,9 +1435,29 @@ const voiceHelper = createVoiceHelperProcess({
   helperPath: VOICE_HELPER_PATH,
   spawnFn: (bin, args, opts) => spawn(bin, args, opts),
   onEvent: (evt) => {
+    // Traza de eventos del helper (volumen bajo: unos pocos por frase). Vital
+    // para diagnosticar el modo voz en la app instalada: lanzándola desde
+    // Terminal con redirect se ve dónde se corta el ciclo
+    // listening→speech-detected→partial→final.
+    try {
+      if (evt && evt.type !== 'voices') {
+        const extra = typeof evt.text === 'string' ? ` "${evt.text.slice(0, 60)}"` : ''
+        console.log('[voz-evt]', evt.type + extra)
+      }
+    } catch {}
     if (evt && evt.type === 'voices' && typeof voiceVoicesWaiter === 'function') {
       voiceVoicesWaiter(Array.isArray(evt.voices) ? evt.voices : [])
     }
+    // Las transcripciones de fichero (ids `ftr:`) y las síntesis a fichero
+    // (ids `syn:`) se consumen las primeras: sus eventos no son de nadie más.
+    // Un `error` fatal rechaza sus pendientes pero NO se consume —
+    // voice-session también tiene que verlo.
+    try {
+      if (appleFileTranscriber?.handleHelperEvent(evt)) return
+    } catch (err) { console.warn('[voz]', err?.message || err) }
+    try {
+      if (voiceNoteMaker?.handleHelperEvent(evt)) return
+    } catch (err) { console.warn('[voz]', err?.message || err) }
     // Las lecturas del visor (ids `viewer:`) se consumen antes de que los vea
     // voice-session; los hello pasan a los dos (no se consumen).
     let consumido = false
@@ -1489,6 +1526,29 @@ const viewerSpeech = createViewerSpeech({
     } catch {}
   },
   log: (m) => console.log('[voz]', m)
+})
+
+// Transcripción de audios (Telegram/WhatsApp/dictado) por Apple Speech en
+// servidor, con whisper de fallback en main/whisper-transcribe.js. El helper
+// se arranca solo para esto y se para al acabar — salvo que el modo voz o el
+// lector del visor lo tengan en uso.
+appleFileTranscriber = createAppleFileTranscriber({
+  helper: voiceHelper,
+  // El transcriptor y el sintetizador comparten helper: ninguno lo para si el
+  // otro tiene trabajo pendiente (de ahí el cruce de pendingCount).
+  isVoiceInUse: () => voiceSession.isEnabled() || viewerSpeech.isReading() || voiceNoteMaker.pendingCount() > 0,
+  log: (m) => console.log('[transcribe]', m)
+})
+
+// Notas de voz de respuesta para Telegram (texto → TTS con la voz configurada
+// → .ogg opus). Ver main/voice-note.js.
+const voiceNoteMaker = createVoiceNoteMaker({
+  helper: voiceHelper,
+  tmpDir: TMP_DIR,
+  ffmpegBin: FFMPEG_BIN,
+  applyPrefs: () => applyVoicePrefsToHelper(),
+  isVoiceInUse: () => voiceSession.isEnabled() || viewerSpeech.isReading() || appleFileTranscriber.pendingCount() > 0,
+  log: (m) => console.log('[voz-nota]', m)
 })
 
 // Todos los sessionIds de claude que YA tienen dueño: sesiones vivas, sus
@@ -2775,6 +2835,15 @@ function initTelegramBridge() {
     stateDir: app.getPath('userData'),
     onTranscribeFile: async (filePath) => {
       return transcribeAudioFile(filePath, buildRuntimeEnv())
+    },
+    // Audio va, audio viene: la respuesta a una nota de voz vuelve como nota
+    // de voz. El markdown pasa por el mismo filtro hablable del modo voz
+    // (fuera código/diffs/tablas, tope 2000); si no queda nada que decir, se
+    // devuelve null y el bridge manda el texto completo.
+    onMakeVoiceNote: async (texto) => {
+      const hablable = speakableFromMarkdown(texto)
+      if (!hablable || !hablable.trim()) return null
+      return voiceNoteMaker.makeVoiceNote(hablable)
     },
     onRunQuery: async (opts) => {
       const tg = appConfig.telegram || {}

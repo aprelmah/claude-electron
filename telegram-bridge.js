@@ -53,6 +53,23 @@ function createAbortError() {
 
 const MAX_MESSAGE_LEN = 3800
 
+// Cuerpo multipart/form-data a mano (sin dependencias): lo que pide la API de
+// Telegram para subir ficheros locales (sendVoice). Puro y exportado para test.
+function buildMultipartBody(fields, fileField) {
+  const boundary = '----poweragent' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+  const parts = []
+  for (const [name, value] of Object.entries(fields || {})) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`))
+  }
+  if (fileField) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField.name}"; filename="${fileField.filename}"\r\nContent-Type: ${fileField.contentType}\r\n\r\n`))
+    parts.push(fileField.buffer)
+    parts.push(Buffer.from('\r\n'))
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`))
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
 class TelegramStream {
   constructor(bridge, chatId, messageId) {
     this.bridge = bridge
@@ -198,6 +215,7 @@ class TelegramBridge {
     tmpDir,
     stateDir,
     onTranscribeFile,
+    onMakeVoiceNote,
     onRunQuery,
     onGetActiveCli,
     onGetCwd,
@@ -216,6 +234,7 @@ class TelegramBridge {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
     this.onTranscribeFile = onTranscribeFile
+    this.onMakeVoiceNote = onMakeVoiceNote
     this.onRunQuery = onRunQuery
     this.onGetActiveCli = onGetActiveCli
     this.onGetCwd = onGetCwd
@@ -563,9 +582,9 @@ class TelegramBridge {
     await this._enqueueQuery(chatId, text)
   }
 
-  _enqueueQuery(chatId, prompt) {
+  _enqueueQuery(chatId, prompt, opts) {
     const prev = this.chatQueues.get(chatId) || Promise.resolve()
-    const next = prev.catch(() => {}).then(() => this._runQuery(chatId, prompt))
+    const next = prev.catch(() => {}).then(() => this._runQuery(chatId, prompt, opts))
     this.chatQueues.set(chatId, next)
     next.finally(() => {
       if (this.chatQueues.get(chatId) === next) this.chatQueues.delete(chatId)
@@ -573,8 +592,11 @@ class TelegramBridge {
     return next
   }
 
-  async _runQuery(chatId, prompt) {
+  async _runQuery(chatId, prompt, opts = {}) {
     if (!this.running) return
+    // Audio va, audio viene: la consulta que entró como nota de voz responde
+    // con nota de voz (si hay onMakeVoiceNote; si no, texto de siempre).
+    const voiceReply = !!(opts?.voiceReply && typeof this.onMakeVoiceNote === 'function')
     const cli = (await this.onGetActiveCli?.()) || 'claude'
     const sessionId = this._getSessionId(chatId, cli)
     const promptText = String(prompt || '')
@@ -593,12 +615,16 @@ class TelegramBridge {
     const abortController = new AbortController()
     this.activeStreams.set(chatId, abortController)
 
-    this._sendChatAction(chatId, 'typing').catch(() => {})
+    const accion = voiceReply ? 'record_voice' : 'typing'
+    this._sendChatAction(chatId, accion).catch(() => {})
     const typingInterval = setInterval(() => {
-      this._sendChatAction(chatId, 'typing').catch(() => {})
+      this._sendChatAction(chatId, accion).catch(() => {})
     }, 4000)
 
-    const stream = new TelegramStream(this, chatId, null)
+    // En modo voz NO se streamea texto: se acumula y al final sale como nota
+    // de voz (o como texto de fallback, entero, si la síntesis falla).
+    const stream = voiceReply ? null : new TelegramStream(this, chatId, null)
+    let voiceBuf = ''
     let runOk = false
     let runError = ''
     let resolvedSessionId = sessionId || null
@@ -618,8 +644,8 @@ class TelegramBridge {
         sessionId,
         chatCwd: this._getChatCwd(chatId),
         signal: abortController.signal,
-        onText: (text) => stream.appendText(text),
-        onToolUse: (name) => stream.appendStatus(`[${name}]`),
+        onText: (text) => { if (voiceReply) voiceBuf += text; else stream.appendText(text) },
+        onToolUse: (name) => { if (!voiceReply) stream.appendStatus(`[${name}]`) },
         onSessionId: (id) => this._setSessionId(chatId, cli, id)
       })
       if (result?.sessionId) this._setSessionId(chatId, cli, result.sessionId)
@@ -630,14 +656,19 @@ class TelegramBridge {
       // ("qué raro responde" → se ve el proyecto/sesión equivocados). Solo si
       // hay respuesta real: sobre "(sin respuesta)" no aporta y confunde.
       const footer = this._contextFooter(chatId, cli)
-      await stream.finalize(footer && stream.buffer.trim() ? footer : undefined)
+      if (voiceReply) {
+        await this._deliverVoiceReply(chatId, voiceBuf.trim() || String(result?.text || '').trim(), footer)
+      } else {
+        await stream.finalize(footer && stream.buffer.trim() ? footer : undefined)
+      }
     } catch (err) {
       runError = err?.message || String(err)
       clearInterval(typingInterval)
-      if (err?.name === 'AbortError') {
-        await stream.finalize('(cancelado)')
+      const cierre = err?.name === 'AbortError' ? '(cancelado)' : `Error: ${err?.message || err}`
+      if (voiceReply) {
+        try { await this._sendMessage(chatId, cierre) } catch {}
       } else {
-        await stream.finalize(`Error: ${err?.message || err}`)
+        await stream.finalize(cierre)
       }
     } finally {
       clearInterval(typingInterval)
@@ -655,6 +686,79 @@ class TelegramBridge {
         })
       } catch {}
     }
+  }
+
+  // Entrega la respuesta de un turno que entró por voz: nota de voz con el
+  // pie de contexto como caption; si la síntesis falla o devuelve null, el
+  // texto completo de fallback (con pie). El .ogg lo borra siempre este método.
+  async _deliverVoiceReply(chatId, texto, footer) {
+    if (!texto) {
+      try { await this._sendMessage(chatId, '(sin respuesta)') } catch {}
+      return
+    }
+    let enviado = false
+    let oggPath = null
+    try {
+      oggPath = await this.onMakeVoiceNote(texto)
+      if (oggPath) {
+        await this._sendVoiceNote(chatId, oggPath, footer || undefined)
+        enviado = true
+      }
+    } catch (err) {
+      console.warn('[telegram] nota de voz fallida, caigo a texto:', err?.message || err)
+    } finally {
+      if (oggPath) { try { fs.unlinkSync(oggPath) } catch {} }
+    }
+    if (!enviado) {
+      const completo = footer ? `${texto}\n\n${footer}` : texto
+      for (const parte of splitByLimit(completo, MAX_MESSAGE_LEN)) {
+        try { await this._sendMessage(chatId, parte) } catch {}
+      }
+    }
+  }
+
+  async _sendVoiceNote(chatId, filePath, caption) {
+    const buffer = fs.readFileSync(filePath)
+    const fields = { chat_id: String(chatId) }
+    if (caption) fields.caption = String(caption).slice(0, 1024)
+    return this._apiUpload('sendVoice', fields, { name: 'voice', filename: 'nota.ogg', contentType: 'audio/ogg', buffer })
+  }
+
+  // Como _api pero multipart/form-data: la única vía para subir un fichero
+  // local a la API de Telegram sin dependencias.
+  async _apiUpload(method, fields, fileField) {
+    const token = this.config?.botToken
+    if (!token) throw new Error('Bot token no configurado.')
+    const { body, contentType } = buildMultipartBody(fields, fileField)
+    const data = await new Promise((resolve, reject) => {
+      const target = new URL(`https://api.telegram.org/bot${token}/${method}`)
+      const req = https.request({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: target.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': contentType, 'Content-Length': body.length }
+      }, (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('error', reject)
+        res.on('end', () => {
+          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8'))) }
+          catch (err) { reject(err) }
+        })
+      })
+      req.on('error', reject)
+      req.end(body)
+    })
+    if (!data.ok) {
+      const err = new Error(`Telegram ${method}: ${data.description || 'error'}`)
+      err.description = data.description
+      err.errorCode = data.error_code
+      err.parameters = data.parameters
+      throw err
+    }
+    return data.result
   }
 
   // setMyCommands puebla el botón "Menú" nativo de Telegram con los comandos.
@@ -725,7 +829,11 @@ class TelegramBridge {
 
   async _handleVoice(chatId, fileId) {
     try {
-      await this._sendMessage(chatId, 'Transcribiendo nota de voz...')
+      // Audio va, audio viene: nada de mensajes de estado ni de eco de la
+      // transcripción (pedido por Luismi, 2026-08-06) — el feedback mientras
+      // se transcribe es la acción de chat, y la respuesta llega como nota de
+      // voz desde _runQuery. Los errores sí van en texto.
+      this._sendChatAction(chatId, 'typing').catch(() => {})
       const fileInfo = await this._api('getFile', { file_id: fileId })
       const filePath = fileInfo?.file_path
       if (!filePath) throw new Error('No se pudo resolver file_path de Telegram.')
@@ -749,8 +857,7 @@ class TelegramBridge {
       }
 
       const cleaned = transcript.trim()
-      await this._sendMessage(chatId, `Voz: ${cleaned}`)
-      await this._enqueueQuery(chatId, cleaned)
+      await this._enqueueQuery(chatId, cleaned, { voiceReply: true })
     } catch (err) {
       await this._sendMessage(chatId, `Error en voz: ${err?.message || err}`)
     }
@@ -1357,4 +1464,4 @@ class TelegramBridge {
   }
 }
 
-module.exports = { TelegramBridge }
+module.exports = { TelegramBridge, buildMultipartBody }

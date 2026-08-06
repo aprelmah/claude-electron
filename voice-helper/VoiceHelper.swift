@@ -82,6 +82,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         self.locale = locale
         super.init()
         synth.delegate = self
+        fileSynth.delegate = self
     }
 
     // ── Permisos ─────────────────────────────────────────────────────────
@@ -376,12 +377,190 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         emit(["type": "voices", "voices": voices])
     }
 
+    // ── Transcripción de ficheros (audios de Telegram/WhatsApp, dictado) ──
+    // Vía SFSpeechURLRecognitionRequest en servidor: el mismo motor que la
+    // escucha en vivo pero sobre un wav ya grabado — sin micrófono, así que
+    // la autorización solo pide reconocimiento (nada de diálogo de micro si
+    // el modo voz nunca se usó). Reconocedor APARTE del de la escucha: las
+    // tasks son independientes y una transcripción de fichero no debe
+    // compartir estado con un turno de voz en marcha.
+    private var fileRecognizer: SFSpeechRecognizer?
+    private var fileTasks: [String: SFSpeechRecognitionTask] = [:]
+    private var fileGuards: [String: Timer] = [:]
+    private var speechOnlyAuthorized = false
+    // Si el servidor nunca contesta, la task no puede quedarse colgada para
+    // siempre: Node tiene su propio timeout (más corto) y cae a whisper.
+    private let fileTaskGuard: TimeInterval = 60
+
+    private func authorizeSpeechOnly(_ done: @escaping (Bool) -> Void) {
+        if authorized || speechOnlyAuthorized { done(true); return }
+        SFSpeechRecognizer.requestAuthorization { status in
+            DispatchQueue.main.async {
+                guard status == .authorized else { done(false); return }
+                self.speechOnlyAuthorized = true
+                done(true)
+            }
+        }
+    }
+
+    func transcribeFile(id: String, path: String) {
+        guard !id.isEmpty else { fail("transcribe sin id"); return }
+        guard FileManager.default.fileExists(atPath: path) else {
+            emit(["type": "file-transcript-error", "id": id, "message": "no existe el fichero: \(path)"]); return
+        }
+        authorizeSpeechOnly { ok in
+            guard ok else {
+                emit(["type": "file-transcript-error", "id": id, "message": "permiso de reconocimiento denegado"]); return
+            }
+            self.runFileTask(id: id, path: path)
+        }
+    }
+
+    private func runFileTask(id: String, path: String) {
+        if fileRecognizer == nil {
+            fileRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
+        }
+        guard let rec = fileRecognizer, rec.isAvailable else {
+            emit(["type": "file-transcript-error", "id": id, "message": "reconocedor no disponible (¿sin red?)"]); return
+        }
+        let req = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: path))
+        // Servidor, no on-device: decisión medida, ver cabecera.
+        req.requiresOnDeviceRecognition = false
+        req.shouldReportPartialResults = false
+        if !vocabulary.isEmpty { req.contextualStrings = vocabulary }
+
+        // Texto acumulado del fichero, compartido entre el callback y la
+        // guardia (captura por referencia): si algo corta a mitad, se manda
+        // lo que haya en vez de perderlo todo.
+        var collected = ""
+        let task = rec.recognitionTask(with: req) { [weak self] result, error in
+            guard let self = self else { return }
+            guard self.fileTasks[id] != nil else { return }
+            if let e = error as NSError? {
+                // 216/301 = cancelación propia (guardia ya disparada).
+                if e.code == 216 || e.code == 301 { return }
+                self.finishFile(id: id, error: e.localizedDescription, text: collected)
+                return
+            }
+            guard let result = result else { return }
+            let text = result.bestTranscription.formattedString
+            if !text.isEmpty { collected = text }
+            if result.isFinal { self.finishFile(id: id, error: nil, text: collected) }
+        }
+        fileTasks[id] = task
+        fileGuards[id]?.invalidate()
+        fileGuards[id] = Timer.scheduledTimer(withTimeInterval: fileTaskGuard, repeats: false) { [weak self] _ in
+            self?.finishFile(id: id, error: "tiempo agotado transcribiendo el fichero", text: collected)
+        }
+    }
+
+    // ── Síntesis a fichero (notas de voz de respuesta para Telegram) ─────
+    // Renderiza el texto con la voz/velocidad configuradas a un .caf (formato
+    // que decide el propio sintetizador; ffmpeg lo convierte después a opus).
+    // Sintetizador APARTE del de hablar en alto: compartirlo mezclaría los
+    // callbacks de write() con los del speak() en curso. Node serializa: UNA
+    // síntesis a la vez (mismo contrato que speak).
+    //
+    // El FIN de la síntesis lo marca el `didFinish` del delegate, NO un buffer
+    // con frameLength 0: en este macOS (12, probado en vivo 2026-08-06) ese
+    // buffer vacío de los ejemplos de Apple no llega nunca — el .caf se
+    // escribía entero y el synth-done no salía jamás. El chequeo de
+    // frameLength 0 se queda de cinturón por si otra versión sí lo manda.
+    private let fileSynth = AVSpeechSynthesizer()
+    private var fileSynthFile: AVAudioFile?
+    private var fileSynthId: String?
+    private var fileSynthPath: String?
+    private var fileSynthWrote = false
+
+    func synthToFile(id: String, text: String, path: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { fail("synth sin id"); return }
+        guard !trimmed.isEmpty else {
+            emit(["type": "synth-error", "id": id, "message": "texto vacío"]); return
+        }
+        guard fileSynthId == nil else {
+            emit(["type": "synth-error", "id": id, "message": "ya hay una síntesis en curso"]); return
+        }
+        fileSynthId = id
+        fileSynthPath = path
+        fileSynthWrote = false
+        fileSynthFile = nil
+        let u = AVSpeechUtterance(string: trimmed)
+        if let vid = voiceId, let v = AVSpeechSynthesisVoice(identifier: vid) { u.voice = v }
+        else { u.voice = AVSpeechSynthesisVoice(language: locale) }
+        u.rate = speechRate
+        // El hilo del callback de write() no está documentado. Medido en este
+        // Mac: llega en el MAIN thread, así que un `async` a main difiere cada
+        // buffer a la vuelta siguiente del run loop y el `didFinish` (llamada
+        // directa del sintetizador) se cuela ANTES que todos ellos → salía
+        // "síntesis vacía" con el audio entero renderizado. En línea si ya
+        // estamos en main; `sync` (preserva el orden) si algún día cambia.
+        fileSynth.write(u) { [weak self] buffer in
+            if Thread.isMainThread { self?.appendFileSynthBuffer(buffer) }
+            else { DispatchQueue.main.sync { self?.appendFileSynthBuffer(buffer) } }
+        }
+    }
+
+    private func appendFileSynthBuffer(_ buffer: AVAudioBuffer) {
+        guard let id = fileSynthId, let path = fileSynthPath else { return }
+        guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+        if pcm.frameLength == 0 { completeFileSynth(); return }
+        do {
+            if fileSynthFile == nil {
+                fileSynthFile = try AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: pcm.format.settings)
+            }
+            try fileSynthFile?.write(from: pcm)
+            fileSynthWrote = true
+        } catch {
+            clearFileSynth()
+            emit(["type": "synth-error", "id": id, "message": "no se pudo escribir el audio: \(error.localizedDescription)"])
+        }
+    }
+
+    fileprivate func completeFileSynth() {
+        guard let id = fileSynthId else { return }
+        let wrote = fileSynthWrote
+        let path = fileSynthPath ?? ""
+        clearFileSynth()
+        if wrote { emit(["type": "synth-done", "id": id, "path": path]) }
+        else { emit(["type": "synth-error", "id": id, "message": "síntesis vacía (¿voz no disponible?)"]) }
+    }
+
+    private func clearFileSynth() {
+        // Soltar el AVAudioFile es lo que vuelca la cabecera a disco (no hay
+        // close explícito): siempre antes de emitir el done.
+        fileSynthFile = nil
+        fileSynthId = nil
+        fileSynthPath = nil
+        fileSynthWrote = false
+    }
+
+    private func finishFile(id: String, error: String?, text: String) {
+        guard let task = fileTasks.removeValue(forKey: id) else { return }
+        fileGuards[id]?.invalidate(); fileGuards.removeValue(forKey: id)
+        // Sobre una task que ya dio su isFinal el cancel es un no-op; sobre la
+        // guardia disparada, es lo que la mata de verdad.
+        task.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let e = error, trimmed.isEmpty {
+            emit(["type": "file-transcript-error", "id": id, "message": e])
+        } else {
+            // Con texto parcial y error, el texto vale más que el error.
+            emit(["type": "file-transcript", "id": id, "text": trimmed])
+        }
+    }
+
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        // El delegate es compartido entre el sintetizador de hablar en alto y
+        // el de fichero: se distingue por identidad. Para el de fichero este
+        // didFinish ES la señal de fin (ver nota en synthToFile).
+        if s === fileSynth { completeFileSynth(); return }
         emit(["type": "speech-end", "id": speakingId ?? "", "finished": true])
         speakingId = nil
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        if s === fileSynth { completeFileSynth(); return }
         emit(["type": "speech-end", "id": speakingId ?? "", "finished": false])
         speakingId = nil
     }
@@ -407,6 +586,8 @@ func handle(_ line: String) {
         case "rate":   engine.setRate(msg["value"] as? Double)
         case "silence": engine.setSilence(msg["ms"] as? Double)
         case "voices": engine.listVoices()
+        case "transcribe": engine.transcribeFile(id: msg["id"] as? String ?? "", path: msg["path"] as? String ?? "")
+        case "synth":  engine.synthToFile(id: msg["id"] as? String ?? "", text: msg["text"] as? String ?? "", path: msg["path"] as? String ?? "")
         case "quit":   exitDraining(0)
         default:       fail("comando desconocido: \(cmd)")
         }
