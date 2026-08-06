@@ -24,13 +24,11 @@ _Última actualización: 2026-08-06 tarde (verificado contra git y los tests; pr
 - Rama `main` == `origin/main`, working tree limpio (`git status -sb` sin ahead/behind).
 - Último commit: `e0bb9ce` "feat(telegram): cableado en main + runbook y estado al día". La tarde son 6 commits (`62a67e3`, `3534875`, `9de7c24`, `adc3a1a`, `c28bf2e`, `e0bb9ce`) + `83bd999` de la mañana — todos pusheados a `aprelmah/claude-electron`.
 - Tests: **1022 (1016 pass / 0 fail / 6 skip)** — el hook pre-commit corrió la suite completa en cada uno de los 6 commits.
-- Deploy: **PENDIENTE** — `/Applications/POWER-AGENT.app` es el build de las 09:10 (mañana), sin nada de la tarde. El modo dev quedó corriendo con todo.
+- Deploy: **HECHO 2026-08-06 20:58** — asar verificado por CONTENIDO (los módulos nuevos dentro), app corriendo desde `/Applications` con ventana. Prueba e2e del ciclo completo hecha por Luismi en dev antes del deploy. Trampa repetida y confirmada: el `npm run deploy` NO mata la instancia dev → la empaquetada se suicida en silencio por el `SingletonLock`; hubo que matar el dev a mano y relanzar.
 
 ## Próximo paso
 
-- Prueba end-to-end de Luismi: tarea programada → aviso por @poweragent_avisos_bot → «Continuar esta sesión» → responder en el propio chat de avisos (el envío directo y el long-poll ya están verificados; el ciclo con tarea real no).
-- Si va bien: `npm run deploy`.
-- Riesgo teórico menor, no tocado a propósito: el primer `detect` de `startPty` (sesiones nuevas, no resumidas) sigue usando `findUpdatedOrNewClaudeSessionId`.
+- Nada urgente. Riesgo teórico menor, no tocado a propósito: el primer `detect` de `startPty` (sesiones nuevas, no resumidas) sigue usando `findUpdatedOrNewClaudeSessionId`.
 
 ---
 
