@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, net } = require('electron')
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, nativeTheme, dialog, session, systemPreferences, shell, clipboard, protocol, net, webContents } = require('electron')
 const pty = require('node-pty')
 const { spawn, spawnSync } = require('child_process')
 const path = require('path')
@@ -67,9 +67,11 @@ const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
 const { createVoiceHelperProcess } = require('./main/voice-helper-process')
 const { createVoiceTurnWatcher } = require('./main/voice-turn-watcher')
-const { createVoiceSendTarget, pickForkedSessionId } = require('./main/voice-send-target')
+const { createVoiceSendTarget, pickForkedSessionId, voiceTurnLockActive } = require('./main/voice-send-target')
+const { createTaskSessionForkWatch } = require('./main/task-session-fork-watch')
 const { createVoiceSession } = require('./main/voice-session')
-const { speakableFromMarkdown } = require('./main/voice-speakable')
+const { speakableFromMarkdown, chunkSpeakableFromMarkdown } = require('./main/voice-speakable')
+const { createViewerSpeech } = require('./main/viewer-speech')
 const voiceRouter = require('./main/voice-router')
 const { registerWindowControlsIpc } = require('./main/window-controls-ipc')
 const {
@@ -86,6 +88,7 @@ const {
 } = require('./main/lan-helpers')
 const { createTelegramRelayBindings, shouldAllowMacSessionFallback } = require('./main/telegram-relay-bindings')
 const { createTelegramHiddenPtyPool } = require('./main/telegram-hidden-pty-pool')
+const { createTelegramNotifyBot } = require('./main/telegram-notify-bot')
 const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
@@ -244,6 +247,7 @@ let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
 let telegramBridge = null
+let telegramNotifyBot = null
 let telegramHiddenPtyPool = null
 let whatsappClient = null
 let whatsappReachable = false
@@ -930,15 +934,18 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
   const targetCli = mode || session.activeCli
   if (targetCli !== 'claude' && targetCli !== 'codex') return null
   if (session.activeCli !== targetCli) return null
-  // Si hay un turno en vuelo (relayActive), esperar a que se libere (máx 30s)
-  // en vez de devolver null inmediato. Cubre race del bridge bajo carga: la cola
-  // por chat ya serializa, pero un cleanup tardío del turno anterior podría dejar
-  // relayActive=true por unos ms. Sin esto, el segundo turno caía a "PTY enlazado falló".
-  if (session.relayActive) {
+  // Si hay un turno en vuelo (relayActive o un turno de VOZ con su cerrojo
+  // voiceTurnUntil), esperar a que se libere (máx 30s) en vez de devolver null
+  // inmediato. relayActive cubre el race del bridge bajo carga; el cerrojo de
+  // voz cubre el orden más probable de la mezcla: un Telegram llegando a mitad
+  // de un turno de voz sobre el mismo PTY (CLAUDE.md § Git automático,
+  // PENDIENTE INMEDIATO cerrado 2026-08-06). El cerrojo caduca solo (180s).
+  const relayBusy = () => session.relayActive || voiceTurnLockActive(session)
+  if (relayBusy()) {
     const RELAY_BUSY_WAIT_MS = 30000
     const RELAY_BUSY_POLL_MS = 50
     const waitStart = Date.now()
-    while (session.relayActive && Date.now() - waitStart < RELAY_BUSY_WAIT_MS) {
+    while (relayBusy() && Date.now() - waitStart < RELAY_BUSY_WAIT_MS) {
       if (signal?.aborted) {
         const err = new Error('Request aborted')
         err.name = 'AbortError'
@@ -947,7 +954,7 @@ async function relayThroughPty(session, prompt, { onText, signal, mode } = {}) {
       await new Promise((r) => setTimeout(r, RELAY_BUSY_POLL_MS))
       if (!session?.pty) return null
     }
-    if (session.relayActive) return null
+    if (relayBusy()) return null
   }
   const message = String(prompt || '').trim()
   if (!message) return null
@@ -1414,6 +1421,11 @@ const voiceHelper = createVoiceHelperProcess({
     if (evt && evt.type === 'voices' && typeof voiceVoicesWaiter === 'function') {
       voiceVoicesWaiter(Array.isArray(evt.voices) ? evt.voices : [])
     }
+    // Las lecturas del visor (ids `viewer:`) se consumen antes de que los vea
+    // voice-session; los hello pasan a los dos (no se consumen).
+    let consumido = false
+    try { consumido = viewerSpeech.handleHelperEvent(evt) } catch (err) { console.warn('[voz]', err?.message || err) }
+    if (consumido) return
     try { voiceSession.handleHelperEvent(evt) } catch (err) { console.warn('[voz]', err?.message || err) }
   },
   log: (m) => console.log('[voz]', m)
@@ -1464,6 +1476,21 @@ const voiceSession = createVoiceSession({
   log: (m) => console.log('[voz]', m)
 })
 
+// Lectura en voz alta desde el visor de archivos (botón 🔊 "Léemelo").
+const viewerSpeech = createViewerSpeech({
+  helper: voiceHelper,
+  chunker: (md) => chunkSpeakableFromMarkdown(md),
+  isVoiceModeEnabled: () => voiceSession.isEnabled(),
+  applyPrefs: () => applyVoicePrefsToHelper(),
+  notifyEnded: (wcId) => {
+    try {
+      const wc = webContents.fromId(wcId)
+      if (wc && !wc.isDestroyed()) wc.send('viewer:speech-ended')
+    } catch {}
+  },
+  log: (m) => console.log('[voz]', m)
+})
+
 // Todos los sessionIds de claude que YA tienen dueño: sesiones vivas, sus
 // sub-chats de voz, y las task-sessions (que es donde viven también los PTYs
 // ocultos del pool de Telegram). La detección del fork de un `--resume` los
@@ -1490,6 +1517,19 @@ function knownClaudeSessionIds() {
   } catch {}
   return ids
 }
+
+// Vigía de fork para task-sessions/pool oculto: mismas guardas que el
+// detectFork de startPty. El vigía anterior adoptaba ficheros que solo habían
+// CRECIDO — la sesión interactiva del usuario en el mismo proyecto — y esa
+// mezcla se persistía en la tarea y en el relay de Telegram.
+const taskSessionForkWatch = createTaskSessionForkWatch({
+  listClaudeSessionFilesWithMtime,
+  snapshotClaudeSessions,
+  pickForkedSessionId,
+  knownClaudeSessionIds,
+  hasLiveSubchat: () => subchatManager.hasAny(),
+  resolveResumeCwd
+})
 
 // El modo voz muere con la ventana que lo tenía: sin esto el helper se queda
 // escuchando y hablándole a nadie.
@@ -2547,8 +2587,10 @@ function startTaskSessionPty(s) {
 
   const args = buildResumeArgs(s.cli, s.sessionId, s.cli === 'claude' ? getClaudeModel() : '')
 
+  // Foto pre-spawn para el vigía de fork (solo claude). Incluye el proyecto
+  // ORIGINAL del id resumido: ahí es donde aparecerá el .jsonl forkeado.
   s.sessionFilesSnapshot = s.cli === 'claude'
-    ? snapshotClaudeSessions(s.cwd)
+    ? taskSessionForkWatch.begin({ cwd: s.cwd, resumedSessionId: s.sessionId })
     : null
 
   let proc
@@ -2576,7 +2618,7 @@ function startTaskSessionPty(s) {
     const detect = setInterval(() => {
       const st = taskSessionStateByWc.get(myWcId)
       if (!st || !st.pty || st.pty !== proc) { clearInterval(detect); return }
-      const sid = findUpdatedOrNewClaudeSessionId(st.cwd, st.sessionFilesSnapshot)
+      const sid = taskSessionForkWatch.tick(st.sessionFilesSnapshot)
       if (sid && sid !== st.sessionId) {
         const prev = st.sessionId
         st.sessionId = sid
@@ -2658,6 +2700,75 @@ async function persistTaskSessionIdRotation(originalSessionId, newSessionId) {
 }
 
 // ── Bridge wiring (one global bridge) ──
+// Enganche de la sesión de un run de tarea al chat: persistir sid en el bridge
+// y (solo claude) asegurar PTY oculto en el pool. Compartido por la ruta legacy
+// del sink telegram y por el botón «Continuar esta sesión» del bot de avisos.
+async function ensureHiddenPtyForTaskRun({ chatId, sessionId, cli, cwd, taskName }) {
+  if (!telegramHiddenPtyPool) return { ok: false, error: 'pool no inicializado' }
+  const isClaude = cli === 'claude'
+  const cliKey = (cli === 'codex') ? 'codex' : 'claude'
+  // PTY-H2: persistimos sid en el bridge SIEMPRE (también Codex). Sin esto,
+  // el siguiente mensaje del usuario por Telegram a una sesión Codex pierde
+  // contexto (sid==null → sesión nueva). El pool oculto solo aplica a Claude;
+  // Codex sigue en headless --resume estable.
+  if (sessionId && telegramBridge && typeof telegramBridge.adoptSession === 'function') {
+    try { telegramBridge.adoptSession(String(chatId), cliKey, sessionId) } catch {}
+  }
+  if (!isClaude) return { ok: true, skipped: true, reason: 'cli-not-claude' }
+  const res = await telegramHiddenPtyPool.ensureHiddenPtyForChat({ chatId, sessionId, cli, cwd, taskName })
+  return res
+}
+
+// Bot de avisos separado: lifecycle completo (crear/parar) según config.
+// Sin token configurado no existe y el sink cae a la ruta legacy (fail-open).
+function applyTelegramNotifyBot() {
+  const token = appConfig.telegram?.notifyBotToken || ''
+  if (telegramNotifyBot) {
+    const bot = telegramNotifyBot
+    telegramNotifyBot = null
+    try { bot.stop() } catch {}
+  }
+  if (!token) return
+  telegramNotifyBot = createTelegramNotifyBot({
+    token,
+    stateDir: app.getPath('userData'),
+    getAllowedUsers: () => appConfig.telegram?.allowedUsers || [],
+    onContinueSession: async ({ chatId, sessionId, cli, cwd, taskName }) => {
+      // Binding EXPLÍCITO pedido por el usuario desde el aviso: además del
+      // pool, dejamos el run como "último" del chat para que /abrir funcione.
+      if (telegramBridge && typeof telegramBridge.rememberRunForChat === 'function') {
+        try { telegramBridge.rememberRunForChat(String(chatId), { sessionId, cli, cwd, taskName }) } catch {}
+      }
+      return ensureHiddenPtyForTaskRun({ chatId, sessionId, cli, cwd, taskName })
+    },
+    // Turno escrito en el chat de avisos tras «Continuar»: mismo enrutado que
+    // un mensaje del bot principal (binding → PTY oculto > headless --resume),
+    // pero la respuesta vuelve por el bot de avisos.
+    onUserReply: async ({ chatId, text, session }) => {
+      if (!telegramBridge || typeof telegramBridge.onRunQuery !== 'function') {
+        return { ok: false, text: 'El bridge principal no está disponible.' }
+      }
+      const cli = (session?.cli === 'codex') ? 'codex' : 'claude'
+      const sid = (typeof telegramBridge.getSessionId === 'function' && telegramBridge.getSessionId(String(chatId), cli)) || session?.sessionId || null
+      let acc = ''
+      const result = await telegramBridge.onRunQuery({
+        cli,
+        prompt: text,
+        userPrompt: text,
+        chatId: String(chatId),
+        sessionId: sid,
+        chatCwd: session?.cwd || undefined,
+        onText: (t) => { acc += t }
+      })
+      if (result?.sessionId && typeof telegramBridge.adoptSession === 'function') {
+        try { telegramBridge.adoptSession(String(chatId), cli, result.sessionId) } catch {}
+      }
+      return { ok: true, text: acc || result?.text || '' }
+    }
+  })
+  telegramNotifyBot.start()
+}
+
 function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
     tmpDir: TMP_DIR,
@@ -2768,6 +2879,30 @@ function initTelegramBridge() {
         ? await syncSessionContextAfterTelegramDetach(binding.session, key, binding.session?.activeCli)
         : { ok: true, refreshed: false, reason: 'no-bound-session' }
       return { ok: true, linked: false, detached, chatId: key, sync }
+    },
+    onGetTelegramModel: (cli) => (cli === 'codex' ? appConfig.telegram?.codexModel : appConfig.telegram?.claudeModel) || '',
+    onSetTelegramModel: async ({ cli, model }) => {
+      // Sin reiniciar el bridge: onRunQuery lee appConfig.telegram en cada
+      // turno, así que el cambio aplica desde el mensaje siguiente.
+      const field = cli === 'codex' ? 'codexModel' : 'claudeModel'
+      const merged = normalizeAppConfig({
+        ...appConfig,
+        telegram: { ...appConfig.telegram, [field]: String(model || '') }
+      })
+      saveAppConfig(merged)
+      return { ok: true }
+    },
+    onGetLinkStatus: async ({ chatId }) => {
+      const binding = getRelayBindingForChat(chatId)
+      if (!binding.bound || !binding.session) return { bound: false }
+      const s = binding.session
+      return {
+        bound: true,
+        via: 'pty',
+        cli: s.activeCli || 'claude',
+        sessionId: s.claudeSessionId || s.codexSessionId || '',
+        cwd: s.cwd || ''
+      }
     },
     onStatus: () => broadcastTelegramStatus(),
     onSemanticInput: ({ chatId, cli, sessionId, prompt }) => {
@@ -3027,6 +3162,7 @@ app.whenReady().then(async () => {
     }
   })
   initTelegramBridge()
+  try { applyTelegramNotifyBot() } catch (err) { console.warn('[telegram-notify] no arrancó:', err?.message || err) }
 
   createWindow()
   startAgentProposalPolling()
@@ -3073,21 +3209,11 @@ app.whenReady().then(async () => {
     const baseSinks = createSinks({
       telegramBridge,
       broadcastToAllWindows,
-      onEnsureHiddenPty: async ({ chatId, sessionId, cli, cwd, taskName }) => {
-        if (!telegramHiddenPtyPool) return { ok: false, error: 'pool no inicializado' }
-        const isClaude = cli === 'claude'
-        const cliKey = (cli === 'codex') ? 'codex' : 'claude'
-        // PTY-H2: persistimos sid en el bridge SIEMPRE (también Codex). Sin esto,
-        // el siguiente mensaje del usuario por Telegram a una sesión Codex pierde
-        // contexto (sid==null → sesión nueva). El pool oculto solo aplica a Claude;
-        // Codex sigue en headless --resume estable.
-        if (sessionId && telegramBridge && typeof telegramBridge.adoptSession === 'function') {
-          try { telegramBridge.adoptSession(String(chatId), cliKey, sessionId) } catch {}
-        }
-        if (!isClaude) return { ok: true, skipped: true, reason: 'cli-not-claude' }
-        const res = await telegramHiddenPtyPool.ensureHiddenPtyForChat({ chatId, sessionId, cli, cwd, taskName })
-        return res
-      }
+      onEnsureHiddenPty: ensureHiddenPtyForTaskRun,
+      // Late binding: el notify bot se (re)crea al aplicar config, después de
+      // crear los sinks. Mismo patrón que los índices de createSessionListing.
+      getNotifyBot: () => telegramNotifyBot,
+      getNotifyChatId: () => appConfig.telegram?.notifyChatId || null
     })
     const inboxSink = createInboxSink({ inbox: tasksInbox, broadcast: broadcastInbox })
     const sinks = { ...baseSinks, inbox: inboxSink }
@@ -3377,6 +3503,7 @@ app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
     globalShortcut.unregisterAll()
     telegramBridge?.stop()
+    try { telegramNotifyBot?.stop() } catch {}
     // Esperar (acotado) a que terminen las integraciones git de las sesiones
     // cerradas antes de salir, para no perder merges en curso.
     if (pendingFinalizes.size) {
@@ -3402,6 +3529,7 @@ app.on('before-quit', (event) => {
   voiceOwnerWcId = null
   try { telegramHiddenPtyPool?.destroy('app-quit') } catch {}
   telegramBridge?.stop()
+  try { telegramNotifyBot?.stop() } catch {}
   try { whatsappClient?.stop() } catch {}
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
   try { if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0) } catch {}
@@ -3662,6 +3790,26 @@ ipcMain.handle('voice:voices', async () => {
   }
   if (!Array.isArray(voces)) return { ok: false, reason: 'el helper no contestó', voices: [] }
   return { ok: true, voices: voces }
+})
+
+// Lectura de documentos desde el visor. El texto llega del renderer del visor
+// (el contenido del textarea, con ediciones sin guardar incluidas); el gate del
+// modo voz y el troceo viven en main/viewer-speech.js.
+ipcMain.handle('viewer:speak', (event, { text } = {}) => {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, reason: 'no hay nada que leer' }
+  const bin = voiceHelper.checkBinary()
+  if (!bin.ok) return { ok: false, reason: bin.reason || 'no hay helper de voz' }
+  return viewerSpeech.speak(event.sender.id, text)
+})
+
+ipcMain.handle('viewer:speak-stop', (event) => viewerSpeech.stop(event.sender.id))
+
+// Cerrar la ventana del visor calla su lectura (la ventana se destruye sin
+// pasar por el botón: Cmd+W, cierre de la app…).
+app.on('web-contents-created', (_e, wc) => {
+  // El id se captura AHORA: sobre un webContents destruido cualquier getter tira.
+  const wcId = wc.id
+  wc.once('destroyed', () => { try { viewerSpeech.handleWindowClosed(wcId) } catch {} })
 })
 
 // Apagar y cambiar de modo son del DUEÑO. Sin esta comprobación, cualquier otra
@@ -4050,7 +4198,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
   const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate', 'voiceSilenceMs']
-  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
+  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort', 'notifyBotToken', 'notifyChatId']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
     const out = {}
@@ -4089,6 +4237,9 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
 
   let telegramResult = { ok: true, running: false }
   if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
+  if (Object.prototype.hasOwnProperty.call(partialConfig || {}, 'telegram')) {
+    try { applyTelegramNotifyBot() } catch (err) { warnings.push(`Bot de avisos no arrancó: ${err?.message || err}`) }
+  }
   broadcastTelegramStatus()
   if (Object.prototype.hasOwnProperty.call(partialConfig || {}, 'lanServer')) {
     if (appConfig.lanServer?.enabled) {

@@ -4,144 +4,152 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-05 noche (verificado contra git, los tests y la app desplegada; ciclo completo probado en vivo por Luismi)._
+_Última actualización: 2026-08-06 tarde (verificado contra git y los tests; probado en dev por Luismi)._
 
 ---
 
-# 🚦 EMPIEZA POR AQUÍ — modo voz: FUNCIONA de punta a punta, commiteado, sin mergear ni pushear
+# 🚦 EMPIEZA POR AQUÍ — Telegram anti-mezcla + bot de avisos, TODO commiteado y pusheado
 
-**Primera prueba real con micrófono hecha esta tarde/noche. Escucha, envía, responde y lo lee en voz alta.** Cinco bugs cazados y arreglados en vivo con logs del sistema y el helper instrumentado — ninguno lo vio la suite de 950+ tests, todos salieron al primer uso real:
+**Sesión 2026-08-06 tarde.** Queja de Luismi: "hablo en una sesión, salta una automatización, irrumpe y se queda en la que abre". Diagnóstico + 6 entregas, todas con TDD. **Tests: 1022 (1016 pass / 0 fail / 6 skip).** Detalle completo en CLAUDE.md (§ "Bot de avisos separado" y § "Relay de Telegram") y en la auto-memory (`update_2026_08_06_telegram_antimezcla.md`).
 
-1. **Detector de forks solo miraba el primer MB** del transcript — el sub-chat respondía pero la app no lo encontraba (`main/relay-transcript-helpers.js`, `main/voice-send-target.js`).
-2. **`setVoiceProcessingEnabled(true)` pasa el micro a 4 canales** — el reconocedor de Apple solo digiere mono/estéreo, daba `kAFAssistantErrorDomain 1110` con audio de sobra (esto era el bloqueo de esta mañana). Arreglado copiando el canal 0 a mono antes de pasarlo al reconocedor.
-3. **El ENTER pegado al texto se leía como salto de línea** dentro del prompt: transcribía perfecto pero el turno se quedaba sin enviar. Ahora va en una escritura aparte, 150 ms después.
-4. **El micro se reabría al hablar (para el barge-in) y se oía a sí mismo**: se autointerrumpía al segundo, siempre. Se cierra mientras habla y punto — se pierde el barge-in por voz, para cortar está el botón.
-5. **`setVoiceProcessingEnabled` mete el proceso en "modo comunicación"** y macOS aplica ducking a TODO el audio del sistema mientras el micro está abierto (música incluida) — se quitó entera, ya no hacía falta sin el barge-in.
+1. **Bot de avisos separado** (`main/telegram-notify-bot.js`, token `telegram.notifyBotToken`, bot real **@poweragent_avisos_bot** ya configurado): las tareas programadas avisan por él y NO tocan el binding del chat. Botón «▶️ Continuar esta sesión» = enganche explícito. Fail-open sin token.
+2. **Chat de avisos conversacional tras «Continuar»** (30 min deslizantes): respondes al aviso ahí mismo y la respuesta vuelve ahí (`onUserReply` → `telegramBridge.onRunQuery`). Pedido por Luismi en la primera prueba: la UX de "sigue en el otro bot" no la entendía nadie.
+3. **Causa raíz extra de la mezcla**: el vigía de task-sessions/pool oculto (`findUpdatedOrNewClaudeSessionId`) adoptaba el primer `.jsonl` nuevo O CRECIDO — la sesión VIVA del usuario en el mismo proyecto — y lo persistía en la tarea. Sustituido por `main/task-session-fork-watch.js` (guardas de `startPty`: solo nuevos, excludeIds, ambigüedad, sub-chat, y mira el proyecto original vía `resolveResumeCwd`).
+4. **Cerrojo voz↔Telegram** (`session.voiceTurnUntil`, 180s, caduca solo) — cierra el PENDIENTE INMEDIATO de CLAUDE.md.
+5. **`/vinculo`** (radiografía del enlace del chat), alias `/desvincular`, y **pie de contexto** `📁 proyecto · abc12345` en cada respuesta.
+6. **`/menu`** (botonera inline) + **`/modelo`** (botones Default/Haiku/Sonnet/Opus, persiste sin reiniciar el bridge) + menú nativo de Telegram (`setMyCommands`).
 
-Y de paso, a petición de Luismi con la voz ya funcionando:
-- **Destino por defecto = sesión de trabajo**, no sub-chat. Botón nuevo ⚡/💬 para elegir. Se borró el detector de intención por patrones (~200 líneas, vive en el historial de git).
-- **Selector de voz y velocidad** en Configuración.
-- **El tope de lectura cortaba a media frase** (935 caracteres con tope en 700) — subido a 2000 y corta en fin de frase si hace falta recortar.
-- **`npm run deploy` automatiza la firma ad-hoc y el bundle `VoiceHelper.app`** — antes se perdían en cada deploy y había que rehacerlos a mano.
+**Pendiente de la tarde**: prueba end-to-end del ciclo completo por Luismi (tarea programada → aviso por @poweragent_avisos_bot → Continuar → responder en el chat de avisos). El envío directo por el notify bot y el long-poll están verificados; el ciclo con tarea real aún no. Después: `npm run deploy`.
 
-## Qué hay hecho
+---
 
-Rama **`feat/modo-voz`** (39 commits sobre `main` @ `0a9c459`, árbol limpio, **sin push, sin merge a `main`**):
+# Sesión anterior (2026-08-06 mañana) — modo voz afinado y visor con lectura en voz alta
 
-- Las 9 tareas del plan original + review final + los 6 commits de hoy (5 fixes de la prueba real + selector de voz + deploy automatizado).
-- **Tests: 953 (947 pass / 0 fail / 6 skip)**, verificado en el repo real.
-- **Desplegado y probado en vivo** en `/Applications/POWER-AGENT.app`: ciclo completo (escucha → transcribe → envía → responde → lee) confirmado por Luismi.
+**El modo voz está mergeado en `main` (PR #6, `4303714`), afinado (`83bd999`) y desplegado.** La sesión de la mañana del 6-ago (la que la madrugada anterior llamaba "sesión paralela") terminó su trabajo: ya no hay dos sesiones sobre el repo.
+
+Dos entregas de esa sesión:
+
+1. **`83bd999` (en `main`, SIN PUSH)** — afinado de tiempos tras el primer día de uso real:
+   - Pausa de silencio 1,1s → **1,8s por defecto y configurable** (`cli.voiceSilenceMs`, comando `silence` del helper, slider 0,8–3,0s en Configuración) — 1,1s cortaba a Luismi al respirar o pensar.
+   - **Cierre en dos fases** en `VoiceHelper.swift`: al detectar silencio cierra el micro y manda `endAudio()`, pero la task de reconocimiento sigue viva hasta el `isFinal` (guardia 2,5s). Antes se cancelaba en el acto y la transcripción del último tramo (~1s de retraso del servidor) se tiraba: frases largas llegaban sin el final.
+   - Un `isFinal` con el micro abierto también cierra el turno (tope ~1min por petición del reconocimiento en servidor): antes un monólogo largo se quedaba mudo y salía truncado.
+2. **Botón 🔊 "Léemelo" en el visor de archivos** — **desplegado pero SIN COMMITEAR** (8 archivos, pendiente del OK de Luismi tras probarlo):
+   - `main/viewer-speech.js` (nuevo): cola de trozos sobre el helper de voz, con gate si el modo voz está encendido (su micro se oiría a sí mismo), y ciclo de vida del helper (lo arranca sin permisos para sintetizar y lo para al acabar).
+   - `main/voice-speakable.js` refactorizado: `proseFromMarkdown` (limpieza sin tope) + `chunkSpeakableFromMarkdown` (documento entero troceado en fin de frase, ~1400 chars/trozo). `speakableFromMarkdown` intacto (tests previos en verde).
+   - IPC `viewer:speak` / `viewer:speak-stop`, botón en `viewer.html` (lee selección o documento, icono play/stop), cierre de ventana calla la lectura (`web-contents-created` → `destroyed`).
+
+Camino hasta aquí, la noche del 5-ago: primera prueba real con micrófono, cinco bugs cazados y arreglados en vivo (ninguno lo vio la suite):
+
+1. **Detector de forks solo miraba el primer MB** del transcript (`main/relay-transcript-helpers.js`, `main/voice-send-target.js`).
+2. **`setVoiceProcessingEnabled(true)` pasa el micro a 4 canales** — el reconocedor solo digiere mono/estéreo (`kAFAssistantErrorDomain 1110`). Arreglado copiando el canal 0 a mono.
+3. **El ENTER pegado al texto se leía como salto de línea** dentro del prompt: el turno se quedaba sin enviar. Ahora va aparte, 150 ms después.
+4. **El micro se reabría al hablar (barge-in) y se oía a sí mismo**: se autointerrumpía siempre. Se cierra mientras habla — el barge-in por voz se pierde, para cortar está el botón.
+5. **`setVoiceProcessingEnabled` mete el proceso en "modo comunicación"**: macOS aplica ducking a TODO el audio del sistema. Se quitó entera.
+
+Y de paso: destino por defecto = sesión de trabajo (botón ⚡/💬), selector de voz y velocidad en Configuración, tope de lectura 700→2000 con corte en fin de frase, y `npm run deploy` automatizando la firma ad-hoc y el bundle `VoiceHelper.app`.
+
+## Reglas técnicas nuevas del 6-ago (además de las de abajo)
+
+- **El helper de voz solo maneja UNA frase a la vez**: su `speakingId` es único y cada `speak` lo pisa (los `speech-end` salen con el id equivocado si encolas en él). Para leer largo, encolar SIEMPRE desde Node: mandar un trozo, esperar su `speech-end`, mandar el siguiente. Así lo hace `main/viewer-speech.js`.
+- **El helper se multiplexa entre consumidores por prefijo de id** (`viewer:` para el visor): `viewer-speech.handleHelperEvent` consume los suyos antes de que los vea `voice-session`; los `hello` los ven los dos (un `hello` a mitad de lectura = el helper se reinició y la frase en vuelo murió).
+- **Un deploy lanzado antes de un merge empaqueta el estado viejo**: el 6-ago la app de las 07:11 no llevaba `83bd999` aunque era posterior al commit. Verificar el contenido del asar (`npx asar extract-file` **desde el scratchpad, nunca desde el repo** — extrae al cwd y pisa el archivo real; pasó y hubo que restaurar `main.js` con `git checkout`), no la fecha de la app.
 
 ## Lo que queda pendiente, consciente y sin cerrar
 
-- **Sin barge-in por voz.** Hablarle encima ya no le corta — precio asumido al cerrar el micro mientras habla. Cortar es con el botón de voz.
-- **Sin música alta de fondo probado.** Sin VoiceProcessing, el reconocimiento pierde precisión si hay ruido/música fuerte por encima de la voz — no medido con datos, solo advertido en el commit.
-- **Salida de audio HDMI/externa**: si el Mac tiene el sonido enrutado a una pantalla o dispositivo externo, el volumen del sistema no controla ese destino. No es bug de la app — se vivió en esta misma sesión (confundía con el modo voz).
-- **`coreaudiod` puede quedarse pegado en modo comunicación** tras muchos ciclos de activar/desactivar VoiceProcessing durante desarrollo — un `sudo killall coreaudiod` lo resetea. No debería volver a pasar ahora que se quitó VoiceProcessing, pero si algún día vuelve, tenerlo en cuenta.
+- **Commit del botón Léemelo** (8 archivos incluyendo este STATE.md) — esperando que Luismi pruebe la lectura y la nueva pausa de voz. Propuesto: `feat(visor): botón Léemelo` + push de todo (`main` va ahead 1 con `83bd999`).
+- **Sin barge-in por voz.** Hablarle encima ya no le corta — precio asumido. Cortar es con el botón.
+- **Sin música alta de fondo probado.** Sin VoiceProcessing, el reconocimiento pierde con ruido fuerte — no medido.
+- **Salida de audio HDMI/externa**: el volumen del sistema no controla ese destino. No es bug de la app.
+- **`coreaudiod` puede quedarse pegado en modo comunicación** (legado de VoiceProcessing en desarrollo): `sudo killall coreaudiod`.
 - **Solo `claude`**, igual que antes. Codex no delimita fin de turno.
-- Falta decidir **push + merge a `main`** — Luismi no lo ha pedido todavía.
+- Heredado del modo voz: exclusión mutua voz/Telegram (`voiceTurnUntil`, CLAUDE.md §Git automático), detección de fork en pool oculto y task-sessions.
 
-## Reglas que no te puedes saltar si sigues tocando esta rama
+## Reglas que no te puedes saltar si sigues tocando esto
 
-- **Los tests, en el repo real, nunca en el worktree.** El worktree no tiene `node_modules` y fallan 12 por `Cannot find module 'node-pty'`. Y **jamás symlinkes `node_modules` dentro de un worktree**: ya provocó un commit de basura (CLAUDE.md § Limitaciones).
-- **No "optimices" el reconocimiento a on-device.** Está medido: RTF 2,5–7,5 en este i7 de 2014, inservible. La decisión de usar los servidores de Apple la tomó Luismi con las cifras delante.
-- **No reintroduzcas `setVoiceProcessingEnabled(true)` sin releer el commit `bc6d5eb`.** Rompe el reconocimiento (4 canales), corta la voz sola (se oye a sí misma) y baja el volumen de todo el sistema. Si algún día hace falta el barge-in por voz de vuelta, hay que resolver los tres problemas a la vez, no solo reactivar la línea.
-- Si un test falla por un detalle de formato, **arregla la implementación, no el test.** El test es el contrato.
-- **No hagas `push`.** Luismi no lo ha pedido.
-- **Los `<script>` sueltos del renderer comparten ámbito con `renderer.js`.** Ningún `const`/`let` con nombre genérico en el nivel superior de `voice-ui-state.js`, `project-picker.js` o `graph-renderer.js`: una colisión mata la página entera y **los tests no lo ven** (en node se cargan con `require`). Ver `bugs/bug_scripts_renderer_ambito_global.md`.
+- **Los tests, en el repo real, nunca en el worktree.** El worktree no tiene `node_modules` (12 fallos por `node-pty`); si no queda otra, `NODE_PATH=<repo-real>/node_modules node --test` funciona (verificado 6-ago). **Jamás symlinkes `node_modules` en un worktree.**
+- **No "optimices" el reconocimiento a on-device.** Medido: RTF 2,5–7,5 en este i7. La decisión de servidores de Apple la tomó Luismi con las cifras delante.
+- **No reintroduzcas `setVoiceProcessingEnabled(true)` sin releer el commit `bc6d5eb`.** Tres problemas a la vez, no una línea.
+- Si un test falla por un detalle de formato, **arregla la implementación, no el test.**
+- **No hagas `push` ni toques commits de otra sesión sin pedirlo explícitamente.**
+- **Los `<script>` sueltos del renderer comparten ámbito con `renderer.js`.** Ver `bugs/bug_scripts_renderer_ambito_global.md`.
 
 ---
 
-## Estado de entrega (verificado)
+## Estado de entrega (verificado 2026-08-06 ~09:30)
 
-- Rama `main`: sigue con los mismos **5 commits por delante de `origin`** de la sesión de planificación (sin push), working tree limpio si te sitúas ahí. Último commit: `0a9c459`.
-- **Rama de trabajo activa ahora: `feat/modo-voz`** — **39 commits** sobre ese `main` (9 tareas + review final + los arreglos de la prueba en vivo de hoy), árbol limpio, sin push, **sin mergear a `main` todavía**. El modo voz **SÍ funciona de punta a punta**, probado en vivo por Luismi.
-- Tests: **953 (947 pass / 0 fail / 6 skip)**, verificado en `feat/modo-voz`, en el repo real.
-- Deploy: `/Applications/POWER-AGENT.app` **redesplegado hoy** con todo el modo voz dentro, incluida la primera build con la firma y el bundle del helper **automatizados** por `npm run deploy` (antes había que rehacerlos a mano tras cada deploy).
-- **`autoReply` está en `false`**: el bot NO responde a nadie. Luismi lo encendió el 3-ago para aprobar el pipeline y lo volvió a apagar. La allowlist sigue vacía, así que **al encenderlo responde a cualquier número**.
-- Las 3 fichas de Turbo Energy están **validadas por Luismi**. Dejan de ser un riesgo abierto.
-- Bridge WhatsApp: **en git** (`whatsapp-bridge/` del repo). Runtime en `~/.claude/whatsapp-bridge/`, `/status` → `ready`. Se despliega con `scripts/deploy-wa-bridge.sh`.
-- Servidor LAN: **encendido**, puertos 9999 (WS) y 10000 (HTTP), IP `192.168.1.14`. 43 tests LAN en verde.
-- Electron 43.2.0, CLI codex 0.145.0 / claude 2.1.220.
+- **`main` local: `83bd999`, ahead 1 de `origin/main`** (sin push — pendiente del OK de Luismi). En GitHub `main` = `4303714` (merge PR #6). `feat/modo-voz` sigue viva en remoto.
+- **Working tree: 8 archivos sin commitear** — el botón Léemelo entero (`main/viewer-speech.js` y `tests/viewer-speech.test.js` nuevos; `main.js`, `main/voice-speakable.js`, `viewer.html`, `viewer-renderer.js`, `viewer-preload.js`, este STATE.md).
+- Tests: **977 (971 pass / 0 fail / 6 skip)** en el repo real, incluyendo los cambios sin commitear. 19 nuevos de `viewer-speech`.
+- Deploy: `/Applications/POWER-AGENT.app` **con TODO dentro** (83bd999 + botón Léemelo), verificado extrayendo `viewer-renderer.js` del asar instalado y con la app corriendo. Helper firmado con entitlement de micrófono (automático en `npm run deploy`).
+- CI: compila el helper Swift antes de los tests (fix de la madrugada del 6-ago).
+- **`autoReply` en `false`**: el bot de WhatsApp NO responde. Allowlist vacía — al encenderlo responde a cualquiera.
+- Las 3 fichas de Turbo Energy: **validadas por Luismi**.
+- Bridge WhatsApp en git, runtime `/status` → `ready`. LAN encendido (9999/10000, `192.168.1.14`). Electron 43.2.0.
 
-## Última sesión (2026-08-05 noche) — la primera prueba real, y el modo voz quedó funcionando
+## Última sesión (2026-08-06 mañana) — afinado de voz + botón Léemelo
 
-**6 commits, 5 bugs de la primera prueba con micrófono real + 3 mejoras pedidas por Luismi con la voz ya oyéndose.** Detalle técnico completo arriba, en "🚦 EMPIEZA POR AQUÍ". Lo que enseñó de método:
+- Luismi reportó los dos fallos del uso real: le cortaba al respirar y las frases largas llegaban incompletas. Diagnóstico: el 1,1s fijo de silencio + `task.cancel()` inmediato que tiraba la transcripción en vuelo. Fix = `83bd999` (detalle arriba), commiteado en el worktree de la sesión y mergeado a `main`.
+- **El primer deploy (07:11) no llevaba el fix** — se construyó desde estado pre-merge. Detectado extrayendo el `main.js` del asar; redesplegado y verificado. De esa verificación salió la regla del `asar extract-file` de arriba (pisó el `main.js` del repo; restaurado con `git checkout` sin pérdida).
+- Feature nueva pedida por Luismi sobre la marcha: **botón de lectura en voz alta en el visor de `.md`** (detalle arriba). Plan aprobado, implementado con TDD sobre el módulo nuevo, desplegado.
+- Deploys lanzados con `nohup` desacoplado: si la sesión corre dentro de la app, el `quit` del deploy no se lleva el proceso por delante.
 
-**Ninguno de los 5 bugs lo vio la suite.** Los cinco necesitaban un micrófono real, un altavoz real y un turno completo de ida y vuelta — exactamente lo que 953 tests no pueden simular. Se cazaron con logs del sistema (`log show`, `tccd`), un helper Swift instrumentado a fichero (`dlog` a `/tmp/voice-diag.log`) y comparaciones directas de audio (`say` del sistema contra el helper). Ninguno salió de "leer el código y razonar".
+## Sesión previa (2026-08-06 madrugada) — push, CI roto, merge y deploy
 
-**El síntoma engañaba.** "No transcribe" (canales del micro) y "se queda ahí sin hacer nada" (ENTER sin enviar) y "se corta en seco" (auto-interrupción) y "se oye bajísimo" (ducking de CoreAudio, ni siquiera del audio del propio modo voz — de TODO el sistema, música incluida) parecían cuatro fallos del modo voz. Eran cuatro consecuencias de la misma decisión (`setVoiceProcessingEnabled(true)`), y se fueron pelando una por una según Luismi las reportaba en vivo.
+- Push de `main` + `feat/modo-voz` (41 commits). PR #6: **primer CI rojo** — `resources/voice-helper` está gitignored y el workflow nunca lo compilaba (`ENOENT` en 5 tests). Arreglado añadiendo el paso Swift al workflow. Segundo CI verde, merge (`4303714`), deploy verificado.
+- **Lección**: "pasa en mi máquina" ≠ "pasa en CI" cuando hay artefactos de build gitignored — el binario llevaba días compilado en disco y nunca se había corrido en limpio.
 
-**La sesión anterior (2026-08-05 tarde) dejó una sospecha correcta sin verificar**: que `setVoiceProcessingEnabled(true)` cambiaba el formato del nodo de audio. Era la causa exacta del 1110 de esta mañana. La variante de prueba que se dejó compilada sin ejecutar (`VoiceHelper-noVP`) apuntaba a la solución que acabó aplicándose horas después: quitar VoiceProcessing.
+## Sesión previa (2026-08-05 noche) — la primera prueba real, y el modo voz quedó funcionando
+
+**6 commits, 5 bugs de la primera prueba con micrófono real + 3 mejoras pedidas por Luismi con la voz ya oyéndose.** Detalle en "🚦 EMPIEZA POR AQUÍ". Método:
+
+**Ninguno de los 5 bugs lo vio la suite.** Los cinco necesitaban micrófono, altavoz y un turno real. Se cazaron con logs del sistema (`log show`, `tccd`), el helper instrumentado a fichero y comparaciones de audio — no leyendo código.
+
+**El síntoma engañaba.** Cuatro síntomas distintos eran consecuencias de la misma decisión (`setVoiceProcessingEnabled(true)`), pelados uno a uno según Luismi los reportaba en vivo.
 
 ## Sesión previa (2026-08-04 noche) — modo voz: medido y planificado, sin implementar
 
-Luismi preguntó si se podía hacer un modo voz tipo ChatGPT escritorio. **Nada está implementado**: la sesión produjo el diseño, el plan y las mediciones que lo sostienen.
+**Las mediciones tumbaron la decisión inicial.** Luismi eligió "todo local, coste cero"; ningún motor local transcribe al ritmo del habla en este i7 (whisper base RTF 1,41; Apple on-device 2,5–7,5). Con el dato cambió a servidores de Apple: 617 ms / 1022 ms, 0 €, el audio sale del Mac. Tablas: `tech/tech_modo_voz_mediciones.md`.
 
-**Las mediciones tumbaron la decisión inicial.** Luismi eligió "todo local, coste cero"; medirlo demostró que en este i7 de 2014 **ningún motor local transcribe tan rápido como se habla** (whisper base RTF 1,41; Apple on-device 2,5–7,5, desplomándose a 7,5 con audio largo). Con el dato delante cambió a los servidores de Apple: **617 ms** al primer texto, **1022 ms** desde que callas, 0 €, a cambio de que el audio salga del Mac. Tablas completas y hallazgos operativos: `tech/tech_modo_voz_mediciones.md`.
-
-**El eco no es un problema**: `VoiceProcessingIO` de CoreAudio cancela el altavoz — verificado con el TTS sonando y el micro abierto. Era el riesgo que podía matar el manos libres.
-
-- **`2adeee8`** — spec (162 líneas) con las cuatro decisiones de producto y las mediciones.
-- **`c804b94`** — plan (2001 líneas, 9 tareas TDD, 50 pasos, sin huecos) + `voice-helper/VoiceHelper.swift` (319 líneas, compila y responde a su protocolo NDJSON).
-- **`5c6824f`**, **`904da4f`** — STATE.md, AGENTS.md y CLAUDE.md apuntando al trabajo autorizado.
-
-El repaso del plan cazó dos fallos propios antes de escribir producción: el sub-chat **forkea el sessionId** (vigilar el de la madre habría dejado el turno esperando para siempre), y dos firmas de `relay-transcript-helpers.js` que había supuesto mal.
-
-⚠️ **Feedback de Luismi**: pidió "déjalo preparado" y tuvo que preguntar **dos veces** qué se había hecho, porque el `.swift` apareció sin anunciarlo. Regla nueva en `~/claude-shared/memory/02-feedback.md`: si me salgo del alcance literal, avisar antes en una línea.
+- `2adeee8` spec · `c804b94` plan 9 tareas TDD + helper Swift · `5c6824f`/`904da4f` memoria.
+- ⚠️ **Feedback**: pidió "déjalo preparado" y tuvo que preguntar dos veces qué se había hecho (un `.swift` sin anunciar). Regla en `~/claude-shared/memory/02-feedback.md`: si me salgo del alcance literal, avisar antes en una línea.
 
 ## Sesión previa (2026-08-04 tarde) — tres bugs que los tests no podían ver
 
-Los tres los cazó Luismi mirando la pantalla, no la suite. Vale la pena tenerlo presente: la cobertura estaba en verde en los tres casos.
-
-- **`127f98a`** — la app **contaminaba a sus PTYs**. Lanzada desde una sesión de Claude Code (un `npm run deploy`), heredaba su identidad y los PTYs desactivaban el guardado del transcript: sin `.jsonl` no hay `--resume`, ni historial, ni relay de Telegram, ni pool de PTYs ocultos. El único aviso era una línea amarilla al fondo del TUI. Detalle: `bugs/bug_pty_hereda_sesion_2026_08_03.md`.
-- **`74e09b5`** — **Telegram no respetaba el proyecto elegido**. `/proyecto` TURBO-ENERGY + escribir → contestaba la sesión de eatBook abierta en el Mac, con su cwd y `bypassPermissions`. Regla nueva y arqueología de por qué parecía funcionar a veces: `decisions/telegram_proyecto_manda_2026_08_04.md`.
-- **`8d55387`** — la instrucción de la app **secuestraba el título** de las sesiones de Telegram: todas se llamaban `[Sistema: si el usuario pide un archivo…`. Detalle: `bugs/bug_telegram_titulo_sesion_2026_08_04.md`.
-
-También se explicó por qué el cliente LAN no sale de la WiFi (IP privada + NAT; y `http.createServer` **sin TLS** en `0.0.0.0` con el token en el query string). Propuesta: Tailscale. Luismi lo está pensando.
+- **`127f98a`** — la app contaminaba a sus PTYs con la identidad de la sesión de Claude Code que la lanzó. `bugs/bug_pty_hereda_sesion_2026_08_03.md`.
+- **`74e09b5`** — Telegram no respetaba el proyecto elegido. `decisions/telegram_proyecto_manda_2026_08_04.md`.
+- **`8d55387`** — la instrucción de la app secuestraba el título de las sesiones de Telegram. `bugs/bug_telegram_titulo_sesion_2026_08_04.md`.
+- LAN fuera de la WiFi: propuesta Tailscale, Luismi lo está pensando. Nunca port forwarding a pelo (sin TLS, token en query).
 
 ## Sesión previa (2026-08-03) — revisión multi-agente, bridge en git y caza de latencia
 
-**15 defectos de la KB, todos cerrados.** Una `/code-review` en xhigh sobre los 4 commits sin pushear del día anterior encontró 15 defectos verificados en el pipeline de la KB. Cerrados en `4cd89eb`, `3a6a868`, `3c5466c`, `7145789`, `3913eca`. Detalle y reglas: `.claude/memory/audit_code_review_2026_08_03.md`.
-
-**El QR no salía, y no era la app.** Tras un `loggedOut`, el bridge no borraba las credenciales muertas, las recargaba, WhatsApp las rechazaba y nunca emitía QR — *Reintentar* tampoco servía. Detalle: `.claude/memory/bugs/bug_wa_qr_loggedout_2026_08_03.md`.
-
-**El bridge entra en git** (`9d4a110`), detonado por ese bug: llevaba meses editándose a mano en producción. Detalle: `.claude/memory/decisions/bridge_en_git_2026_08_03.md`.
-
-**Caza de latencia (`80a1ccd`).** El bot heredaba en CADA turno los ~10 MCP de Luismi, su `CLAUDE.md`, settings y hooks: 3,6 s de arranque y ~9.000 tokens de entrada que no son ni la persona ni la ficha. Con `--strict-mcp-config --setting-sources ''`: 11,2 s → 6,9 s por turno, **~8,6 s menos por mensaje** (son dos turnos). Detalle y método de medición: `.claude/memory/tech/tech_latencia_cli_bot.md`.
-
-**Burbuja del panel en dos fases** (`d4e4706`): "el bot se está haciendo cargo" mientras corre el pipeline (el cliente no ve nada), y "escribiendo…" cuando el bridge manda el `composing` de verdad. Sincronizado emitiendo el evento justo antes del `POST /send/text`, que es cuando el bridge lo lanza.
-
-**Arreglado de paso:** `/security-review` no arrancaba por faltar `refs/remotes/origin/HEAD` en el clon (`git remote set-head origin -a`).
+- 15 defectos de la KB cerrados (`audit_code_review_2026_08_03.md`).
+- QR de WhatsApp: un `loggedOut` no se arregla reiniciando — borrar `.baileys_auth/` (desde el 3-ago lo hace solo). `bugs/bug_wa_qr_loggedout_2026_08_03.md`.
+- **El bridge entra en git** (`9d4a110`). `decisions/bridge_en_git_2026_08_03.md`.
+- Latencia del bot: `--strict-mcp-config --setting-sources ''` → 11,2 s → 6,9 s/turno. `tech/tech_latencia_cli_bot.md`.
 
 ## Próximo paso
 
-**El paso 0 es el bloque "🚦 EMPIEZA POR AQUÍ" del principio de este archivo: desatascar el reconocimiento de voz (error 1110).** La variante de prueba ya está compilada; falta ejecutarla.
-
-0. **Decidir push + merge de `feat/modo-voz` a `main`.** Funciona, está probado en vivo, 39 commits limpios. Pendiente solo porque Luismi no lo ha pedido todavía — preguntarlo, no darlo por hecho.
-
-1. **Probar los tres fixes del 4-ago (Telegram)**, ninguno validado por Luismi todavía: (a) abrir sesión en la app y ver que NO sale el aviso amarillo de transcript; (b) `/proyecto` en Telegram + escribir → debe contestar en ese proyecto; (c) sesión nueva desde Telegram → el título debe ser el mensaje real, no `[Sistema:…`.
-2. **Primer mensaje real del bot de WhatsApp con todo esto puesto.** Nada del pipeline se ha ejercitado de punta a punta: los arreglos de flujo están verificados por lectura y por tests de sus primitivas. Comparar contra la mediana registrada de 29 s.
-3. **Decidir la allowlist antes de volver a encender el bot**: está vacía, así que `autoReply: true` = responde a cualquier número.
-4. **Latencia restante del bot**: quedan ~6,2 s/turno que sí son el modelo. Las palancas son `kbAnswerModel` sonnet→haiku (peor ceñido a la ficha) o CLI→API con fast mode (**factura aparte del plan Max**). Decisión de negocio, pendiente.
-5. **LAN fuera de la WiFi**: Luismi lo está pensando. Propuesta = Tailscale (sin abrir puertos, sin tocar código). ⚠️ Nunca por port forwarding a pelo: el server es `http.createServer` **sin TLS** escuchando en `0.0.0.0` con el token en el query string.
-6. Probar el cliente LAN (URL con token en Configuración → LAN, o el QR).
-7. Sincronizar las dos ventanas del panel al cambiar `autoReply` (hoy tardan hasta 15 s por el `setInterval`).
-8. Heredado: detección de fork en el pool de PTYs ocultos y task-sessions de Telegram; elegir modelo de codex; macOS Monterey es el tope con Electron 43; certificado Apple/firma.
+0. **Luismi prueba**: (a) la pausa nueva al hablar (1,8s; slider si quiere más), (b) frases largas completas, (c) botón 🔊 en un `.md`. Si OK → commit `feat(visor): botón Léemelo` + push de los 2 commits (con su OK explícito).
+1. **Probar los tres fixes del 4-ago (Telegram)**: sin aviso amarillo de transcript; `/proyecto` respetado; título de sesión real.
+2. **Primer mensaje real del bot de WhatsApp** de punta a punta (mediana registrada: 29 s).
+3. **Decidir la allowlist antes de encender `autoReply`** (vacía = responde a cualquiera).
+4. Latencia restante del bot (~6,2 s/turno de modelo): `kbAnswerModel` haiku o CLI→API fast mode (factura aparte). Decisión de negocio.
+5. LAN fuera de la WiFi (Tailscale) y prueba del cliente LAN.
+6. Sincronizar las dos ventanas del panel al cambiar `autoReply` (hasta 15 s de retraso).
+7. Heredado: fork en pool oculto/task-sessions; exclusión mutua voz/Telegram (`voiceTurnUntil`); modelo de codex; Monterey tope con Electron 43; certificado Apple.
 
 ## Notas operativas
 
-- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** Usar `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev).
-- ⚠️ Al morir a lo bruto queda un **`SingletonLock` huérfano**: el siguiente arranque se suicida **en silencio**. Borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie`.
-- Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → **nunca pueden convivir**.
-- **Editar el bridge en el repo y desplegar con `scripts/deploy-wa-bridge.sh`.** Editarlo directo en el runtime vuelve a divergir las copias.
-- **Un `loggedOut` de WhatsApp no se arregla reiniciando**: hay que borrar `.baileys_auth/`. Desde el 3-ago lo hace solo.
-- **Lanzar la app desde una sesión de Claude Code le pega su identidad.** Mitigado en `buildRuntimeEnv()` (los PTYs salen limpios), pero cualquier variable nueva de identidad que aparezca en el CLI hay que añadirla a `CLAUDE_SESSION_IDENTITY_VARS`.
-- **Todo lo que la app añada a un turno va como system prompt**, nunca pegado al mensaje del usuario: además de secuestrar el título de la sesión, entra en el historial como si lo hubiera escrito él.
-- **Con proyecto elegido desde Telegram no hay fallback a las sesiones del Mac.** Reactivarlo "para reaprovechar una sesión caliente" reabre el bug de contestar desde otro proyecto.
-- **Todo spawn del CLI que no sea sesión interactiva de Luismi va aislado** (`--strict-mcp-config --setting-sources ''`). Quitarlos duplica la latencia y reabre el camino del cliente hacia los MCP personales.
-- **Tras cada `npm run deploy` se cortan las conexiones LAN** y las pestañas del operador quedan con JS viejo en caché: hay que **cerrar y reabrir la pestaña**, no solo recargar.
-- El "escribiendo…" del panel es **para Luismi**; el que ve el cliente lo gobierna el bridge, solo segundos antes de enviar.
-- Dev/deploy requieren `osascript` (sin WindowServer). Mac Intel → `dist/mac/POWER-AGENT.app`.
+- ⚠️ **`pkill -f "POWER-AGENT.app"` NO mata la app.** `osascript -e 'quit app "POWER-AGENT"'` (empaquetada) o `pkill -9 -f "claude-electron/node_modules/electron"` (dev).
+- ⚠️ Muerte a lo bruto → **`SingletonLock` huérfano** → el siguiente arranque se suicida en silencio. Borrar `SingletonLock`/`SingletonSocket`/`SingletonCookie`.
+- Dev y empaquetada comparten `userData` (`CLAUDE-NOVAK`) → nunca conviven.
+- **`npx asar extract-file` extrae al cwd**: correrlo siempre desde el scratchpad, nunca desde el repo (ya pisó `main.js` una vez).
+- **Editar el bridge en el repo y desplegar con `scripts/deploy-wa-bridge.sh`.**
+- **Lanzar la app desde una sesión de Claude Code le pega su identidad** — mitigado en `buildRuntimeEnv()`; variables nuevas del CLI van a `CLAUDE_SESSION_IDENTITY_VARS`.
+- **Todo lo que la app añada a un turno va como system prompt**, nunca pegado al mensaje del usuario.
+- **Con proyecto elegido desde Telegram no hay fallback a las sesiones del Mac.**
+- **Todo spawn del CLI que no sea sesión interactiva de Luismi va aislado** (`--strict-mcp-config --setting-sources ''`).
+- **Tras cada `npm run deploy` se cortan las conexiones LAN** y las pestañas del operador necesitan cerrar y reabrir (no basta recargar).
+- Dev/deploy vía `osascript` (sin WindowServer). Mac Intel → `dist/mac/POWER-AGENT.app`.
 - CI usa Node 20.18.0; el Mac corre Node 24 (tests pasan en ambos).
 - El ruido `EGL ... Bad attribute` es cosmético (8/s, medido).
