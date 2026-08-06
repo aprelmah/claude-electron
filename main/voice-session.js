@@ -313,6 +313,16 @@ function createVoiceSession({
       onDone: (r) => {
         if (myRun !== runId) return
         cancelWatch()
+        // Turno completado = claude terminó de escribir en el PTY: se suelta
+        // el cerrojo voz↔Telegram YA, en vez de esperar a que caduque (180s).
+        // Sin esto, tras cada turno de voz el relay de Telegram del mismo PTY
+        // daba "sesión enlazada no disponible" hasta 3 minutos (bug real
+        // 2026-08-06). El timeout del vigía NO lo suelta: el turno puede
+        // seguir corriendo y ahí manda la caducidad.
+        try {
+          const s = getSession()
+          if (s && s.voiceTurnUntil) s.voiceTurnUntil = 0
+        } catch {}
         try { onTurnDone(r) } catch (err) {
           trace(`fallo al cerrar el turno de voz: ${err?.message || err}`)
           listen()

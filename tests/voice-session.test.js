@@ -900,3 +900,29 @@ describe('voice-session: la voz elegida sobrevive a una caída del helper', () =
     assert.strictEqual(h.count('voice'), 0)
   })
 })
+
+describe('voice-session: cerrojo voz↔Telegram', () => {
+  // Bug real 2026-08-06: el cerrojo (voiceTurnUntil, 180s) solo caducaba por
+  // tiempo — tras un turno de voz, el relay de Telegram del mismo PTY daba
+  // "sesión enlazada no disponible" hasta 3 minutos. El turno COMPLETADO
+  // (onDone del vigía = claude terminó de escribir) debe soltarlo; la
+  // caducidad queda de red para vigía muerto.
+  test('al completar el turno se suelta el cerrojo', async () => {
+    const ses = { activeCli: 'claude', claudeSessionId: 'sid', pty: {}, wcId: 1, voiceTurnUntil: Date.now() + 180000 }
+    const h = makeHarness({ session: ses })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireDone({ text: 'Todo bien.', sessionId: 'sid' })
+    assert.strictEqual(ses.voiceTurnUntil, 0)
+  })
+
+  test('el timeout del vigía NO suelta el cerrojo (puede seguir corriendo el turno)', async () => {
+    const hasta = Date.now() + 180000
+    const ses = { activeCli: 'claude', claudeSessionId: 'sid', pty: {}, wcId: 1, voiceTurnUntil: hasta }
+    const h = makeHarness({ session: ses })
+    h.session.enable()
+    await h.session.handleHelperEvent({ type: 'final', text: 'hola' })
+    h.fireTimeout()
+    assert.strictEqual(ses.voiceTurnUntil, hasta)
+  })
+})
