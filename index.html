@@ -541,6 +541,14 @@
             <span>Allowed users (IDs Telegram, separados por coma)</span>
             <input id="cfg-telegram-users" type="text" placeholder="12345678, 98765432" />
           </label>
+          <label class="settings-field">
+            <span>Bot de avisos (token, opcional) — las tareas programadas avisan por este bot y no interrumpen tu sesión</span>
+            <input id="cfg-telegram-notify-token" type="password" placeholder="123456:BB..." />
+          </label>
+          <label class="settings-field">
+            <span>Chat ID de avisos (opcional; por defecto, el primer allowed user)</span>
+            <input id="cfg-telegram-notify-chat" type="text" placeholder="12345678" />
+          </label>
           <div class="settings-row">
             <label class="settings-field">
               <span>Modelo Claude (Telegram)</span>

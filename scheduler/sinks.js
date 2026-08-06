@@ -1,4 +1,4 @@
-function createSinks({ telegramBridge, broadcastToAllWindows, onEnsureHiddenPty }) {
+function createSinks({ telegramBridge, broadcastToAllWindows, onEnsureHiddenPty, getNotifyBot, getNotifyChatId }) {
   return {
     notifyMacOS: ({ task, run }) => {
       try {
@@ -23,16 +23,43 @@ function createSinks({ telegramBridge, broadcastToAllWindows, onEnsureHiddenPty 
       }
       try {
         const bridge = telegramBridge
-        if (!bridge) { log(`task=${task.name}: bridge=null`); return }
-        if (!bridge.running) { log(`task=${task.name}: bridge.running=false`); return }
-        const cfg = bridge.config || {}
+        const cfg = (bridge && bridge.config) || {}
         const users = cfg.allowedUsers
         let firstUser = null
         if (users instanceof Set) firstUser = [...users][0]
         else if (Array.isArray(users)) firstUser = users[0]
         else if (users && typeof users === 'object') firstUser = Object.values(users)[0]
-        const chatId = cfg.defaultChatId || firstUser
+        const notifyChatId = typeof getNotifyChatId === 'function' ? getNotifyChatId() : null
+        const chatId = notifyChatId || cfg.defaultChatId || firstUser
         if (!chatId) { log(`task=${task.name}: no chatId (defaultChatId=${cfg.defaultChatId} usersType=${users?.constructor?.name})`); return }
+
+        // Bot de avisos separado: el aviso sale por él y el estado del bridge
+        // principal (binding de sesión, pool oculto) queda intacto. Continuar
+        // la sesión del run es opt-in vía botón inline, nunca efecto colateral.
+        const notify = typeof getNotifyBot === 'function' ? getNotifyBot() : null
+        if (notify && notify.running) {
+          const nHead = `⏰ ${task.name} — ${run.status === 'ok' ? 'OK' : 'ERROR'}`
+          const nBody = run.status === 'ok'
+            ? ((run.output && run.output.slice(0, 3500)) || '(sin salida)')
+            : (run.error || '(error desconocido)')
+          const nSid = (run && run.status === 'ok' && (run.sessionId || (task && task.sessionId))) || null
+          const session = nSid
+            ? {
+                sessionId: nSid,
+                cli: task.cli || 'claude',
+                cwd: (run && run.cwd) || (task && task.cwd) || '',
+                taskName: task.name || '',
+                runId: run.runId
+              }
+            : null
+          const nHint = session ? '\n\nPulsa «Continuar esta sesión» para engancharla al bot principal.' : ''
+          log(`task=${task.name}: sending via notify bot to chatId=${chatId}`)
+          await notify.sendTaskNotification({ chatId, text: `${nHead}\n\n${nBody}${nHint}`, session })
+          return
+        }
+
+        if (!bridge) { log(`task=${task.name}: bridge=null`); return }
+        if (!bridge.running) { log(`task=${task.name}: bridge.running=false`); return }
         const send = bridge.sendMessageTo || bridge.sendMessage
         if (typeof send !== 'function') { log(`task=${task.name}: no send fn (typeof sendMessageTo=${typeof bridge.sendMessageTo} sendMessage=${typeof bridge.sendMessage})`); return }
         const head = `⏰ ${task.name} — ${run.status === 'ok' ? 'OK' : 'ERROR'}`

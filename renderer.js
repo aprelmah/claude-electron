@@ -77,6 +77,8 @@ const cfgVoiceSilenceLabel = document.getElementById('cfg-voice-silence-label')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
+const cfgTelegramNotifyToken = document.getElementById('cfg-telegram-notify-token')
+const cfgTelegramNotifyChat = document.getElementById('cfg-telegram-notify-chat')
 const cfgTelegramClaudeModel = document.getElementById('cfg-telegram-claude-model')
 const cfgTelegramClaudeEffort = document.getElementById('cfg-telegram-claude-effort')
 const cfgTelegramCodexModel = document.getElementById('cfg-telegram-codex-model')
@@ -2341,6 +2343,8 @@ async function refreshSettings() {
   cfgTelegramEnabled.checked = Boolean(config?.telegram?.enabled)
   cfgTelegramToken.value = config?.telegram?.botToken || ''
   cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
+  if (cfgTelegramNotifyToken) cfgTelegramNotifyToken.value = config?.telegram?.notifyBotToken || ''
+  if (cfgTelegramNotifyChat) cfgTelegramNotifyChat.value = config?.telegram?.notifyChatId || ''
   cfgTelegramClaudeModel.value = config?.telegram?.claudeModel || ''
   cfgTelegramClaudeEffort.value = config?.telegram?.claudeEffort || ''
   cfgTelegramCodexModel.value = config?.telegram?.codexModel || ''
@@ -2769,7 +2773,9 @@ btnSaveSettings.addEventListener('click', async () => {
       claudeModel: cfgTelegramClaudeModel.value,
       claudeEffort: cfgTelegramClaudeEffort.value,
       codexModel: cfgTelegramCodexModel.value.trim(),
-      codexEffort: cfgTelegramCodexEffort.value
+      codexEffort: cfgTelegramCodexEffort.value,
+      notifyBotToken: cfgTelegramNotifyToken ? cfgTelegramNotifyToken.value.trim() : '',
+      notifyChatId: cfgTelegramNotifyChat ? cfgTelegramNotifyChat.value.trim() : ''
     },
     lanServer: {
       enabled: lanEnabled,

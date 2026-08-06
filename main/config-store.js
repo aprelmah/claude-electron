@@ -242,6 +242,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
       telegram: {
         enabled: Boolean(telegram.enabled),
         botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
+        notifyBotToken: typeof telegram.notifyBotToken === 'string' ? telegram.notifyBotToken.trim() : '',
+        notifyChatId: typeof telegram.notifyChatId === 'string' ? telegram.notifyChatId.trim() : '',
         allowedUsers: [],
         claudeModel: typeof telegram.claudeModel === 'string' ? telegram.claudeModel.trim() : '',
         claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
