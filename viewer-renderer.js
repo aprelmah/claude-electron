@@ -13,6 +13,9 @@
     name: document.getElementById('file-name'),
     fullPath: document.getElementById('file-path'),
     host: document.getElementById('content-host'),
+    btnSpeak: document.getElementById('btn-speak'),
+    speakIconPlay: document.getElementById('speak-icon-play'),
+    speakIconStop: document.getElementById('speak-icon-stop'),
     btnSend: document.getElementById('btn-send'),
     btnSave: document.getElementById('btn-save'),
     btnMin: document.getElementById('btn-minimize'),
@@ -58,17 +61,46 @@
     }
   }
 
+  // ── Lectura en voz alta ──
+  let speaking = false
+  function setSpeaking(on) {
+    speaking = on
+    el.btnSpeak.classList.toggle('reading', on)
+    el.speakIconPlay.style.display = on ? 'none' : ''
+    el.speakIconStop.style.display = on ? '' : 'none'
+    el.btnSpeak.title = on ? 'Parar la lectura' : 'Léemelo en voz alta'
+  }
+
+  async function toggleSpeak() {
+    if (speaking) {
+      setSpeaking(false)
+      try { await window.api.viewerSpeakStop() } catch {}
+      return
+    }
+    if (state.kind !== 'text' || !state.textarea) return
+    // Con texto seleccionado se lee la selección; si no, el documento entero.
+    const ta = state.textarea
+    const sel = ta.selectionStart !== ta.selectionEnd ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : ''
+    const text = sel || ta.value
+    let res
+    try { res = await window.api.viewerSpeak(text) } catch { res = null }
+    if (res && res.ok) setSpeaking(true)
+    else showToast(res && res.reason ? res.reason : 'No se pudo leer el documento')
+  }
+
   function renderImage(res, p) {
     const ext = (p.split('.').pop() || '').toLowerCase()
     const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`
     el.host.innerHTML = `<div id="image-wrap"><img src="data:${mime};base64,${res.base64}" alt=""/></div>`
     el.btnSave.disabled = true
+    el.btnSpeak.disabled = true
   }
 
   function renderBinary(res) {
     const kb = (res.size / 1024).toFixed(1)
     el.host.innerHTML = `<div id="binary-msg"><strong>Archivo binario</strong><span>${kb} KB · no editable</span></div>`
     el.btnSave.disabled = true
+    el.btnSpeak.disabled = true
   }
 
   function renderText(res) {
@@ -90,6 +122,7 @@
     el.host.innerHTML = ''
     el.host.appendChild(ta)
     state.textarea = ta
+    el.btnSpeak.disabled = false
     setDirty(false)
     setTimeout(() => ta.focus(), 30)
   }
@@ -144,6 +177,9 @@
     if (!confirmCloseIfDirty()) return
     window.api.viewerClose()
   }
+
+  el.btnSpeak.addEventListener('click', toggleSpeak)
+  window.api.onSpeechEnded(() => setSpeaking(false))
 
   el.btnSend.addEventListener('click', () => {
     if (!state.path) return

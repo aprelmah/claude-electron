@@ -12,13 +12,11 @@
 // de lectura a la velocidad por defecto; para cortar antes está el botón.
 const DEFAULT_MAX_CHARS = 2000
 
-function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
+// Limpieza completa markdown → prosa, SIN tope. La usan speakableFromMarkdown
+// (que recorta encima) y chunkSpeakableFromMarkdown (que trocea el documento
+// entero para el botón "Léemelo" del visor, donde recortar sería perder texto).
+function proseFromMarkdown(md) {
   if (typeof md !== 'string' || !md) return ''
-
-  // maxChars puede venir de config/estado (Tarea 6): si no es un número
-  // finito y positivo, no se desactiva el recorte en silencio, se usa el
-  // valor por defecto.
-  const safeMaxChars = Number.isFinite(maxChars) && maxChars > 0 ? maxChars : DEFAULT_MAX_CHARS
 
   let out = md
 
@@ -197,6 +195,16 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   out = out.trim()
   out = out.replace(/^[.\s]+/, '').trim()
 
+  return out
+}
+
+function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
+  // maxChars puede venir de config/estado (Tarea 6): si no es un número
+  // finito y positivo, no se desactiva el recorte en silencio, se usa el
+  // valor por defecto.
+  const safeMaxChars = Number.isFinite(maxChars) && maxChars > 0 ? maxChars : DEFAULT_MAX_CHARS
+
+  let out = proseFromMarkdown(md)
   if (!out) return ''
 
   if (out.length > safeMaxChars) {
@@ -217,4 +225,34 @@ function speakableFromMarkdown(md, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   return out
 }
 
-module.exports = { speakableFromMarkdown, DEFAULT_MAX_CHARS }
+// Documento entero → lista de trozos legibles, cortando en fin de frase. El
+// sintetizador de Apple digiere frases de cualquier tamaño razonable, pero
+// mandar el documento de golpe impide parar con grano fino y satura el IPC;
+// ~1400 caracteres ≈ minuto y medio por trozo. El corte busca fin de frase
+// dentro del trozo y cae a espacio (y en último extremo a corte duro) para
+// prosa sin puntos.
+const DEFAULT_CHUNK_CHARS = 1400
+
+function chunkSpeakableFromMarkdown(md, { chunkChars = DEFAULT_CHUNK_CHARS } = {}) {
+  const safeChunk = Number.isFinite(chunkChars) && chunkChars > 100 ? chunkChars : DEFAULT_CHUNK_CHARS
+  let prose = proseFromMarkdown(md)
+  if (!prose) return []
+
+  const chunks = []
+  while (prose.length > safeChunk) {
+    const cut = prose.slice(0, safeChunk)
+    const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+    let at
+    if (lastSentence > safeChunk * 0.4) at = lastSentence + 1
+    else {
+      const lastSpace = cut.lastIndexOf(' ')
+      at = lastSpace > safeChunk * 0.5 ? lastSpace : safeChunk
+    }
+    chunks.push(prose.slice(0, at).trim())
+    prose = prose.slice(at).trim()
+  }
+  if (prose) chunks.push(prose)
+  return chunks.filter(Boolean)
+}
+
+module.exports = { speakableFromMarkdown, chunkSpeakableFromMarkdown, proseFromMarkdown, DEFAULT_MAX_CHARS, DEFAULT_CHUNK_CHARS }

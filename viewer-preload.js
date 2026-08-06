@@ -9,4 +9,8 @@ contextBridge.exposeInMainWorld('api', {
   fileRead: (p) => ipcRenderer.invoke('file-read', p),
   fileWrite: (p, text) => ipcRenderer.invoke('file-write', { path: p, text }),
   getSystemTheme: () => ipcRenderer.invoke('get-system-theme'),
+
+  viewerSpeak: (text) => ipcRenderer.invoke('viewer:speak', { text }),
+  viewerSpeakStop: () => ipcRenderer.invoke('viewer:speak-stop'),
+  onSpeechEnded: (cb) => ipcRenderer.on('viewer:speech-ended', () => cb()),
 })

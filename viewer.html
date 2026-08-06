@@ -152,6 +152,8 @@ body {
 
 #btn-close:hover { color: var(--error); }
 
+#btn-speak.reading { color: var(--accent, #4a9eff); }
+
 #body {
   flex: 1;
   min-height: 0;
@@ -252,6 +254,10 @@ body {
       <div id="file-path"></div>
     </div>
     <div id="header-buttons">
+      <button id="btn-speak" class="icon-btn" title="Léemelo en voz alta" aria-label="Leer el documento en voz alta">
+        <svg id="speak-icon-play" viewBox="0 0 24 24" aria-hidden="true"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19 11,5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+        <svg id="speak-icon-stop" viewBox="0 0 24 24" aria-hidden="true" style="display:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
       <button id="btn-send" class="icon-btn" title="Enviar @ruta al CLI activo" aria-label="Enviar ruta del archivo al CLI activo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9 22,2"/></svg>
       </button>
