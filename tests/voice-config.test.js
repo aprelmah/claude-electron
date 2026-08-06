@@ -108,3 +108,46 @@ describe('config del modo voz — voiceRate en normalizeAppConfig', () => {
     assert.strictEqual(normalizeAppConfig({}).cli.voiceRate, '')
   })
 })
+
+// La pausa de silencio que cierra el turno (2026-08-06): el 1,1 s fijo del
+// helper cortaba a Luismi al respirar o pensar a mitad de frase.
+describe('config del modo voz — sanitizeVoiceSilenceMs (pausa antes de enviar)', () => {
+  const { sanitizeVoiceSilenceMs } = configStore
+
+  test('valores dentro del rango pasan tal cual, como texto', () => {
+    assert.strictEqual(sanitizeVoiceSilenceMs(1800), '1800')
+    assert.strictEqual(sanitizeVoiceSilenceMs('2500'), '2500')
+    assert.strictEqual(sanitizeVoiceSilenceMs(800), '800')
+    assert.strictEqual(sanitizeVoiceSilenceMs(3000), '3000')
+  })
+
+  test('fuera de rango se acota, no se descarta', () => {
+    assert.strictEqual(sanitizeVoiceSilenceMs(100), '800')
+    assert.strictEqual(sanitizeVoiceSilenceMs(99999), '3000')
+    assert.strictEqual(sanitizeVoiceSilenceMs('0'), '800')
+  })
+
+  test('basura devuelve "": sin preferencia, el helper usa su defecto (1800)', () => {
+    for (const v of ['', '  ', 'largo', null, undefined, NaN, Infinity, {}]) {
+      assert.strictEqual(sanitizeVoiceSilenceMs(v), '', String(v))
+    }
+  })
+
+  test('decimales se redondean a ms enteros', () => {
+    assert.strictEqual(sanitizeVoiceSilenceMs(1850.6), '1851')
+  })
+})
+
+describe('config del modo voz — voiceSilenceMs en normalizeAppConfig', () => {
+  const { normalizeAppConfig } = createConfigNormalizers({
+    clampLanPort: (p) => Number(p) || 9999,
+    normalizeEnterpriseConfig: () => ({}),
+    defaultEnterpriseRoleId: 'role'
+  })
+
+  test('voiceSilenceMs viaja por la normalización y la basura cae a ""', () => {
+    assert.strictEqual(normalizeAppConfig({ cli: { voiceSilenceMs: '2000' } }).cli.voiceSilenceMs, '2000')
+    assert.strictEqual(normalizeAppConfig({ cli: { voiceSilenceMs: 'no' } }).cli.voiceSilenceMs, '')
+    assert.strictEqual(normalizeAppConfig({}).cli.voiceSilenceMs, '')
+  })
+})

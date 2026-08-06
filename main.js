@@ -3633,6 +3633,8 @@ function applyVoicePrefsToHelper() {
   if (voiceId) voiceHelper.send({ cmd: 'voice', id: voiceId })
   const rate = Number(appConfig?.cli?.voiceRate)
   if (Number.isFinite(rate)) voiceHelper.send({ cmd: 'rate', value: rate })
+  const silence = Number(appConfig?.cli?.voiceSilenceMs)
+  if (Number.isFinite(silence) && silence > 0) voiceHelper.send({ cmd: 'silence', ms: silence })
 }
 
 // Lista de voces del sistema para el selector de Configuración. El helper puede
@@ -4047,7 +4049,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate', 'voiceSilenceMs']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {

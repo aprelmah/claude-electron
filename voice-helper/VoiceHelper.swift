@@ -58,15 +58,25 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     // 0,52 medido como el punto cómodo por defecto en es-ES.
     private var speechRate: Float = 0.52
 
-    // Endpointing propio. 1,1 s sale de la medición: el texto se estabiliza a
-    // ~1,0 s de callar. El de Apple es más lento y no es configurable.
-    private let silenceToEndTurn: TimeInterval = 1.1
+    // Endpointing propio (el de Apple es más lento y no es configurable).
+    // 1,1 s era la medición de estabilización del texto, pero en uso real
+    // cortaba al usuario al respirar o pensar (2026-08-06): el defecto sube a
+    // 1,8 s y Node lo puede ajustar con {cmd:"silence", ms} (slider en
+    // Configuración).
+    private var silenceToEndTurn: TimeInterval = 1.8
     private let voiceThreshold: Float = 0.012
+    // Guardia del cierre en dos fases: tiempo máximo esperando el `isFinal`
+    // del reconocedor tras endAudio() antes de mandar lo que haya.
+    private let finalResultGuard: TimeInterval = 2.5
 
     private var speechStartedAt: Date?
     private var lastVoiceAt: Date?
     private var lastText = ""
     private var endTimer: Timer?
+    // Fase de cierre: el micro ya está cerrado pero la task sigue viva
+    // esperando la cola de la transcripción del servidor.
+    private var finishing = false
+    private var finalGuardTimer: Timer?
 
     init(locale: String = "es-ES") {
         self.locale = locale
@@ -117,6 +127,10 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         }
         guard !listening, let rec = recognizer else { return }
         guard rec.isAvailable else { fail("reconocedor no disponible (¿sin red?)"); return }
+        // Si quedó un cierre a medias (no debería: Node no manda `start` hasta
+        // recibir el `final`), se remata en seco para no dejar una task vieja
+        // viva cuyo `isFinal` tardío pisaría el turno nuevo.
+        if finishing { stopAudio() }
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         // Servidor, no on-device: decisión medida, ver cabecera.
@@ -127,17 +141,33 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
         resetTurn()
 
+        // Los callbacks llegan en la cola principal (SFSpeechRecognizer.queue
+        // por defecto), la misma de los timers: sin carreras entre ellos.
+        // La guarda de identidad (`self.request === req`) descarta los
+        // callbacks tardíos de una task ya sustituida por un turno nuevo.
         task = rec.recognitionTask(with: req) { [weak self] result, error in
-            guard let self = self else { return }
+            guard let self = self, self.request === req else { return }
             if let e = error as NSError? {
                 // 216/301 = cancelaciones normales al cerrar el turno.
                 if e.code != 216 && e.code != 301 { fail("reconocimiento: \(e.localizedDescription)") }
+                // En fase de cierre un error también es el final: se manda lo
+                // que haya en vez de dejar la guardia esperando.
+                if self.finishing { self.emitFinal() }
                 return
             }
-            guard let text = result?.bestTranscription.formattedString, !text.isEmpty else { return }
-            guard text != self.lastText else { return }
-            self.lastText = text
-            emit(["type": "partial", "text": text])
+            guard let result = result else { return }
+            let text = result.bestTranscription.formattedString
+            if !text.isEmpty && text != self.lastText {
+                self.lastText = text
+                // En fase de cierre no se emiten parciales: lo que llega es la
+                // cola del turno y sale entero en el `final`.
+                if !self.finishing { emit(["type": "partial", "text": text]) }
+            }
+            // `isFinal` con el micro abierto también cierra el turno: es el
+            // tope de ~1 min por petición del reconocimiento en servidor. Sin
+            // esto, en un monólogo largo el texto dejaba de crecer en silencio
+            // y el turno salía truncado al detectar el siguiente silencio.
+            if result.isFinal { self.emitFinal() }
         }
 
         do { try openMic() } catch {
@@ -232,24 +262,50 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
+    // Cierre en DOS fases (2026-08-06). Hasta ahora el silencio emitía
+    // `lastText` y cancelaba la task en el acto — pero el reconocimiento va por
+    // servidor con ~1 s de retraso, así que la transcripción del último tramo
+    // de audio aún venía de vuelta y el cancel() la tiraba: las frases largas
+    // llegaban sin la cola. Fase 1: cerrar el micro y avisar con endAudio(),
+    // manteniendo viva la task. Fase 2: el `isFinal` (texto completo y
+    // corregido) dispara emitFinal(); una guardia manda lo que haya si no llega.
     private func closeTurn() {
         endTimer?.invalidate(); endTimer = nil
-        let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
-        stopAudio()
+        guard !finishing else { return }
+        finishing = true
         listening = false
+        engine.inputNode.removeTap(onBus: 0)
+        if engine.isRunning { engine.stop() }
+        request?.endAudio()
+        finalGuardTimer?.invalidate()
+        finalGuardTimer = Timer.scheduledTimer(withTimeInterval: finalResultGuard, repeats: false) { [weak self] _ in
+            self?.emitFinal()
+        }
+    }
+
+    private func emitFinal() {
+        guard listening || finishing else { return }
+        finishing = false
+        listening = false
+        let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // stopAudio ya es seguro aquí: el cancel() sobre una task que acaba de
+        // dar su isFinal es un no-op, y sus errores 216/301 se filtran.
+        stopAudio()
         if text.isEmpty { emit(["type": "empty"]) }
         else { emit(["type": "final", "text": text]) }
         // Node decide si reabrir el micro: mientras Claude piensa, no escuchamos.
     }
 
     func stop() {
-        guard listening else { return }
+        guard listening || finishing else { return }
         stopAudio(); listening = false
         emit(["type": "stopped"])
     }
 
     private func stopAudio() {
         endTimer?.invalidate(); endTimer = nil
+        finalGuardTimer?.invalidate(); finalGuardTimer = nil
+        finishing = false
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
         // Cinturón: si algún día vuelve VoiceProcessing, soltarlo aquí es lo
@@ -289,6 +345,13 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func setVoice(_ identifier: String?) { voiceId = identifier }
+
+    // Mismo criterio que setRate: Node acota (sanitizeVoiceSilenceMs), pero el
+    // helper no se fía de su stdin. Llega en ms, se guarda en segundos.
+    func setSilence(_ ms: Double?) {
+        guard let v = ms, v.isFinite else { return }
+        silenceToEndTurn = min(3.0, max(0.8, v / 1000.0))
+    }
 
     // Mismo tope que sanitizeVoiceRate en Node (main/config-store.js): aunque
     // Node ya acota, el helper no se fía de su entrada — cualquier proceso
@@ -342,6 +405,7 @@ func handle(_ line: String) {
         case "vocab":  engine.setVocabulary(msg["words"] as? [String] ?? [])
         case "voice":  engine.setVoice(msg["id"] as? String)
         case "rate":   engine.setRate(msg["value"] as? Double)
+        case "silence": engine.setSilence(msg["ms"] as? Double)
         case "voices": engine.listVoices()
         case "quit":   exitDraining(0)
         default:       fail("comando desconocido: \(cmd)")

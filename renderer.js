@@ -72,6 +72,8 @@ const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgVoiceId = document.getElementById('cfg-voice-id')
 const cfgVoiceRate = document.getElementById('cfg-voice-rate')
 const cfgVoiceRateLabel = document.getElementById('cfg-voice-rate-label')
+const cfgVoiceSilence = document.getElementById('cfg-voice-silence')
+const cfgVoiceSilenceLabel = document.getElementById('cfg-voice-silence-label')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
@@ -2263,12 +2265,25 @@ function voiceRateLabelText(v) {
   return 'rápida'
 }
 
+// Segundos con coma decimal, estilo es-ES: 1800 → "1,8 s".
+function voiceSilenceLabelText(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '1,8 s'
+  return `${(n / 1000).toFixed(1).replace('.', ',')} s`
+}
+
 async function refreshVoiceSettings(config) {
   if (!cfgVoiceId || !cfgVoiceRate) return
   const actual = config?.cli?.voiceId || ''
   const rate = Number(config?.cli?.voiceRate)
   cfgVoiceRate.value = Number.isFinite(rate) ? String(rate) : '0.52'
   if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+  if (cfgVoiceSilence) {
+    // Ojo: Number('') === 0 — el vacío es "sin preferencia", no 0 ms.
+    const silence = Number(config?.cli?.voiceSilenceMs)
+    cfgVoiceSilence.value = Number.isFinite(silence) && silence > 0 ? String(silence) : '1800'
+    if (cfgVoiceSilenceLabel) cfgVoiceSilenceLabel.textContent = voiceSilenceLabelText(cfgVoiceSilence.value)
+  }
 
   // Voces del sistema. Si el helper no contesta (binario ausente, timeout), el
   // selector se queda con "Voz del sistema" + la guardada: nunca se pierde en
@@ -2305,6 +2320,12 @@ async function refreshVoiceSettings(config) {
 if (cfgVoiceRate) {
   cfgVoiceRate.addEventListener('input', () => {
     if (cfgVoiceRateLabel) cfgVoiceRateLabel.textContent = voiceRateLabelText(cfgVoiceRate.value)
+  })
+}
+
+if (cfgVoiceSilence) {
+  cfgVoiceSilence.addEventListener('input', () => {
+    if (cfgVoiceSilenceLabel) cfgVoiceSilenceLabel.textContent = voiceSilenceLabelText(cfgVoiceSilence.value)
   })
 }
 
@@ -2735,7 +2756,8 @@ btnSaveSettings.addEventListener('click', async () => {
       codexBin: cfgCodexBin.value.trim(),
       whisperBin: cfgWhisperBin.value.trim(),
       voiceId: cfgVoiceId ? cfgVoiceId.value : '',
-      voiceRate: cfgVoiceRate ? cfgVoiceRate.value : ''
+      voiceRate: cfgVoiceRate ? cfgVoiceRate.value : '',
+      voiceSilenceMs: cfgVoiceSilence ? cfgVoiceSilence.value : ''
     },
     telegram: {
       enabled: cfgTelegramEnabled.checked,

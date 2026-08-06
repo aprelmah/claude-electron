@@ -144,6 +144,18 @@ function sanitizeVoiceRate(value) {
   return String(Math.min(0.7, Math.max(0.3, Math.round(n * 100) / 100)))
 }
 
+// Pausa de silencio (ms) que cierra el turno del modo voz. El 1,1 s medido de
+// estabilización del texto cortaba al usuario al respirar o pensar; el helper
+// usa 1,8 s por defecto. '' = sin preferencia. Acotado a 800–3000: por debajo
+// corta en cada coma, por encima el envío se siente colgado.
+function sanitizeVoiceSilenceMs(value) {
+  // Ojo: Number('') === 0. El vacío es "sin preferencia", no "al mínimo".
+  if (typeof value === 'string' && !value.trim()) return ''
+  const n = typeof value === 'string' ? Number(value) : value
+  if (typeof n !== 'number' || !Number.isFinite(n)) return ''
+  return String(Math.min(3000, Math.max(800, Math.round(n))))
+}
+
 // Identificador de voz de AVSpeechSynthesis (p. ej.
 // `com.apple.voice.premium.es-ES.Monica`). Viaja al helper como valor de un
 // JSON por NDJSON, así que lo único intolerable son los saltos de línea (parten
@@ -224,7 +236,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         claudeModel: sanitizeClaudeModel(cli.claudeModel),
         gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation),
         voiceId: sanitizeVoiceId(cli.voiceId),
-        voiceRate: sanitizeVoiceRate(cli.voiceRate)
+        voiceRate: sanitizeVoiceRate(cli.voiceRate),
+        voiceSilenceMs: sanitizeVoiceSilenceMs(cli.voiceSilenceMs)
       },
       telegram: {
         enabled: Boolean(telegram.enabled),
@@ -258,7 +271,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     sanitizeClaudeModel,
     sanitizeGitSessionIsolation,
     sanitizeVoiceId,
-    sanitizeVoiceRate
+    sanitizeVoiceRate,
+    sanitizeVoiceSilenceMs
   }
 }
 
@@ -295,5 +309,6 @@ module.exports = {
   sanitizeClaudeModel,
   sanitizeGitSessionIsolation,
   sanitizeVoiceId,
-  sanitizeVoiceRate
+  sanitizeVoiceRate,
+  sanitizeVoiceSilenceMs
 }
