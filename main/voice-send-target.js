@@ -49,6 +49,15 @@ const DEFAULT_MOTHER_WAIT_MS = 3000
 // corre en el proceso main: bloquea IPC y PTYs mientras dura. 5 MB sobra de
 // largo para localizar la línea de un prompt y mantiene la pausa en pocos ms.
 const MAX_FORK_SCAN_BYTES = 5 * 1024 * 1024
+// Cerrojo voz↔Telegram: duración del turno de voz a efectos de exclusión
+// mutua. Mismo techo que MAX_WAIT_MS de relayThroughPty y que el vigía (180s).
+const VOICE_TURN_LOCK_MS = 180000
+
+// ¿Hay un turno de voz en vuelo sobre esta sesión? relayThroughPty lo consulta
+// igual que relayActive. Timestamp con caducidad, no booleano: caduca solo.
+function voiceTurnLockActive(session, now = Date.now()) {
+  return Boolean(session && Number.isFinite(session.voiceTurnUntil) && session.voiceTurnUntil > now)
+}
 
 // Localiza el .jsonl del fork que crea un `--resume` en el spawn: el que ha
 // aparecido desde `before` y no pertenece ya a nadie. Se usa SOLO donde todavía
@@ -249,19 +258,22 @@ function createVoiceSendTarget({
   // ── Encargo: al PTY de la sesión madre, con efectos reales en el proyecto ──
   async function sendToMother(session, prompt, cwds) {
     if (!session.pty) return { ok: false, reason: 'la sesión no tiene proceso vivo' }
-    // `relayThroughPty` (Telegram) serializa sus turnos con este flag. El modo
-    // voz lo RESPETA pero no marca nada mientras dura el suyo, así que el orden
-    // contrario (Telegram entrando a mitad de un turno de voz) sigue sin cubrir
-    // — y es el más probable, porque un turno de voz dura decenas de segundos.
-    // Pendiente inmediato en CLAUDE.md: cerrojo con caducidad
-    // (`session.voiceTurnUntil`), no un booleano que haya que soltar a mano.
+    // `relayThroughPty` (Telegram) serializa sus turnos con este flag; el modo
+    // voz lo respeta en esta dirección…
     if (session.relayActive) return { ok: false, reason: 'la sesión está ocupada con otro turno' }
+    // …y cubre la contraria con el cerrojo: `relayThroughPty` respeta
+    // `voiceTurnUntil` igual que `relayActive`. Caduca SOLO (180s): nada lo
+    // suelta a mano, así no queda pegado si el vigía del turno muere por
+    // cualquiera de sus cuatro caminos de salida. Diseño en CLAUDE.md
+    // § Git automático → PENDIENTE INMEDIATO (cerrado 2026-08-06).
+    session.voiceTurnUntil = Date.now() + VOICE_TURN_LOCK_MS
 
     const expectedId = session.claudeSessionId
     const baseOffset = transcriptSize(expectedId, cwds)
     const before = snapshotAll(cwds)
 
     try { session.pty.write(prompt) } catch (err) {
+      session.voiceTurnUntil = 0
       return { ok: false, reason: `no se pudo escribir en la sesión: ${err?.message || err}` }
     }
     // El ENTER va APARTE y con una pausa. Pegado al texto (`prompt + '\r'`) el
@@ -270,6 +282,7 @@ function createVoiceSendTarget({
     // que la mandes tú a mano. Visto en la primera prueba real (2026-08-05).
     await wait(ENTER_DELAY)
     try { session.pty.write('\r') } catch (err) {
+      session.voiceTurnUntil = 0
       return { ok: false, reason: `no se pudo enviar el turno: ${err?.message || err}` }
     }
 
@@ -386,6 +399,8 @@ function createVoiceSendTarget({
 module.exports = {
   createVoiceSendTarget,
   pickForkedSessionId,
+  voiceTurnLockActive,
+  VOICE_TURN_LOCK_MS,
   DEFAULT_POLL_MS,
   DEFAULT_SUBCHAT_WARMUP_MS,
   DEFAULT_SUBCHAT_FORK_WAIT_MS,
