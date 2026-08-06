@@ -203,6 +203,9 @@ class TelegramBridge {
     onGetCwd,
     onSetCli,
     onUnlinkRelay,
+    onGetLinkStatus,
+    onGetTelegramModel,
+    onSetTelegramModel,
     onStatus,
     onSemanticInput,
     onSemanticOutput,
@@ -218,6 +221,9 @@ class TelegramBridge {
     this.onGetCwd = onGetCwd
     this.onSetCli = onSetCli
     this.onUnlinkRelay = onUnlinkRelay
+    this.onGetLinkStatus = onGetLinkStatus
+    this.onGetTelegramModel = onGetTelegramModel
+    this.onSetTelegramModel = onSetTelegramModel
     this.onStatus = onStatus
     this.onSemanticInput = onSemanticInput
     this.onSemanticOutput = onSemanticOutput
@@ -441,6 +447,9 @@ class TelegramBridge {
     await this._api('deleteWebhook')
     const me = await this._api('getMe')
     this.botUsername = me?.username || ''
+    // Menú nativo de Telegram (botón ≡ junto al campo de texto). Best effort:
+    // si falla, el bot funciona igual con comandos escritos.
+    try { await this._registerCommandMenu() } catch {}
     this.lastInfo = this.botUsername ? `Telegram activo (@${this.botUsername})` : 'Telegram activo'
     this._emitStatus()
 
@@ -617,7 +626,11 @@ class TelegramBridge {
       resolvedSessionId = result?.sessionId || this._getSessionId(chatId, cli) || resolvedSessionId
       runOk = true
       clearInterval(typingInterval)
-      await stream.finalize()
+      // Pie de contexto: hace visible al instante cualquier cruce de sesiones
+      // ("qué raro responde" → se ve el proyecto/sesión equivocados). Solo si
+      // hay respuesta real: sobre "(sin respuesta)" no aporta y confunde.
+      const footer = this._contextFooter(chatId, cli)
+      await stream.finalize(footer && stream.buffer.trim() ? footer : undefined)
     } catch (err) {
       runError = err?.message || String(err)
       clearInterval(typingInterval)
@@ -642,6 +655,41 @@ class TelegramBridge {
         })
       } catch {}
     }
+  }
+
+  // setMyCommands puebla el botón "Menú" nativo de Telegram con los comandos.
+  async _registerCommandMenu() {
+    await this._api('setMyCommands', {
+      commands: [
+        { command: 'menu', description: 'Menú con botones' },
+        { command: 'proyecto', description: 'Elegir proyecto' },
+        { command: 'sesiones', description: 'Elegir conversación previa' },
+        { command: 'modelo', description: 'Cambiar modelo (Telegram)' },
+        { command: 'vinculo', description: 'Ver a qué está enganchado este chat' },
+        { command: 'status', description: 'Estado del bridge' },
+        { command: 'abrir', description: 'Abrir la sesión en el Mac' },
+        { command: 'reset', description: 'Conversación nueva' },
+        { command: 'desvincular', description: 'Cortar el relay PTY' },
+        { command: 'cli', description: 'Cambiar CLI (claude|codex)' },
+        { command: 'cancel', description: 'Cancelar respuesta en curso' },
+        { command: 'help', description: 'Ayuda' }
+      ]
+    })
+  }
+
+  // «📁 proyecto · abc12345» — o '' si no hay nada que enseñar.
+  _contextFooter(chatId, cli) {
+    let proj = ''
+    try {
+      const cwd = this._getChatCwd(chatId)
+      if (cwd) proj = path.basename(cwd)
+    } catch {}
+    let sid = ''
+    try { sid = String(this._getSessionId(chatId, cli) || '').slice(0, 8) } catch {}
+    if (proj && sid) return `📁 ${proj} · ${sid}`
+    if (proj) return `📁 ${proj}`
+    if (sid) return `📁 sesión ${sid}`
+    return ''
   }
 
   async _sendChatAction(chatId, action) {
@@ -722,7 +770,8 @@ class TelegramBridge {
         '/sesiones -> elegir conversación previa del proyecto',
         '/cwd     -> carpeta actual',
         '/reset   -> empezar conversación nueva (olvida sesión)',
-        '/salir   -> desconectar este chat del relay PTY',
+        '/vinculo -> ver a qué proyecto/sesión está enganchado este chat',
+        '/salir   -> desconectar este chat del relay PTY (alias /desvincular)',
         '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
         '/abrir   -> abrir en el Mac la sesión del último run programado',
@@ -761,7 +810,78 @@ class TelegramBridge {
       return
     }
 
-    if (lower === '/salir' || lower === '/unlink' || lower === '/disconnect') {
+    if (lower === '/menu' || lower === '/m') {
+      // Botonera: cada botón dispara el comando equivalente (callback mnu:*).
+      await this._sendMessage(chatId, 'Menú:', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📁 Proyecto', callback_data: 'mnu:proyecto' }, { text: '🗂 Sesiones', callback_data: 'mnu:sesiones' }],
+            [{ text: '🧠 Modelo', callback_data: 'mnu:modelo' }, { text: '🔗 Vínculo', callback_data: 'mnu:vinculo' }],
+            [{ text: '📊 Estado', callback_data: 'mnu:status' }, { text: '🖥 Abrir en el Mac', callback_data: 'mnu:abrir' }],
+            [{ text: '🆕 Conversación nueva', callback_data: 'mnu:reset' }, { text: '✂️ Desvincular', callback_data: 'mnu:desvincular' }]
+          ]
+        }
+      })
+      return
+    }
+
+    if (lower === '/modelo' || lower === '/model' || lower.startsWith('/modelo ') || lower.startsWith('/model ')) {
+      const cli = (await this.onGetActiveCli?.()) || 'claude'
+      const arg = text.split(/\s+/).slice(1).join(' ').trim()
+      if (arg) {
+        const model = arg.toLowerCase() === 'default' ? '' : arg
+        const res = await this.onSetTelegramModel?.({ cli, model })
+        if (res?.ok === false) {
+          await this._sendMessage(chatId, `No pude cambiar el modelo: ${res.error || 'error'}`)
+        } else {
+          await this._sendMessage(chatId, `Modelo de ${cli} para Telegram: ${model || 'Default'} (aplica desde el próximo mensaje).`)
+        }
+        return
+      }
+      let current = ''
+      try { current = (await this.onGetTelegramModel?.(cli)) || '' } catch {}
+      if (cli !== 'claude') {
+        await this._sendMessage(chatId, `Modelo actual de ${cli} para Telegram: ${current || 'Default'}. Cámbialo con /modelo <nombre> (o /modelo default).`)
+        return
+      }
+      await this._sendMessage(chatId, `Modelo actual de claude para Telegram: ${current || 'Default'}. Elige:`, {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Default', callback_data: 'mod:default' },
+            { text: 'Haiku', callback_data: 'mod:haiku' },
+            { text: 'Sonnet', callback_data: 'mod:sonnet' },
+            { text: 'Opus', callback_data: 'mod:opus' }
+          ]]
+        }
+      })
+      return
+    }
+
+    if (lower === '/vinculo' || lower === '/link') {
+      // Radiografía del enlace del chat, para cortar mezclas desde el móvil
+      // sin ir al Mac: binding PTY (si main lo conoce) + sesión persistida.
+      const activeCli = (await this.onGetActiveCli?.()) || 'claude'
+      let link = null
+      try { link = await this.onGetLinkStatus?.({ chatId: String(chatId) }) } catch {}
+      const lines = []
+      if (link?.bound) {
+        const proj = link.cwd ? path.basename(link.cwd) : '(proyecto desconocido)'
+        lines.push(`🔗 Enlazado por relay PTY a ${proj} (${link.cli || 'claude'})`)
+        if (link.sessionId) lines.push(`Sesión: ${String(link.sessionId).slice(0, 8)}`)
+      } else {
+        lines.push('Sin enlace de relay PTY.')
+      }
+      const chatCwd = this._getChatCwd(chatId)
+      if (chatCwd) lines.push(`Proyecto del chat: ${path.basename(chatCwd)} (${chatCwd})`)
+      const sid = this._getSessionId(chatId, activeCli)
+      if (sid) lines.push(`Sesión persistida (${activeCli}): ${String(sid).slice(0, 8)}`)
+      if (!link?.bound && !chatCwd && !sid) lines.push('Este chat no tiene proyecto ni sesión asociados. Usa /proyecto.')
+      lines.push('', '/desvincular corta el relay PTY. /reset olvida la sesión.')
+      await this._sendMessage(chatId, lines.join('\n'))
+      return
+    }
+
+    if (lower === '/salir' || lower === '/unlink' || lower === '/disconnect' || lower === '/desvincular') {
       const result = await this.onUnlinkRelay?.(String(chatId))
       if (result?.ok) {
         const sync = result.sync || null
@@ -926,6 +1046,25 @@ class TelegramBridge {
 
     const key = String(chatId)
     const picker = this.pendingPickers.get(key)
+
+    // Botones del /menu: despachan el comando equivalente.
+    if (data.startsWith('mnu:')) {
+      await this._handleCommand(chatId, `/${data.slice(4)}`)
+      return
+    }
+
+    // Botones de /modelo (solo claude; codex va por argumento).
+    if (data.startsWith('mod:')) {
+      const value = data.slice(4)
+      const model = value === 'default' ? '' : value
+      const res = await this.onSetTelegramModel?.({ cli: 'claude', model })
+      if (res?.ok === false) {
+        await this._sendMessage(chatId, `No pude cambiar el modelo: ${res.error || 'error'}`)
+      } else {
+        await this._sendMessage(chatId, `Modelo de claude para Telegram: ${model || 'Default'} (aplica desde el próximo mensaje).`)
+      }
+      return
+    }
 
     if (data.startsWith('prj:')) {
       const idx = Number(data.slice(4))
