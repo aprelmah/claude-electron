@@ -12,8 +12,8 @@ Empezó con una pregunta sobre dos iconos de la topbar y acabó en 6 arreglos, t
 
 ## Estado de entrega (verificado al cierre)
 
-- `main` **ahead 5** de `origin/main` al escribir esto → **pusheado en este mismo cierre** (ver "Notas operativas" si el push falló). HEAD **`88aed1b`**, árbol limpio salvo los docs de este wrap.
-- 5 commits: `32c6d75` (📌 prompt escrito + canal `pty-notice`), `d9b1475` (sessionId codex), `f3538ed` (picker: worktree + títulos), `4b0bfe9` (menú de directorio + conversación ocupada), `88aed1b` (reglas en CLAUDE.md).
+- `main` == `origin/main` (**pusheado** `f6b4f34..90de564`), HEAD **`90de564`**, árbol limpio.
+- 6 commits: `32c6d75` (📌 prompt escrito + canal `pty-notice`), `d9b1475` (sessionId codex), `f3538ed` (picker: worktree + títulos), `4b0bfe9` (menú de directorio + conversación ocupada), `88aed1b` (reglas en CLAUDE.md), `90de564` (memoria de este cierre).
 - Tests: **1295 (1289 pass / 0 fail / 6 skip)** — el tramo empezó en 1233.
 - Deploy: **HECHO** (5 deploys, el último tras los commits), asar verificado por CONTENIDO en cada uno.
 
