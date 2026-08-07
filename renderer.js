@@ -4291,7 +4291,9 @@ function renderStatusPanel(snap) {
   statusPanelBody.appendChild(spSection('Últimos eventos (bitácora)'))
   if (!snap?.eventos?.length) statusPanelBody.appendChild(spRow('Nada registrado.'))
   for (const e of snap?.eventos || []) {
-    const hora = e.ts ? String(e.ts).slice(11, 19) : ''
+    // e.ts es epoch ms (semantic-logger); un slice de string daba "39".
+    const d = e.ts ? new Date(Number(e.ts) || e.ts) : null
+    const hora = d && !isNaN(d) ? d.toLocaleTimeString('es-ES', { hour12: false }) : ''
     statusPanelBody.appendChild(spRow(`${hora} ${e.ok ? '✓' : '✗'} ${e.action} ${e.detail}`.trim(), e.ok ? '' : 'sp-err'))
   }
 }
