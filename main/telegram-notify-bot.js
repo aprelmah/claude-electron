@@ -8,6 +8,7 @@
 const fs = require('fs')
 const path = require('path')
 const https = require('https')
+const { sanitizeChannelText } = require('./untrusted-input')
 
 const STATE_FILE = 'telegram-notify-state.json'
 const COURTESY_WINDOW_MS = 10 * 60 * 1000
@@ -192,7 +193,9 @@ function createTelegramNotifyBot({
     const fromId = msg?.from?.id
     if (chatId == null || !isAllowed(fromId)) return
     const key = String(chatId)
-    const text = typeof msg?.text === 'string' ? msg.text.trim() : ''
+    // Saneado de canal: este texto viaja a un turno de la sesión enlazada
+    // (PTY oculto o headless). Limpieza sin bloqueo, igual que el bridge.
+    const text = typeof msg?.text === 'string' ? sanitizeChannelText(msg.text).text.trim() : ''
 
     // Ventana conversacional abierta con «Continuar» → el texto es un turno
     // de la sesión enlazada y la respuesta vuelve por ESTE chat.

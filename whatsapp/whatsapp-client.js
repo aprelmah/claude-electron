@@ -4,6 +4,7 @@ const os = require('os')
 const http = require('http')
 const { EventEmitter } = require('events')
 const { runClaudePersona, buildPrompt } = require('./whatsapp-auto-reply')
+const { sanitizeChannelText } = require('../main/untrusted-input')
 const { readToken, HEADER_NAME, defaultTokenPath } = require('./whatsapp-auth')
 const {
   loadKbIndex, loadKbCards, buildSelectorPrompt, parseSelectorResponse,
@@ -1152,6 +1153,16 @@ function isAuthorized(jid) {
 
     if (!promptBody) return
     if (!canAutoReplyNow(jid, epoch)) return
+
+    // Robo de Hermes (untrusted-input.js): un mensaje de cliente con pinta de
+    // inyección de prompt o de exfiltración no se auto-responde jamás — se
+    // escala a humano. Falso positivo = un humano contesta; coste asumido.
+    const scan = sanitizeChannelText(promptBody)
+    if (scan.risky) {
+      console.warn('[whatsapp] mensaje con pinta de inyección, escalado:', scan.findings.map((f) => f.type).join(', '))
+      await escalateToHuman(jid, chat, 'inyeccion')
+      return
+    }
 
     // ── Modo KB: si hay fichas, el bot SOLO resuelve lo que esté en ellas ──
     if (config.kbMode !== 'off') {

@@ -1,5 +1,6 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
+const { sanitizeChannelText } = require('../main/untrusted-input')
 
 // Lanza claude headless con persona como --system-prompt y devuelve texto.
 // No usa --resume; cada turno es independiente (todo el contexto va en el prompt).
@@ -100,13 +101,15 @@ function buildPrompt({ displayNumber, history, body, maxHistory }) {
   const recent = (history || []).slice(-maxHistory)
   const turns = recent.map((m) => {
     const autor = m.fromMe ? 'tu' : 'cliente'
-    const text = (m.body || `[${m.type}]`).replace(/\s+/g, ' ').trim()
+    // sanitizeChannelText: fuera Unicode invisible y controles de terminal —
+    // el cliente es la fuente NO confiable por excelencia (untrusted-input.js).
+    const text = sanitizeChannelText(m.body || `[${m.type}]`).text.replace(/\s+/g, ' ').trim()
     return `<turno autor="${autor}">${escapeForXmlData(text)}</turno>`
   }).join('\n')
   const histBlock = turns
     ? `<historial>\n${turns}\n</historial>\n\n`
     : '<historial></historial>\n\n'
-  const safeBody = escapeForXmlData(String(body || '').replace(/\s+/g, ' ').trim())
+  const safeBody = escapeForXmlData(sanitizeChannelText(String(body || '')).text.replace(/\s+/g, ' ').trim())
   return [
     `Conversación con cliente ${displayNumber}.`,
     '',
