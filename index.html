@@ -504,10 +504,11 @@
             <span>Aislamiento git por sesión</span>
             <input id="cfg-git-isolation" type="checkbox" />
           </label>
-          <label class="settings-field">
+          <div class="settings-field">
             <span>Carpetas SIN aislamiento (una por línea; vale ~ y subcarpetas)</span>
             <textarea id="cfg-git-isolation-excludes" rows="3" placeholder="~/Desktop/LUISMI/TURBO-ENERGY RMA&#10;~/Documents"></textarea>
-          </label>
+            <button id="cfg-git-isolation-add" type="button" class="settings-mini-btn">➕ Elegir carpeta…</button>
+          </div>
           <label class="settings-field">
             <span>CODEX_BIN</span>
             <input id="cfg-codex-bin" type="text" placeholder="/ruta/a/codex o comando" />

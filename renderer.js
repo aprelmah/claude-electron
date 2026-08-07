@@ -69,6 +69,7 @@ const cfgClaudeBin = document.getElementById('cfg-claude-bin')
 const cfgClaudeModel = document.getElementById('cfg-claude-model')
 const cfgGitIsolation = document.getElementById('cfg-git-isolation')
 const cfgGitIsolationExcludes = document.getElementById('cfg-git-isolation-excludes')
+const cfgGitIsolationAdd = document.getElementById('cfg-git-isolation-add')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgVoiceId = document.getElementById('cfg-voice-id')
@@ -2381,6 +2382,25 @@ function renderPairingList(pending) {
     row.appendChild(rejectBtn)
     cfgTelegramPairingList.appendChild(row)
   }
+}
+
+// Selector nativo para las carpetas sin aislamiento: nadie escribe rutas a
+// mano. La ruta se guarda en forma ~ si cae bajo el home (legible y portable).
+if (cfgGitIsolationAdd) {
+  cfgGitIsolationAdd.addEventListener('click', async (e) => {
+    e.preventDefault()
+    const dir = await window.api.pickFolder()
+    if (!dir || !cfgGitIsolationExcludes) return
+    let entry = dir
+    try {
+      const home = await window.api.homeDir()
+      if (home && dir === home) entry = '~'
+      else if (home && dir.startsWith(home + '/')) entry = '~' + dir.slice(home.length)
+    } catch {}
+    const lines = cfgGitIsolationExcludes.value.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (!lines.includes(entry)) lines.push(entry)
+    cfgGitIsolationExcludes.value = lines.join('\n')
+  })
 }
 
 async function refreshPairingList() {
