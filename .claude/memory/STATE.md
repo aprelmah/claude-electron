@@ -24,6 +24,14 @@ Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarl
 - UX pendiente: el icono del panel (pulso) se camufla — más contraste o etiqueta.
 - Deuda consciente: rama codex de `buildCurrentSessionMeta` sigue adivinando.
 
+## Backlog aprobado por Luismi (2026-08-07 noche, "apúntalos y haremos")
+
+Segunda ronda de robos de Hermes, por orden de valor:
+
+1. **Jardinero de memoria** (el gordo; transversal, no de la app): Hermes acota la memoria con presupuesto visible y obliga a podar. El sistema de Luismi crece sin tope — `~/claude-shared/memory/02-feedback.md` ya pesa 73KB y el MEMORY.md del proyecto suma un bloque por sesión; todo entra al contexto de arranque. Hacer: pase periódico (o skill `/jardinero`) que compacte sesiones viejas en resúmenes, pode lo obsoleto y muestre presupuesto por archivo.
+2. **Escáner de skills de terceros** (tarde corta): reutilizar `main/untrusted-input.js` en un `/revisar-skill` que pase revista a un SKILL.md/plugin antes de instalarlo (exfil, comandos destructivos, Unicode invisible), estilo el scanner del Skills Hub de Hermes.
+3. **Vocabulario del modo voz** (tarde corta): el helper YA tiene `{cmd:'vocab'}` (contextualStrings) en el protocolo y nadie lo llama. Mandarle la jerga del proyecto activo (nombres de módulos, "worktree", "eatbook") al encender el modo voz.
+
 1. **Consolidar**: los DOS flakes históricos eran la misma causa — `ws-server-auth-token.test.js` elegía puertos dentro del rango efímero del SO (49152–65535) y chocaba con sockets salientes de otros tests (EADDRINUSE + 404-vs-401). Banda movida a 18500–19900. Test de humo `module-load-smoke.test.js` (73 requires). `resolveSessionIdForRelay` ya no persiste ids adivinados.
 2. **Doctor in-app** (`main/health-watchdog.js` + toggle `telegram.healthWatchdog`): chequeo diario 08:00, avisa por notify bot solo con problemas.
 3. **Bandeja única**: sección "Decisiones" en el dropdown del 🔔 (pairing accionable + encargos repetidos con "📌 Crear tarea"/"Descartar"). El detector de repetidos ahora persiste propuestas (`listProposals`/`resolveProposal`; descartado = no propone nunca más).
