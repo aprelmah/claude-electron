@@ -927,6 +927,7 @@ class TelegramBridge {
         '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
         '/abrir   -> abrir en el Mac la sesión del último run programado',
+        '/doctor  -> chequeo de salud completo (CLI, bridges, tareas)',
         '',
         'Manda texto normal o una nota de voz para hablar con el CLI activo.'
       ].join('\n'))
@@ -995,8 +996,9 @@ class TelegramBridge {
           inline_keyboard: [
             [{ text: '📁 Proyecto', callback_data: 'mnu:proyecto' }, { text: '🗂 Sesiones', callback_data: 'mnu:sesiones' }],
             [{ text: '🧠 Modelo', callback_data: 'mnu:modelo' }, { text: '🔗 Vínculo', callback_data: 'mnu:vinculo' }],
-            [{ text: '📊 Estado', callback_data: 'mnu:status' }, { text: '🖥 Abrir en el Mac', callback_data: 'mnu:abrir' }],
-            [{ text: '🆕 Conversación nueva', callback_data: 'mnu:reset' }, { text: '✂️ Desvincular', callback_data: 'mnu:desvincular' }]
+            [{ text: '📊 Estado', callback_data: 'mnu:status' }, { text: '🩺 Doctor', callback_data: 'mnu:doctor' }],
+            [{ text: '🖥 Abrir en el Mac', callback_data: 'mnu:abrir' }, { text: '🆕 Conversación nueva', callback_data: 'mnu:reset' }],
+            [{ text: '✂️ Desvincular', callback_data: 'mnu:desvincular' }]
           ]
         }
       })
