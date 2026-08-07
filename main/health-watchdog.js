@@ -58,7 +58,10 @@ function createHealthWatchdog({
   let timer = null
   let lastRunDay = ''
 
-  async function runOnce({ force = false } = {}) {
+  // quiet: pase MANUAL — el resultado vuelve al llamador (la UI lo enseña,
+  // incluso el "todo bien") y no se manda aviso por Telegram, que sería
+  // redundante con la pantalla delante.
+  async function runOnce({ force = false, quiet = false } = {}) {
     const d = now()
     if (!force) {
       if (!isEnabled()) return { ran: false, reason: 'disabled' }
@@ -71,12 +74,12 @@ function createHealthWatchdog({
       log(`collect falló: ${err?.message || err}`)
     }
     const problems = evaluateHealthProblems(snapshot)
-    if (problems.length) {
+    if (problems.length && !quiet) {
       try { await notify(formatHealthReport(problems)) } catch (err) {
         log(`notify falló: ${err?.message || err}`)
       }
     }
-    return { ran: true, problems }
+    return { ran: true, problems, ts: d.getTime() }
   }
 
   function start() {

@@ -97,6 +97,17 @@ describe('runOnce: gating por hora, día y toggle', () => {
     assert.strictEqual(sent.length, 1)
   })
 
+  test('pase manual (quiet): devuelve los problemas pero NO avisa por Telegram', async () => {
+    const { wd, sent } = makeWd({
+      collect: async () => ({ ...OK_SNAPSHOT, whatsapp: { state: 'error', detail: 'caído' } })
+    })
+    const res = await wd.runOnce({ force: true, quiet: true })
+    assert.strictEqual(res.ran, true)
+    assert.strictEqual(res.problems.length, 1)
+    assert.ok(res.ts > 0)
+    assert.strictEqual(sent.length, 0, 'quiet no manda aviso')
+  })
+
   test('collect que peta → avisa de que el chequeo falló', async () => {
     const { wd, sent } = makeWd({ collect: async () => { throw new Error('boom') } })
     await wd.runOnce()

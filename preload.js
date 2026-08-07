@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('api', {
   telegramPairingList: () => ipcRenderer.invoke('telegram:pairing-list'),
   decisionsList: () => ipcRenderer.invoke('decisions:list'),
   statusPanelGet: () => ipcRenderer.invoke('status-panel:get'),
+  doctorRun: () => ipcRenderer.invoke('doctor:run'),
   decisionsResolveRepeated: (id, status) => ipcRenderer.invoke('decisions:resolve-repeated', { id, status }),
   onDecisionsChanged: (cb) => ipcRenderer.on('decisions-changed', () => cb()),
   telegramPairingApprove: (code) => ipcRenderer.invoke('telegram:pairing-approve', code),

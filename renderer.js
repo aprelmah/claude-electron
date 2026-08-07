@@ -4267,9 +4267,26 @@ function spRow(text, extraClass) {
   return r
 }
 
+// Último pase manual del doctor: se pinta arriba del panel y sobrevive al
+// refresco de 3s (el render lo reconstruye todo).
+let lastDoctorResult = null
+
 function renderStatusPanel(snap) {
   if (!statusPanelBody) return
   statusPanelBody.textContent = ''
+  if (lastDoctorResult) {
+    statusPanelBody.appendChild(spSection('Doctor'))
+    const hora = new Date(lastDoctorResult.ts || Date.now()).toLocaleTimeString('es-ES', { hour12: false })
+    if (!lastDoctorResult.ok) {
+      statusPanelBody.appendChild(spRow(`✗ ${hora} — ${lastDoctorResult.error || 'no se pudo pasar'}`, 'sp-err'))
+    } else if (!lastDoctorResult.problems?.length) {
+      statusPanelBody.appendChild(spRow(`✓ ${hora} — todo en orden`))
+    } else {
+      for (const p of lastDoctorResult.problems) {
+        statusPanelBody.appendChild(spRow(`✗ ${hora} — ${p.label}: ${p.detail}`, 'sp-err'))
+      }
+    }
+  }
   statusPanelBody.appendChild(spSection('Sesiones abiertas'))
   if (!snap?.sesiones?.length) statusPanelBody.appendChild(spRow('Ninguna.'))
   for (const s of snap?.sesiones || []) {
@@ -4312,6 +4329,21 @@ if (btnStatusPanel) {
     statusPanelModal?.classList.remove('hidden')
     await refreshStatusPanel()
     if (!statusPanelTimer) statusPanelTimer = setInterval(refreshStatusPanel, 3000)
+  })
+}
+const btnDoctorRun = document.getElementById('btn-doctor-run')
+if (btnDoctorRun) {
+  btnDoctorRun.addEventListener('click', async () => {
+    btnDoctorRun.disabled = true
+    btnDoctorRun.textContent = '🩺 Pasando…'
+    try {
+      lastDoctorResult = await window.api.doctorRun()
+    } catch (err) {
+      lastDoctorResult = { ok: false, error: err?.message || String(err) }
+    }
+    btnDoctorRun.disabled = false
+    btnDoctorRun.textContent = '🩺 Pasar el doctor'
+    await refreshStatusPanel()
   })
 }
 if (btnCloseStatusPanel) btnCloseStatusPanel.addEventListener('click', closeStatusPanel)

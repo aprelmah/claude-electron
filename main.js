@@ -4496,6 +4496,17 @@ ipcMain.handle('telegram:pairing-reject', (_event, code) => {
 })
 
 // ── Bandeja única de decisiones (pairing + encargos repetidos) ──
+// Pase manual del doctor desde el panel: resultado a la UI, sin Telegram.
+ipcMain.handle('doctor:run', async () => {
+  if (!healthWatchdog) return { ok: false, error: 'El doctor no está arrancado.' }
+  try {
+    const res = await healthWatchdog.runOnce({ force: true, quiet: true })
+    return { ok: true, ...res }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
 // ── Panel "¿qué está pasando?" ──
 ipcMain.handle('status-panel:get', () => buildStatusPanelSnapshot({
   sessions: [...sessions.entries()].map(([wcId, s]) => ({
