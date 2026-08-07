@@ -19,11 +19,16 @@ function makeStubHtml() {
 
 // Asignación de puertos sin race: incrementa de 2 en 2 (reservamos port y port+1
 // que es el httpPort). Cursor random inicial para evitar choque entre procesos.
-let __portCursor = 49000 + (Math.floor(Math.random() * 5000) & ~1)
+// FUERA del rango efímero del SO (49152–65535 en macOS): ahí los sockets
+// SALIENTES de los demás tests aterrizan al azar y daban los dos flakes reales
+// de la suite — EADDRINUSE al bindear, y un 404-vs-401 de un cliente hablando
+// con el servidor de OTRO test que había cogido ese puerto. Banda 18500–19900,
+// disjunta de las de los demás ficheros ws-server (12000–18100).
+let __portCursor = 18500 + (Math.floor(Math.random() * 1200) & ~1)
 function freePort() {
   const p = __portCursor
   __portCursor += 2
-  if (__portCursor > 64000) __portCursor = 49000
+  if (__portCursor > 19900) __portCursor = 18500
   return Promise.resolve(p)
 }
 
