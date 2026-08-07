@@ -56,6 +56,7 @@ const cwdValue = document.getElementById('cwd-value')
 const btnSessions = document.getElementById('btn-sessions')
 const sessionsModal = document.getElementById('sessions-modal')
 const sessionsList = document.getElementById('sessions-list')
+const sessionsSearchInput = document.getElementById('sessions-search')
 const sessionsCwd = document.getElementById('sessions-cwd')
 const sessionsEmpty = document.getElementById('sessions-empty')
 const btnCloseSessions = document.getElementById('btn-close-sessions')
@@ -77,6 +78,8 @@ const cfgVoiceSilenceLabel = document.getElementById('cfg-voice-silence-label')
 const cfgTelegramEnabled = document.getElementById('cfg-telegram-enabled')
 const cfgTelegramToken = document.getElementById('cfg-telegram-token')
 const cfgTelegramUsers = document.getElementById('cfg-telegram-users')
+const cfgTelegramPairingBlock = document.getElementById('cfg-telegram-pairing-block')
+const cfgTelegramPairingList = document.getElementById('cfg-telegram-pairing-list')
 const cfgTelegramNotifyToken = document.getElementById('cfg-telegram-notify-token')
 const cfgTelegramNotifyChat = document.getElementById('cfg-telegram-notify-chat')
 const cfgTelegramClaudeModel = document.getElementById('cfg-telegram-claude-model')
@@ -2331,6 +2334,49 @@ if (cfgVoiceSilence) {
   })
 }
 
+// Solicitudes de emparejamiento Telegram pendientes. DOM a mano con
+// textContent: el username lo escribe un desconocido, nunca va en innerHTML.
+function renderPairingList(pending) {
+  if (!cfgTelegramPairingBlock || !cfgTelegramPairingList) return
+  const list = Array.isArray(pending) ? pending : []
+  cfgTelegramPairingList.textContent = ''
+  cfgTelegramPairingBlock.style.display = list.length ? '' : 'none'
+  for (const entry of list) {
+    const row = document.createElement('div')
+    row.className = 'pairing-row'
+    const label = document.createElement('span')
+    const who = entry.username ? `@${entry.username}` : (entry.firstName || entry.userId)
+    label.textContent = `${who} (${entry.userId}) — código ${entry.code}`
+    const approveBtn = document.createElement('button')
+    approveBtn.type = 'button'
+    approveBtn.textContent = 'Aprobar'
+    approveBtn.addEventListener('click', async () => {
+      const res = await window.api.telegramPairingApprove(entry.code)
+      renderPairingList(res?.pending)
+      if (res?.ok) {
+        const config = await window.api.getAppConfig()
+        cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
+      }
+    })
+    const rejectBtn = document.createElement('button')
+    rejectBtn.type = 'button'
+    rejectBtn.textContent = 'Rechazar'
+    rejectBtn.addEventListener('click', async () => {
+      const res = await window.api.telegramPairingReject(entry.code)
+      renderPairingList(res?.pending)
+    })
+    row.appendChild(label)
+    row.appendChild(approveBtn)
+    row.appendChild(rejectBtn)
+    cfgTelegramPairingList.appendChild(row)
+  }
+}
+
+async function refreshPairingList() {
+  if (!window.api.telegramPairingList) return
+  try { renderPairingList(await window.api.telegramPairingList()) } catch {}
+}
+
 async function refreshSettings() {
   const config = await window.api.getAppConfig()
   cfgDefaultCli.value = config?.cli?.defaultCli || 'claude'
@@ -2353,6 +2399,7 @@ async function refreshSettings() {
   if (cfgLanPort) cfgLanPort.value = String(clampLanPort(config?.lanServer?.port ?? 9999))
   await refreshEnterpriseState(config)
   renderTelegramStatus(await window.api.getTelegramStatus())
+  await refreshPairingList()
   await refreshLanServerStatus(true)
 }
 
@@ -2546,6 +2593,9 @@ if (btnSendTelegram) {
   // Refresca tras cambios de status de Telegram.
   if (window.api.onTelegramStatus) {
     window.api.onTelegramStatus(() => refreshSendTelegramButton())
+  }
+  if (window.api.onTelegramPairingChanged) {
+    window.api.onTelegramPairingChanged((pending) => renderPairingList(pending))
   }
   if (window.api.onPtyTransferredToTelegram) {
     window.api.onPtyTransferredToTelegram(() => {
@@ -4172,10 +4222,12 @@ async function openSessions() {
   const PAGE_SIZE = 50
   let rendered = 0
   let loadMoreBtn = null
+  let visibleSessions = sessions
 
   const appendSessionRow = (s) => {
     const row = document.createElement('div')
     row.className = 'session-row'
+    if (s.searchSnippet) row.title = s.searchSnippet
     row.innerHTML = `
       <div class="session-main">
         <div class="session-name-row">
@@ -4303,19 +4355,51 @@ async function openSessions() {
 
   const renderPage = () => {
     if (loadMoreBtn) { loadMoreBtn.remove(); loadMoreBtn = null }
-    const end = Math.min(rendered + PAGE_SIZE, sessions.length)
-    for (let i = rendered; i < end; i++) appendSessionRow(sessions[i])
+    const end = Math.min(rendered + PAGE_SIZE, visibleSessions.length)
+    for (let i = rendered; i < end; i++) appendSessionRow(visibleSessions[i])
     rendered = end
-    if (rendered < sessions.length) {
+    if (rendered < visibleSessions.length) {
       loadMoreBtn = document.createElement('button')
       loadMoreBtn.className = 'session-load-more'
       loadMoreBtn.type = 'button'
-      loadMoreBtn.textContent = `Ver más (${sessions.length - rendered} restantes)`
+      loadMoreBtn.textContent = `Ver más (${visibleSessions.length - rendered} restantes)`
       loadMoreBtn.addEventListener('click', renderPage)
       sessionsList.appendChild(loadMoreBtn)
     }
   }
   renderPage()
+
+  // Búsqueda en el contenido (main/session-content-search.js). Debounce de
+  // 350ms y token contra respuestas fuera de orden; <3 letras = lista entera.
+  if (sessionsSearchInput) {
+    sessionsSearchInput.value = ''
+    let searchTimer = null
+    let searchToken = 0
+    const applySearch = async (queryRaw) => {
+      const query = String(queryRaw || '').trim()
+      const token = ++searchToken
+      let next = sessions
+      if (query.length >= 3) {
+        const hits = await window.api.searchSessionContent(cwd, query)
+        if (token !== searchToken) return
+        const byId = new Map((hits || []).map((h) => [h.id, h]))
+        next = sessions.filter((s) => byId.has(s.id))
+        for (const s of next) s.searchSnippet = byId.get(s.id)?.snippet || ''
+      } else {
+        for (const s of sessions) delete s.searchSnippet
+      }
+      visibleSessions = next
+      sessionsList.innerHTML = ''
+      rendered = 0
+      sessionsEmpty.textContent = query.length >= 3 ? 'Sin coincidencias en el contenido.' : 'Sin sesiones para esta carpeta.'
+      sessionsEmpty.classList.toggle('hidden', visibleSessions.length > 0)
+      renderPage()
+    }
+    sessionsSearchInput.oninput = () => {
+      clearTimeout(searchTimer)
+      searchTimer = setTimeout(() => { applySearch(sessionsSearchInput.value).catch(() => {}) }, 350)
+    }
+  }
 }
 
 btnSessions.addEventListener('click', openSessions)

@@ -3284,3 +3284,11 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
   background: var(--bg3);
   border-color: var(--accent);
 }
+
+/* Emparejamiento Telegram (Configuración → Telegram) */
+.pairing-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+.pairing-row span { flex: 1; }
+
+/* Búsqueda de contenido en el modal de sesiones */
+.sessions-search-row { padding: 6px 10px 2px; }
+#sessions-search { width: 100%; box-sizing: border-box; }

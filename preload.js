@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   onTreeChanged: (cb) => ipcRenderer.on('tree-changed', (_, reason) => cb(reason)),
 
   listSessions: (cwd, cli) => ipcRenderer.invoke('list-sessions', cwd, cli),
+  searchSessionContent: (cwd, query) => ipcRenderer.invoke('search-session-content', cwd, query),
   deleteSession: (cwd, sessionId) => ipcRenderer.invoke('delete-session', { cwd, sessionId }),
   updateSessionTitle: (cwd, sessionId, title) => ipcRenderer.invoke('update-session-title', { cwd, sessionId, title }),
   resumeSession: (sessionId, cwd, cols, rows, cli) => ipcRenderer.invoke('resume-session', { sessionId, cwd, cols, rows, cli }),
@@ -71,6 +72,10 @@ contextBridge.exposeInMainWorld('api', {
   enterpriseUpdateOperator: (id, patch) => ipcRenderer.invoke('enterprise:operators:update', { id, patch: patch || {} }),
   enterpriseDeleteOperator: (id) => ipcRenderer.invoke('enterprise:operators:delete', id),
   getTelegramStatus: () => ipcRenderer.invoke('get-telegram-status'),
+  telegramPairingList: () => ipcRenderer.invoke('telegram:pairing-list'),
+  telegramPairingApprove: (code) => ipcRenderer.invoke('telegram:pairing-approve', code),
+  telegramPairingReject: (code) => ipcRenderer.invoke('telegram:pairing-reject', code),
+  onTelegramPairingChanged: (cb) => ipcRenderer.on('telegram-pairing-changed', (_, pending) => cb(pending)),
   getHealth: () => ipcRenderer.invoke('health:get'),
   wsServerStart: (port) => ipcRenderer.invoke('ws-server:start', { port }),
   wsServerStop: () => ipcRenderer.invoke('ws-server:stop'),

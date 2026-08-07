@@ -251,6 +251,35 @@ let primaryWcId = null
 let lastPrimarySnapshot = { cwd: os.homedir(), activeCli: 'claude' }
 let nextOrdinal = 0
 let telegramBridge = null
+// Emparejamiento por código para chats desconocidos (robo de Hermes Agent).
+// En memoria a propósito: reiniciar la app caduca todos los códigos.
+const { createPairingManager } = require('./main/telegram-pairing')
+const telegramPairing = createPairingManager()
+
+// Detector de tareas repetidas (robo del learning loop de Hermes): 3+ encargos
+// parecidos en 30 días por canal → notificación proponiendo tarea 📌 o skill.
+// Lazy: userData no está listo en top-level.
+const { createRepeatedPromptDetector } = require('./main/repeated-prompts')
+const { searchSessionContentInFiles } = require('./main/session-content-search')
+let repeatedPrompts = null
+function feedRepeatedPromptDetector(text, source) {
+  try {
+    if (!repeatedPrompts) {
+      repeatedPrompts = createRepeatedPromptDetector({
+        storePath: path.join(app.getPath('userData'), 'repeated-prompts.json')
+      })
+    }
+    const res = repeatedPrompts.record({ text, source })
+    if (res?.repeated) {
+      notifyNative({
+        title: 'POWER-AGENT: encargo repetido',
+        body: `Me has pedido esto ${res.count} veces en 30 días: «${String(res.example || '').slice(0, 120)}». ¿Lo convertimos en tarea programada (📌) o en skill?`
+      })
+    }
+  } catch (err) {
+    try { console.warn('[repeated-prompts]', err?.message || err) } catch {}
+  }
+}
 let telegramNotifyBot = null
 let telegramHiddenPtyPool = null
 let whatsappClient = null
@@ -493,6 +522,13 @@ function broadcastTelegramStatus() {
   const status = telegramBridge?.getStatus() || null
   for (const s of sessions.values()) {
     if (s.win && !s.win.isDestroyed()) s.win.webContents.send('telegram-status', status)
+  }
+}
+
+function broadcastTelegramPairing() {
+  const pending = telegramPairing.listPending()
+  for (const s of sessions.values()) {
+    if (s.win && !s.win.isDestroyed()) s.win.webContents.send('telegram-pairing-changed', pending)
   }
 }
 
@@ -1475,7 +1511,7 @@ const voiceWatcher = createVoiceTurnWatcher({
   statFn: (p) => safeStat(p)
 })
 
-const voiceSendTarget = createVoiceSendTarget({
+const voiceSendTargetRaw = createVoiceSendTarget({
   // Sesión VIVA en cada consulta (nada de copias cacheadas): voice-session
   // revalida el destino turno a turno, y con una copia el cambio de sesión o de
   // CLI en esa ventana pasaría desapercibido.
@@ -1489,6 +1525,13 @@ const voiceSendTarget = createVoiceSendTarget({
   readFileFn: (p) => fs.readFileSync(p, 'utf8'),
   log: (m) => console.log('[voz]', m)
 })
+
+// Envoltorio del destino de voz: los encargos alimentan el detector de tareas
+// repetidas. La charla (sub-chat) no cuenta — no es un encargo de trabajo.
+const voiceSendTarget = async (args = {}) => {
+  if (args?.mode === 'encargo') feedRepeatedPromptDetector(args.text, 'voz')
+  return voiceSendTargetRaw(args)
+}
 
 const voiceSession = createVoiceSession({
   helper: voiceHelper,
@@ -2810,6 +2853,7 @@ function applyTelegramNotifyBot() {
       if (!telegramBridge || typeof telegramBridge.onRunQuery !== 'function') {
         return { ok: false, text: 'El bridge principal no está disponible.' }
       }
+      feedRepeatedPromptDetector(text, 'avisos')
       const cli = (session?.cli === 'codex') ? 'codex' : 'claude'
       const sid = (typeof telegramBridge.getSessionId === 'function' && telegramBridge.getSessionId(String(chatId), cli)) || session?.sessionId || null
       let acc = ''
@@ -2835,6 +2879,21 @@ function initTelegramBridge() {
   telegramBridge = new TelegramBridge({
     tmpDir: TMP_DIR,
     stateDir: app.getPath('userData'),
+    // Emparejamiento por código: el desconocido recibe un código de 6 dígitos
+    // y Luismi lo aprueba en Configuración → Telegram. El manager reutiliza el
+    // código pendiente del mismo usuario, así que solo se notifica al crearlo.
+    onPairingRequest: ({ userId, chatId, username, firstName }) => {
+      const res = telegramPairing.requestPairing({ userId, chatId, username, firstName })
+      if (res.ok && res.created) {
+        const who = username ? `@${username}` : (firstName || userId)
+        notifyNative({
+          title: 'Telegram: solicitud de vinculación',
+          body: `${who} pide acceso — código ${res.code}. Apruébalo en Configuración → Telegram.`
+        })
+        broadcastTelegramPairing()
+      }
+      return res
+    },
     onTranscribeFile: async (filePath) => {
       return transcribeAudioFile(filePath, buildRuntimeEnv())
     },
@@ -2977,6 +3036,7 @@ function initTelegramBridge() {
     },
     onStatus: () => broadcastTelegramStatus(),
     onSemanticInput: ({ chatId, cli, sessionId, prompt }) => {
+      feedRepeatedPromptDetector(prompt, 'telegram')
       const charCount = String(prompt || '').length
       logSemantic('telegram_entrada', {
         session: sessionId || '',
@@ -4075,6 +4135,19 @@ ipcMain.handle('list-sessions', async (event, cwd, cli) => {
   return listClaudeSessionsForCwd(cwd, { limit: 1000 })
 })
 
+// Búsqueda en el CONTENIDO de las sesiones del proyecto (robo de Hermes:
+// buscar en tus conversaciones pasadas). Streaming sobre los .jsonl del
+// listado normal; solo claude — el índice codex no guarda paths uniformes.
+ipcMain.handle('search-session-content', async (event, cwd, query) => {
+  const q = String(query || '').trim()
+  if (q.length < 3) return []
+  const sessions = await listClaudeSessionsForCwd(cwd, { limit: 1000 })
+  const entries = (sessions || [])
+    .filter((s) => s && s.id && s.path)
+    .map((s) => ({ id: s.id, path: s.path }))
+  return searchSessionContentInFiles({ entries, query: q, maxResults: 40 })
+})
+
 ipcMain.handle('delete-session', async (event, { cwd, sessionId }) => {
   if (!isValidSessionId(sessionId)) return false
   const dir = resolveClaudeProjectDir(cwd)
@@ -4342,6 +4415,34 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
 })
 
 ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
+
+// ── Emparejamiento por código (Configuración → Telegram) ──
+ipcMain.handle('telegram:pairing-list', () => telegramPairing.listPending())
+
+ipcMain.handle('telegram:pairing-approve', async (_event, code) => {
+  const res = telegramPairing.approve(code)
+  if (!res.ok) return { ...res, pending: telegramPairing.listPending() }
+  const current = Array.isArray(appConfig.telegram?.allowedUsers) ? appConfig.telegram.allowedUsers : []
+  saveAppConfig({
+    ...appConfig,
+    telegram: { ...appConfig.telegram, allowedUsers: [...current, res.userId] }
+  })
+  let telegramResult = { ok: true, running: false }
+  if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
+  broadcastTelegramStatus()
+  broadcastTelegramPairing()
+  // Aviso al chat recién aprobado (best effort).
+  if (res.chatId && telegramBridge) {
+    try { await telegramBridge._sendMessage(res.chatId, 'Vinculado. Ya puedes hablar con el bot.') } catch {}
+  }
+  return { ok: true, userId: res.userId, telegram: telegramResult, pending: telegramPairing.listPending() }
+})
+
+ipcMain.handle('telegram:pairing-reject', (_event, code) => {
+  const res = telegramPairing.reject(code)
+  broadcastTelegramPairing()
+  return { ...res, pending: telegramPairing.listPending() }
+})
 
 ipcMain.handle('health:get', async (event) => {
   const s = getSessionByEvent(event) || (primaryWcId != null ? sessions.get(primaryWcId) : null)
