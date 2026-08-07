@@ -4,6 +4,8 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
+const { worktreeCwdBelongsTo } = require('./session-git')
+
 function encodeProjectPath(p) {
   return p.replace(/\/$/, '').replace(/[\/\s]/g, '-')
 }
@@ -66,47 +68,97 @@ function readFirstNonEmptyLine(filePath, maxBytes = 64 * 1024) {
   }
 }
 
-function extractCodexSessionFirstPrompt(filePath, maxBytes = 64 * 1024) {
+// Codex abre cada sesión con mensajes que llevan role:user pero no los escribió
+// nadie: el volcado de AGENTS.md, el environment_context, las instrucciones de
+// skills. Tomarlos como título dejaba todas las sesiones del picker con el mismo
+// nombre. Un prompt humano no empieza por una etiqueta `<algo>` ni por la
+// cabecera literal de AGENTS.md.
+const CODEX_PREAMBLE_TAG = /^<[a-z][a-z0-9_]*>/i
+function isInjectedCodexPreamble(text) {
+  const t = String(text || '').trimStart()
+  if (!t) return false
+  if (CODEX_PREAMBLE_TAG.test(t)) return true
+  return /^#+\s*AGENTS\.md\s+instructions\b/i.test(t)
+}
+
+// `codex exec` no admite --append-system-prompt, así que la pista de archivos del
+// bridge de Telegram va pegada DELANTE del prompt, en el mismo mensaje. El título
+// se queda con lo que escribió el usuario, que va detrás del corchete de cierre.
+function stripAppSystemHint(text) {
+  const t = String(text || '')
+  if (!/^\s*\[Sistema:/.test(t)) return t
+  const end = t.indexOf(']\n')
+  if (end === -1) {
+    const last = t.lastIndexOf(']')
+    return last === -1 ? t : t.slice(last + 1).trim()
+  }
+  return t.slice(end + 1).trim()
+}
+
+// Lee por trozos hasta encontrar el primer prompt real. Hace falta leer más de un
+// trozo porque el preámbulo es enorme: en un rollout real de este Mac el primer
+// prompt del usuario estaba en el byte 85.882.
+function extractCodexSessionFirstPrompt(filePath, chunkBytes = 64 * 1024, maxBytes = 1024 * 1024) {
   let fd = -1
   try {
     fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(maxBytes)
-    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
-    if (read <= 0) return ''
-    const slice = buf.slice(0, read).toString('utf-8')
-    const lines = slice.split('\n')
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let obj = null
-      try { obj = JSON.parse(trimmed) } catch { continue }
-      if (!obj || typeof obj !== 'object') continue
-      const type = String(obj.type || '')
-      const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : null
-      if (type === 'event' || type === 'event_msg' || type === 'response_item' || type === 'item') {
-        const role = String(payload?.role || payload?.author?.role || '')
-        if (role && role !== 'user') continue
-        const content = payload?.content
-        let text = ''
-        if (typeof content === 'string') text = content
-        else if (Array.isArray(content)) {
-          for (const part of content) {
-            if (!part) continue
-            if (typeof part.text === 'string' && part.text.trim()) { text = part.text; break }
-            if (typeof part === 'string' && part.trim()) { text = part; break }
-          }
-        }
-        text = String(text || '').replace(/\s+/g, ' ').trim()
-        if (text) return text.slice(0, 160)
-      }
-      if (type === 'user_input' || type === 'user_message' || type === 'turn') {
-        const text = String(payload?.text || payload?.prompt || '').replace(/\s+/g, ' ').trim()
-        if (text) return text.slice(0, 160)
-      }
+    const cap = Math.max(chunkBytes, maxBytes)
+    const buf = Buffer.alloc(cap)
+    let filled = 0
+    let scanned = 0
+    while (true) {
+      const want = Math.min(chunkBytes, cap - filled)
+      const read = want > 0 ? fs.readSync(fd, buf, filled, want, filled) : 0
+      if (read > 0) filled += read
+      const slice = buf.slice(0, filled).toString('utf-8')
+      const lines = slice.split('\n')
+      // La última línea puede estar cortada: se deja para el siguiente trozo,
+      // salvo que ya no quede nada por leer.
+      const complete = (read > 0 && filled < cap) ? lines.slice(0, -1) : lines
+      const found = scanCodexLinesForPrompt(complete.slice(scanned))
+      if (found) return found
+      scanned = complete.length
+      if (read <= 0 || filled >= cap) return ''
     }
   } catch {} finally {
     if (fd >= 0) {
       try { fs.closeSync(fd) } catch {}
+    }
+  }
+  return ''
+}
+
+function scanCodexLinesForPrompt(lines) {
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let obj = null
+    try { obj = JSON.parse(trimmed) } catch { continue }
+    if (!obj || typeof obj !== 'object') continue
+    const type = String(obj.type || '')
+    const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : null
+    if (type === 'event' || type === 'event_msg' || type === 'response_item' || type === 'item') {
+      const role = String(payload?.role || payload?.author?.role || '')
+      if (role && role !== 'user') continue
+      const content = payload?.content
+      let text = ''
+      if (typeof content === 'string') text = content
+      else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (!part) continue
+          if (typeof part.text === 'string' && part.text.trim()) { text = part.text; break }
+          if (typeof part === 'string' && part.trim()) { text = part; break }
+        }
+      }
+      if (isInjectedCodexPreamble(text)) continue
+      text = stripAppSystemHint(text).replace(/\s+/g, ' ').trim()
+      if (text) return text.slice(0, 160)
+    }
+    if (type === 'user_input' || type === 'user_message' || type === 'turn') {
+      const raw = String(payload?.text || payload?.prompt || '')
+      if (isInjectedCodexPreamble(raw)) continue
+      const text = stripAppSystemHint(raw).replace(/\s+/g, ' ').trim()
+      if (text) return text.slice(0, 160)
     }
   }
   return ''
@@ -200,7 +252,11 @@ function createSessionListing(opts = {}) {
     // sessionGitMap se crea en onReady, después de que este módulo se
     // instancie a nivel top-level. Se invoca en cada listado, así que
     // siempre ve el valor actual de sessionGitMap por closure.
-    getActiveWorktreeSessionDirs = null
+    getActiveWorktreeSessionDirs = null,
+    // Raíz de los worktrees del aislamiento git: hace falta para atribuir al
+    // proyecto los rollouts de codex que nacieron dentro de un worktree.
+    worktreesRoot = null,
+    listCodexSessionFilesImpl = listCodexSessionFiles
   } = opts
   function resolveIndex() {
     if (!claudeIndex) return null
@@ -357,7 +413,7 @@ function createSessionListing(opts = {}) {
       // Si el índice está vacío para este cwd, caer al walk como red de seguridad
       // (puede ser que el bootstrap aún no haya completado).
     }
-    const files = listCodexSessionFiles()
+    const files = listCodexSessionFilesImpl()
     if (!files.length) return []
     const rows = []
     for (const fullPath of files) {
@@ -371,7 +427,10 @@ function createSessionListing(opts = {}) {
       const id = String(payload.id || '').trim()
       if (!isReusableCodexSessionId(id)) continue
       const sessionCwd = String(payload.cwd || '').trim()
-      if (!sessionCwd || sessionCwd !== targetCwd) continue
+      if (!sessionCwd) continue
+      const belongs = sessionCwd === targetCwd
+        || worktreeCwdBelongsTo({ cwd: sessionCwd, realCwd: targetCwd, worktreesRoot })
+      if (!belongs) continue
       let mtime = 0
       let size = 0
       try {
@@ -421,6 +480,8 @@ module.exports = {
   listCodexSessionFiles,
   readFirstNonEmptyLine,
   extractCodexSessionFirstPrompt,
+  isInjectedCodexPreamble,
+  stripAppSystemHint,
   streamFirstUserPreview,
   streamCountLines,
   createSessionListing

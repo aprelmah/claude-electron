@@ -5,6 +5,7 @@ const os = require('os')
 const path = require('path')
 
 const { atomicWriteJsonSync } = require('./atomic-writes')
+const { worktreeCwdBelongsTo } = require('./session-git')
 const {
   listCodexSessionFiles,
   readFirstNonEmptyLine,
@@ -12,7 +13,10 @@ const {
   isReusableCodexSessionId
 } = require('./claude-session-listing')
 
-const INDEX_VERSION = 1
+// v2 (2026-08-07): los previews dejan de ser el preámbulo inyectado de codex y las
+// sesiones de los worktrees se atribuyen al proyecto — el índice v1 en disco tiene
+// títulos y buckets que ya no valen.
+const INDEX_VERSION = 2
 const DEBOUNCE_MS = 500
 const POLL_FALLBACK_MS = 60_000
 // PERF-H1: debounce de writes. Antes hacíamos un atomicWrite sync por cada addOrUpdate/removeByPath,
@@ -40,10 +44,11 @@ function parseSessionMeta(filePath) {
   return { id, cwd }
 }
 
-function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
+function createCodexSessionsIndex({ userDataDir, sessionsRoot, worktreesRoot: worktreesRootOpt } = {}) {
   if (!userDataDir) throw new Error('createCodexSessionsIndex requires userDataDir')
   const root = sessionsRoot || path.join(os.homedir(), '.codex', 'sessions')
   const indexPath = path.join(userDataDir, 'codex-sessions-index.json')
+  const worktreesRoot = worktreesRootOpt || path.join(userDataDir, 'worktrees')
 
   let state = loadFromDisk()
   let watcher = null
@@ -58,6 +63,9 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
       const raw = fs.readFileSync(indexPath, 'utf-8')
       const parsed = JSON.parse(raw)
       if (!parsed || typeof parsed !== 'object') throw new Error('bad shape')
+      // Los previews van cacheados aquí: un índice de otra versión se tira para
+      // que el bootstrap lo regenere, en vez de arrastrar títulos malos a perpetuidad.
+      if (Number(parsed.version) !== INDEX_VERSION) throw new Error('stale version')
       const byCwd = (parsed.byCwd && typeof parsed.byCwd === 'object') ? parsed.byCwd : {}
       for (const k of Object.keys(byCwd)) {
         if (!Array.isArray(byCwd[k])) byCwd[k] = []
@@ -233,10 +241,23 @@ function createCodexSessionsIndex({ userDataDir, sessionsRoot } = {}) {
   function getForCwd(cwd) {
     const target = String(cwd || '').trim()
     if (!target) return []
-    const list = state.byCwd[target]
-    if (!Array.isArray(list) || list.length === 0) return []
+    const out = []
+    const seen = new Set()
+    for (const bucket of Object.keys(state.byCwd)) {
+      // El rollout guarda el cwd donde corrió codex. Con el aislamiento git eso
+      // es el worktree, no el proyecto: sin esto, las sesiones de hoy no salían
+      // en el picker y la lista parecía congelada en la última sesión sin aislar.
+      const mine = bucket === target
+        || worktreeCwdBelongsTo({ cwd: bucket, realCwd: target, worktreesRoot })
+      if (!mine) continue
+      for (const entry of state.byCwd[bucket] || []) {
+        if (!entry || seen.has(entry.path)) continue
+        seen.add(entry.path)
+        out.push(entry)
+      }
+    }
     // Defensa: clonar y reordenar (los inserts pueden romper el orden).
-    return list.slice().sort((a, b) => b.mtime - a.mtime)
+    return out.sort((a, b) => b.mtime - a.mtime)
   }
 
   function scheduleDebounced(rolloutPath) {

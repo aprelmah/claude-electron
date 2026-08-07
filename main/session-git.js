@@ -10,6 +10,27 @@ const { execFile } = require('node:child_process')
 
 const GIT_TIMEOUT_MS = 15000
 
+// Nombre del worktree de un repo: determinista y sin estado, así que sirve en los
+// dos sentidos — para crearlo y para saber a qué proyecto pertenece un cwd que ya
+// existe. Lo segundo hace falta porque los rollouts de codex guardan el cwd donde
+// corrieron (el worktree), y el picker de sesiones pregunta por el cwd real.
+function worktreeSlugFor(realCwd) {
+  const dir = String(realCwd || '')
+  const base = path.basename(dir).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 40) || 'repo'
+  const hash = crypto.createHash('sha1').update(dir).digest('hex').slice(0, 6)
+  return `${base}-${hash}`
+}
+
+// ¿`cwd` es (o está dentro de) un worktree creado para `realCwd`?
+function worktreeCwdBelongsTo({ cwd, realCwd, worktreesRoot } = {}) {
+  const target = String(cwd || '').trim()
+  const repo = String(realCwd || '').trim()
+  const root = String(worktreesRoot || '').trim()
+  if (!target || !repo || !root) return false
+  const prefix = path.join(root, `${worktreeSlugFor(repo)}-`)
+  return target.startsWith(prefix)
+}
+
 function createSessionGit({
   worktreesRoot,
   looksRemotePath,
@@ -34,11 +55,7 @@ function createSessionGit({
     try { return (await git(['rev-parse', '--is-inside-work-tree'], cwd)) === 'true' } catch { return false }
   }
 
-  function slugFor(realCwd) {
-    const base = path.basename(realCwd).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 40) || 'repo'
-    const hash = crypto.createHash('sha1').update(realCwd).digest('hex').slice(0, 6)
-    return `${base}-${hash}`
-  }
+  const slugFor = worktreeSlugFor
 
   async function prepareSessionWorkspace({ realCwd }) {
     try {
@@ -507,4 +524,4 @@ function cwdExcludedFromIsolation(realCwd, excludes, { home = os.homedir() } = {
   return false
 }
 
-module.exports = { createSessionGit, cwdExcludedFromIsolation }
+module.exports = { createSessionGit, cwdExcludedFromIsolation, worktreeSlugFor, worktreeCwdBelongsTo }
