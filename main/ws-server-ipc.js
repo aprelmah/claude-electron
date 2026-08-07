@@ -5,6 +5,7 @@ function registerWsServerIpc({
   startLanServer,
   stopLanServer,
   getLanServerStatus,
+  createLanSessionInvite,
   getLanWsServer,
   clampLanPort,
   getAppConfig,
@@ -44,6 +45,14 @@ function registerWsServerIpc({
     const closed = lanWsServer.closeSession(sessionId, 'closed-by-operator')
     if (!closed) return { ok: false, error: 'Sesión no encontrada', ...getLanServerStatus() }
     return { ok: true, ...getLanServerStatus() }
+  })
+
+  ipcMain.handle('ws-server:create-session-invite', async (event) => {
+    try {
+      return createLanSessionInvite(event)
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) }
+    }
   })
 }
 

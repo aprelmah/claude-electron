@@ -361,18 +361,19 @@
     .onboarding { display: grid; gap: 14px; }
     body[data-connected="true"] .onboarding { display: none; }
 
-    /* La fila de sesión reutilizable vive DENTRO del bloque de conexión.
-       Solo aparece en la fase de elegir (canal abierto, sesión aún no activa).
-       Una vez dentro (data-connected) se oculta junto con todo el onboarding:
-       para cambiar de CLI/sesión el operador sale y vuelve a entrar. */
+    /* El selector persiste cuando ya hay canal: permite cambiar de proyecto o
+       reanudar otra conversación sin volver a cargar la página. */
     .session-dock {
       display: none;
       gap: 8px;
-      margin-top: 12px;
-      padding-top: 12px;
+      margin: 12px 0 0;
+      padding: 12px;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
       border-top: 1px solid var(--border);
     }
-    body[data-channel-open="true"]:not([data-connected="true"]) .session-dock { display: grid; }
+    body[data-channel-open="true"] .session-dock { display: grid; }
 
     .onboarding-head { display: grid; gap: 6px; }
 
@@ -1426,23 +1427,6 @@
         </div>
         <p class="hint">Modelo y esfuerzo dependen del CLI elegido. Se aplican al conectar o reconectar.</p>
 
-        <!-- 4. Sesión reutilizable (aparece cuando el canal está abierto, antes de entrar) -->
-        <div class="session-dock" aria-label="Selector de sesión LAN">
-          <div class="session-picker-row">
-            <div class="field">
-              <label for="session-select">Sesión reutilizable</label>
-              <select id="session-select" class="control">
-                <option value="">Nueva sesión (sin reanudar)</option>
-              </select>
-            </div>
-            <div class="session-picker-actions">
-              <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
-              <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar</button>
-            </div>
-          </div>
-          <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
-        </div>
-
         <!-- Estado del enlace -->
         <div id="handshake-strip" class="handshake" role="status" aria-live="polite" style="margin-top:12px">
           <span id="handshake-text">Listo para conectar.</span>
@@ -1474,6 +1458,22 @@
           </div>
         </details>
       </form>
+    </section>
+
+    <section class="session-dock" aria-label="Selector de sesión LAN">
+      <div class="session-picker-row">
+        <div class="field">
+          <label for="session-select">Proyecto y sesión</label>
+          <select id="session-select" class="control">
+            <option value="">Nueva sesión (sin reanudar)</option>
+          </select>
+        </div>
+        <div class="session-picker-actions">
+          <button id="btn-session-open" class="btn btn-primary" type="button">Abrir sesión</button>
+          <button id="btn-session-refresh" class="btn btn-ghost" type="button">Refrescar</button>
+        </div>
+      </div>
+      <p id="session-picker-meta" class="session-picker-meta">Conecta primero para cargar sesiones de esta carpeta.</p>
     </section>
 
     <section class="chat-card" aria-labelledby="chat-title">
@@ -2590,10 +2590,13 @@
 
     function inferDefaultWsUrl() {
       const q = new URLSearchParams(window.location.search)
+      const explicit = q.get('wsUrl') || q.get('websocket') || ''
+      if (/^wss?:\/\//i.test(explicit)) return explicit
       const host = q.get('host') || window.location.hostname || ''
       const port = q.get('port') || '9999'
       if (!host) return 'ws://127.0.0.1:9999'
-      return `ws://${host}:${port}`
+      const scheme = q.get('wsScheme') || (window.location.protocol === 'https:' ? 'wss' : 'ws')
+      return `${scheme}://${host}:${port}`
     }
     function inferDefaultRemoteIdentity() {
       const q = new URLSearchParams(window.location.search)
@@ -2630,6 +2633,8 @@
       const pageQ = new URLSearchParams(window.location.search)
       const token = pageQ.get('token') || pageQ.get('auth')
       if (token) base.searchParams.set('token', token)
+      const invite = pageQ.get('invite')
+      if (invite) base.searchParams.set('invite', invite)
       return base.toString()
     }
     function sendMessage(payload) {
@@ -3737,6 +3742,12 @@
     refs.wsUrlInput.value = inferDefaultWsUrl()
     refs.wsUrlInput.placeholder = inferDefaultWsUrl()
     inferDefaultRemoteIdentity()
+    const initialInvite = new URLSearchParams(window.location.search).get('invite')
+    if (initialInvite) {
+      refs.body.dataset.invite = 'true'
+      setHandshakeStatus('warn', 'Invitación segura detectada. Abriendo la sesión compartida…', 'invitación')
+      window.setTimeout(() => connect({ autoStart: 'always' }).catch(() => {}), 80)
+    }
     clearFsUi('Conecta primero para ver carpetas.')
     setAttachStatus('Cuando hables o adjuntes algo, llegará al equipo central.')
     setConnectionStatus('offline', 'Sin conectar')
