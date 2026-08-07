@@ -261,20 +261,36 @@ const telegramPairing = createPairingManager()
 // Lazy: userData no está listo en top-level.
 const { createRepeatedPromptDetector } = require('./main/repeated-prompts')
 const { searchSessionContentInFiles } = require('./main/session-content-search')
+const { createHealthWatchdog } = require('./main/health-watchdog')
+const { buildStatusPanelSnapshot } = require('./main/status-panel')
+let healthWatchdog = null
 let repeatedPrompts = null
+function getRepeatedPrompts() {
+  if (!repeatedPrompts) {
+    repeatedPrompts = createRepeatedPromptDetector({
+      storePath: path.join(app.getPath('userData'), 'repeated-prompts.json')
+    })
+  }
+  return repeatedPrompts
+}
+
+// Un solo canal para "hay decisiones nuevas en la bandeja" (pairing Telegram,
+// encargos repetidos): el renderer refresca el dropdown y el badge al oírlo.
+function broadcastDecisionsChanged() {
+  for (const s of sessions.values()) {
+    if (s.win && !s.win.isDestroyed()) s.win.webContents.send('decisions-changed')
+  }
+}
+
 function feedRepeatedPromptDetector(text, source) {
   try {
-    if (!repeatedPrompts) {
-      repeatedPrompts = createRepeatedPromptDetector({
-        storePath: path.join(app.getPath('userData'), 'repeated-prompts.json')
-      })
-    }
-    const res = repeatedPrompts.record({ text, source })
+    const res = getRepeatedPrompts().record({ text, source })
     if (res?.repeated) {
       notifyNative({
         title: 'POWER-AGENT: encargo repetido',
-        body: `Me has pedido esto ${res.count} veces en 30 días: «${String(res.example || '').slice(0, 120)}». ¿Lo convertimos en tarea programada (📌) o en skill?`
+        body: `Me has pedido esto ${res.count} veces en 30 días: «${String(res.example || '').slice(0, 120)}». Resuélvelo en la bandeja 🔔.`
       })
+      broadcastDecisionsChanged()
     }
   } catch (err) {
     try { console.warn('[repeated-prompts]', err?.message || err) } catch {}
@@ -530,6 +546,7 @@ function broadcastTelegramPairing() {
   for (const s of sessions.values()) {
     if (s.win && !s.win.isDestroyed()) s.win.webContents.send('telegram-pairing-changed', pending)
   }
+  broadcastDecisionsChanged()
 }
 
 function updatePrimarySnapshot() {
@@ -3124,22 +3141,20 @@ const {
 function resolveSessionIdForRelay(session) {
   if (!session) return null
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
+  // Regla dura (bug real 2026-08-07, `6956fd5`): un id ADIVINADO ("última
+  // .jsonl por mtime" / historial) se devuelve para este uso puntual pero NO
+  // se persiste en la sesión — el campo relleno paraba al vigía de startPty y
+  // la sesión quedaba envenenada para siempre. El relay se auto-repara por
+  // prompt si la adivinanza era mala; el campo lo escriben solo el spawn, los
+  // vigías o el relay verificando.
   if (cli === 'claude') {
     if (session.claudeSessionId) return session.claudeSessionId
     const latest = listClaudeSessionFilesWithMtime(resolveRelayCwd(session))[0]
-    if (latest?.sessionId) {
-      session.claudeSessionId = latest.sessionId
-      return latest.sessionId
-    }
-    return null
+    return latest?.sessionId || null
   }
   if (session.codexSessionId) return session.codexSessionId
   const guess = guessCodexSessionFromHistory(session)
-  if (guess?.sessionId) {
-    session.codexSessionId = guess.sessionId
-    return guess.sessionId
-  }
-  return null
+  return guess?.sessionId || null
 }
 
 function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
@@ -3294,6 +3309,28 @@ app.whenReady().then(async () => {
   })
   initTelegramBridge()
   try { applyTelegramNotifyBot() } catch (err) { console.warn('[telegram-notify] no arrancó:', err?.message || err) }
+
+  // Doctor diario in-app: chequeo de salud una vez al día, aviso por el bot
+  // de avisos (o notificación nativa si no hay bot) SOLO si hay problemas.
+  try {
+    healthWatchdog = createHealthWatchdog({
+      collect: () => collectHealthSnapshot(primaryWcId != null ? sessions.get(primaryWcId) : null),
+      notify: async (text) => {
+        const tg = appConfig.telegram || {}
+        const chatId = tg.notifyChatId || (Array.isArray(tg.allowedUsers) ? tg.allowedUsers[0] : null)
+        if (telegramNotifyBot && chatId) {
+          const res = await telegramNotifyBot.sendTaskNotification({ chatId, text })
+          if (res?.ok) return
+        }
+        notifyNative({ title: 'POWER-AGENT · doctor', body: text.slice(0, 200) })
+      },
+      isEnabled: () => appConfig.telegram?.healthWatchdog !== false,
+      log: (m) => console.warn('[doctor]', m)
+    })
+    healthWatchdog.start()
+  } catch (err) {
+    console.warn('[doctor] no arrancó:', err?.message || err)
+  }
 
   createWindow()
   startAgentProposalPolling()
@@ -4371,7 +4408,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
   const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'gitIsolationExcludes', 'voiceId', 'voiceRate', 'voiceSilenceMs']
-  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort', 'notifyBotToken', 'notifyChatId']
+  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort', 'notifyBotToken', 'notifyChatId', 'healthWatchdog']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {
     const out = {}
@@ -4456,6 +4493,36 @@ ipcMain.handle('telegram:pairing-reject', (_event, code) => {
   const res = telegramPairing.reject(code)
   broadcastTelegramPairing()
   return { ...res, pending: telegramPairing.listPending() }
+})
+
+// ── Bandeja única de decisiones (pairing + encargos repetidos) ──
+// ── Panel "¿qué está pasando?" ──
+ipcMain.handle('status-panel:get', () => buildStatusPanelSnapshot({
+  sessions: [...sessions.entries()].map(([wcId, s]) => ({
+    wcId,
+    activeCli: s.activeCli,
+    cwd: s.cwd,
+    claudeSessionId: s.claudeSessionId,
+    codexSessionId: s.codexSessionId,
+    pty: s.pty,
+    gitWorkspace: s.gitWorkspace,
+    relayActive: s.relayActive
+  })),
+  poolStats: (() => { try { return telegramHiddenPtyPool?.getStats() || null } catch { return null } })(),
+  recentEvents: (() => { try { return semanticLogger.readRecent({ limit: 12 }) } catch { return [] } })(),
+  voiceOwnerWcId
+}))
+
+ipcMain.handle('decisions:list', () => ({
+  pairing: telegramPairing.listPending(),
+  repeated: (() => { try { return getRepeatedPrompts().listProposals() } catch { return [] } })()
+}))
+
+ipcMain.handle('decisions:resolve-repeated', (_event, { id, status } = {}) => {
+  let res = { ok: false }
+  try { res = getRepeatedPrompts().resolveProposal(id, status) } catch {}
+  broadcastDecisionsChanged()
+  return res
 })
 
 ipcMain.handle('health:get', async (event) => {

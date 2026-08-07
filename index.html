@@ -255,6 +255,9 @@
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         <span id="tasks-inbox-badge" class="topbar-badge hidden">0</span>
       </button>
+      <button id="btn-status-panel" class="icon-btn" title="¿Qué está pasando? — estado vivo de sesiones, Telegram y bitácora" aria-label="Panel de estado">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+      </button>
       <button id="btn-tasks" class="icon-btn" title="Tareas programadas (Cmd+Shift+T)" aria-label="Tareas programadas">
         <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9,11 12,14 22,4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       </button>
@@ -474,6 +477,18 @@
     </div>
   </div>
 
+  <div id="status-panel-modal" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel">
+      <div class="modal-header">
+        <span class="modal-title">¿Qué está pasando?</span>
+        <span class="modal-sub">estado vivo — se refresca solo</span>
+        <button id="btn-close-status-panel" class="modal-close" aria-label="Cerrar panel">×</button>
+      </div>
+      <div id="status-panel-body"></div>
+    </div>
+  </div>
+
   <div id="settings-modal" class="hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-panel settings">
@@ -564,6 +579,10 @@
           <label class="settings-field">
             <span>Chat ID de avisos (opcional; por defecto, el primer allowed user)</span>
             <input id="cfg-telegram-notify-chat" type="text" placeholder="12345678" />
+          </label>
+          <label class="settings-field">
+            <span>Doctor diario — chequeo de salud a las 8:00; solo avisa si algo está roto</span>
+            <input id="cfg-telegram-health-watchdog" type="checkbox" />
           </label>
           <div class="settings-row">
             <label class="settings-field">

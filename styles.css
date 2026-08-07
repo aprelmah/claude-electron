@@ -3298,3 +3298,16 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 
 /* Botón pequeño de los settings (elegir carpeta sin aislamiento) */
 .settings-mini-btn { align-self: flex-start; margin-top: 4px; font-size: 12px; padding: 3px 8px; cursor: pointer; }
+
+/* Bandeja única: sección Decisiones */
+.decisions-header { padding: 6px 12px 2px; font-size: 11px; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.5px; }
+.decision-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
+.decision-label { flex: 1; font-size: 12px; line-height: 1.35; }
+.decision-actions { display: flex; gap: 6px; }
+.decision-actions button { font-size: 11px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+
+/* Panel "¿qué está pasando?" */
+.sp-section-title { padding: 10px 12px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.5px; }
+.sp-row { padding: 4px 12px; font-size: 12px; line-height: 1.4; word-break: break-all; }
+.sp-row.sp-err { color: #e06c75; }
+#status-panel-body { max-height: 60vh; overflow-y: auto; padding-bottom: 10px; }

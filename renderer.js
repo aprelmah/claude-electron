@@ -84,6 +84,7 @@ const cfgTelegramPairingBlock = document.getElementById('cfg-telegram-pairing-bl
 const cfgTelegramPairingList = document.getElementById('cfg-telegram-pairing-list')
 const cfgTelegramNotifyToken = document.getElementById('cfg-telegram-notify-token')
 const cfgTelegramNotifyChat = document.getElementById('cfg-telegram-notify-chat')
+const cfgTelegramHealthWatchdog = document.getElementById('cfg-telegram-health-watchdog')
 const cfgTelegramClaudeModel = document.getElementById('cfg-telegram-claude-model')
 const cfgTelegramClaudeEffort = document.getElementById('cfg-telegram-claude-effort')
 const cfgTelegramCodexModel = document.getElementById('cfg-telegram-codex-model')
@@ -2427,6 +2428,7 @@ async function refreshSettings() {
   cfgTelegramUsers.value = Array.isArray(config?.telegram?.allowedUsers) ? config.telegram.allowedUsers.join(', ') : ''
   if (cfgTelegramNotifyToken) cfgTelegramNotifyToken.value = config?.telegram?.notifyBotToken || ''
   if (cfgTelegramNotifyChat) cfgTelegramNotifyChat.value = config?.telegram?.notifyChatId || ''
+  if (cfgTelegramHealthWatchdog) cfgTelegramHealthWatchdog.checked = config?.telegram?.healthWatchdog !== false
   cfgTelegramClaudeModel.value = config?.telegram?.claudeModel || ''
   cfgTelegramClaudeEffort.value = config?.telegram?.claudeEffort || ''
   cfgTelegramCodexModel.value = config?.telegram?.codexModel || ''
@@ -2879,7 +2881,8 @@ btnSaveSettings.addEventListener('click', async () => {
       codexModel: cfgTelegramCodexModel.value.trim(),
       codexEffort: cfgTelegramCodexEffort.value,
       notifyBotToken: cfgTelegramNotifyToken ? cfgTelegramNotifyToken.value.trim() : '',
-      notifyChatId: cfgTelegramNotifyChat ? cfgTelegramNotifyChat.value.trim() : ''
+      notifyChatId: cfgTelegramNotifyChat ? cfgTelegramNotifyChat.value.trim() : '',
+      healthWatchdog: cfgTelegramHealthWatchdog ? Boolean(cfgTelegramHealthWatchdog.checked) : true
     },
     lanServer: {
       enabled: lanEnabled,
@@ -4243,6 +4246,75 @@ function fmtSize(bytes) {
   return `${(bytes/1024/1024).toFixed(1)}MB`
 }
 
+// ── Panel "¿qué está pasando?" (estado vivo, refresco 3s mientras abierto) ──
+const statusPanelModal = document.getElementById('status-panel-modal')
+const statusPanelBody = document.getElementById('status-panel-body')
+const btnStatusPanel = document.getElementById('btn-status-panel')
+const btnCloseStatusPanel = document.getElementById('btn-close-status-panel')
+let statusPanelTimer = null
+
+function spSection(title) {
+  const h = document.createElement('div')
+  h.className = 'sp-section-title'
+  h.textContent = title
+  return h
+}
+
+function spRow(text, extraClass) {
+  const r = document.createElement('div')
+  r.className = 'sp-row' + (extraClass ? ` ${extraClass}` : '')
+  r.textContent = text
+  return r
+}
+
+function renderStatusPanel(snap) {
+  if (!statusPanelBody) return
+  statusPanelBody.textContent = ''
+  statusPanelBody.appendChild(spSection('Sesiones abiertas'))
+  if (!snap?.sesiones?.length) statusPanelBody.appendChild(spRow('Ninguna.'))
+  for (const s of snap?.sesiones || []) {
+    const parts = [
+      `[${s.cli}] ${s.cwd || '(sin carpeta)'}`,
+      s.sessionId ? `id ${s.sessionId}` : 'sin conversación aún',
+      s.ptyVivo ? 'PTY vivo' : 'PTY parado'
+    ]
+    if (s.aislada) parts.push(`🌿 aislada (${s.aislada.branch})`)
+    if (s.telegram) parts.push('📨 enlazada a Telegram')
+    if (s.voz) parts.push('🎙 modo voz')
+    statusPanelBody.appendChild(spRow(parts.join(' · ')))
+  }
+  statusPanelBody.appendChild(spSection('Sesiones ocultas de Telegram (pool)'))
+  if (!snap?.poolTelegram?.length) statusPanelBody.appendChild(spRow('Ninguna.'))
+  for (const p of snap?.poolTelegram || []) {
+    statusPanelBody.appendChild(spRow(`chat ${p.chatId} · ${p.cli} · id ${p.sessionId || '—'} · ${p.idleMin} min sin uso`))
+  }
+  statusPanelBody.appendChild(spSection('Últimos eventos (bitácora)'))
+  if (!snap?.eventos?.length) statusPanelBody.appendChild(spRow('Nada registrado.'))
+  for (const e of snap?.eventos || []) {
+    const hora = e.ts ? String(e.ts).slice(11, 19) : ''
+    statusPanelBody.appendChild(spRow(`${hora} ${e.ok ? '✓' : '✗'} ${e.action} ${e.detail}`.trim(), e.ok ? '' : 'sp-err'))
+  }
+}
+
+async function refreshStatusPanel() {
+  try { renderStatusPanel(await window.api.statusPanelGet()) } catch {}
+}
+
+function closeStatusPanel() {
+  if (statusPanelTimer) { clearInterval(statusPanelTimer); statusPanelTimer = null }
+  statusPanelModal?.classList.add('hidden')
+}
+
+if (btnStatusPanel) {
+  btnStatusPanel.addEventListener('click', async () => {
+    statusPanelModal?.classList.remove('hidden')
+    await refreshStatusPanel()
+    if (!statusPanelTimer) statusPanelTimer = setInterval(refreshStatusPanel, 3000)
+  })
+}
+if (btnCloseStatusPanel) btnCloseStatusPanel.addEventListener('click', closeStatusPanel)
+statusPanelModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeStatusPanel)
+
 async function openSessions() {
   const cwd = await window.api.ptyCwd()
   sessionsCwd.textContent = cwd
@@ -4929,7 +5001,8 @@ cliSelector.addEventListener('change', async (e) => {
   async function refreshBadge() {
     try {
       const res = await api.get({ unreadOnly: true, limit: 1 })
-      updateBadge(res?.unreadCount || 0)
+      const decisions = await fetchDecisions()
+      updateBadge((res?.unreadCount || 0) + decisions.pairing.length + decisions.repeated.length)
     } catch {}
   }
 
@@ -4973,6 +5046,7 @@ cliSelector.addEventListener('change', async (e) => {
         <span>Respuestas pendientes</span>
         <button type="button" class="tasks-inbox-clear" title="Marcar todo como leído">Marcar todo leído</button>
       </div>
+      <div class="tasks-inbox-decisions"></div>
       <div class="tasks-inbox-list"></div>
       <div class="tasks-inbox-footer"><a class="tasks-inbox-open-manager">Ver todas en Tareas programadas</a></div>
     `
@@ -5059,12 +5133,88 @@ cliSelector.addEventListener('change', async (e) => {
     })
   }
 
+  // Sección "Decisiones" de la bandeja única: solicitudes de vinculación de
+  // Telegram y encargos repetidos, accionables desde aquí. DOM a mano con
+  // textContent: usernames y prompts son texto no confiable.
+  async function fetchDecisions() {
+    try {
+      const d = await window.api.decisionsList()
+      return {
+        pairing: Array.isArray(d?.pairing) ? d.pairing : [],
+        repeated: Array.isArray(d?.repeated) ? d.repeated : []
+      }
+    } catch { return { pairing: [], repeated: [] } }
+  }
+
+  function decisionRow(labelText, actions) {
+    const row = document.createElement('div')
+    row.className = 'decision-row'
+    const label = document.createElement('div')
+    label.className = 'decision-label'
+    label.textContent = labelText
+    const btns = document.createElement('div')
+    btns.className = 'decision-actions'
+    for (const a of actions) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.textContent = a.text
+      if (a.title) b.title = a.title
+      b.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        try { await a.run() } catch (err) { console.error('[decisiones]', err) }
+        await loadAndRender()
+      })
+      btns.appendChild(b)
+    }
+    row.appendChild(label)
+    row.appendChild(btns)
+    return row
+  }
+
+  function renderDecisions(decisions) {
+    const dd = ensureDropdown()
+    const box = dd.querySelector('.tasks-inbox-decisions')
+    if (!box) return
+    box.textContent = ''
+    const total = decisions.pairing.length + decisions.repeated.length
+    if (!total) return
+    const header = document.createElement('div')
+    header.className = 'decisions-header'
+    header.textContent = 'Decisiones'
+    box.appendChild(header)
+    for (const p of decisions.pairing) {
+      const who = p.username ? `@${p.username}` : (p.firstName || p.userId)
+      box.appendChild(decisionRow(`Telegram: ${who} pide acceso — código ${p.code}`, [
+        { text: 'Aprobar', run: () => window.api.telegramPairingApprove(p.code) },
+        { text: 'Rechazar', run: () => window.api.telegramPairingReject(p.code) }
+      ]))
+    }
+    for (const r of decisions.repeated) {
+      box.appendChild(decisionRow(`Repetido ×${r.count}: «${String(r.example || '').slice(0, 90)}»`, [
+        {
+          text: '📌 Crear tarea',
+          title: 'Copia el prompt y abre Tareas programadas',
+          run: async () => {
+            try { await navigator.clipboard.writeText(r.example || '') } catch {}
+            try { showStatus && showStatus('Prompt copiado — pégalo en la tarea nueva.', 'ok', 4000) } catch {}
+            try { document.getElementById('btn-tasks')?.click() } catch {}
+            await window.api.decisionsResolveRepeated(r.id, 'done')
+            hideDropdown()
+          }
+        },
+        { text: 'Descartar', title: 'No volver a proponer este encargo', run: () => window.api.decisionsResolveRepeated(r.id, 'dismissed') }
+      ]))
+    }
+  }
+
   async function loadAndRender() {
     try {
       const res = await api.get({ limit: 50 })
       const items = Array.isArray(res?.items) ? res.items : []
       lastItems = items
-      updateBadge(res?.unreadCount || 0)
+      const decisions = await fetchDecisions()
+      updateBadge((res?.unreadCount || 0) + decisions.pairing.length + decisions.repeated.length)
+      renderDecisions(decisions)
       renderItems(items)
     } catch (err) {
       console.error('[tasksInbox] load error:', err)
@@ -5110,8 +5260,16 @@ cliSelector.addEventListener('change', async (e) => {
 
   // Listener del broadcast del backend
   if (api.onUpdated) {
-    api.onUpdated((payload) => {
-      updateBadge(payload?.unreadCount || 0)
+    api.onUpdated(() => {
+      refreshBadge()
+      if (dropdown && !dropdown.classList.contains('hidden')) loadAndRender()
+    })
+  }
+
+  // Decisiones nuevas (pairing Telegram, encargos repetidos): mismo refresco.
+  if (window.api.onDecisionsChanged) {
+    window.api.onDecisionsChanged(() => {
+      refreshBadge()
       if (dropdown && !dropdown.classList.contains('hidden')) loadAndRender()
     })
   }
