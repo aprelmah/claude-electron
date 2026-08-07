@@ -4,11 +4,25 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-07 noche (profesionalización en /loop: flakes muertos, doctor, bandeja única, panel de estado)._
+_Última actualización: 2026-08-07 noche, cierre de sesión (todo commiteado, pusheado y desplegado; wrap hecho)._
 
-# 🚦 EMPIEZA POR AQUÍ — Profesionalización (2026-08-07 noche, /loop autónomo)
+# 🚦 EMPIEZA POR AQUÍ — Profesionalización + doctor a demanda (2026-08-07 noche)
 
-Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarlo entero. 4 fases, TDD, **suite 1227 (1221 pass / 0 fail / 6 skip)**. Detalle de reglas en CLAUDE.md §"Profesionalización (2026-08-07 noche)".
+Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarlo entero en /loop. 4 fases + 4 remates pedidos en vivo. Detalle de reglas en CLAUDE.md §"Profesionalización (2026-08-07 noche)".
+
+## Estado de entrega (verificado al cierre)
+
+- `main` == `origin/main`, HEAD **`a6c8c6e`**, árbol limpio salvo docs de este wrap. 10 commits del tramo: `f1b317d` (flakes+humo), `fb6ca9d` (doctor), `880b890` (propuestas+builder panel), `24043c9` (cableado app), `057dbb0` (docs), `0697bda` (CSS modal), `68c7817` (hora bitácora), `9d8fedb` (doctor manual panel), `2cbb03d` (/doctor Telegram), `a6c8c6e` (🩺 en /menu).
+- Tests: **1233 (1227 pass / 0 fail / 6 skip)** — el día empezó en 1079.
+- Deploy: **HECHO** (5 deploys, último tras `a6c8c6e`), asar verificado por contenido en cada uno; panel verificado por CDP con captura; botón 🩺 probado en vivo por Luismi ("funciona").
+- Bugs cazados con captura tras el deploy: modal del panel sin CSS por ID (tira rota al fondo) y hora de bitácora "39" (ts epoch). Ambos arreglados y desplegados.
+
+## Próximo paso
+
+- Probar `/doctor` desde el móvil (el botón del panel está probado; el comando no).
+- Verificar que el `1` de prueba salió de `telegram.allowedUsers`.
+- UX pendiente: el icono del panel (pulso) se camufla — más contraste o etiqueta.
+- Deuda consciente: rama codex de `buildCurrentSessionMeta` sigue adivinando.
 
 1. **Consolidar**: los DOS flakes históricos eran la misma causa — `ws-server-auth-token.test.js` elegía puertos dentro del rango efímero del SO (49152–65535) y chocaba con sockets salientes de otros tests (EADDRINUSE + 404-vs-401). Banda movida a 18500–19900. Test de humo `module-load-smoke.test.js` (73 requires). `resolveSessionIdForRelay` ya no persiste ids adivinados.
 2. **Doctor in-app** (`main/health-watchdog.js` + toggle `telegram.healthWatchdog`): chequeo diario 08:00, avisa por notify bot solo con problemas.
@@ -39,13 +53,7 @@ Luismi pidió comparar POWER-AGENT con Hermes Agent (Nous Research, MIT, ~220k e
 
 Luismi, harto del baile de worktrees en sus carpetas de trabajo ("Estás en un worktree nuevo" en TURBO-ENERGY): `cli.gitIsolationExcludes` (Configuración → "Carpetas SIN aislamiento", una por línea, `~` y subcarpetas; `cwdExcludedFromIsolation` en `main/session-git.js`, `isEnabled(realCwd)`) + badge «🌿 worktree» en la tira de sesión (`meta.gitIsolation`). Toggle global intacto; exclusión gana. Tests **1133 (1127/0/6)**, 9 nuevos en `git-isolation-excludes.test.js`. Segundo flake pre-existente visto en suite completa: 404-vs-401 en un test HTTP (no reproduce en re-run), además del EADDRINUSE 55555.
 
-## Próximo paso
-
-- **Luismi debe rellenar sus carpetas excluidas** en Configuración → "Carpetas SIN aislamiento" (p. ej. `~/Desktop/LUISMI/TURBO-ENERGY RMA`).
-- Verificar que el `1` de prueba salió de `telegram.allowedUsers` (se le dijo, sin comprobar).
-- Arreglar el **flake EADDRINUSE del puerto 55555** (test con puerto fijo + suites en paralelo; pre-existente, NO es de los robos; ~1 de cada 3 corridas completas): puerto aleatorio/0.
-- El detector de repetidos no se puede probar en corto (necesita 3 encargos en días distintos); saldrá con el uso.
-- Commitear este STATE.md (docs) cuando toque.
+(Sus pendientes se cerraron en la sesión de la noche: carpetas excluidas rellenadas, flake arreglado de raíz; los vivos están en el "Próximo paso" de arriba.)
 
 # Sesión anterior — Fix: la sesión nueva adoptaba la conversación vieja (envenenamiento del sessionId)
 
