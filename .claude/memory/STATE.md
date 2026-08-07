@@ -4,20 +4,37 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-07 tarde (robos de Hermes implementados; tests en verde; SIN commitear — esperando OK de Luismi)._
+_Última actualización: 2026-08-07 tarde (robos de Hermes commiteados, pusheados, probados en vivo y DESPLEGADOS — asar verificado por contenido)._
 
 ---
 
-# 🚦 EMPIEZA POR AQUÍ — 4 "robos" de Hermes Agent implementados (2026-08-07 tarde, /loop autónomo)
+# 🚦 EMPIEZA POR AQUÍ — 4 "robos" de Hermes Agent: hechos, pusheados y probados (2026-08-07 tarde)
 
-Luismi pidió comparar POWER-AGENT con Hermes Agent (Nous Research) y aprobó robarle 4 ideas. Las 4 están implementadas con TDD, **suite 1124 (1118 pass / 0 fail / 6 skip)**, `node --check` limpio en todos los tocados. **SIN commitear, SIN deploy, SIN prueba en vivo** — la app empaquetada de Luismi estaba corriendo y no se mató (dev y empaquetada comparten SingletonLock).
+Luismi pidió comparar POWER-AGENT con Hermes Agent (Nous Research, MIT, ~220k estrellas) y aprobó robarle 4 ideas. Veredicto de la comparativa: Hermes es el mejor agente personal genérico, pero no sustituye a POWER-AGENT (no pilota Claude Code, cobraría por API teniendo Max, sin el WhatsApp de negocio). Las 4 implementadas con TDD en `/loop` autónomo y **probadas en vivo por Luismi en modo dev ("funciona todo")** — el pairing con el truco del ID falso `1` en allowedUsers.
+
+## Estado de entrega (verificado 2026-08-07 tarde)
+
+- Rama `main` == `origin/main`: **6 commits pusheados** `d7fa0fd..5f0f089` (4193c04 saneado, ef395c3 pairing, 3b31f0f repetidos, 866411a búsqueda, 9ee0d9b cableado app, 5f0f089 docs). Árbol limpio salvo este STATE.md.
+- Tests: **1124 (1118 pass / 0 fail / 6 skip)** — el hook corrió la suite en cada commit.
+- **Deploy: HECHO 2026-08-07 tarde** (`npm run deploy`, exit 0, helper de voz firmado). Verificado por CONTENIDO del asar: los 4 módulos nuevos dentro, `sessions-search` en renderer y `cfg-telegram-pairing-block` en index.html. App empaquetada corriendo desde /Applications.
+- Percance corregido sobre la marcha: el hook falló en el commit del cableado (flake EADDRINUSE) y el pipe `| tail` se tragó el exit → el commit de docs arrastró 7 archivos; `reset --soft` + recommit limpio. **Regla: jamás `git commit | tail && siguiente` — el pipe devuelve el exit de tail.**
 
 1. **Emparejamiento por código** (`main/telegram-pairing.js` + hook en `telegram-bridge.js` `_handleUnauthorized`): un chat desconocido recibe código de 6 dígitos (TTL 10 min, máx. 5 pendientes, mismo código si insiste); se aprueba/rechaza en Configuración → Telegram (IPC `telegram:pairing-*`, notificación nativa, bloque UI nuevo). Aprobar persiste en `allowedUsers` y reaplica el bridge en vivo. Códigos solo en memoria (reinicio = caducados). Sin hook o hook roto → rechazo legacy (fail-open). Tests: `telegram-pairing.test.js`, `telegram-bridge-pairing.test.js`.
 2. **Saneado anti-inyección** (`main/untrusted-input.js`, `sanitizeChannelText`): limpia Unicode invisible (zero-width/bidi/BOM), ANSI/C0 y normaliza `\r`→`\n` (un `\r` crudo es un ENTER en el PTY); detecta override/exfil/exec. Política por llamador: Telegram (`_enqueueQuery`) y notify bot (intake) SOLO limpian (quien habla es Luismi); WhatsApp escala a humano si `risky` (`respondTo` en `whatsapp-client.js`) y `buildPrompt` limpia body+historial. OJO: regex con clases `\uXXXX` en ASCII — jamás pegar caracteres invisibles literales en el código (se hizo por error y se corrigió). Tampoco `.test()` sobre regex `/g` (lastIndex stateful). Tests: `untrusted-input.test.js`, `channel-input-sanitized.test.js`.
 3. **Detector de tareas repetidas** (`main/repeated-prompts.js`): Jaccard de tokens (normalización sin tildes), 3+ hits similares en 30 días → notificación nativa proponiendo tarea 📌 o skill; cooldown 7 días por cluster, `minGapMs` 60s (reintentos no cuentan), store atómico `userData/repeated-prompts.json`. Alimentado desde: `onSemanticInput` de Telegram, `onUserReply` del notify bot y encargos de voz (wrapper de `voiceSendTarget` en main.js — la charla no cuenta). Tests: `repeated-prompts.test.js`.
 4. **Búsqueda en contenido de sesiones** (`main/session-content-search.js` + input en el modal Sesiones): streaming readline de los `.jsonl` del proyecto (nada de readFileSync — lección del relay), plegado 1:1 por code point (tildes/mayúsculas), snippet como tooltip de la fila, IPC `search-session-content` (solo claude), debounce 350ms + token anti-carreras en renderer. La "lupa" vieja era solo del grafo; el modal de sesiones no tenía búsqueda ninguna. Tests: `session-content-search.test.js`.
 
-**Pendiente (necesita a Luismi)**: probar en vivo (matar app → dev → verificar pairing/buscador), OK para plan de commits troceado (4 commits, uno por robo), deploy. Informe completo en el chat de la sesión.
+## Además (2026-08-07 noche): aislamiento git por carpeta + chivato
+
+Luismi, harto del baile de worktrees en sus carpetas de trabajo ("Estás en un worktree nuevo" en TURBO-ENERGY): `cli.gitIsolationExcludes` (Configuración → "Carpetas SIN aislamiento", una por línea, `~` y subcarpetas; `cwdExcludedFromIsolation` en `main/session-git.js`, `isEnabled(realCwd)`) + badge «🌿 worktree» en la tira de sesión (`meta.gitIsolation`). Toggle global intacto; exclusión gana. Tests **1133 (1127/0/6)**, 9 nuevos en `git-isolation-excludes.test.js`. Segundo flake pre-existente visto en suite completa: 404-vs-401 en un test HTTP (no reproduce en re-run), además del EADDRINUSE 55555.
+
+## Próximo paso
+
+- **Luismi debe rellenar sus carpetas excluidas** en Configuración → "Carpetas SIN aislamiento" (p. ej. `~/Desktop/LUISMI/TURBO-ENERGY RMA`).
+- Verificar que el `1` de prueba salió de `telegram.allowedUsers` (se le dijo, sin comprobar).
+- Arreglar el **flake EADDRINUSE del puerto 55555** (test con puerto fijo + suites en paralelo; pre-existente, NO es de los robos; ~1 de cada 3 corridas completas): puerto aleatorio/0.
+- El detector de repetidos no se puede probar en corto (necesita 3 encargos en días distintos); saldrá con el uso.
+- Commitear este STATE.md (docs) cuando toque.
 
 # Sesión anterior — Fix: la sesión nueva adoptaba la conversación vieja (envenenamiento del sessionId)
 
