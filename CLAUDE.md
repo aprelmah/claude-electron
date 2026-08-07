@@ -110,6 +110,15 @@ Rama `feat/modo-voz` (40 commits sobre `main`), árbol limpio, **sin push, sin m
 - **Detector de tareas repetidas** (`main/repeated-prompts.js`): 3+ encargos similares (Jaccard tokens ≥0.72) en 30 días por Telegram/avisos/voz → notificación proponiendo tarea 📌 o skill. Cooldown 7 días, hits a <60s no cuentan (reintentos). Store `userData/repeated-prompts.json`. La charla del sub-chat de voz NO alimenta el detector.
 - **Búsqueda en contenido de sesiones** (`main/session-content-search.js` + input en el modal Sesiones): streaming readline sobre los `.jsonl` del proyecto — jamás `readFileSync` entero (lección del relay). Solo claude. IPC `search-session-content`.
 
+## Profesionalización (2026-08-07 noche)
+
+- **Regla de puertos en tests**: JAMÁS elegir puertos de escucha dentro del rango efímero del SO (49152–65535 en macOS) — los sockets salientes de otros tests aterrizan ahí al azar y daban los dos flakes históricos de la suite (EADDRINUSE y un 404-vs-401 de un cliente hablando con el servidor de OTRO test). Cada fichero ws-server usa una banda propia en 12000–19900.
+- **Test de humo** (`tests/module-load-smoke.test.js`): requiere TODOS los `main/*.js`, `whatsapp/*.js` (menos `whatsapp-panel.js`, script de renderer) y los módulos raíz cargables. Un módulo nuevo que no cargue bajo node rompe la suite al instante.
+- **`resolveSessionIdForRelay` ya NO persiste ids adivinados** (cerrada la deuda del bug `6956fd5`): devuelve la adivinanza para el uso puntual pero el campo de la sesión lo escriben solo spawn/vigías/relay. La rama codex del meta (`claude-session-cache.js`) sigue siendo deuda consciente.
+- **Doctor in-app** (`main/health-watchdog.js`): una vez al día (08:00, poll cada 15 min con `unref`) evalúa `collectHealthSnapshot` y avisa por el bot de avisos (fallback notificación nativa) SOLO si hay `state: 'error'`. Toggle `telegram.healthWatchdog` (default ON) en Configuración → Telegram. Día de última pasada en memoria a propósito: reinicio + problema persistente = re-aviso.
+- **Bandeja única de decisiones** (dropdown del 🔔): sección "Decisiones" encima de las respuestas de tareas — solicitudes de pairing (Aprobar/Rechazar) y encargos repetidos (📌 Crear tarea = copia el prompt y abre Tareas; Descartar = ese cluster no propone nunca más). IPC `decisions:list`/`decisions:resolve-repeated`, push `decisions-changed` (el broadcast de pairing también lo emite). El badge suma no-leídos + decisiones.
+- **Panel "¿qué está pasando?"** (botón 📈 en topbar, `main/status-panel.js` puro + `status-panel:get`): sesiones vivas (CLI, carpeta, id corto, PTY, 🌿 aislada, 📨 Telegram, 🎙 voz), pool oculto de Telegram y últimos 12 eventos de la bitácora. Refresco 3 s mientras está abierto.
+
 ## Incident history
 - Date: **2026-05-14**
 - Symptom 1: app crash on startup (`SIGABRT`, stack in `_RegisterApplication` / `NSApplication`).

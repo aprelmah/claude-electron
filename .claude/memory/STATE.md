@@ -4,11 +4,22 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-07 tarde (robos de Hermes commiteados, pusheados, probados en vivo y DESPLEGADOS — asar verificado por contenido)._
+_Última actualización: 2026-08-07 noche (profesionalización en /loop: flakes muertos, doctor, bandeja única, panel de estado)._
+
+# 🚦 EMPIEZA POR AQUÍ — Profesionalización (2026-08-07 noche, /loop autónomo)
+
+Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarlo entero. 4 fases, TDD, **suite 1227 (1221 pass / 0 fail / 6 skip)**. Detalle de reglas en CLAUDE.md §"Profesionalización (2026-08-07 noche)".
+
+1. **Consolidar**: los DOS flakes históricos eran la misma causa — `ws-server-auth-token.test.js` elegía puertos dentro del rango efímero del SO (49152–65535) y chocaba con sockets salientes de otros tests (EADDRINUSE + 404-vs-401). Banda movida a 18500–19900. Test de humo `module-load-smoke.test.js` (73 requires). `resolveSessionIdForRelay` ya no persiste ids adivinados.
+2. **Doctor in-app** (`main/health-watchdog.js` + toggle `telegram.healthWatchdog`): chequeo diario 08:00, avisa por notify bot solo con problemas.
+3. **Bandeja única**: sección "Decisiones" en el dropdown del 🔔 (pairing accionable + encargos repetidos con "📌 Crear tarea"/"Descartar"). El detector de repetidos ahora persiste propuestas (`listProposals`/`resolveProposal`; descartado = no propone nunca más).
+4. **Panel "¿qué está pasando?"** (botón nuevo en topbar): sesiones vivas con aislamiento/Telegram/voz, pool oculto y últimos eventos de la bitácora, refresco 3 s.
+
+Además, misma sesión (tarde): **aislamiento git por carpeta** (`gitIsolationExcludes` + botón selector + badge 🌿; excludes de Luismi rellenados: TURBO-ENERGY RMA, DMWEB, DOCUMENTOS_AGENTE, ~/Documents) — commits `dbbc772`+`62de42d`+`f6cfc90` pusheados y desplegados.
 
 ---
 
-# 🚦 EMPIEZA POR AQUÍ — 4 "robos" de Hermes Agent: hechos, pusheados y probados (2026-08-07 tarde)
+# Sesión anterior — 4 robos de Hermes Agent: hechos, pusheados y probados (2026-08-07 tarde)
 
 Luismi pidió comparar POWER-AGENT con Hermes Agent (Nous Research, MIT, ~220k estrellas) y aprobó robarle 4 ideas. Veredicto de la comparativa: Hermes es el mejor agente personal genérico, pero no sustituye a POWER-AGENT (no pilota Claude Code, cobraría por API teniendo Max, sin el WhatsApp de negocio). Las 4 implementadas con TDD en `/loop` autónomo y **probadas en vivo por Luismi en modo dev ("funciona todo")** — el pairing con el truco del ID falso `1` en allowedUsers.
 
