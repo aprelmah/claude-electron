@@ -26,7 +26,7 @@ _Última actualización: 2026-08-07 mediodía (verificado contra git, tests y el
 
 ## Estado de entrega (verificado 2026-08-07 mediodía)
 
-- Rama `main`: `6956fd5` (fix sessionId) **sin push** sobre `2595248`/`04e0441` ya pusheados.
+- Rama `main` == `origin/main`: `6956fd5` (fix) + `4e2814b` (docs) **pusheados** (`04e0441..4e2814b`).
 - Tests: **1079 (1073 pass / 0 fail / 6 skip)** — hook pre-commit corrió la suite en el commit.
 - Deploy: **HECHO 2026-08-07 ~12:00** — asar verificado por CONTENIDO (`claude-session-cache.js` con «(sesión nueva)» y sin la línea del veneno). Probado en vivo por Luismi ("va bien").
 
