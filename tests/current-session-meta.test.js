@@ -11,7 +11,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 const { createClaudeSessionCache } = require('../main/claude-session-cache')
 
-function makeCache({ latestRows = [] } = {}) {
+function makeCache({ latestRows = [], codexGuess = null } = {}) {
   return createClaudeSessionCache({
     resolveClaudeProjectDir: () => null,
     listClaudeSessionFilesWithMtime: () => latestRows,
@@ -22,7 +22,7 @@ function makeCache({ latestRows = [] } = {}) {
     codexSessionReader: {
       loadCodexSessionIndexMap: () => new Map(),
       readCodexStateThreadMeta: () => null,
-      guessCodexSessionFromHistory: () => null,
+      guessCodexSessionFromHistory: () => codexGuess,
       fileCacheKey: () => ''
     },
     CODEX_HISTORY_PATH: '/dev/null',
@@ -48,6 +48,26 @@ test('sesión claude sin id: el título dice sesión nueva, no el de la conversa
   const session = { wcId: 8, activeCli: 'claude', cwd: '/tmp/proyecto', claudeSessionId: null }
   const meta = buildCurrentSessionMeta(session)
   assert.strictEqual(meta.title, '(sesión nueva)')
+})
+
+test('sesión codex: la adivinanza del historial se pinta pero NO se persiste', () => {
+  const { buildCurrentSessionMeta } = makeCache({
+    codexGuess: { sessionId: 'adivinada-3333', tsMs: 1, text: 'hola' }
+  })
+  const session = { wcId: 11, activeCli: 'codex', cwd: '/tmp/proyecto', codexSessionId: '' }
+  const meta = buildCurrentSessionMeta(session)
+  assert.strictEqual(meta.sessionId, 'adivinada-3333', 'la tira de sesión sí puede pintarla')
+  assert.strictEqual(session.codexSessionId, '', 'no debe escribir en session.codexSessionId')
+})
+
+test('sesión codex con id propio: lo respeta', () => {
+  const { buildCurrentSessionMeta } = makeCache({
+    codexGuess: { sessionId: 'adivinada-3333', tsMs: 1, text: 'hola' }
+  })
+  const session = { wcId: 12, activeCli: 'codex', cwd: '/tmp/proyecto', codexSessionId: 'propia-4444' }
+  const meta = buildCurrentSessionMeta(session)
+  assert.strictEqual(meta.sessionId, 'propia-4444')
+  assert.strictEqual(session.codexSessionId, 'propia-4444')
 })
 
 test('sesión claude con id propio: lo respeta y no lo pisa', () => {

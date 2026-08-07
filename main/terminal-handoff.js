@@ -26,13 +26,19 @@ function buildAppleScript(shellCmd) {
   return `tell application "Terminal"\n  activate\n  do script "${esc}"\nend tell`
 }
 
-function captureHandoffTarget(session) {
+function captureHandoffTarget(session, { resolveCodexSessionId } = {}) {
   if (!session) return { error: 'Sin sesión activa' }
   // session.claudeSessionId sobrevive a la muerte del PTY: sin esta guarda,
   // el botón abriría en Terminal una conversación que ya no corre en la app.
   if (!session.pty) return { error: 'No hay ninguna sesión corriendo en esta ventana' }
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
-  const rawId = cli === 'codex' ? session.codexSessionId : session.claudeSessionId
+  let rawId = cli === 'codex' ? session.codexSessionId : session.claudeSessionId
+  // Con codex nadie rellena el campo salvo el spawn con `resume`: en una sesión
+  // nueva se resuelve aquí, contra el historial y filtrado por el arranque del
+  // PTY. Nunca se persiste — el campo lo escribe solo el spawn.
+  if (!String(rawId || '').trim() && cli === 'codex' && typeof resolveCodexSessionId === 'function') {
+    try { rawId = resolveCodexSessionId(session) } catch { rawId = '' }
+  }
   const sessionId = String(rawId || '').trim()
   if (!sessionId) return { error: 'La sesión aún no tiene conversación que reanudar' }
   const cwd = String(session.gitWorkspace?.realCwd || session.cwd || '').trim()

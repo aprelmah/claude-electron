@@ -152,10 +152,12 @@ function createClaudeSessionCache({
     let sessionId = session?.codexSessionId || null
     let fallbackTitle = ''
     if (!sessionId) {
+      // Se PINTA, no se asigna: un id resuelto por heurística no se persiste
+      // jamás en la sesión (regla dura de CLAUDE.md). Escribirlo aquí congelaba
+      // el campo con la conversación anterior y "Llevar a Terminal" la abría.
       const guess = guessCodexSessionFromHistory(session)
       if (guess?.sessionId) {
         sessionId = guess.sessionId
-        session.codexSessionId = sessionId
         fallbackTitle = guess.text || ''
       }
     }

@@ -54,6 +54,56 @@ test('captureHandoffTarget: codex sin worktree usa session.cwd y codexSessionId'
   assert.deepStrictEqual(captureHandoffTarget(session), { cli: 'codex', cwd: '/tmp/p', sessionId: 'rollout-9' })
 })
 
+// Con codex el id no lo escribe ningún vigía (solo el spawn con `resume`), así
+// que una sesión nueva llega aquí con el campo vacío: se resuelve EN EL CLIC
+// leyendo el historial filtrado por el arranque del PTY. Antes el meta lo
+// rellenaba con la conversación anterior y el botón abría esa (bug 2026-08-07).
+test('captureHandoffTarget: codex sin id lo resuelve en el momento del clic', () => {
+  const session = { activeCli: 'codex', codexSessionId: '', cwd: '/tmp/p', pty: {}, ptyStartedAt: 1000 }
+  const seen = []
+  const target = captureHandoffTarget(session, {
+    resolveCodexSessionId: (s) => { seen.push(s); return 'rollout-nuevo' }
+  })
+  assert.deepStrictEqual(target, { cli: 'codex', cwd: '/tmp/p', sessionId: 'rollout-nuevo' })
+  assert.strictEqual(seen.length, 1)
+  assert.strictEqual(seen[0], session)
+})
+
+test('captureHandoffTarget: codex con id propio no consulta el historial', () => {
+  const session = { activeCli: 'codex', codexSessionId: 'rollout-9', cwd: '/tmp/p', pty: {} }
+  let llamadas = 0
+  const target = captureHandoffTarget(session, {
+    resolveCodexSessionId: () => { llamadas += 1; return 'otro' }
+  })
+  assert.strictEqual(target.sessionId, 'rollout-9')
+  assert.strictEqual(llamadas, 0)
+})
+
+test('captureHandoffTarget: codex sin conversación aún da error, no abre otra', () => {
+  const session = { activeCli: 'codex', codexSessionId: '', cwd: '/tmp/p', pty: {} }
+  const r = captureHandoffTarget(session, { resolveCodexSessionId: () => null })
+  assert.ok(r.error)
+  assert.match(r.error, /conversación/i)
+})
+
+test('captureHandoffTarget: un resolver que revienta no tumba el botón', () => {
+  const session = { activeCli: 'codex', codexSessionId: '', cwd: '/tmp/p', pty: {} }
+  const r = captureHandoffTarget(session, {
+    resolveCodexSessionId: () => { throw new Error('historial ilegible') }
+  })
+  assert.ok(r.error)
+})
+
+test('captureHandoffTarget: claude no consulta el resolver de codex', () => {
+  const session = { activeCli: 'claude', claudeSessionId: 'sid-1', cwd: '/tmp/p', pty: {} }
+  let llamadas = 0
+  const target = captureHandoffTarget(session, {
+    resolveCodexSessionId: () => { llamadas += 1; return 'rollout' }
+  })
+  assert.strictEqual(target.sessionId, 'sid-1')
+  assert.strictEqual(llamadas, 0)
+})
+
 test('captureHandoffTarget: sin sesión o sin sessionId devuelve error', () => {
   assert.ok(captureHandoffTarget(null).error)
   assert.ok(captureHandoffTarget({ activeCli: 'claude', claudeSessionId: '', cwd: '/tmp', pty: {} }).error)

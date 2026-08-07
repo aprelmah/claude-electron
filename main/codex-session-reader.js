@@ -116,23 +116,54 @@ function createCodexSessionReader({ historyPath, sessionIndexPath, stateDbPath }
     return meta
   }
 
+  // Los session_id de codex son UUIDv7: los primeros 48 bits son el instante en
+  // que se creó la sesión, en ms. Eso identifica de quién es una conversación
+  // sin depender de cuándo se tecleó el último turno.
+  const UUID_V7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7/i
+  function sessionCreatedAtMs(sessionId) {
+    const m = UUID_V7.exec(String(sessionId || ''))
+    if (!m) return 0
+    const ms = parseInt(`${m[1]}${m[2]}`, 16)
+    return Number.isFinite(ms) && ms > 0 ? ms : 0
+  }
+
+  // Devuelve la fila del historial que pertenece a ESTA sesión.
+  //
+  // El criterio es la HORA DE NACIMIENTO de la sesión de codex, no la del último
+  // turno: la sesión de este PTY es la primera que nació después de arrancarlo.
+  // Dos bugs reales del 2026-08-07 vienen de aquí: (1) el fallback a "la última
+  // fila del historial" enganchaba la conversación de otro día en una sesión
+  // nueva, y (2) meter `lastLocalInputAt` en el filtro lo convertía en "actividad
+  // de los últimos 3,5 s", así que tras un rato hablando no encontraba nada.
+  //
+  // Sin `ptyStartedAt` no hay con qué comparar y no se adivina. Para ids que no
+  // sean UUIDv7 queda la red del filtro por hora de la fila.
+  const BIRTH_SLACK_MS = 2000
   function guessCodexSessionFromHistory(session) {
     const rows = loadCodexHistoryRows()
     if (!rows.length) return null
 
-    const sinceMs = Math.max(
-      Number(session?.ptyStartedAt || 0),
-      Number(session?.lastLocalInputAt || 0) - 1500
-    )
+    const sinceMs = Number(session?.ptyStartedAt || 0)
+    if (!(sinceMs > 0)) return null
 
+    let best = null
+    let bestBirth = Infinity
+    let fallback = null
     for (let i = rows.length - 1; i >= 0; i--) {
       const row = rows[i]
       if (!row?.sessionId) continue
-      if (sinceMs > 0 && row.tsMs > 0 && row.tsMs + 2000 < sinceMs) continue
-      return row
+      const birth = sessionCreatedAtMs(row.sessionId)
+      if (birth > 0) {
+        if (birth + BIRTH_SLACK_MS < sinceMs) continue
+        // Entre varias nacidas tras el arranque, la de este PTY es la primera:
+        // cualquier otra ventana se abrió después.
+        if (birth < bestBirth) { best = row; bestBirth = birth }
+        continue
+      }
+      if (!fallback && row.tsMs > 0 && row.tsMs + BIRTH_SLACK_MS >= sinceMs) fallback = row
     }
 
-    return rows[rows.length - 1] || null
+    return best || fallback || null
   }
 
   return {
