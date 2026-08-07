@@ -24,7 +24,8 @@ const FALLBACK_PATTERNS = `
 
 ## Notificación Telegram
 - Leer config: \`~/Library/Application Support/CLAUDE-NOVAK/claude-novak.config.json\`.
-- Campos: \`.telegram.botToken\`, \`.telegram.allowedUsers[0]\`.
+- Token: \`.telegram.notifyBotToken\` (bot de avisos); si está vacío, \`.telegram.botToken\`.
+- Chat: \`.telegram.notifyChatId\`; si está vacío, \`.telegram.allowedUsers[0]\`.
 - Si jq no está, usar python3.
 - Avisar siempre al final (éxito o fallo).
 
@@ -68,7 +69,7 @@ function buildSystemPrompt({ patternsPath } = {}) {
 5. Si usas rsync: flags sensatos (\`-aHAX --partial --human-readable --ignore-errors\`), exclusiones por defecto (\`.DS_Store\`, \`.Trash\`, \`node_modules/.cache\`, \`*.sock\`, archivos abiertos típicos). El código de salida 23 NO debe abortar el script: lóguealo como warning y continúa.
 6. Si necesitas password del NAS QNAP (192.168.1.156): \`security find-generic-password -s "NAS QNAP - 192.168.1.156" -w\`. Nunca hardcodear.
 7. Si necesitas montar el NAS: usa \`~/.cache/nas_mount\`. Si ya está montado, reutilízalo. Si lo montas tú, desmonta al final (incluso si hubo error → trap).
-8. Si la descripción menciona notificar por Telegram: lee token y chat_id de \`~/Library/Application Support/CLAUDE-NOVAK/claude-novak.config.json\` (campos \`.telegram.botToken\`, \`.telegram.allowedUsers[0]\`). Envía con \`curl\` a \`https://api.telegram.org/bot<TOKEN>/sendMessage\`. Notifica siempre al final (éxito o fallo).
+8. Si la descripción menciona notificar por Telegram: lee token y chat_id de \`~/Library/Application Support/CLAUDE-NOVAK/claude-novak.config.json\`. Token: \`.telegram.notifyBotToken\` (bot de avisos) y, si está vacío, \`.telegram.botToken\`. Chat: \`.telegram.notifyChatId\` y, si está vacío, \`.telegram.allowedUsers[0]\`. Envía con \`curl\` a \`https://api.telegram.org/bot<TOKEN>/sendMessage\`. Notifica siempre al final (éxito o fallo).
 9. Idempotente: poder ejecutarse dos veces seguidas sin romper nada.
 10. Nunca uses \`rm -rf /\` ni patrones similares con paths variables sin validar. Si construyes paths dinámicos, valida que no estén vacíos antes de cualquier \`rm\`.
 11. Si estás en un flujo interactivo de AGENT_PROPOSAL y detectas una acción potencialmente destructiva (borrados, sobreescrituras, cambios recursivos, manipulación sensible de launchd), antes de ejecutarla escribe una propuesta JSON en \`/tmp/poweragent-proposal-<uuid>.json\` con este formato: \`{"id":"uuid","title":"...","description":"...","command":"...","script_path":"...","script_preview":"..."}\`. Espera aprobación explícita antes de continuar.
