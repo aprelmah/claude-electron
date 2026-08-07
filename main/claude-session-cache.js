@@ -121,14 +121,14 @@ function createClaudeSessionCache({
     const wcId = Number(session?.wcId || 0)
 
     if (cli === 'claude') {
-      let sessionId = session?.claudeSessionId || null
-      if (!sessionId) {
-        const latest = listClaudeSessionFilesWithMtime(cwd)[0]
-        if (latest?.sessionId) {
-          sessionId = latest.sessionId
-          session.claudeSessionId = sessionId
-        }
-      }
+      // Sin id NO se adivina con "la última .jsonl del proyecto por mtime" ni
+      // se persiste nada: una sesión nueva aún sin conversación adoptaba la
+      // conversación VIEJA más reciente, el vigía de startPty veía el campo
+      // relleno y dejaba de buscar el id real para siempre, y todo lo que
+      // cuelga del id (Llevar a Terminal, sub-chat, modo voz) heredaba la
+      // sesión equivocada. El id lo ponen el spawn (--resume), el vigía o el
+      // relay; aquí solo se pinta.
+      const sessionId = session?.claudeSessionId || null
       const info = readClaudeSessionTitle(cwd, sessionId)
       const cacheKey = `${wcId}|claude|${cwd}|${sessionId || ''}`
       const sourceKey = `${info.statKey || ''}|${sessionId || ''}`
@@ -141,7 +141,7 @@ function createClaudeSessionCache({
         cli,
         cwd,
         sessionId: sessionId || null,
-        title: info.title || '(sin título)',
+        title: info.title || (sessionId ? '(sin título)' : '(sesión nueva)'),
         path: info.path || null
       }
       rememberSessionMeta(cacheKey, { sourceKey, meta: nextMeta })
