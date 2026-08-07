@@ -9,6 +9,8 @@ const os = require('os')
 // titulaba la sesión con ella.
 const TELEGRAM_FILE_HINT = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]'
 
+const { sanitizeChannelText } = require('./main/untrusted-input')
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -229,7 +231,8 @@ class TelegramBridge {
     onSemanticOutput,
     onOpenTaskSession,
     onListProjects,
-    onListSessions
+    onListSessions,
+    onPairingRequest
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -247,6 +250,7 @@ class TelegramBridge {
     this.onSemanticInput = onSemanticInput
     this.onSemanticOutput = onSemanticOutput
     this.onOpenTaskSession = onOpenTaskSession
+    this.onPairingRequest = onPairingRequest
     this.onListProjects = onListProjects
     this.onListSessions = onListSessions
     this.lastRunByChat = new Map()
@@ -556,7 +560,7 @@ class TelegramBridge {
     if (!chatId) return
 
     if (!this.allowedUsers.has(fromId)) {
-      await this._sendMessage(chatId, 'No autorizado. Pide que te añadan a allowed users.')
+      await this._handleUnauthorized(chatId, message, fromId)
       return
     }
 
@@ -582,7 +586,44 @@ class TelegramBridge {
     await this._enqueueQuery(chatId, text)
   }
 
+  // Desconocido: con emparejamiento configurado (estilo Hermes), recibe un
+  // código de 6 dígitos que el dueño aprueba en Configuración → Telegram.
+  // El mismo usuario insistiendo recibe el MISMO código (el manager lo
+  // garantiza), así que esto no fabrica códigos a demanda de un spammer.
+  // Sin hook, o si el hook peta: rechazo legacy de siempre.
+  async _handleUnauthorized(chatId, message, fromId) {
+    let res = null
+    if (typeof this.onPairingRequest === 'function') {
+      try {
+        res = await this.onPairingRequest({
+          userId: fromId,
+          chatId: String(chatId),
+          username: message?.from?.username || '',
+          firstName: message?.from?.first_name || ''
+        })
+      } catch { res = null }
+    }
+    if (res?.ok && res.code) {
+      await this._sendMessage(chatId, `Código de vinculación: ${res.code}\nPide al dueño que lo apruebe en POWER-AGENT (Configuración → Telegram). Caduca en 10 minutos.`)
+      return
+    }
+    if (res?.reason === 'rate-limited') {
+      await this._sendMessage(chatId, 'Demasiadas solicitudes pendientes. Inténtalo más tarde.')
+      return
+    }
+    await this._sendMessage(chatId, 'No autorizado. Pide que te añadan a allowed users.')
+  }
+
   _enqueueQuery(chatId, prompt, opts) {
+    // Saneado de canal (untrusted-input.js): el emisor está allowlisted, pero
+    // el texto puede venir reenviado/pegado con Unicode invisible o escapes de
+    // terminal, y esto acaba en un PTY con bypassPermissions. Solo limpieza;
+    // sin bloqueo — quien manda aquí es Luismi.
+    const scan = sanitizeChannelText(prompt)
+    if (scan.findings.length) {
+      try { console.warn('[telegram] entrada saneada:', scan.findings.map((f) => f.type).join(', ')) } catch {}
+    }
+    prompt = scan.text
     const prev = this.chatQueues.get(chatId) || Promise.resolve()
     const next = prev.catch(() => {}).then(() => this._runQuery(chatId, prompt, opts))
     this.chatQueues.set(chatId, next)
