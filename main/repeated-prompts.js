@@ -10,6 +10,7 @@
 // Falso negativo = todo sigue igual; falso positivo = una notificación de más.
 
 const fs = require('fs')
+const crypto = require('crypto')
 const { atomicWriteJsonSync } = require('./atomic-writes')
 
 const DAY_MS = 24 * 3600 * 1000
@@ -124,10 +125,13 @@ function createRepeatedPromptDetector({
 
     const count = cluster.hits.length
     const enCooldown = cluster.proposedAt && ts - cluster.proposedAt < cooldownMs
+    // Un cluster descartado a mano no vuelve a proponer jamás.
+    const descartado = cluster.proposal?.status === 'dismissed' || cluster.proposal?.status === 'done'
     let repeated = false
-    if (count >= minRepeats && !enCooldown) {
+    if (count >= minRepeats && !enCooldown && !descartado) {
       repeated = true
       cluster.proposedAt = ts
+      cluster.proposal = { status: 'pending', at: ts }
     }
     saveStore()
     return repeated
@@ -135,12 +139,37 @@ function createRepeatedPromptDetector({
       : { repeated: false }
   }
 
+  function proposalIdOf(cluster) {
+    return crypto.createHash('sha1').update(cluster.example || '').digest('hex').slice(0, 12)
+  }
+
+  // Propuestas pendientes para la bandeja de decisiones.
+  function listProposals() {
+    pruneClusters(now())
+    return clusters
+      .filter((c) => c.proposal?.status === 'pending')
+      .map((c) => ({ id: proposalIdOf(c), example: c.example, count: c.hits.length, at: c.proposal.at }))
+  }
+
+  // status: 'done' (se creó la tarea/skill) o 'dismissed' (no molestar más).
+  function resolveProposal(id, status) {
+    const st = status === 'done' ? 'done' : 'dismissed'
+    for (const c of clusters) {
+      if (c.proposal?.status === 'pending' && proposalIdOf(c) === String(id || '')) {
+        c.proposal = { ...c.proposal, status: st, resolvedAt: now() }
+        saveStore()
+        return { ok: true }
+      }
+    }
+    return { ok: false, reason: 'not-found' }
+  }
+
   function listClusters() {
     pruneClusters(now())
     return clusters.map((c) => ({ example: c.example, count: c.hits.length, proposedAt: c.proposedAt || 0 }))
   }
 
-  return { record, listClusters }
+  return { record, listClusters, listProposals, resolveProposal }
 }
 
 module.exports = { createRepeatedPromptDetector, normalizeText, tokensOf, jaccard }

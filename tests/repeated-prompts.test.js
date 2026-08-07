@@ -107,6 +107,57 @@ describe('repeated-prompts: detección', () => {
   })
 })
 
+describe('repeated-prompts: propuestas para la bandeja', () => {
+  const HOUR = 3600 * 1000
+
+  function triggerProposal(det, tsRef) {
+    det.record({ text: PROMPT })
+    tsRef.v += HOUR
+    det.record({ text: PROMPT })
+    tsRef.v += HOUR
+    return det.record({ text: PROMPT })
+  }
+
+  test('al dispararse queda una propuesta pendiente listable', () => {
+    const tsRef = { v: 1000 }
+    const { det } = makeDetector({ now: () => tsRef.v })
+    assert.strictEqual(triggerProposal(det, tsRef).repeated, true)
+    const list = det.listProposals()
+    assert.strictEqual(list.length, 1)
+    assert.strictEqual(list[0].count, 3)
+    assert.match(list[0].id, /^[0-9a-f]{12}$/)
+  })
+
+  test('resolver como done/dismissed la saca de la lista y no vuelve a proponer', () => {
+    const tsRef = { v: 1000 }
+    const { det } = makeDetector({ now: () => tsRef.v })
+    triggerProposal(det, tsRef)
+    const [p] = det.listProposals()
+    assert.strictEqual(det.resolveProposal(p.id, 'dismissed').ok, true)
+    assert.strictEqual(det.listProposals().length, 0)
+    // Pasado el cooldown, un cluster descartado sigue sin proponer.
+    tsRef.v += 9 * DAY
+    tsRef.v += HOUR
+    det.record({ text: PROMPT })
+    tsRef.v += HOUR
+    assert.strictEqual(det.record({ text: PROMPT }).repeated, false)
+    assert.strictEqual(det.listProposals().length, 0)
+  })
+
+  test('resolver un id desconocido no revienta', () => {
+    const { det } = makeDetector()
+    assert.strictEqual(det.resolveProposal('nadie', 'done').ok, false)
+  })
+
+  test('las propuestas sobreviven a otra instancia (persisten en el store)', () => {
+    const tsRef = { v: 1000 }
+    const { det, storePath } = makeDetector({ now: () => tsRef.v })
+    triggerProposal(det, tsRef)
+    const det2 = createRepeatedPromptDetector({ storePath, now: () => tsRef.v })
+    assert.strictEqual(det2.listProposals().length, 1)
+  })
+})
+
 describe('repeated-prompts: persistencia', () => {
   test('otra instancia con el mismo storePath ve los clusters', () => {
     let ts = 1000
