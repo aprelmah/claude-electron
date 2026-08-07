@@ -3306,7 +3306,20 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 .decision-actions { display: flex; gap: 6px; }
 .decision-actions button { font-size: 11px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
 
-/* Panel "¿qué está pasando?" */
+/* Panel "¿qué está pasando?" — los modales de esta app se estilan POR ID
+   (ver #sessions-modal): sin este bloque, el contenido sale como una tira
+   suelta al fondo de la página con el backdrop tapándolo todo (bug real
+   2026-08-07, captura de Luismi). */
+#status-panel-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 115;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#status-panel-modal.hidden { display: none; }
+
 .sp-section-title { padding: 10px 12px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.5px; }
 .sp-row { padding: 4px 12px; font-size: 12px; line-height: 1.4; word-break: break-all; }
 .sp-row.sp-err { color: #e06c75; }
