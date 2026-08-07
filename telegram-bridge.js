@@ -10,6 +10,7 @@ const os = require('os')
 const TELEGRAM_FILE_HINT = '[Sistema: si el usuario pide un archivo, búscalo con `find ~ -name "*palabraclave*" -not -path "*/node_modules/*" 2>/dev/null` si no sabes la ruta exacta. Cuando lo encuentres, incluye al final de tu respuesta [ARCHIVO:/ruta/completa/al/archivo.ext] — solo si el archivo existe de verdad.]'
 
 const { sanitizeChannelText } = require('./main/untrusted-input')
+const { formatHealthReport } = require('./main/health-watchdog')
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -232,7 +233,8 @@ class TelegramBridge {
     onOpenTaskSession,
     onListProjects,
     onListSessions,
-    onPairingRequest
+    onPairingRequest,
+    onRunDoctor
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -251,6 +253,7 @@ class TelegramBridge {
     this.onSemanticOutput = onSemanticOutput
     this.onOpenTaskSession = onOpenTaskSession
     this.onPairingRequest = onPairingRequest
+    this.onRunDoctor = onRunDoctor
     this.onListProjects = onListProjects
     this.onListSessions = onListSessions
     this.lastRunByChat = new Map()
@@ -812,6 +815,7 @@ class TelegramBridge {
         { command: 'modelo', description: 'Cambiar modelo (Telegram)' },
         { command: 'vinculo', description: 'Ver a qué está enganchado este chat' },
         { command: 'status', description: 'Estado del bridge' },
+        { command: 'doctor', description: 'Chequeo de salud completo' },
         { command: 'abrir', description: 'Abrir la sesión en el Mac' },
         { command: 'reset', description: 'Conversación nueva' },
         { command: 'desvincular', description: 'Cortar el relay PTY' },
@@ -926,6 +930,32 @@ class TelegramBridge {
         '',
         'Manda texto normal o una nota de voz para hablar con el CLI activo.'
       ].join('\n'))
+      return
+    }
+
+    if (lower === '/doctor') {
+      // El mismo chequeo de las 8:00, disparado a mano desde el móvil. La
+      // respuesta viene SIEMPRE (también el "todo en orden": un pase manual
+      // sin respuesta parecería roto). quiet en el watchdog: la respuesta ya
+      // va por aquí, sin duplicar el aviso.
+      if (typeof this.onRunDoctor !== 'function') {
+        await this._sendMessage(chatId, 'El doctor no está disponible en esta versión.')
+        return
+      }
+      await this._sendMessage(chatId, '🩺 Pasando revista…')
+      try {
+        const res = await this.onRunDoctor()
+        if (!res || res.ok === false) {
+          await this._sendMessage(chatId, `No pude pasar el doctor: ${res?.error || 'error desconocido'}`)
+          return
+        }
+        const problems = Array.isArray(res.problems) ? res.problems : []
+        await this._sendMessage(chatId, problems.length
+          ? formatHealthReport(problems)
+          : '🩺 Todo en orden: CLI, Telegram, WhatsApp, launchd y tareas OK.')
+      } catch (err) {
+        await this._sendMessage(chatId, `No pude pasar el doctor: ${err?.message || err}`)
+      }
       return
     }
 

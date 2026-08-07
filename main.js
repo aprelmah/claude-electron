@@ -2899,6 +2899,11 @@ function initTelegramBridge() {
     // Emparejamiento por código: el desconocido recibe un código de 6 dígitos
     // y Luismi lo aprueba en Configuración → Telegram. El manager reutiliza el
     // código pendiente del mismo usuario, así que solo se notifica al crearlo.
+    // /doctor desde el móvil: el mismo chequeo de las 8:00, a demanda.
+    onRunDoctor: async () => {
+      if (!healthWatchdog) return { ok: false, error: 'el doctor no está arrancado' }
+      return healthWatchdog.runOnce({ force: true, quiet: true })
+    },
     onPairingRequest: ({ userId, chatId, username, firstName }) => {
       const res = telegramPairing.requestPairing({ userId, chatId, username, firstName })
       if (res.ok && res.created) {
