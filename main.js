@@ -240,6 +240,7 @@ const flushPtyData = (s) => _ptyBatcher.flush(s)
 // ── Auto-update de los CLI dentro del PTY ──
 // Codex se cierra tras actualizarse ("Please restart Codex"); relanzamos la
 // sesión en vez de mandar al usuario al picker.
+const { createCodexResumeCwdPrompt } = require('./main/codex-resume-watch')
 const { createCliUpdateWatcher } = require('./main/cli-update-watch')
 const cliUpdateWatcher = createCliUpdateWatcher()
 
@@ -1808,6 +1809,23 @@ function startPty(session, cols, rows, cwd, args = []) {
   session.pty = proc
   session.lastPtyArgs = Array.isArray(args) ? args.slice() : []
   const myWcId = session.wcId
+  // Reanudar codex pregunta por el directorio cuando el del rollout no es el
+  // actual — con aislamiento git, siempre. Lo contesta la app (ver módulo).
+  session.codexCwdPrompt = session.activeCli === 'codex'
+    ? createCodexResumeCwdPrompt({
+      onAnswer: (data) => { try { proc.write(data) } catch {} },
+      onNotice: (message) => {
+        const live = sessions.get(myWcId)
+        if (live?.win && !live.win.isDestroyed()) live.win.webContents.send('pty-notice', message)
+      },
+      // Codex se cierra al chocar con otro escritor de la misma conversación: sin
+      // este aviso el PTY moría y el renderer abría el picker sin decir por qué.
+      onFatal: (message) => {
+        const live = sessions.get(myWcId)
+        if (live) notifyPtyError(live, message)
+      }
+    })
+    : null
   scheduleProfileBootstrapMessage(session, proc, activeProfile)
   logSemanticForSession(session, 'pty_inicio', {
     detail: `cwd=${session.cwd || ''}`,
@@ -1895,6 +1913,7 @@ function startPty(session, cols, rows, cwd, args = []) {
     const s = sessions.get(myWcId)
     if (s) trackPtyLoadForGraph(s)
     try { cliUpdateWatcher.observe(myWcId, data) } catch {}
+    try { s?.codexCwdPrompt?.feed(data) } catch {}
     // Relay (Telegram) recibe data sin batching para no romper la detección de
     // marcadores de fin de turno.
     if (s?.relayListener) {
@@ -4167,7 +4186,10 @@ const _sessionListing = createSessionListing({
     } catch {
       return []
     }
-  }
+  },
+  // Los rollouts de codex guardan el cwd donde corrieron: con aislamiento git es
+  // el worktree, así que sin esto las sesiones de hoy no salen en el picker.
+  worktreesRoot: path.join(app.getPath('userData'), 'worktrees')
 })
 const {
   listClaudeSessionsForCwd,
@@ -4362,7 +4384,9 @@ ipcMain.handle('get-current-session-meta', (event) => {
 
 ipcMain.handle('session:handoff-to-terminal', async (event) => {
   const session = getSessionByEvent(event)
-  const target = terminalHandoff.captureHandoffTarget(session)
+  const target = terminalHandoff.captureHandoffTarget(session, {
+    resolveCodexSessionId: (s) => guessCodexSessionFromHistory(s)?.sessionId || null
+  })
   if (target.error) return { ok: false, error: target.error }
   killPty(session)
   if (session.win && !session.win.isDestroyed()) session.win.webContents.send('pty-exit')
