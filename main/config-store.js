@@ -221,6 +221,22 @@ function sanitizeCliBinaryPath(value) {
 // Factory: pass clampLanPort + normalizeEnterpriseConfig + defaultEnterpriseRoleId
 // so we don't depend on ws-server / enterprise-policy at load time.
 function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defaultEnterpriseRoleId }) {
+  function normalizeLanPublicUrl(raw, protocols) {
+    const text = typeof raw === 'string' ? raw.trim() : ''
+    if (!text || text.length > 500 || /[\u0000\r\n]/.test(text)) return ''
+    try {
+      const parsed = new URL(text)
+      if (!protocols.includes(parsed.protocol) || parsed.username || parsed.password) return ''
+      // Los parámetros los añade el servidor (token, invite, wsUrl). No
+      // persistimos query/hash escritos a mano para evitar guardar secretos.
+      parsed.search = ''
+      parsed.hash = ''
+      return parsed.toString().replace(/\/$/, '')
+    } catch {
+      return ''
+    }
+  }
+
   function normalizeLanServerConfig(raw) {
     const cfg = raw && typeof raw === 'object' ? raw : {}
     return {
@@ -228,7 +244,11 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
       port: clampLanPort(cfg.port),
       // SEC-C1: token Bearer para auth WS+HTTP. Si vacío, server queda inseguro
       // (compat hacia atrás); main.js genera y persiste uno al primer arranque.
-      authToken: typeof cfg.authToken === 'string' ? cfg.authToken.trim() : ''
+      authToken: typeof cfg.authToken === 'string' ? cfg.authToken.trim() : '',
+      // Opcionales: se rellenan cuando existe un Cloudflare Tunnel gestionado
+      // por el usuario. Vacíos = solo LAN/local, sin publicar nada.
+      publicClientUrl: normalizeLanPublicUrl(cfg.publicClientUrl, ['http:', 'https:']),
+      publicWsUrl: normalizeLanPublicUrl(cfg.publicWsUrl, ['ws:', 'wss:'])
     }
   }
 

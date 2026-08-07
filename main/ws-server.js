@@ -6,6 +6,7 @@ const crypto = require('crypto')
 const pty = require('node-pty')
 const { WebSocketServer } = require('ws')
 const { looksRemotePath } = require('./dir-helpers')
+const { createLanSessionInvites } = require('./lan-session-invites')
 
 const DEFAULT_LAN_WS_PORT = 9999
 const MIN_LAN_PORT = 1024
@@ -391,6 +392,13 @@ function normalizeSessionListRows(rows, options = {}) {
 
 function extractRequestedContextFromQuery(req) {
   const params = parseConnectionQuery(req)
+  const raw = Object.fromEntries(params.entries())
+  // Nunca pasamos credenciales o capabilities de un enlace a la política de
+  // sesión. El token Bearer y la invitación son secretos de transporte, no
+  // contexto de operador.
+  delete raw.token
+  delete raw.auth
+  delete raw.invite
   return {
     operatorId: firstNonEmpty(params, ['operatorId', 'operator', 'op', 'userId']),
     profileId: firstNonEmpty(params, ['profileId', 'profile', 'pf']),
@@ -399,7 +407,7 @@ function extractRequestedContextFromQuery(req) {
     cli: sanitizeCliChoice(firstNonEmpty(params, ['cli', 'provider', 'engine'])),
     model: sanitizeModelName(firstNonEmpty(params, ['model', 'modelId', 'm'])),
     effort: sanitizeEffortLevel(firstNonEmpty(params, ['effort', 'reasoningEffort', 'reasoning', 'e'])),
-    raw: Object.fromEntries(params.entries()),
+    raw,
     source: 'query'
   }
 }
@@ -979,6 +987,12 @@ function createLanWsServer(options = {}) {
   const getAuthToken = typeof options.getAuthToken === 'function'
     ? options.getAuthToken
     : () => ''
+  const getPublicClientUrl = typeof options.getPublicClientUrl === 'function'
+    ? options.getPublicClientUrl
+    : () => ''
+  const getPublicWsUrl = typeof options.getPublicWsUrl === 'function'
+    ? options.getPublicWsUrl
+    : () => ''
   function timingSafeStringEqual(a, b) {
     const A = String(a || '')
     const B = String(b || '')
@@ -1073,6 +1087,7 @@ function createLanWsServer(options = {}) {
 
   const sessions = new Map()
   const sessionLocks = new Map()
+  const sessionInvites = createLanSessionInvites()
   let lockSweepTimer = null
 
   function emitAudit(action, details = {}) {
@@ -1315,6 +1330,7 @@ function createLanWsServer(options = {}) {
       allowedRoots: Array.isArray(context.allowedRoots) ? [...context.allowedRoots] : [],
       readOnlyRoots: Array.isArray(context.readOnlyRoots) ? [...context.readOnlyRoots] : [],
       allowedMcpServers: Array.isArray(context.allowedMcpServers) ? [...context.allowedMcpServers] : [],
+      inviteLabel: trimToString(session?.sessionInvite?.label, 180) || null,
       request: context.request || {
         operatorId: null,
         profileId: null,
@@ -1374,6 +1390,61 @@ function createLanWsServer(options = {}) {
     try { session.ws.close(1000, reason) } catch {}
     logger(`[lan] session closed ${session.id} (${reason})`)
     return true
+  }
+
+  function buildClientUrl(extra = {}) {
+    const publicClient = trimToString(getPublicClientUrl(), 1000)
+    const publicWs = trimToString(getPublicWsUrl(), 1000)
+    const tk = String(getAuthToken() || '')
+    let url
+    if (publicClient) {
+      try {
+        url = new URL(publicClient)
+        if (publicWs) url.searchParams.set('wsUrl', publicWs)
+      } catch {
+        url = null
+      }
+    }
+    if (!url) {
+      url = new URL(`http://${lanIp}:${httpPort}/lan-client.html`)
+      url.searchParams.set('host', lanIp)
+      url.searchParams.set('port', String(port))
+    }
+    if (tk) url.searchParams.set('token', tk)
+    for (const [key, value] of Object.entries(extra || {})) {
+      if (value == null || value === '') continue
+      url.searchParams.set(key, String(value))
+    }
+    return url.toString()
+  }
+
+  function createSessionInvite({ cwd, sessionId, cli, label, ttlMs, maxUses } = {}) {
+    if (!running) throw new Error('Activa primero el servidor LAN.')
+    const safeCwd = resolveExistingDir(cwd)
+    const safeSessionId = sanitizeResumeSessionId(sessionId)
+    const safeCli = sanitizeSessionRowCli(cli, 'claude')
+    if (!safeCwd) throw new Error('La carpeta de la sesión ya no existe o no es local.')
+    if (!safeSessionId) throw new Error('La sesión actual aún no tiene un ID reutilizable.')
+    const created = sessionInvites.create({
+      cwd: safeCwd,
+      sessionId: safeSessionId,
+      cli: safeCli,
+      label,
+      ttlMs,
+      maxUses
+    })
+    emitAudit('lan_session_invite_created', {
+      cwd: safeCwd,
+      sessionId: safeSessionId,
+      cli: safeCli,
+      label: trimToString(label, 180)
+    })
+    return {
+      ok: true,
+      clientUrl: buildClientUrl({ invite: created.token, cli: safeCli }),
+      expiresAt: created.expiresAt,
+      maxUses: created.maxUses
+    }
   }
 
   function closeAllSessions(reason = 'server-stopped') {
@@ -2307,7 +2378,11 @@ function createLanWsServer(options = {}) {
     if (session.preparePromise) return session.preparePromise
 
     session.preparePromise = (async () => {
-      const resolved = await resolveConfigForConnection({ req, requestedContext: session.requestedContext })
+      const resolved = await resolveConfigForConnection({
+        req,
+        requestedContext: session.requestedContext,
+        sessionInvite: session.sessionInvite
+      })
       session.preparedResolvedConfig = resolved
       return resolved
     })()
@@ -2775,7 +2850,14 @@ function createLanWsServer(options = {}) {
     })
   }
 
-  async function resolveConfigForConnection({ req, requestedContext }) {
+  async function resolveConfigForConnection({ req, requestedContext, sessionInvite }) {
+    const raw = requestedContext.raw && typeof requestedContext.raw === 'object'
+      ? { ...requestedContext.raw }
+      : {}
+    // El cliente puede actualizar operador/modelo durante el handshake, pero
+    // nunca puede sustituir la carpeta o sesión autorizadas por la invitación.
+    if (sessionInvite) raw.lanInvite = { ...sessionInvite }
+    else delete raw.lanInvite
     const resolverInput = {
       req,
       requestedContext: {
@@ -2787,7 +2869,7 @@ function createLanWsServer(options = {}) {
         model: requestedContext.model || '',
         effort: requestedContext.effort || '',
         source: requestedContext.source || 'none',
-        raw: requestedContext.raw || {}
+        raw
       }
     }
 
@@ -2989,8 +3071,28 @@ function createLanWsServer(options = {}) {
       try { ws.terminate?.() } catch {}
       return
     }
+    const inviteToken = firstNonEmpty(parseConnectionQuery(req), ['invite'])
+    const sessionInvite = inviteToken ? sessionInvites.claim(inviteToken) : null
+    if (inviteToken && !sessionInvite) {
+      safeSend(ws, {
+        type: 'status',
+        state: 'error',
+        code: 'SESSION_INVITE_INVALID',
+        message: 'La invitación ha caducado o ya no admite más usos.'
+      })
+      try { ws.close(4403, 'session-invite-invalid') } catch {}
+      return
+    }
     const initialRequested = extractRequestedContextFromQuery(req)
-    const manualSessionSelector = extractSessionSelectorModeFromQuery(req)
+    if (sessionInvite) {
+      initialRequested.cli = sessionInvite.cli
+      initialRequested.source = 'invite'
+      initialRequested.raw = {
+        ...initialRequested.raw,
+        lanInvite: { ...sessionInvite }
+      }
+    }
+    const manualSessionSelector = extractSessionSelectorModeFromQuery(req) || !!sessionInvite
     const session = {
       id: crypto.randomUUID(),
       ws,
@@ -3012,9 +3114,10 @@ function createLanWsServer(options = {}) {
       pendingPayloads: [],
       pendingInputBytes: 0,
       manualSessionSelector,
+      sessionInvite,
       preparedResolvedConfig: null,
       preparePromise: null,
-      selectedResumeSessionId: '',
+      selectedResumeSessionId: sessionInvite?.sessionId || '',
       resumeSessionId: '',
       sessionLockKey: '',
       requestedContext: mergeRequestedContext({}, initialRequested),
@@ -3326,15 +3429,14 @@ function createLanWsServer(options = {}) {
     running = true
     ensureLockSweepTimer()
     logger(`[lan] ws server started on ${lanIp}:${port}`)
-    const tk = String(getAuthToken() || '')
-    const tkQuery = tk ? `&token=${encodeURIComponent(tk)}` : ''
     return {
       ok: true,
       running,
       ip: lanIp,
       port,
       httpPort,
-      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}${tkQuery}`
+      wsUrl: `ws://${lanIp}:${port}`,
+      clientUrl: buildClientUrl()
     }
   }
 
@@ -3360,19 +3462,19 @@ function createLanWsServer(options = {}) {
 
     running = false
     sessionLocks.clear()
+    sessionInvites.clear()
     logger('[lan] ws server stopped')
     return { ok: true, running: false }
   }
 
   function getStatus() {
-    const tk = String(getAuthToken() || '')
-    const tkQuery = tk ? `&token=${encodeURIComponent(tk)}` : ''
     return {
       running,
       ip: lanIp,
       port,
       httpPort,
-      clientUrl: `http://${lanIp}:${httpPort}/lan-client.html?host=${encodeURIComponent(lanIp)}&port=${port}${tkQuery}`,
+      wsUrl: `ws://${lanIp}:${port}`,
+      clientUrl: buildClientUrl(),
       sessions: listSessions()
     }
   }
@@ -3382,6 +3484,7 @@ function createLanWsServer(options = {}) {
     stop,
     listSessions,
     closeSession,
+    createSessionInvite,
     getStatus,
     isRunning: () => running
   }

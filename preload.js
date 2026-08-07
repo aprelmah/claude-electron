@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld('api', {
   wsServerStop: () => ipcRenderer.invoke('ws-server:stop'),
   wsServerSessions: () => ipcRenderer.invoke('ws-server:sessions'),
   wsServerCloseSession: (id) => ipcRenderer.invoke('ws-server:close-session', { id }),
+  wsServerCreateSessionInvite: () => ipcRenderer.invoke('ws-server:create-session-invite'),
   getPendingProposal: () => ipcRenderer.invoke('proposal:get-pending'),
   proposalApprove: (id) => ipcRenderer.invoke('proposal:approve', { id }),
   proposalReject: (id) => ipcRenderer.invoke('proposal:reject', { id }),

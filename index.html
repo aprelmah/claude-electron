@@ -641,10 +641,21 @@
             <span>Puerto WebSocket</span>
             <input id="cfg-lan-port" type="number" min="1024" max="65534" step="1" placeholder="9999" />
           </label>
+          <label class="settings-field">
+            <span>URL pública del cliente (opcional)</span>
+            <input id="cfg-lan-public-client" type="url" placeholder="https://agent.ejemplo.com/lan-client.html" autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span>URL pública WebSocket (opcional)</span>
+            <input id="cfg-lan-public-ws" type="url" placeholder="wss://agent-ws.ejemplo.com" autocomplete="off" />
+          </label>
           <div id="cfg-lan-status" class="settings-note">Estado: detenido</div>
           <div id="cfg-lan-url" class="settings-note">URL: -</div>
           <div id="cfg-lan-client-url" class="settings-note">Cliente: -</div>
           <div id="cfg-lan-qr" class="settings-note">QR no disponible</div>
+          <button id="btn-lan-share-session" class="btn btn-ghost" type="button">Copiar invitación de la sesión actual</button>
+          <div id="cfg-lan-share-status" class="settings-note">La invitación dura 10 minutos y admite hasta 3 aperturas.</div>
+          <div class="settings-note">Para salir de tu red, rellena estas dos URLs con un Cloudflare Tunnel + Access. No abras el puerto en el router.</div>
         </div>
 
         <div class="settings-group">

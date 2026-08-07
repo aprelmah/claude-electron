@@ -592,10 +592,17 @@ const {
 
 function resolveLanSessionConfig(remoteMeta = {}) {
   const rawRemoteContext = resolveLanRemoteContextInput(remoteMeta)
+  const rawInvite = rawRemoteContext?.raw?.lanInvite
+  const invitedCwd = resolveExistingDir(rawInvite?.cwd)
+  const invitedSessionId = isValidSessionId(String(rawInvite?.sessionId || ''))
+    ? String(rawInvite.sessionId)
+    : ''
+  const invitedCli = sanitizeLanRequestedCli(rawInvite?.cli)
+  const hasValidInvite = !!(invitedCwd && invitedSessionId && invitedCli)
   const requestedCli = sanitizeLanRequestedCli(
     rawRemoteContext?.cli || rawRemoteContext?.provider || rawRemoteContext?.engine
   )
-  const cli = requestedCli || (getActiveCliSync() === 'codex' ? 'codex' : 'claude')
+  const cli = (hasValidInvite ? invitedCli : '') || requestedCli || (getActiveCliSync() === 'codex' ? 'codex' : 'claude')
   const cliCheck = ensureCliAvailable(cli)
   if (!cliCheck.ok) throw new Error(cliCheck.error)
   const activeProfile = getActiveProfile()
@@ -608,11 +615,21 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     cli
   )
   const remoteIp = resolveLanRemoteIp(remoteMeta)
-  const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, getCwdSync())
+  const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, invitedCwd || getCwdSync())
   const effectiveProfile = getProfileById(enterpriseContext.profileId) || activeProfile
   const profileCwd = resolveExistingDir(effectiveProfile?.cwd)
   const currentCwd = resolveExistingDir(getCwdSync())
-  const cwd = profileCwd || currentCwd || os.homedir()
+  const cwd = invitedCwd || profileCwd || currentCwd || os.homedir()
+  if (hasValidInvite && enterpriseContext.enterpriseApplied) {
+    const allowed = Array.isArray(enterpriseContext.allowedRoots) ? enterpriseContext.allowedRoots : []
+    const allowedInviteCwd = allowed.some((root) => {
+      const normalizedRoot = resolveExistingDir(root)
+      return normalizedRoot === cwd || (normalizedRoot && cwd.startsWith(normalizedRoot + path.sep))
+    })
+    if (!allowedInviteCwd) {
+      throw new Error('La invitación apunta a un proyecto fuera de las carpetas permitidas para este equipo.')
+    }
+  }
   const legacyBootstrap = getProfileStartupMessage(effectiveProfile)
   const personaResolved = sanitizePersonaPrompt(enterpriseContext.personaResolved || '')
   const bootstrapMessage = personaResolved
@@ -649,7 +666,11 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     profileId: effectiveProfile?.id || activeProfile?.id || DEFAULT_PROFILE_ID,
     personaResolved,
     personaSource: enterpriseContext.personaSource || (personaResolved ? 'operator-or-profile' : 'none'),
-    allowedRoots: Array.isArray(enterpriseContext.allowedRoots) ? [...enterpriseContext.allowedRoots] : buildLanSessionLegacyRoots(cwd),
+    allowedRoots: hasValidInvite
+      ? (Array.isArray(enterpriseContext.allowedRoots) && enterpriseContext.allowedRoots.length
+          ? [...enterpriseContext.allowedRoots]
+          : buildLanSessionLegacyRoots(cwd))
+      : (Array.isArray(enterpriseContext.allowedRoots) ? [...enterpriseContext.allowedRoots] : buildLanSessionLegacyRoots(cwd)),
     readOnlyRoots: Array.isArray(enterpriseContext.readOnlyRoots) ? [...enterpriseContext.readOnlyRoots] : [],
     allowedMcpServers,
     permissions,
@@ -726,6 +747,8 @@ function ensureLanWsServer() {
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event),
     getAuthToken: () => ensureLanAuthToken(),
+    getPublicClientUrl: () => appConfig?.lanServer?.publicClientUrl || '',
+    getPublicWsUrl: () => appConfig?.lanServer?.publicWsUrl || '',
     // Getters: sessionGit/sessionGitMap son `let` inicializados en onReady,
     // después de crear el servidor. La resolución perezosa evita capturar null.
     sessionGit: () => sessionGit,
@@ -779,7 +802,10 @@ function getLanServerStatus() {
       ip: '',
       port: configuredPort,
       httpPort: configuredPort + 1,
+      wsUrl: '',
       clientUrl: '',
+      publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
+      publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
       sessions: []
     }
   }
@@ -789,8 +815,38 @@ function getLanServerStatus() {
     ip: status.ip || '',
     port: clampLanPort(status.port ?? configuredPort),
     httpPort: Number(status.httpPort || (configuredPort + 1)),
+    wsUrl: status.wsUrl || '',
     clientUrl: status.clientUrl || '',
+    publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
+    publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
     sessions: Array.isArray(status.sessions) ? status.sessions : []
+  }
+}
+
+function createLanSessionInvite(event) {
+  const session = getSessionByEvent(event) || (primaryWcId != null ? sessions.get(primaryWcId) : null)
+  if (!session || !session.ptyProcess) {
+    return { ok: false, error: 'No hay una sesión local activa para compartir.' }
+  }
+  const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
+  const sessionId = semanticSessionId(session, cli)
+  if (!sessionId) {
+    return { ok: false, error: 'Habla al menos una vez antes de compartir esta sesión.' }
+  }
+  const server = ensureLanWsServer()
+  if (!server.isRunning()) {
+    return { ok: false, error: 'Activa primero el servidor LAN.' }
+  }
+  const meta = buildCurrentSessionMeta(session) || {}
+  try {
+    return server.createSessionInvite({
+      cwd: session.gitWorkspace?.realCwd || session.cwd,
+      sessionId,
+      cli,
+      label: meta.title || `${cli} · ${sessionId}`
+    })
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
   }
 }
 
@@ -4575,6 +4631,7 @@ registerWsServerIpc({
   startLanServer,
   stopLanServer,
   getLanServerStatus,
+  createLanSessionInvite,
   getLanWsServer: () => lanWsServer,
   clampLanPort,
   getAppConfig: () => appConfig,

@@ -92,10 +92,14 @@ const cfgTelegramCodexEffort = document.getElementById('cfg-telegram-codex-effor
 const cfgTelegramStatus = document.getElementById('cfg-telegram-status')
 const cfgLanEnabled = document.getElementById('cfg-lan-enabled')
 const cfgLanPort = document.getElementById('cfg-lan-port')
+const cfgLanPublicClient = document.getElementById('cfg-lan-public-client')
+const cfgLanPublicWs = document.getElementById('cfg-lan-public-ws')
 const cfgLanStatus = document.getElementById('cfg-lan-status')
 const cfgLanUrl = document.getElementById('cfg-lan-url')
 const cfgLanClientUrl = document.getElementById('cfg-lan-client-url')
 const cfgLanQr = document.getElementById('cfg-lan-qr')
+const btnLanShareSession = document.getElementById('btn-lan-share-session')
+const cfgLanShareStatus = document.getElementById('cfg-lan-share-status')
 const cfgEnterpriseEnabled = document.getElementById('cfg-enterprise-enabled')
 const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
 const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
@@ -2234,7 +2238,7 @@ function renderLanStatus(snapshot, errorText = '') {
   const running = Boolean(snapshot?.running)
   const ip = String(snapshot?.ip || '').trim()
   const port = Number(snapshot?.port || clampLanPort(cfgLanPort?.value || 9999))
-  const wsUrl = running && ip ? `ws://${ip}:${port}` : '-'
+  const wsUrl = running && snapshot?.wsUrl ? String(snapshot.wsUrl) : (running && ip ? `ws://${ip}:${port}` : '-')
   const clientUrl = running && snapshot?.clientUrl ? String(snapshot.clientUrl) : '-'
   const sessionCount = Array.isArray(snapshot?.sessions) ? snapshot.sessions.length : 0
   if (cfgLanStatus) {
@@ -2251,6 +2255,12 @@ function renderLanStatus(snapshot, errorText = '') {
     } else {
       cfgLanQr.textContent = 'QR no disponible'
     }
+  }
+  if (cfgLanPublicClient && document.activeElement !== cfgLanPublicClient) {
+    cfgLanPublicClient.value = String(snapshot?.publicClientUrl || cfgLanPublicClient.value || '')
+  }
+  if (cfgLanPublicWs && document.activeElement !== cfgLanPublicWs) {
+    cfgLanPublicWs.value = String(snapshot?.publicWsUrl || cfgLanPublicWs.value || '')
   }
   renderRemoteSessionsToggle()
   renderRemoteSessions(snapshot?.sessions || [])
@@ -2435,6 +2445,8 @@ async function refreshSettings() {
   cfgTelegramCodexEffort.value = config?.telegram?.codexEffort || ''
   if (cfgLanEnabled) cfgLanEnabled.checked = Boolean(config?.lanServer?.enabled)
   if (cfgLanPort) cfgLanPort.value = String(clampLanPort(config?.lanServer?.port ?? 9999))
+  if (cfgLanPublicClient) cfgLanPublicClient.value = config?.lanServer?.publicClientUrl || ''
+  if (cfgLanPublicWs) cfgLanPublicWs.value = config?.lanServer?.publicWsUrl || ''
   await refreshEnterpriseState(config)
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshPairingList()
@@ -2852,6 +2864,34 @@ if (btnRemoteSessionsToggle) {
   })
 }
 
+if (btnLanShareSession) {
+  btnLanShareSession.addEventListener('click', async () => {
+    btnLanShareSession.disabled = true
+    if (cfgLanShareStatus) cfgLanShareStatus.textContent = 'Generando invitación temporal…'
+    try {
+      const result = await window.api.wsServerCreateSessionInvite?.()
+      if (!result?.ok || !result.clientUrl) {
+        const message = result?.error || 'No se pudo generar la invitación.'
+        if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
+        showStatus(message, 'warn', 5000)
+        return
+      }
+      const copied = await window.api.copyText(result.clientUrl)
+      const expires = result.expiresAt ? new Date(result.expiresAt).toLocaleTimeString() : '10 minutos'
+      if (cfgLanShareStatus) cfgLanShareStatus.textContent = copied
+        ? `Invitación copiada. Caduca a las ${expires}; máximo ${result.maxUses || 3} aperturas.`
+        : `Invitación creada hasta las ${expires}, pero no se pudo copiar.`
+      showStatus(copied ? 'Invitación copiada al portapapeles' : 'Invitación creada', copied ? 'ok' : 'warn', 5000)
+    } catch (err) {
+      const message = errorMessage(err)
+      if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
+      showStatus(message, 'error', 5000)
+    } finally {
+      btnLanShareSession.disabled = false
+    }
+  })
+}
+
 btnSaveSettings.addEventListener('click', async () => {
   showStatus('Guardando configuracion…', 'busy')
   const lanEnabled = Boolean(cfgLanEnabled?.checked)
@@ -2887,7 +2927,9 @@ btnSaveSettings.addEventListener('click', async () => {
     },
     lanServer: {
       enabled: lanEnabled,
-      port: lanPort
+      port: lanPort,
+      publicClientUrl: cfgLanPublicClient?.value?.trim() || '',
+      publicWsUrl: cfgLanPublicWs?.value?.trim() || ''
     }
   }
 
