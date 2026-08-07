@@ -263,6 +263,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         botToken: typeof telegram.botToken === 'string' ? telegram.botToken.trim() : '',
         notifyBotToken: typeof telegram.notifyBotToken === 'string' ? telegram.notifyBotToken.trim() : '',
         notifyChatId: typeof telegram.notifyChatId === 'string' ? telegram.notifyChatId.trim() : '',
+        // Doctor diario in-app (health-watchdog): default ON, solo avisa con problemas.
+        healthWatchdog: telegram.healthWatchdog !== false,
         allowedUsers: [],
         claudeModel: typeof telegram.claudeModel === 'string' ? telegram.claudeModel.trim() : '',
         claudeEffort: typeof telegram.claudeEffort === 'string' ? telegram.claudeEffort.trim() : '',
