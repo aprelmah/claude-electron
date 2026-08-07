@@ -2418,6 +2418,23 @@ btnPin.addEventListener('click', async () => {
   btnPin.classList.toggle('active', pinned)
 })
 
+// ── Botón "Llevar a Terminal" ──
+const btnHandoffTerminal = document.getElementById('btn-handoff-terminal')
+if (btnHandoffTerminal) {
+  btnHandoffTerminal.addEventListener('click', async () => {
+    if (btnHandoffTerminal.disabled) return
+    btnHandoffTerminal.disabled = true
+    try {
+      const res = await window.api.handoffToTerminal()
+      if (!res?.ok) showStatus(res?.error || 'No se pudo llevar la sesión a Terminal', 'error', 7000)
+    } catch (err) {
+      showStatus(String(err?.message || err), 'error', 7000)
+    } finally {
+      btnHandoffTerminal.disabled = false
+    }
+  })
+}
+
 // ── Botón "Enviar a Telegram" ──
 async function refreshSendTelegramButton() {
   if (!btnSendTelegram) return

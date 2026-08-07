@@ -92,6 +92,7 @@ const {
 const { createTelegramRelayBindings, shouldAllowMacSessionFallback } = require('./main/telegram-relay-bindings')
 const { createTelegramHiddenPtyPool } = require('./main/telegram-hidden-pty-pool')
 const { createTelegramNotifyBot } = require('./main/telegram-notify-bot')
+const terminalHandoff = require('./main/terminal-handoff')
 const { registerProposalIpc } = require('./main/proposal-ipc')
 const { registerFilesystemIpc, fileKind, IGNORE_NAMES } = require('./main/filesystem-ipc')
 const { registerWsServerIpc } = require('./main/ws-server-ipc')
@@ -1633,6 +1634,7 @@ function finalizeWorkspaceForSession(session) {
     }
   })().catch((err) => console.warn('[session-git] finalize:', err?.message)).finally(() => pendingFinalizes.delete(p))
   pendingFinalizes.add(p)
+  return p
 }
 
 function notifySessionGitIssue(ws, r) {
@@ -4227,6 +4229,21 @@ ipcMain.handle('get-current-session-meta', (event) => {
     return { cli: appConfig.cli.defaultCli || 'claude', cwd: os.homedir(), sessionId: null, title: '(sin sesión)' }
   }
   return buildCurrentSessionMeta(s)
+})
+
+ipcMain.handle('session:handoff-to-terminal', async (event) => {
+  const session = getSessionByEvent(event)
+  const target = terminalHandoff.captureHandoffTarget(session)
+  if (target.error) return { ok: false, error: target.error }
+  killPty(session)
+  if (session.win && !session.win.isDestroyed()) session.win.webContents.send('pty-exit')
+  await finalizeWorkspaceForSession(session)
+  try {
+    await terminalHandoff.openInTerminal(target)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: `No se pudo abrir Terminal: ${err?.message || err}` }
+  }
 })
 
 ipcMain.handle('clipboard-write-text', (_event, text) => {

@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('api', {
   getSystemTheme: () => ipcRenderer.invoke('get-system-theme'),
   getActiveCli: () => ipcRenderer.invoke('get-active-cli'),
   getCurrentSessionMeta: () => ipcRenderer.invoke('get-current-session-meta'),
+  handoffToTerminal: () => ipcRenderer.invoke('session:handoff-to-terminal'),
   setActiveCli: (cli) => ipcRenderer.invoke('set-active-cli', cli),
   copyText: (text) => ipcRenderer.invoke('clipboard-write-text', text),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
