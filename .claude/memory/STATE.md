@@ -4,25 +4,25 @@
 > Única fuente de "lo último que pasó". No acumular handoffs por fecha: sobrescribir aquí.
 > El detalle histórico vive en `.claude/memory/` (handoffs, `bugs/`, `decisions/`, `tech/`) y en la auto-memory del harness.
 
-_Última actualización: 2026-08-07 noche, cierre de sesión (todo commiteado, pusheado y desplegado; wrap hecho)._
+_Última actualización: 2026-08-07 noche (segundo tramo), cierre de sesión._
 
-# 🚦 EMPIEZA POR AQUÍ — Profesionalización + doctor a demanda (2026-08-07 noche)
+# 🚦 EMPIEZA POR AQUÍ — Sesiones de codex: identificación y picker (2026-08-07 noche, 2º tramo)
 
-Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarlo entero en /loop. 4 fases + 4 remates pedidos en vivo. Detalle de reglas en CLAUDE.md §"Profesionalización (2026-08-07 noche)".
+Empezó con una pregunta sobre dos iconos de la topbar y acabó en 6 arreglos, todos disparados por Luismi probando en vivo. Reglas duras nuevas en CLAUDE.md §"Sesiones de codex: cómo se identifican y cómo se listan". Detalle del bug en `bugs/bug_codex_sessionid_picker_resume_2026_08_07.md`.
 
 ## Estado de entrega (verificado al cierre)
 
-- `main` == `origin/main`, HEAD **`a6c8c6e`**, árbol limpio salvo docs de este wrap. 10 commits del tramo: `f1b317d` (flakes+humo), `fb6ca9d` (doctor), `880b890` (propuestas+builder panel), `24043c9` (cableado app), `057dbb0` (docs), `0697bda` (CSS modal), `68c7817` (hora bitácora), `9d8fedb` (doctor manual panel), `2cbb03d` (/doctor Telegram), `a6c8c6e` (🩺 en /menu).
-- Tests: **1233 (1227 pass / 0 fail / 6 skip)** — el día empezó en 1079.
-- Deploy: **HECHO** (5 deploys, último tras `a6c8c6e`), asar verificado por contenido en cada uno; panel verificado por CDP con captura; botón 🩺 probado en vivo por Luismi ("funciona").
-- Bugs cazados con captura tras el deploy: modal del panel sin CSS por ID (tira rota al fondo) y hora de bitácora "39" (ts epoch). Ambos arreglados y desplegados.
+- `main` **ahead 5** de `origin/main` al escribir esto → **pusheado en este mismo cierre** (ver "Notas operativas" si el push falló). HEAD **`88aed1b`**, árbol limpio salvo los docs de este wrap.
+- 5 commits: `32c6d75` (📌 prompt escrito + canal `pty-notice`), `d9b1475` (sessionId codex), `f3538ed` (picker: worktree + títulos), `4b0bfe9` (menú de directorio + conversación ocupada), `88aed1b` (reglas en CLAUDE.md).
+- Tests: **1295 (1289 pass / 0 fail / 6 skip)** — el tramo empezó en 1233.
+- Deploy: **HECHO** (5 deploys, el último tras los commits), asar verificado por CONTENIDO en cada uno.
 
 ## Próximo paso
 
-- Probar `/doctor` desde el móvil (el botón del panel está probado; el comando no).
-- Verificar que el `1` de prueba salió de `telegram.allowedUsers`.
-- UX pendiente: el icono del panel (pulso) se camufla — más contraste o etiqueta.
-- Deuda consciente: rama codex de `buildCurrentSessionMeta` sigue adivinando.
+- **Probar en vivo lo desplegado** (nada de esto lo ha confirmado Luismi todavía): el 📌 con un prompt escrito sin enviar; el picker de codex con títulos legibles; reanudar una sesión de codex sin ver el menú de directorio.
+- **Cerrar el `codex resume` vivo en Terminal.app** (PID 53592 desde las 19:18, sesión `019fdd2a`): mientras siga abierto, esa conversación no se puede reanudar en la app (ahora avisa claro, ya no muere en silencio).
+- Sigue vivo el backlog aprobado de más abajo (jardinero de memoria, escáner de skills, vocab de voz).
+- Heredados: `/doctor` desde el móvil sin probar; quitar el `1` dummy de `telegram.allowedUsers`; el icono del panel (pulso) se camufla.
 
 ## Backlog aprobado por Luismi (2026-08-07 noche, "apúntalos y haremos")
 
@@ -32,69 +32,42 @@ Segunda ronda de robos de Hermes, por orden de valor:
 2. **Escáner de skills de terceros** (tarde corta): reutilizar `main/untrusted-input.js` en un `/revisar-skill` que pase revista a un SKILL.md/plugin antes de instalarlo (exfil, comandos destructivos, Unicode invisible), estilo el scanner del Skills Hub de Hermes.
 3. **Vocabulario del modo voz** (tarde corta): el helper YA tiene `{cmd:'vocab'}` (contextualStrings) en el protocolo y nadie lo llama. Mandarle la jerga del proyecto activo (nombres de módulos, "worktree", "eatbook") al encender el modo voz.
 
-1. **Consolidar**: los DOS flakes históricos eran la misma causa — `ws-server-auth-token.test.js` elegía puertos dentro del rango efímero del SO (49152–65535) y chocaba con sockets salientes de otros tests (EADDRINUSE + 404-vs-401). Banda movida a 18500–19900. Test de humo `module-load-smoke.test.js` (73 requires). `resolveSessionIdForRelay` ya no persiste ids adivinados.
-2. **Doctor in-app** (`main/health-watchdog.js` + toggle `telegram.healthWatchdog`): chequeo diario 08:00, avisa por notify bot solo con problemas.
-3. **Bandeja única**: sección "Decisiones" en el dropdown del 🔔 (pairing accionable + encargos repetidos con "📌 Crear tarea"/"Descartar"). El detector de repetidos ahora persiste propuestas (`listProposals`/`resolveProposal`; descartado = no propone nunca más).
-4. **Panel "¿qué está pasando?"** (botón nuevo en topbar): sesiones vivas con aislamiento/Telegram/voz, pool oculto y últimos eventos de la bitácora, refresco 3 s.
+## Qué se arregló en este tramo
 
-Además, misma sesión (tarde): **aislamiento git por carpeta** (`gitIsolationExcludes` + botón selector + badge 🌿; excludes de Luismi rellenados: TURBO-ENERGY RMA, DMWEB, DOCUMENTOS_AGENTE, ~/Documents) — commits `dbbc772`+`62de42d`+`f6cfc90` pusheados y desplegados.
+1. **El botón 📌 abría vacío** (`prompt-capture.js`, nuevo): recordaba solo prompts YA ENVIADOS y no veía nada de lo que entra por `injectToPty` (dictado 🎤, arrastrar archivos, doble clic). La lógica sale de `renderer.js` para poder testearla (11 tests).
+2. **Sesión codex nueva adoptaba la conversación anterior** (el mismo bug del mediodía en la rama que quedó como deuda). Y al quitar el fallback ciego apareció el defecto que tapaba: `lastLocalInputAt` en el filtro convertía "¿de quién es esta conversación?" en "actividad de los últimos 3,5 s". Criterio bueno: el `session_id` de codex es **UUIDv7** y lleva su hora de nacimiento dentro.
+3. **El picker de codex enseñaba sesiones de mayo**: los rollouts graban el cwd del worktree; se atribuyen al repo por el nombre determinista del worktree (`worktreeSlugFor`), en el índice Y en el walk de respaldo.
+4. **Todos los títulos iguales** ("# AGENTS.md instructions for…"): el primer `role:user` es preámbulo inyectado, y el prompt real estaba en el **byte 85.882** (fuera de los 64 KB que se leían). Índice a v2, que además valida su versión al cargar.
+5. **Menú de directorio al reanudar codex**: lo contesta la app ("usar el directorio actual") y avisa por la barra de estado. El primer intento no disparó: el TUI pinta palabra a palabra y sin ANSI el texto queda **sin espacios**.
+6. **`already has an active writer`**: codex se niega a reanudar una conversación abierta en otro sitio y moría sin explicar nada. Ahora sale un `pty-error` claro.
 
----
-
-# Sesión anterior — 4 robos de Hermes Agent: hechos, pusheados y probados (2026-08-07 tarde)
-
-Luismi pidió comparar POWER-AGENT con Hermes Agent (Nous Research, MIT, ~220k estrellas) y aprobó robarle 4 ideas. Veredicto de la comparativa: Hermes es el mejor agente personal genérico, pero no sustituye a POWER-AGENT (no pilota Claude Code, cobraría por API teniendo Max, sin el WhatsApp de negocio). Las 4 implementadas con TDD en `/loop` autónomo y **probadas en vivo por Luismi en modo dev ("funciona todo")** — el pairing con el truco del ID falso `1` en allowedUsers.
-
-## Estado de entrega (verificado 2026-08-07 tarde)
-
-- Rama `main` == `origin/main`: **6 commits pusheados** `d7fa0fd..5f0f089` (4193c04 saneado, ef395c3 pairing, 3b31f0f repetidos, 866411a búsqueda, 9ee0d9b cableado app, 5f0f089 docs). Árbol limpio salvo este STATE.md.
-- Tests: **1124 (1118 pass / 0 fail / 6 skip)** — el hook corrió la suite en cada commit.
-- **Deploy: HECHO 2026-08-07 tarde** (`npm run deploy`, exit 0, helper de voz firmado). Verificado por CONTENIDO del asar: los 4 módulos nuevos dentro, `sessions-search` en renderer y `cfg-telegram-pairing-block` en index.html. App empaquetada corriendo desde /Applications.
-- Percance corregido sobre la marcha: el hook falló en el commit del cableado (flake EADDRINUSE) y el pipe `| tail` se tragó el exit → el commit de docs arrastró 7 archivos; `reset --soft` + recommit limpio. **Regla: jamás `git commit | tail && siguiente` — el pipe devuelve el exit de tail.**
-
-1. **Emparejamiento por código** (`main/telegram-pairing.js` + hook en `telegram-bridge.js` `_handleUnauthorized`): un chat desconocido recibe código de 6 dígitos (TTL 10 min, máx. 5 pendientes, mismo código si insiste); se aprueba/rechaza en Configuración → Telegram (IPC `telegram:pairing-*`, notificación nativa, bloque UI nuevo). Aprobar persiste en `allowedUsers` y reaplica el bridge en vivo. Códigos solo en memoria (reinicio = caducados). Sin hook o hook roto → rechazo legacy (fail-open). Tests: `telegram-pairing.test.js`, `telegram-bridge-pairing.test.js`.
-2. **Saneado anti-inyección** (`main/untrusted-input.js`, `sanitizeChannelText`): limpia Unicode invisible (zero-width/bidi/BOM), ANSI/C0 y normaliza `\r`→`\n` (un `\r` crudo es un ENTER en el PTY); detecta override/exfil/exec. Política por llamador: Telegram (`_enqueueQuery`) y notify bot (intake) SOLO limpian (quien habla es Luismi); WhatsApp escala a humano si `risky` (`respondTo` en `whatsapp-client.js`) y `buildPrompt` limpia body+historial. OJO: regex con clases `\uXXXX` en ASCII — jamás pegar caracteres invisibles literales en el código (se hizo por error y se corrigió). Tampoco `.test()` sobre regex `/g` (lastIndex stateful). Tests: `untrusted-input.test.js`, `channel-input-sanitized.test.js`.
-3. **Detector de tareas repetidas** (`main/repeated-prompts.js`): Jaccard de tokens (normalización sin tildes), 3+ hits similares en 30 días → notificación nativa proponiendo tarea 📌 o skill; cooldown 7 días por cluster, `minGapMs` 60s (reintentos no cuentan), store atómico `userData/repeated-prompts.json`. Alimentado desde: `onSemanticInput` de Telegram, `onUserReply` del notify bot y encargos de voz (wrapper de `voiceSendTarget` en main.js — la charla no cuenta). Tests: `repeated-prompts.test.js`.
-4. **Búsqueda en contenido de sesiones** (`main/session-content-search.js` + input en el modal Sesiones): streaming readline de los `.jsonl` del proyecto (nada de readFileSync — lección del relay), plegado 1:1 por code point (tildes/mayúsculas), snippet como tooltip de la fila, IPC `search-session-content` (solo claude), debounce 350ms + token anti-carreras en renderer. La "lupa" vieja era solo del grafo; el modal de sesiones no tenía búsqueda ninguna. Tests: `session-content-search.test.js`.
-
-## Además (2026-08-07 noche): aislamiento git por carpeta + chivato
-
-Luismi, harto del baile de worktrees en sus carpetas de trabajo ("Estás en un worktree nuevo" en TURBO-ENERGY): `cli.gitIsolationExcludes` (Configuración → "Carpetas SIN aislamiento", una por línea, `~` y subcarpetas; `cwdExcludedFromIsolation` en `main/session-git.js`, `isEnabled(realCwd)`) + badge «🌿 worktree» en la tira de sesión (`meta.gitIsolation`). Toggle global intacto; exclusión gana. Tests **1133 (1127/0/6)**, 9 nuevos en `git-isolation-excludes.test.js`. Segundo flake pre-existente visto en suite completa: 404-vs-401 en un test HTTP (no reproduce en re-run), además del EADDRINUSE 55555.
-
-(Sus pendientes se cerraron en la sesión de la noche: carpetas excluidas rellenadas, flake arreglado de raíz; los vivos están en el "Próximo paso" de arriba.)
-
-# Sesión anterior — Fix: la sesión nueva adoptaba la conversación vieja (envenenamiento del sessionId)
-
-**Sesión 2026-08-07 mediodía** (`6956fd5`, probado en vivo por Luismi: "va bien"). Reporte real: sesión nueva + "Llevar a Terminal" → Terminal abría OTRA conversación. **No era el botón**: `buildCurrentSessionMeta` (`main/claude-session-cache.js`, código de mayo `f6cebba`) rellenaba `session.claudeSessionId` con la última `.jsonl` del cwd por mtime cuando el campo estaba vacío. El renderer refresca la tira de sesión nada más arrancar el PTY → milisegundos después del spawn la sesión nueva ya llevaba el id de la conversación vieja, y el vigía de `startPty` (`main.js:1763`) al ver el campo relleno se paraba para siempre (escribir después no lo curaba). El mismo veneno alimentaba en silencio el sub-chat ("contexto congelado") y el modo voz.
-
-**Fix**: el meta ya no adivina ni persiste — sin id, topbar «(sesión nueva)» y `sessionId: null`; el id lo ponen solo el spawn (`--resume`), el vigía o el relay. Verificado e2e por CDP en dev: guarda del botón correcta sin conversación (el PTY sobrevive al error), y tras el primer mensaje adopta SU id en ~5s (jsonl con el prompt comprobado). Tests **1079 (1073/0/6)**, 3 nuevos en `tests/current-session-meta.test.js`.
-
-**Queda un patrón hermano**: `resolveSessionIdForRelay` (`main.js:3068`) hace la misma adivinanza por mtime para la ruta Telegram; se auto-repara por prompt en el relay, se dejó a propósito. Si algún día hay mezcla por Telegram en sesiones recién abiertas, empezar por ahí.
-
-# Sesión anterior — Avisos de automatizaciones al notify bot + botón "Llevar a Terminal"
-
-**Sesión 2026-08-07 mañana.** Dos entregas, ambas probadas por Luismi. **Tests: 1070 (1064 pass / 0 fail / 6 skip).** Detalle en auto-memory (`update_2026_08_07_avisos_y_boton_terminal.md`).
-
-1. **Avisos de automatizaciones por el bot de avisos** (`899807d`). Las automatizaciones (scripts bash de launchd) hacían `curl` directo con `.telegram.botToken` — el patrón venía horneado de `patterns.md` §4 del skill `automation-builder` y de `automations/system-prompt.js` (regla 8 + fallback). Arreglado en ambos y en los 3 scripts instalados en `~/Library/PowerAgent/automations/`: ahora `notifyBotToken`/`notifyChatId` con fallback a `botToken`/`allowedUsers[0]`. Los scripts leen el token EN RUNTIME del config: cambiar el campo los re-apunta sin reinstalar. `notifyChatId` sigue vacío en config (fallback al mismo chat — funciona).
-2. **Botón "Llevar a Terminal"** (`2595248`, topbar junto al de voz). Handoff de la sesión activa a Terminal.app: captura cli/cwd/sessionId → `killPty` → `pty-exit` explícito (el guard `_alive` del onExit lo suprime tras killPty) → **await finalize del worktree** → osascript con `claude --resume <id>` / `codex resume <id>` en el cwd real. Módulo `main/terminal-handoff.js` (12 tests). El orden es de carga: `copySessionsHome` dentro del finalize copia el `.jsonl` al proyecto real; sin eso el resume da "No conversation found". `finalizeWorkspaceForSession` ahora devuelve su promesa. Spec/plan en `docs/superpowers/{specs,plans}/2026-08-07-*`.
-3. **Supuesto tumbado por la verificación CDP**: la app arranca con PTY auto-restaurado — el primer click de prueba "sin sesión" abrió Terminal con la última conversación. De ahí la guarda: sin `session.pty` no hay handoff (`claudeSessionId` sobrevive a la muerte del PTY). Sin la guarda, el botón desde el picker abriría una conversación vieja.
-
-## Estado de entrega (verificado 2026-08-07 mediodía)
-
-- Rama `main` == `origin/main`: `6956fd5` (fix) + `4e2814b` (docs) **pusheados** (`04e0441..4e2814b`).
-- Tests: **1079 (1073 pass / 0 fail / 6 skip)** — hook pre-commit corrió la suite en el commit.
-- Deploy: **HECHO 2026-08-07 ~12:00** — asar verificado por CONTENIDO (`claude-session-cache.js` con «(sesión nueva)» y sin la línea del veneno). Probado en vivo por Luismi ("va bien").
-
-## Próximo paso
-
-- Nada urgente. Opcional: poner `telegram.notifyChatId` en Configuración si algún día los avisos deben ir a un chat distinto del primero de `allowedUsers`.
-- Cosmético sin reporte: con el picker abierto, el overlay tapa visualmente la topbar (el botón sigue en el DOM); con sesión abierta se ve normal.
-- Heredados: skill `luismi:telegram-bridge-relay` roto (confirmar con Luismi antes de borrar); elegir `gpt-5.6-sol` en codex (quedó en `codex-auto-review`).
+Fuera del repo: **`wrap-codex` reescrito** (`~/.codex/skills/wrap-codex/SKILL.md`, 179 líneas, backup `.bak.20260807`) — antes solo tocaba el `STATE.md`, así que cerrar con Codex perdía la memoria larga.
 
 ## Notas operativas
 
-- El handoff a Terminal NO es un spawn nuevo de PTY: abre una Terminal externa tras finalizar el worktree. El `--resume` interactivo en esa Terminal forkea sessionId (ventana de adopción ya documentada en CLAUDE.md para "un `claude` lanzado a mano"; la sesión de la app muere antes, sin trabajo nuevo).
-- Verificación por CDP en modo dev: `npx electron . --remote-debugging-port=9222` vía Terminal/osascript (el skill `verify` documenta el resto; vale igual para dev, no solo para /Applications).
-- Reincidencia sin daño: `npx asar extract-file` desde el repo otra vez (extrajo al root, no pisó nada). SIEMPRE desde scratchpad.
+- **Método que funcionó y método que no**: los dos últimos bugs se resistieron a la lectura de código y cayeron con una **sonda de 30 líneas** sobre un PTY controlado (`tech/tech_sondar_cli_en_pty.md`). Tres hipótesis descartadas antes; la sonda acertó al primer intento.
+- **Arreglar en cadena destapa el defecto de debajo**: si un fix correcto "revela" un fallo nuevo en el mismo sitio, suele ser la misma avería más abajo, no un bug nuevo.
+- El handoff a Terminal NO es un spawn nuevo de PTY: abre una Terminal externa tras finalizar el worktree. Ojo, **deja un `codex`/`claude` vivo ahí fuera** y codex no admite dos escritores en el mismo hilo.
+- Verificación por CDP en modo dev: `npx electron . --remote-debugging-port=9222` vía Terminal/osascript (el skill `verify` documenta el resto).
+- `npx asar extract-file` SIEMPRE desde el scratchpad (extrae al cwd; ya pisó `main.js` una vez).
 - Trampa vigente: `npm run deploy` no mata la instancia dev → SingletonLock → la empaquetada se suicida en silencio. Matar dev a mano antes.
 - El helper de voz se prueba SUELTO por stdin/stdout para lo que no toque micrófono; lo que toca micrófono solo funciona como hijo de la app empaquetada.
+
+---
+
+# Sesión anterior — Profesionalización + doctor a demanda (2026-08-07 noche, 1er tramo)
+
+Luismi pidió "si POWER-AGENT fuera tuyo, ¿qué harías?" y autorizó ejecutarlo entero en /loop. 4 fases + 4 remates pedidos en vivo. Reglas en CLAUDE.md §"Profesionalización (2026-08-07 noche)".
+
+- `main` == `origin/main`, HEAD `a6c8c6e`. 10 commits: `f1b317d` (flakes+humo), `fb6ca9d` (doctor), `880b890` (propuestas+builder panel), `24043c9` (cableado app), `057dbb0` (docs), `0697bda` (CSS modal), `68c7817` (hora bitácora), `9d8fedb` (doctor manual panel), `2cbb03d` (/doctor Telegram), `a6c8c6e` (🩺 en /menu). Tests 1233. Deploy hecho, botón 🩺 probado en vivo.
+- Los DOS flakes históricos eran la misma causa: puertos de test dentro del rango efímero del SO (49152–65535). Banda movida a 18500–19900. Test de humo `module-load-smoke.test.js` (73 requires).
+- Doctor in-app (`main/health-watchdog.js`, 08:00 + botón 🩺 + `/doctor`), bandeja única de decisiones en el 🔔, panel "¿qué está pasando?" (📈).
+- Antes, misma sesión (tarde): **aislamiento git por carpeta** (`gitIsolationExcludes` + selector + badge 🌿) — `dbbc772`+`62de42d`+`f6cfc90`.
+
+# Sesión anterior — 4 robos de Hermes Agent (2026-08-07 tarde)
+
+Veredicto: Hermes es el mejor agente personal genérico, pero no sustituye a POWER-AGENT (no pilota Claude Code, cobraría por API teniendo Max, sin el WhatsApp de negocio). 6 commits `d7fa0fd..5f0f089`, tests 1124, probado en vivo. Emparejamiento por código, saneado anti-inyección (`untrusted-input.js`), detector de encargos repetidos, búsqueda en contenido de sesiones.
+
+# Sesión anterior — sessionId envenenado en sesión nueva (2026-08-07 mediodía)
+
+`6956fd5` + `4e2814b` pusheados, tests 1079, deploy verificado por asar. Regla dura que nació aquí y volvió a hacer falta hoy: **un sessionId adivinado no se persiste jamás en la sesión**.

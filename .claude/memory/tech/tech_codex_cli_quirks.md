@@ -60,3 +60,9 @@ Codex y Claude exponen patrones similares en JSONL (init / message / final). Dif
 - Codex: `type:"item.completed"` con `item.text` para texto.
 
 Ambos: capturar `session_id` (Claude) o `thread_id` (Codex) del primer mensaje o del final, persistir, reanudar.
+
+## Sesiones de codex: identificación, listado y TUI (2026-08-07)
+
+Las reglas duras viven en **`CLAUDE.md` §"Sesiones de codex: cómo se identifican y cómo se listan"** — no se copian aquí para que no divergan. Resumen de qué hay allí: el `session_id` es un UUIDv7 con su hora de nacimiento dentro; los rollouts guardan el cwd del worktree, no el del proyecto; el primer mensaje con `role:user` es preámbulo inyectado; el TUI pinta palabra a palabra (texto sin espacios al quitar los ANSI, y secuencias partidas entre chunks del PTY); y codex no admite dos escritores en el mismo hilo.
+
+Caso completo con las trazas: `bugs/bug_codex_sessionid_picker_resume_2026_08_07.md`. Cómo se investigó: `tech/tech_sondar_cli_en_pty.md`.
