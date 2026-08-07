@@ -245,10 +245,10 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
       // SEC-C1: token Bearer para auth WS+HTTP. Si vacío, server queda inseguro
       // (compat hacia atrás); main.js genera y persiste uno al primer arranque.
       authToken: typeof cfg.authToken === 'string' ? cfg.authToken.trim() : '',
-      // Opcionales: se rellenan cuando existe un Cloudflare Tunnel gestionado
-      // por el usuario. Vacíos = solo LAN/local, sin publicar nada.
-      publicClientUrl: normalizeLanPublicUrl(cfg.publicClientUrl, ['http:', 'https:']),
-      publicWsUrl: normalizeLanPublicUrl(cfg.publicWsUrl, ['ws:', 'wss:'])
+      // Opcionales: solo aceptamos HTTPS/WSS para una publicación exterior.
+      // Vacíos = solo LAN/local, sin publicar nada.
+      publicClientUrl: normalizeLanPublicUrl(cfg.publicClientUrl, ['https:']),
+      publicWsUrl: normalizeLanPublicUrl(cfg.publicWsUrl, ['wss:'])
     }
   }
 

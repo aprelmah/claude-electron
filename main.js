@@ -593,7 +593,9 @@ const {
 function resolveLanSessionConfig(remoteMeta = {}) {
   const rawRemoteContext = resolveLanRemoteContextInput(remoteMeta)
   const rawInvite = rawRemoteContext?.raw?.lanInvite
+  const rawProject = rawRemoteContext?.raw?.lanProject
   const invitedCwd = resolveExistingDir(rawInvite?.cwd)
+  const selectedProjectCwd = resolveExistingDir(rawProject?.cwd)
   const invitedSessionId = isValidSessionId(String(rawInvite?.sessionId || ''))
     ? String(rawInvite.sessionId)
     : ''
@@ -615,11 +617,11 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     cli
   )
   const remoteIp = resolveLanRemoteIp(remoteMeta)
-  const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, invitedCwd || getCwdSync())
+  const enterpriseContext = resolveLanEnterpriseContext(remoteContext, activeProfile, invitedCwd || selectedProjectCwd || getCwdSync())
   const effectiveProfile = getProfileById(enterpriseContext.profileId) || activeProfile
   const profileCwd = resolveExistingDir(effectiveProfile?.cwd)
   const currentCwd = resolveExistingDir(getCwdSync())
-  const cwd = invitedCwd || profileCwd || currentCwd || os.homedir()
+  const cwd = invitedCwd || selectedProjectCwd || profileCwd || currentCwd || os.homedir()
   if (hasValidInvite && enterpriseContext.enterpriseApplied) {
     const allowed = Array.isArray(enterpriseContext.allowedRoots) ? enterpriseContext.allowedRoots : []
     const allowedInviteCwd = allowed.some((root) => {
@@ -628,6 +630,15 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     })
     if (!allowedInviteCwd) {
       throw new Error('La invitación apunta a un proyecto fuera de las carpetas permitidas para este equipo.')
+    }
+  }
+  if (selectedProjectCwd && enterpriseContext.enterpriseApplied) {
+    const allowedProjectCwd = Array.isArray(enterpriseContext.allowedRoots) && enterpriseContext.allowedRoots.some((root) => {
+      const normalizedRoot = resolveExistingDir(root)
+      return normalizedRoot === cwd || (normalizedRoot && cwd.startsWith(normalizedRoot + path.sep))
+    })
+    if (!allowedProjectCwd) {
+      throw new Error('El proyecto seleccionado está fuera de las carpetas permitidas para este equipo.')
     }
   }
   const legacyBootstrap = getProfileStartupMessage(effectiveProfile)
@@ -741,6 +752,7 @@ function ensureLanWsServer() {
     clientHtmlPath: getLanClientHtmlPath(),
     getSessionConfig: (remoteMeta) => resolveLanSessionConfig(remoteMeta),
     listReusableSessions: (meta) => listLanReusableSessions(meta),
+    listReusableProjects: (meta) => listLanReusableProjects(meta),
     transcribeAudio: (audioPath) => transcribeAudioFile(audioPath, buildRuntimeEnv()),
     runSemanticChatTurn: (payload) => runLanSemanticChatTurn(payload),
     buildExecCommand: buildFdLimitCommand,
@@ -825,7 +837,7 @@ function getLanServerStatus() {
 
 function createLanSessionInvite(event) {
   const session = getSessionByEvent(event) || (primaryWcId != null ? sessions.get(primaryWcId) : null)
-  if (!session || !session.ptyProcess) {
+  if (!session || !session.pty) {
     return { ok: false, error: 'No hay una sesión local activa para compartir.' }
   }
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
@@ -4252,6 +4264,38 @@ const {
   listCodexSessionsForCwd,
   listLanReusableSessions
 } = _sessionListing
+
+function listLanReusableProjects(meta = {}) {
+  const requestedCwd = resolveExistingDir(meta?.cwd)
+  const invitedCwd = resolveExistingDir(meta?.invitedCwd)
+  const roots = (Array.isArray(meta?.allowedRoots) ? meta.allowedRoots : [])
+    .map((root) => resolveExistingDir(root))
+    .filter(Boolean)
+  const allowed = (cwd) => {
+    if (!cwd) return false
+    if (!roots.length) return cwd === requestedCwd || cwd === invitedCwd
+    return roots.some((root) => cwd === root || cwd.startsWith(root + path.sep))
+  }
+  const source = recentCwds ? recentCwds.list({ pruneMissing: true }) : []
+  const rows = []
+  const seen = new Set()
+  const add = (rawCwd, lastUsedAt = 0) => {
+    const cwd = resolveExistingDir(rawCwd)
+    if (!cwd || seen.has(cwd) || !allowed(cwd)) return
+    seen.add(cwd)
+    rows.push({
+      cwd,
+      label: path.basename(cwd) || cwd,
+      lastUsedAt: Number(lastUsedAt || 0)
+    })
+  }
+  // El actual va primero para que el selector remoto sea útil incluso si aún
+  // no se ha escrito en recent-cwds.json; la invitación siempre queda dentro
+  // de su único proyecto permitido.
+  add(invitedCwd || requestedCwd)
+  for (const entry of source) add(entry?.cwd, entry?.lastUsedAt)
+  return rows.slice(0, 50)
+}
 
 ipcMain.handle('list-sessions', async (event, cwd, cli) => {
   if (cli === 'codex') {

@@ -7,9 +7,11 @@
 - La opción **Copiar invitación de la sesión actual** crea un enlace temporal
   de 10 minutos y hasta 3 aperturas. El token vive solo en memoria y se borra
   al detener el servidor.
-- El cliente remoto puede cambiar de proyecto o sesión con el selector
-  persistente; el servidor mantiene bloqueo por sesión para evitar dos
-  operadores escribiendo a la misma conversación.
+- El cliente remoto puede elegir un proyecto autorizado y una sesión con el
+  selector persistente antes de entrar; las sesiones se pueden cambiar en
+  caliente y el cambio de proyecto requiere desconectar primero. El servidor
+  mantiene bloqueo por sesión para evitar dos operadores escribiendo a la
+  misma conversación.
 
 ## Exponerlo fuera de casa
 

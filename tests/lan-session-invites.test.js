@@ -19,6 +19,8 @@ test('las invitaciones caducan y limitan sus usos', () => {
     maxUses: 2
   })
 
+  assert.equal(invites.has(created.token), true)
+
   const first = invites.claim(created.token)
   assert.equal(first.cwd, '/tmp/power-agent-project')
   assert.equal(first.sessionId, 'session-abc')
@@ -29,6 +31,7 @@ test('las invitaciones caducan y limitan sus usos', () => {
   assert.equal(second.usesRemaining, 0)
   assert.equal(invites.size(), 0)
   assert.equal(invites.claim(created.token), null)
+  assert.equal(invites.has(created.token), false)
 
   const other = invites.create({ cwd: '/tmp/power-agent-project', sessionId: 's2', cli: 'codex' })
   clock += 10 * 60 * 1000 + 1

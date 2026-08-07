@@ -1328,7 +1328,7 @@
       .engine-grid { grid-template-columns: minmax(140px, 1fr) 1fr 1fr; align-items: end; }
       .primary-actions { grid-template-columns: auto auto; justify-content: start; }
       .primary-actions .btn { min-width: 160px; }
-      .session-picker-row { grid-template-columns: 1fr auto; align-items: end; }
+      .session-picker-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; }
       .session-picker-actions { grid-template-columns: auto auto; }
       .advanced-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .attach-actions { grid-template-columns: auto auto; justify-content: start; }
@@ -1463,7 +1463,13 @@
     <section class="session-dock" aria-label="Selector de sesión LAN">
       <div class="session-picker-row">
         <div class="field">
-          <label for="session-select">Proyecto y sesión</label>
+          <label for="project-select">Proyecto</label>
+          <select id="project-select" class="control">
+            <option value="">Conecta para cargar proyectos</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="session-select">Sesión</label>
           <select id="session-select" class="control">
             <option value="">Nueva sesión (sin reanudar)</option>
           </select>
@@ -1686,6 +1692,7 @@
       btnConnect: document.getElementById('btn-connect'),
       btnAutoReconnect: document.getElementById('btn-autoreconnect'),
       btnSessionOpen: document.getElementById('btn-session-open'),
+      projectSelect: document.getElementById('project-select'),
       sessionSelect: document.getElementById('session-select'),
       // Mismo nodo que providerSelect: el CLI es uno solo en toda la UI.
       sessionCliSelect: document.getElementById('session-cli'),
@@ -1868,6 +1875,11 @@
       mediaStream: null,
       sessionInfo: null,
       sessionCapabilities: null,
+      projects: [],
+      projectListReqSeq: 0,
+      pendingProjectSelectRequestId: '',
+      selectedProjectId: '',
+      selectedProjectLabel: '',
       sessionList: [],
       sessionListCwd: '',
       sessionListReqSeq: 0,
@@ -2309,7 +2321,34 @@
       map[key] = String(sessionId || '')
     }
 
+    function renderProjectSelector() {
+      const list = Array.isArray(appState.projects) ? appState.projects : []
+      const selectedBefore = String(appState.selectedProjectId || refs.projectSelect.value || '').trim()
+      refs.projectSelect.innerHTML = ''
+      if (!list.length) {
+        const empty = document.createElement('option')
+        empty.value = ''
+        empty.textContent = isSocketOpen() ? 'Sin proyectos disponibles' : 'Conecta para cargar proyectos'
+        refs.projectSelect.appendChild(empty)
+      } else {
+        for (const row of list) {
+          const id = String(row?.id || '').trim()
+          if (!id) continue
+          const option = document.createElement('option')
+          option.value = id
+          option.textContent = String(row?.label || 'Proyecto')
+          refs.projectSelect.appendChild(option)
+        }
+      }
+      const canKeep = selectedBefore && Array.from(refs.projectSelect.options).some((opt) => opt.value === selectedBefore)
+      refs.projectSelect.value = canKeep ? selectedBefore : (refs.projectSelect.options[0]?.value || '')
+      if (!appState.selectedProjectId && refs.projectSelect.value) appState.selectedProjectId = refs.projectSelect.value
+      const projectBusy = !!appState.pendingProjectSelectRequestId
+      refs.projectSelect.disabled = !isSocketOpen() || !!appState.sessionInfo || projectBusy
+    }
+
     function renderSessionSelector() {
+      renderProjectSelector()
       const list = Array.isArray(appState.sessionList) ? appState.sessionList : []
       const currentCli = appState.sessionListCli || getSelectedSessionCli()
       const stickyForCli = getStickyResumeForCli(currentCli)
@@ -2436,6 +2475,58 @@
       }
       if (!silent) setSessionPickerMeta(`Actualizando sesiones de ${cliChoice}…`, 'warn')
       return true
+    }
+
+    function requestReusableProjects({ forceRefresh = false, silent = false } = {}) {
+      if (!isSocketOpen()) {
+        if (!silent) setSessionPickerMeta('Conecta primero para listar proyectos.', 'warn')
+        renderProjectSelector()
+        return false
+      }
+      const requestId = `project-list-${Date.now()}-${++appState.projectListReqSeq}`
+      const sent = sendMessage({ type: 'project:list', requestId, forceRefresh })
+      if (!sent) {
+        if (!silent) setSessionPickerMeta('No se pudo pedir la lista de proyectos.', 'err')
+        return false
+      }
+      if (!silent) setSessionPickerMeta('Actualizando proyectos y sesiones…', 'warn')
+      return true
+    }
+
+    function applyProjectListMessage(msg = {}) {
+      if (msg.ok === false) {
+        setSessionPickerMeta(String(msg?.error?.message || 'No se pudieron cargar proyectos.'), 'err')
+        return
+      }
+      appState.projects = Array.isArray(msg.projects) ? msg.projects : []
+      appState.selectedProjectId = String(msg.selectedProjectId || appState.selectedProjectId || '').trim()
+      appState.selectedProjectLabel = String(msg.selectedProjectLabel || '').trim()
+      renderSessionSelector()
+      if (!appState.projects.length) {
+        setSessionPickerMeta('No hay proyectos permitidos para este operador.', 'warn')
+      }
+    }
+
+    function handleProjectSelectedMessage(msg = {}) {
+      const requestId = String(msg.requestId || '')
+      if (appState.pendingProjectSelectRequestId && requestId && requestId !== appState.pendingProjectSelectRequestId) return
+      appState.pendingProjectSelectRequestId = ''
+      if (msg.ok !== true) {
+        const errorTextMsg = String(msg?.error?.message || 'No se pudo cambiar de proyecto.')
+        setSessionPickerMeta(errorTextMsg, 'err')
+        renderSessionSelector()
+        return
+      }
+      appState.selectedProjectId = String(msg.projectId || refs.projectSelect.value || '').trim()
+      appState.selectedProjectLabel = String(msg.label || '').trim()
+      appState.sessionList = []
+      appState.sessionListCwd = ''
+      appState.selectedResumeSessionId = ''
+      appState.stickyResumeSessionId = ''
+      setStickyResumeForCli('claude', '')
+      setStickyResumeForCli('codex', '')
+      renderSessionSelector()
+      setSessionPickerMeta(`Proyecto ${appState.selectedProjectLabel || 'seleccionado'} · cargando sesiones…`, 'warn')
     }
 
     function applySessionListMessage(msg = {}) {
@@ -3112,6 +3203,10 @@
       stopSessionLockHeartbeat()
       appState.sessionInfo = null
       appState.sessionCapabilities = null
+      appState.projects = []
+      appState.pendingProjectSelectRequestId = ''
+      appState.selectedProjectId = ''
+      appState.selectedProjectLabel = ''
       appState.uploadSupport = 'unknown'
       appState.pendingSessionStartRequestId = ''
       appState.sessionList = []
@@ -3165,6 +3260,7 @@
         setConnectionStatus('connecting', `Canal abierto · ${socketUrl}`)
         setHandshakeStatus('warn', 'Canal abierto. Enviando identidad y cargando sesiones…', 'pendiente')
         sendHandshake()
+        requestReusableProjects({ forceRefresh: true, silent: false })
         requestReusableSessions({ forceRefresh: true, silent: false })
         sendResizeToServer({ forceFit: appState.chatView === 'terminal' })
         scheduleTerminalRefit({ forceFit: appState.chatView === 'terminal' })
@@ -3235,6 +3331,14 @@
         }
         if (msg.type === 'fs:result') {
           if (!resolveFsResponse(msg)) setFsStatus('Respuesta de archivos sin id reconocible.', 'warn')
+          return
+        }
+        if (msg.type === 'project:list') {
+          applyProjectListMessage(msg)
+          return
+        }
+        if (msg.type === 'project:selected') {
+          handleProjectSelectedMessage(msg)
           return
         }
         if (msg.type === 'session:list') {
@@ -3567,9 +3671,30 @@
         setSessionPickerMeta('Abre conexión primero para refrescar sesiones.', 'warn')
         return
       }
+      requestReusableProjects({ forceRefresh: true, silent: true })
       requestReusableSessions({ forceRefresh: true, silent: false })
     })
     refs.btnSessionOpen.addEventListener('click', () => openOrSwitchSelectedSession())
+
+    refs.projectSelect.addEventListener('change', () => {
+      const projectId = String(refs.projectSelect.value || '').trim()
+      if (!projectId || !isSocketOpen()) return
+      if (appState.sessionInfo) {
+        setSessionPickerMeta('Desconecta la sesión actual para cambiar de proyecto.', 'warn')
+        renderProjectSelector()
+        return
+      }
+      const requestId = `project-select-${Date.now()}-${++appState.projectListReqSeq}`
+      appState.pendingProjectSelectRequestId = requestId
+      appState.selectedProjectId = projectId
+      renderSessionSelector()
+      setSessionPickerMeta('Cambiando de proyecto y cargando sesiones…', 'warn')
+      if (!sendMessage({ type: 'project:select', requestId, projectId })) {
+        appState.pendingProjectSelectRequestId = ''
+        setSessionPickerMeta('No se pudo seleccionar el proyecto.', 'err')
+        renderSessionSelector()
+      }
+    })
 
     refs.sessionSelect.addEventListener('change', () => {
       appState.selectedResumeSessionId = String(refs.sessionSelect.value || '').trim()

@@ -967,6 +967,9 @@ function createLanWsServer(options = {}) {
   const listReusableSessions = typeof options.listReusableSessions === 'function'
     ? options.listReusableSessions
     : (() => [])
+  const listReusableProjects = typeof options.listReusableProjects === 'function'
+    ? options.listReusableProjects
+    : ((meta) => [{ cwd: meta?.cwd, label: path.basename(String(meta?.cwd || '')) || 'Proyecto actual' }])
   const resolveSessionContext = typeof options.resolveSessionContext === 'function' ? options.resolveSessionContext : null
   const transcribeAudio = typeof options.transcribeAudio === 'function' ? options.transcribeAudio : null
   const runSemanticChatTurn = typeof options.runSemanticChatTurn === 'function' ? options.runSemanticChatTurn : null
@@ -1017,6 +1020,11 @@ function createLanWsServer(options = {}) {
     const expected = String(getAuthToken() || '')
     if (!expected) return true
     return timingSafeStringEqual(extractTokenFromReq(req), expected)
+  }
+
+  function hasValidSessionInvite(req) {
+    const token = firstNonEmpty(parseConnectionQuery(req), ['invite'])
+    return !!token && sessionInvites.has(token)
   }
 
   // Git por sesión (aislamiento por worktree). Se aceptan como getter o como
@@ -1286,6 +1294,139 @@ function createLanWsServer(options = {}) {
     return { cwd, sessions: merged, cli }
   }
 
+  function isProjectAllowedForResolvedConfig(cwd, resolvedConfig) {
+    const candidate = resolveExistingDir(cwd)
+    if (!candidate) return false
+    const roots = Array.isArray(resolvedConfig?.context?.allowedRoots)
+      ? resolvedConfig.context.allowedRoots
+      : []
+    if (!roots.length) return false
+    return roots.some((root) => {
+      const normalizedRoot = resolveExistingDir(root)
+      return normalizedRoot && isUnderPath(candidate, normalizedRoot)
+    })
+  }
+
+  async function listReusableProjectsForConnection(session, resolvedConfig, options = {}) {
+    const resolved = resolvedConfig && typeof resolvedConfig === 'object' ? resolvedConfig : session.preparedResolvedConfig
+    const currentCwd = resolveExistingDir(resolved?.cwd || session.projectCwd || session.cwd) || ''
+    const inviteCwd = resolveExistingDir(session?.sessionInvite?.cwd)
+    let rows = []
+    try {
+      rows = await listReusableProjects({
+        cwd: currentCwd,
+        allowedRoots: Array.isArray(resolved?.context?.allowedRoots) ? [...resolved.context.allowedRoots] : [],
+        context: resolved?.context || session.context || {},
+        requestedContext: session.requestedContext || {},
+        connectionId: session.id,
+        remoteIp: session.ip || '',
+        invitedCwd: inviteCwd || ''
+      })
+    } catch (err) {
+      logger(`[lan] reusable projects error: ${err?.message || err}`)
+      throw err
+    }
+
+    const catalog = new Map()
+    const projects = []
+    const seen = new Set()
+    const sourceRows = Array.isArray(rows) ? rows : []
+    for (const row of sourceRows) {
+      const cwd = resolveExistingDir(row?.cwd || row?.path)
+      if (!cwd || seen.has(cwd) || !isProjectAllowedForResolvedConfig(cwd, resolved)) continue
+      // Un enlace temporal comparte exactamente un proyecto: no se convierte
+      // en una puerta para navegar por los recientes del host.
+      if (inviteCwd && cwd !== inviteCwd) continue
+      seen.add(cwd)
+      const id = crypto.randomBytes(18).toString('base64url')
+      const label = trimToString(row?.label || row?.name || path.basename(cwd) || cwd, 180)
+      catalog.set(id, { cwd, label })
+      projects.push({
+        id,
+        label: label || 'Proyecto',
+        lastUsedAt: Number(row?.lastUsedAt || row?.mtime || 0)
+      })
+      if (projects.length >= 50) break
+    }
+
+    session.projectCatalog = catalog
+    const selected = Array.from(catalog.entries()).find(([, entry]) => entry.cwd === (session.projectCwd || currentCwd))
+    if (selected) session.projectCwd = selected[1].cwd
+    return {
+      projects,
+      selectedProjectId: selected ? selected[0] : '',
+      selectedProjectLabel: selected ? selected[1].label : ''
+    }
+  }
+
+  async function sendReusableProjectList(session, payload = {}) {
+    const requestId = trimToString(payload?.requestId || payload?.id, 200)
+    try {
+      const resolved = await ensureSessionPrepared(session, session.req, { force: payload?.forceRefresh === true })
+      const listed = await listReusableProjectsForConnection(session, resolved, { forceRefresh: payload?.forceRefresh === true })
+      safeSend(session.ws, {
+        type: 'project:list',
+        ok: true,
+        requestId: requestId || null,
+        projects: listed.projects,
+        selectedProjectId: listed.selectedProjectId || '',
+        selectedProjectLabel: listed.selectedProjectLabel || ''
+      })
+      return { ok: true, resolved, listed }
+    } catch (err) {
+      safeSend(session.ws, {
+        type: 'project:list',
+        ok: false,
+        requestId: requestId || null,
+        projects: [],
+        error: {
+          code: trimToString(err?.code, 120) || 'PROJECT_LIST_FAILED',
+          message: err?.message || String(err || 'No se pudieron listar proyectos')
+        }
+      })
+      return { ok: false, error: err }
+    }
+  }
+
+  async function handleProjectSelectRequest(session, payload = {}) {
+    const requestId = trimToString(payload?.requestId || payload?.id, 200)
+    if (session.initialized || session.initInFlight) {
+      safeSend(session.ws, {
+        type: 'project:selected',
+        ok: false,
+        requestId: requestId || null,
+        error: {
+          code: 'PROJECT_SWITCH_REQUIRES_RECONNECT',
+          message: 'Desconecta la sesión actual antes de cambiar de proyecto.'
+        }
+      })
+      return
+    }
+    const projectId = trimToString(payload?.projectId || payload?.id, 200)
+    const entry = session.projectCatalog?.get(projectId)
+    if (!entry?.cwd) {
+      safeSend(session.ws, {
+        type: 'project:selected',
+        ok: false,
+        requestId: requestId || null,
+        error: { code: 'PROJECT_NOT_FOUND', message: 'El proyecto ya no está disponible. Refresca la lista.' }
+      })
+      return
+    }
+    session.projectCwd = entry.cwd
+    session.selectedResumeSessionId = ''
+    releaseSessionLock(session, 'project-changed')
+    invalidatePreparedSession(session, 'project-changed')
+    safeSend(session.ws, {
+      type: 'project:selected',
+      ok: true,
+      requestId: requestId || null,
+      projectId,
+      label: entry.label
+    })
+    await sendReusableSessionList(session, { requestId: requestId || null, forceRefresh: true })
+  }
+
   function buildSessionCapabilities(session) {
     const perms = session.permissions || DEFAULT_PERMISSIONS
     return {
@@ -1397,7 +1538,10 @@ function createLanWsServer(options = {}) {
     const publicWs = trimToString(getPublicWsUrl(), 1000)
     const tk = String(getAuthToken() || '')
     let url
-    if (publicClient) {
+    // El cliente público y el WebSocket deben estar configurados juntos. Si
+    // falta uno, devolvemos la URL LAN para no ofrecer un enlace que parece
+    // exterior pero intentaría conectar al puerto 9999 público.
+    if (publicClient && publicWs) {
       try {
         url = new URL(publicClient)
         if (publicWs) url.searchParams.set('wsUrl', publicWs)
@@ -1410,7 +1554,10 @@ function createLanWsServer(options = {}) {
       url.searchParams.set('host', lanIp)
       url.searchParams.set('port', String(port))
     }
-    if (tk) url.searchParams.set('token', tk)
+    // Una invitación ya es una capability temporal. No añadimos el Bearer
+    // persistente al enlace compartido para que una filtración no abra todo el
+    // servidor LAN.
+    if (tk && !extra.invite) url.searchParams.set('token', tk)
     for (const [key, value] of Object.entries(extra || {})) {
       if (value == null || value === '') continue
       url.searchParams.set(key, String(value))
@@ -1422,9 +1569,10 @@ function createLanWsServer(options = {}) {
     if (!running) throw new Error('Activa primero el servidor LAN.')
     const safeCwd = resolveExistingDir(cwd)
     const safeSessionId = sanitizeResumeSessionId(sessionId)
-    const safeCli = sanitizeSessionRowCli(cli, 'claude')
+    const safeCli = sanitizeCliChoice(cli)
     if (!safeCwd) throw new Error('La carpeta de la sesión ya no existe o no es local.')
     if (!safeSessionId) throw new Error('La sesión actual aún no tiene un ID reutilizable.')
+    if (!safeCli) throw new Error('El CLI de la sesión no es válido.')
     const created = sessionInvites.create({
       cwd: safeCwd,
       sessionId: safeSessionId,
@@ -2381,7 +2529,8 @@ function createLanWsServer(options = {}) {
       const resolved = await resolveConfigForConnection({
         req,
         requestedContext: session.requestedContext,
-        sessionInvite: session.sessionInvite
+        sessionInvite: session.sessionInvite,
+        projectCwd: session.projectCwd
       })
       session.preparedResolvedConfig = resolved
       return resolved
@@ -2710,6 +2859,26 @@ function createLanWsServer(options = {}) {
       return
     }
 
+    if (msgType === 'project:list') {
+      sendReusableProjectList(session, payload).catch(() => {})
+      return
+    }
+
+    if (msgType === 'project:select') {
+      handleProjectSelectRequest(session, payload).catch((err) => {
+        safeSend(session.ws, {
+          type: 'project:selected',
+          ok: false,
+          requestId: trimToString(payload?.requestId || payload?.id, 200) || null,
+          error: {
+            code: trimToString(err?.code, 120) || 'PROJECT_SELECT_FAILED',
+            message: err?.message || String(err || 'No se pudo seleccionar el proyecto')
+          }
+        })
+      })
+      return
+    }
+
     if (msgType === 'session:start') {
       handleSessionStartRequest(session, payload).catch((err) => {
         safeSend(session.ws, {
@@ -2850,14 +3019,19 @@ function createLanWsServer(options = {}) {
     })
   }
 
-  async function resolveConfigForConnection({ req, requestedContext, sessionInvite }) {
+  async function resolveConfigForConnection({ req, requestedContext, sessionInvite, projectCwd }) {
     const raw = requestedContext.raw && typeof requestedContext.raw === 'object'
       ? { ...requestedContext.raw }
       : {}
     // El cliente puede actualizar operador/modelo durante el handshake, pero
     // nunca puede sustituir la carpeta o sesión autorizadas por la invitación.
+    // `lanProject` solo se añade desde el catálogo efímero del servidor; jamás
+    // se acepta el valor homónimo enviado por un cliente.
+    delete raw.lanProject
     if (sessionInvite) raw.lanInvite = { ...sessionInvite }
     else delete raw.lanInvite
+    const trustedProjectCwd = resolveExistingDir(projectCwd)
+    if (trustedProjectCwd) raw.lanProject = { cwd: trustedProjectCwd }
     const resolverInput = {
       req,
       requestedContext: {
@@ -3066,7 +3240,7 @@ function createLanWsServer(options = {}) {
 
   function onWsConnection(ws, req) {
     // SEC-C1: verifyClient ya rechaza no-auth en handshake; defensa en profundidad por si bypaseo.
-    if (!isAuthorizedReq(req)) {
+    if (!isAuthorizedReq(req) && !hasValidSessionInvite(req)) {
       try { ws.close(4401, 'unauthorized') } catch {}
       try { ws.terminate?.() } catch {}
       return
@@ -3115,6 +3289,10 @@ function createLanWsServer(options = {}) {
       pendingInputBytes: 0,
       manualSessionSelector,
       sessionInvite,
+      // Se resuelve a través del catálogo efímero `project:list`; nunca se
+      // rellena directamente desde un cwd enviado por el navegador.
+      projectCwd: resolveExistingDir(sessionInvite?.cwd) || '',
+      projectCatalog: new Map(),
       preparedResolvedConfig: null,
       preparePromise: null,
       selectedResumeSessionId: sessionInvite?.sessionId || '',
@@ -3196,7 +3374,7 @@ function createLanWsServer(options = {}) {
       const msgType = trimToString(payload.type, 100).toLowerCase()
 
       if (!session.initialized) {
-        if (msgType.startsWith('session:')) {
+        if (msgType.startsWith('session:') || msgType.startsWith('project:')) {
           onClientPayload(session, payload)
           return
         }
@@ -3338,9 +3516,10 @@ function createLanWsServer(options = {}) {
         }
         return
       }
-      // SEC-C1: todos los endpoints HTTP requieren token cuando getAuthToken() está activo.
-      // El cliente HTML solo se sirve si el visitante ya conoce el token (lo lleva en su URL).
-      if (!isAuthorizedReq(req)) {
+      // SEC-C1: los endpoints HTTP requieren Bearer, salvo la página abierta
+      // con una invitación temporal válida. /status nunca se abre con invite.
+      const inviteAllowedPage = (u.pathname === '/' || u.pathname === '/lan-client.html') && hasValidSessionInvite(req)
+      if (!isAuthorizedReq(req) && !inviteAllowedPage) {
         try { emitAudit('lan-http-auth-rejected', { ip: normalizeRemoteIp(req?.socket?.remoteAddress), path: u.pathname }) } catch {}
         res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer realm="lan"' })
         res.end('unauthorized')
@@ -3396,7 +3575,7 @@ function createLanWsServer(options = {}) {
       host: '0.0.0.0',
       // SEC-C1: rechazar handshake si el token no es válido (no abrir socket).
       verifyClient: (info, cb) => {
-        const ok = isAuthorizedReq(info.req)
+        const ok = isAuthorizedReq(info.req) || hasValidSessionInvite(info.req)
         if (!ok) {
           try { emitAudit('lan-ws-auth-rejected', { ip: normalizeRemoteIp(info.req?.socket?.remoteAddress) }) } catch {}
           return cb(false, 401, 'unauthorized')

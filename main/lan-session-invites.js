@@ -102,6 +102,19 @@ function createLanSessionInvites(options = {}) {
     }
   }
 
+  function has(token) {
+    const key = trim(token, 200)
+    if (!isSafeInviteToken(key)) return false
+    const entry = entries.get(key)
+    const currentTime = Number(now()) || Date.now()
+    if (!entry) return false
+    if (entry.expiresAt <= currentTime || entry.uses >= entry.maxUses) {
+      entries.delete(key)
+      return false
+    }
+    return true
+  }
+
   function revoke(token) {
     return entries.delete(trim(token, 200))
   }
@@ -113,6 +126,7 @@ function createLanSessionInvites(options = {}) {
   return {
     create,
     claim,
+    has,
     revoke,
     clear,
     size: () => entries.size
