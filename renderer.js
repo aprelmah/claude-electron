@@ -68,6 +68,7 @@ const cfgDefaultCli = document.getElementById('cfg-default-cli')
 const cfgClaudeBin = document.getElementById('cfg-claude-bin')
 const cfgClaudeModel = document.getElementById('cfg-claude-model')
 const cfgGitIsolation = document.getElementById('cfg-git-isolation')
+const cfgGitIsolationExcludes = document.getElementById('cfg-git-isolation-excludes')
 const cfgCodexBin = document.getElementById('cfg-codex-bin')
 const cfgWhisperBin = document.getElementById('cfg-whisper-bin')
 const cfgVoiceId = document.getElementById('cfg-voice-id')
@@ -100,6 +101,7 @@ const sessionStripCli = document.getElementById('session-strip-cli')
 const sessionStripTitle = document.getElementById('session-strip-title')
 const sessionStripEdit = document.getElementById('session-strip-edit')
 const sessionStripId = document.getElementById('session-strip-id')
+const sessionStripIsolation = document.getElementById('session-strip-isolation')
 const healthIndicator = document.getElementById('health-indicator')
 const healthGlobalDot = document.getElementById('health-global-dot')
 const healthDotPty = document.getElementById('health-dot-pty')
@@ -2009,6 +2011,15 @@ async function refreshSessionStrip(force = false) {
   sessionMetaRefreshInFlight = true
   try {
     const meta = await window.api.getCurrentSessionMeta()
+    // Chivato de aislamiento: visible SIEMPRE que la sesión corra en worktree.
+    // Fuera de la key de render: se actualiza en cada poll, es barato.
+    if (sessionStripIsolation) {
+      const iso = meta?.gitIsolation
+      sessionStripIsolation.classList.toggle('hidden', !iso)
+      sessionStripIsolation.title = iso
+        ? `Sesión aislada en worktree git\nRama: ${iso.branch}\nCarpeta real: ${iso.realCwd}\nAl cerrar la sesión se fusiona solo. Configurable en Configuración → CLI.`
+        : ''
+    }
     const key = `${meta?.cli || ''}|${meta?.sessionId || ''}|${meta?.title || ''}`
     if (force || key !== sessionMetaLastKey) {
       if (sessionStripEditInput) {
@@ -2383,6 +2394,11 @@ async function refreshSettings() {
   cfgClaudeBin.value = config?.cli?.claudeBin || ''
   if (cfgClaudeModel) cfgClaudeModel.value = config?.cli?.claudeModel || 'opus'
   if (cfgGitIsolation) cfgGitIsolation.checked = config?.cli?.gitSessionIsolation !== false
+  if (cfgGitIsolationExcludes) {
+    cfgGitIsolationExcludes.value = Array.isArray(config?.cli?.gitIsolationExcludes)
+      ? config.cli.gitIsolationExcludes.join('\n')
+      : ''
+  }
   cfgCodexBin.value = config?.cli?.codexBin || ''
   cfgWhisperBin.value = config?.cli?.whisperBin || ''
   await refreshVoiceSettings(config)
@@ -2824,6 +2840,7 @@ btnSaveSettings.addEventListener('click', async () => {
       claudeBin: cfgClaudeBin.value.trim(),
       claudeModel: cfgClaudeModel ? cfgClaudeModel.value.trim() : '',
       gitSessionIsolation: cfgGitIsolation ? Boolean(cfgGitIsolation.checked) : true,
+      gitIsolationExcludes: cfgGitIsolationExcludes ? cfgGitIsolationExcludes.value : [],
       codexBin: cfgCodexBin.value.trim(),
       whisperBin: cfgWhisperBin.value.trim(),
       voiceId: cfgVoiceId ? cfgVoiceId.value : '',

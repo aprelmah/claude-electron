@@ -62,7 +62,7 @@ const { registerBitacoraIpc } = require('./main/bitacora-ipc')
 const { createHealthCollectors } = require('./main/health-collectors')
 const { createSessionListing, projectDirFor } = require('./main/claude-session-listing')
 const { handleOpenTaskSession } = require('./main/telegram-open-task-session')
-const { createSessionGit } = require('./main/session-git')
+const { createSessionGit, cwdExcludedFromIsolation } = require('./main/session-git')
 const { createSessionGitMap } = require('./main/session-git-map')
 const { createSubchatManager } = require('./main/subchat-pty')
 const { createVoiceHelperProcess } = require('./main/voice-helper-process')
@@ -3366,7 +3366,12 @@ app.whenReady().then(async () => {
       sessionGit = createSessionGit({
         worktreesRoot: path.join(app.getPath('userData'), 'worktrees'),
         looksRemotePath,
-        isEnabled: () => appConfig?.cli?.gitSessionIsolation !== false,
+        // Apagado global (toggle) O por carpeta (cli.gitIsolationExcludes):
+        // el aislamiento sigue donde aporta y calla donde molesta.
+        isEnabled: (realCwd) => {
+          if (appConfig?.cli?.gitSessionIsolation === false) return false
+          return !cwdExcludedFromIsolation(realCwd, appConfig?.cli?.gitIsolationExcludes || [])
+        },
         resolveClaudeProjectDir
       })
       // Recuperación tras crash + barrido de huérfanos (fire-and-forget).
@@ -4301,7 +4306,16 @@ ipcMain.handle('get-current-session-meta', (event) => {
   if (!s) {
     return { cli: appConfig.cli.defaultCli || 'claude', cwd: os.homedir(), sessionId: null, title: '(sin sesión)' }
   }
-  return buildCurrentSessionMeta(s)
+  const meta = buildCurrentSessionMeta(s)
+  // Chivato de aislamiento para la topbar: si la sesión corre en worktree,
+  // el usuario tiene que VERLO (rama + carpeta real), no descubrirlo por
+  // archivos que aparecen donde no los busca.
+  if (meta && typeof meta === 'object') {
+    meta.gitIsolation = s.gitWorkspace
+      ? { branch: s.gitWorkspace.branch || '', realCwd: s.gitWorkspace.realCwd || '' }
+      : null
+  }
+  return meta
 })
 
 ipcMain.handle('session:handoff-to-terminal', async (event) => {
@@ -4356,7 +4370,7 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'voiceId', 'voiceRate', 'voiceSilenceMs']
+  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'gitIsolationExcludes', 'voiceId', 'voiceRate', 'voiceSilenceMs']
   const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort', 'notifyBotToken', 'notifyChatId']
   const SAFE_LAN = ['enabled', 'port']
   function pick(src, keys) {

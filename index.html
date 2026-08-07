@@ -328,6 +328,7 @@
     <span id="session-strip-title">Sesión: detectando…</span>
     <button id="session-strip-edit" class="session-strip-edit" title="Editar título de la sesión" aria-label="Editar título de la sesión">✎</button>
     <button id="session-strip-id" class="session-strip-id" title="Copiar UID exacta de sesión" disabled>UID: —</button>
+    <span id="session-strip-isolation" class="session-strip-isolation hidden" title="">🌿 worktree</span>
   </div>
 
   <div id="main">
@@ -502,6 +503,10 @@
           <label class="settings-field">
             <span>Aislamiento git por sesión</span>
             <input id="cfg-git-isolation" type="checkbox" />
+          </label>
+          <label class="settings-field">
+            <span>Carpetas SIN aislamiento (una por línea; vale ~ y subcarpetas)</span>
+            <textarea id="cfg-git-isolation-excludes" rows="3" placeholder="~/Desktop/LUISMI/TURBO-ENERGY RMA&#10;~/Documents"></textarea>
           </label>
           <label class="settings-field">
             <span>CODEX_BIN</span>

@@ -126,6 +126,24 @@ function sanitizeGitSessionIsolation(value, fallback = true) {
   return fallback
 }
 
+// Carpetas excluidas del aislamiento git (una por línea en la UI). Acepta
+// array o string multilínea/comas. Solo rutas absolutas o con ~; tope de 50
+// entradas y 500 chars cada una para que un config roto no infle el JSON.
+function sanitizeGitIsolationExcludes(value) {
+  let items = []
+  if (Array.isArray(value)) items = value
+  else if (typeof value === 'string') items = value.split(/[\n,]+/g)
+  const out = []
+  for (const raw of items) {
+    const s = String(raw || '').trim()
+    if (!s || s.length > 500) continue
+    if (!s.startsWith('/') && !s.startsWith('~')) continue
+    if (!out.includes(s)) out.push(s)
+    if (out.length >= 50) break
+  }
+  return out
+}
+
 // El modo voz NO tiene clave de "arrancado": se enciende siempre desde el botón
 // de la ventana, nunca al abrir la app. Persistir un `voiceEnabled` obligaría a
 // pedir micrófono y reconocimiento de voz en el arranque sin que nadie lo haya
@@ -235,6 +253,7 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
         whisperBin: sanitizeCliBinaryPath(cli.whisperBin),
         claudeModel: sanitizeClaudeModel(cli.claudeModel),
         gitSessionIsolation: sanitizeGitSessionIsolation(cli.gitSessionIsolation),
+        gitIsolationExcludes: sanitizeGitIsolationExcludes(cli.gitIsolationExcludes),
         voiceId: sanitizeVoiceId(cli.voiceId),
         voiceRate: sanitizeVoiceRate(cli.voiceRate),
         voiceSilenceMs: sanitizeVoiceSilenceMs(cli.voiceSilenceMs)
@@ -272,6 +291,7 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
     sanitizeCliBinaryPath,
     sanitizeClaudeModel,
     sanitizeGitSessionIsolation,
+    sanitizeGitIsolationExcludes,
     sanitizeVoiceId,
     sanitizeVoiceRate,
     sanitizeVoiceSilenceMs
@@ -310,6 +330,7 @@ module.exports = {
   sanitizeCliBinaryPath,
   sanitizeClaudeModel,
   sanitizeGitSessionIsolation,
+  sanitizeGitIsolationExcludes,
   sanitizeVoiceId,
   sanitizeVoiceRate,
   sanitizeVoiceSilenceMs

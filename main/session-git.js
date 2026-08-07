@@ -4,6 +4,7 @@
 // arranca sin aislar. Todo git es async con timeout — nunca bloquear el main.
 const path = require('node:path')
 const fs = require('node:fs')
+const os = require('node:os')
 const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
 
@@ -42,7 +43,9 @@ function createSessionGit({
   async function prepareSessionWorkspace({ realCwd }) {
     try {
       if (!realCwd) return null
-      if (typeof isEnabled === 'function' && !isEnabled()) return null
+      // isEnabled recibe el cwd real: el aislamiento puede estar apagado
+      // globalmente O solo para esta carpeta (cli.gitIsolationExcludes).
+      if (typeof isEnabled === 'function' && !isEnabled(realCwd)) return null
       if (looksRemotePath(realCwd)) return null
       if (!(await isGitRepo(realCwd))) return null
       try { await git(['rev-parse', '--verify', 'HEAD'], realCwd) } catch { return null }
@@ -479,4 +482,29 @@ function createSessionGit({
   }
 }
 
-module.exports = { createSessionGit }
+// ¿Está el cwd dentro de alguna carpeta excluida del aislamiento?
+// Comparación por límites de segmento (no por prefijo de string: /a/bc no está
+// dentro de /a/b), insensible a mayúsculas (APFS por defecto) y con `~`
+// expandido. Pura e inyectable para tests.
+function cwdExcludedFromIsolation(realCwd, excludes, { home = os.homedir() } = {}) {
+  if (!realCwd || !Array.isArray(excludes) || !excludes.length) return false
+  const norm = (p) => {
+    let s = String(p || '').trim()
+    if (!s) return ''
+    if (s === '~') s = home
+    else if (s.startsWith('~/')) s = path.join(home, s.slice(2))
+    s = path.resolve(s)
+    if (s.length > 1) s = s.replace(/\/+$/, '')
+    return s.toLowerCase()
+  }
+  const cwd = norm(realCwd)
+  if (!cwd) return false
+  for (const raw of excludes) {
+    const ex = norm(raw)
+    if (!ex) continue
+    if (cwd === ex || cwd.startsWith(ex + path.sep)) return true
+  }
+  return false
+}
+
+module.exports = { createSessionGit, cwdExcludedFromIsolation }

@@ -3292,3 +3292,6 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 /* Búsqueda de contenido en el modal de sesiones */
 .sessions-search-row { padding: 6px 10px 2px; }
 #sessions-search { width: 100%; box-sizing: border-box; }
+
+/* Chivato de aislamiento git en la tira de sesión */
+.session-strip-isolation { font-size: 11px; opacity: 0.75; margin-left: 6px; cursor: help; white-space: nowrap; }
