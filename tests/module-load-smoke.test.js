@@ -38,7 +38,7 @@ describe('humo: whatsapp/*.js', () => {
 })
 
 describe('humo: módulos raíz cargables', () => {
-  for (const f of ['telegram-bridge.js', 'headless-runners.js', 'voice-ui-state.js']) {
+  for (const f of ['telegram-bridge.js', 'headless-runners.js', 'voice-ui-state.js', 'prompt-capture.js']) {
     test(`require ${f}`, requirable(path.join(REPO_ROOT, f)))
   }
 })

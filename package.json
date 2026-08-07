@@ -60,6 +60,7 @@
       "renderer.js",
       "project-picker.js",
       "voice-ui-state.js",
+      "prompt-capture.js",
       "index.html",
       "lan-client.html",
       "styles.css",

@@ -2445,6 +2445,7 @@ async function refreshSettings() {
 function injectToPty(text) {
   if (!text) return
   window.api.writePty(text)
+  try { _promptCapture.noteInjected(text) } catch {}
   term.focus()
 }
 
@@ -4589,65 +4590,11 @@ if (PERF) {
   }, 5000)
 }
 
-// Captura del último prompt enviado al PTY (para "Programar este prompt"). Mantenemos
-// un buffer heurístico: chars imprimibles, soporta backspace y bracketed paste, y al
-// ver \r o \n cuajamos el buffer en lastUserPromptFromTerm.
-let lastUserPromptFromTerm = ''
-let _userInputBuffer = ''
-let _inPaste = false
+// Captura de lo que el usuario escribe en el terminal, para "Programar este prompt".
+// La lógica vive en prompt-capture.js (testeable); aquí solo se alimenta.
+const _promptCapture = window.PromptCapture.createPromptCapture()
 function _absorbUserInput(data) {
-  if (typeof data !== 'string') return
-  let i = 0
-  while (i < data.length) {
-    const c = data[i]
-    // Bracketed paste start: ESC [ 2 0 0 ~
-    if (c === '\x1b' && data.substr(i, 6) === '\x1b[200~') {
-      _inPaste = true
-      i += 6
-      continue
-    }
-    if (c === '\x1b' && data.substr(i, 6) === '\x1b[201~') {
-      _inPaste = false
-      i += 6
-      continue
-    }
-    if (_inPaste) {
-      // Dentro del paste tratamos todo como texto literal (incluido \n).
-      if (c === '\r' || c === '\n') _userInputBuffer += '\n'
-      else _userInputBuffer += c
-      i += 1
-      continue
-    }
-    // ESC + secuencia (flechas, F-keys, etc.): saltar hasta letra final.
-    if (c === '\x1b') {
-      i += 1
-      // skip CSI
-      if (data[i] === '[') {
-        i += 1
-        while (i < data.length && !/[a-zA-Z~]/.test(data[i])) i += 1
-        i += 1
-      }
-      continue
-    }
-    // Backspace o DEL
-    if (c === '\x7f' || c === '\b') {
-      if (_userInputBuffer.length) _userInputBuffer = _userInputBuffer.slice(0, -1)
-      i += 1
-      continue
-    }
-    // Enter
-    if (c === '\r' || c === '\n') {
-      const trimmed = _userInputBuffer.trim()
-      if (trimmed.length >= 2) lastUserPromptFromTerm = trimmed
-      _userInputBuffer = ''
-      i += 1
-      continue
-    }
-    // Ctrl chars: ignorar
-    if (c.charCodeAt(0) < 0x20) { i += 1; continue }
-    _userInputBuffer += c
-    i += 1
-  }
+  _promptCapture.absorb(data)
 }
 
 term.onData((data) => {
@@ -4717,6 +4664,11 @@ window.api.onPtyError((message) => {
 if (typeof window.api.onPtyBusy === 'function') {
   window.api.onPtyBusy((message) => {
     showStatus(String(message || 'Relay activo en Telegram'), 'warn', 1800)
+  })
+}
+if (typeof window.api.onPtyNotice === 'function') {
+  window.api.onPtyNotice((message) => {
+    if (message) showStatus(String(message), 'info', 4000)
   })
 }
 window.api.onTelegramStatus((status) => {
@@ -4909,7 +4861,7 @@ cliSelector.addEventListener('change', async (e) => {
 
     const $ = (id) => modal.querySelector('#' + id)
     $('sp-name').value = 'Tarea sin nombre'
-    $('sp-prompt').value = lastUserPromptFromTerm || ''
+    $('sp-prompt').value = _promptCapture.current()
     const freq = $('sp-freq')
     const cron = $('sp-cron')
     freq.addEventListener('change', () => {
