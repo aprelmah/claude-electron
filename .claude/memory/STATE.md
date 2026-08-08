@@ -2,39 +2,39 @@
 
 > Estado vivo. Lo lee el arranque (Claude y Codex) y lo actualiza el cierre.
 
-_Última actualización: 2026-08-08 (verificado contra git y filesystem en el mismo turno)._
+_Última actualización: 2026-08-08 noche, 2º tramo (verificado contra git y filesystem en el mismo turno)._
 
 ## Estado de entrega (verificado)
 
-- Rama `main`. Último commit: `21911e3 feat(telegram+ui): sesión real siempre, badge de modelo y menú de tareas` (2026-08-08 noche).
-- Tests: `1383` totales, `1377` pass, `0` fail, `6` skip.
-- Deploy: `/Applications/POWER-AGENT.app` **redeployado el 2026-08-08 a las 21:32** (verificado por contenido del asar: `main/session-model-reader.js` dentro). La app está abierta.
+- Rama `main`, **sincronizada con `origin/main`** (0 ahead / 0 behind) y working tree **limpio**.
+- Último commit: `77833cb feat(telegram): el botón ➕ arma el siguiente mensaje como nombre de proyecto` (pusheado).
+- Tests: `1398` totales, `1392` pass, `0` fail, `6` skip.
+- Deploy: `/Applications/POWER-AGENT.app` **redeployado el 2026-08-08 a las 22:21**, verificado por CONTENIDO del asar (`PROJECT_NAME_ARM_TTL_MS` dentro). La app está abierta.
 - Acceso exterior LAN: sin cambios desde el 2026-08-07. No activo, `cloudflared` sin instalar.
 
-## Sesión 2026-08-08 noche — sesión real siempre, badge de modelo, menú de tareas (**probado en vivo por Luismi: OK**)
+## Sesión 2026-08-08 noche — Telegram al mando y badge de modelo
 
-- **Fuera la compactación de 20 turnos** (Telegram/LAN): `compactClaudeSessionIfNeeded` tiraba el sessionId con >30 turnos y arrancaba conversación nueva con los turnos pegados — la real quedaba huérfana y la CLI solo enseñaba 20 turnos (bug con pantallazo de Luismi). El headless resume SIEMPRE la sesión real. No reintroducir.
-- **Badge de modelo en la tira de sesión** (`main/session-model-reader.js`): claude del transcript (último assistant no-sidechain, ignora `<synthetic>`), codex del rollout (último `turn_context`, fichero localizado por la fecha del UUIDv7 ±1 día). Cola de 64KB + caché por stat. Se pinta (`meta.model`), jamás se persiste.
-- **`/tareas` y `/autos` en Telegram** (+ botones en `/menu`): lanzar YA tareas programadas y automatizaciones launchd. Patrón picker de `/proyecto`; pre-chequeo antes de confirmar; resultado por los sinks de siempre.
+Cinco commits (`21911e3..77833cb`), en dos tramos:
 
-## Última sesión — modo voz: no esperar por ruido, y leer mientras escribe
-
-- **El fin de turno ya no usa un umbral absoluto.** El helper cortaba con `voiceThreshold = 0.012` fijo: una tele o gente hablando al lado lo superan, reiniciaban el reloj del silencio y el micro no cerraba nunca. Nuevo `main/voice-endpointer.js` (Node decide, el helper emite `audio-level` cada 100 ms y acepta `{cmd:'endturn'}`), con umbral relativo al suelo de ruido de la sala y a la media de la voz del usuario. El corte absoluto del helper queda como red de seguridad y por construcción nunca dispara antes.
-- **La respuesta se lee a trozos según claude la escribe**, sin esperar al `end_turn`: `splitSpeakableChunk` + `onChunk` en `main/voice-turn-watcher.js`, y `main/voice-speech-queue.js` porque el helper solo maneja una frase a la vez.
-- **Ajuste tras la primera prueba real de Luismi**: el respaldo por texto congelado iba a 1,2 s contra una pausa de silencio de 1,8 s — cortaba ANTES que la pausa, justo al pararse a pensar. Ahora va siempre por detrás (×1,5 o +1,5 s). Tope del slider subido de 3 s a 6 s en los tres sitios (UI, `sanitizeVoiceSilenceMs`, `setSilence` del Swift).
-- **Voces de Siri: cerrado, no se pueden usar.** Investigado con sonda propia, cinco vías. Detalle y datos: `.claude/memory/tech/tech_voces_apple_siri_bloqueadas.md`. Decisión de producto de Luismi: **no** integrar Piper ni Kokoro; la mejora no compensa latencia ni mantenimiento.
-- Reglas nuevas del modo voz documentadas en `CLAUDE.md` del repo (dentro del commit `031d20e`).
+- **Tramo 1 (`21911e3`) — PROBADO EN VIVO por Luismi, OK:**
+  - **Fuera la compactación de 20 turnos** (Telegram/LAN): tiraba el sessionId con >30 turnos y huérfanaba la conversación real — la CLI solo enseñaba 20 turnos. El headless resume SIEMPRE la sesión real. No reintroducir.
+  - **Badge de modelo en la tira de sesión** (`main/session-model-reader.js`): claude del transcript, codex del rollout (localizado por la fecha del UUIDv7 ±1 día). Cola de 64KB + caché por stat. Se pinta, jamás se persiste.
+  - **`/tareas` y `/autos`** en Telegram (+ botones en `/menu`): lanzar YA tareas programadas y automatizaciones. Pre-chequeo antes de confirmar; resultado por los sinks de siempre.
+- **Tramo 2 (`8fa6b5c` + `77833cb`) — desplegado 22:21, SIN probar por Luismi:**
+  - El badge lee también el **`/model` del TUI** (no genera turno; se quedaba con el modelo viejo — pantallazo de Luismi). Gana la señal más reciente: turno assistant o `<local-command-stdout>Set model to X`.
+  - **`/nuevoproyecto <nombre>`**: carpeta bajo `~/Desktop/LUISMI/`, elegida para el chat. Nombre por allowlist estricta (`sanitizeNewProjectName` en `main/session-helpers.js`).
+  - **El botón ➕ del picker ARMA el chat**: el siguiente mensaje de texto es el nombre (bug de UX cazado por Luismi: el nombre a secas viajaba como prompt al CLI). TTL 5 min, cualquier comando desarma, caducado sigue camino normal.
+- Además: **CLAUDE.md GLOBAL (`~/claude-shared/CLAUDE.md`, symlink desde `~/.claude/`) recortado de 61.9k a 14.2k chars** — lo de POWER-AGENT vive SOLO en el runbook de este repo.
 
 ## Próximo paso
 
-- Nada bloqueante: el modo voz queda validado en uso real. Lo siguiente lo marca Luismi.
-- Si con el uso la pausa de 4,5 s se hace larga para frases cortas, bajarla en Configuración → CLI (rango 0,8–6 s). Vive en la config de Luismi; el default del código sigue en 1.800 ms.
-- Si hace falta afinar los umbrales del endpointer, el helper ya emite `audio-level`: se calibra con datos, no a ojo.
+- **Probar el tramo 2**: `/model` en la CLI → badge cambia sin escribir; `/proyecto` → ➕ → nombre a secas → carpeta creada y elegida.
+- Heredados: probar acceso LAN + Cloudflare Tunnel; umbrales del endpointer (razonados, no medidos); `resolveSessionIdForRelay` aún adivina para Telegram (deuda consciente).
 
 ## Notas operativas
 
-- **Los umbrales del endpointer están razonados, NO medidos** (0,28 de la media de voz; 2,2× el suelo de ruido). Es la deuda consciente que dejó esta sesión.
-- La pausa de 4,5 s vive en `~/Library/Application Support/CLAUDE-NOVAK/claude-novak.config.json` (`cli.voiceSilenceMs`), no en el código. Backup: `claude-novak.config.json.bak.2026-08-08`.
-- **Verificar un deploy por el timestamp del asar, nunca por haber lanzado el script.** El 2026-08-08 un `npm run deploy` lanzado por osascript no llegó a ejecutarse y Luismi estuvo probando una build a medias durante media sesión.
-- Sin verificar todavía: `npm run dist`/`build:zip` a secas con el helper de voz (solo se usa `deploy.sh`), y build `arm64`.
-- Reglas duras heredadas: WhatsApp siempre con `X-Auth-Token` y prefijo internacional; state crítico mediante `main/atomic-writes.js`; no ampliar `WA_SAFE_CONFIG_FIELDS`; `package.json` `build.files` es whitelist para `.js` nuevos en raíz.
+- **Patrón nuevo del bridge**: estado "armado" en `pendingPickers` (type `project-name`) para pedir texto libre tras un botón inline — TTL + desarme por comando. Reutilizable para cualquier flujo botón→texto.
+- Badge de modelo en codex: depende de que el rollout esté en el día UUIDv7 ±1 (zona horaria). Si el badge sale vacío con sesión codex vieja, empezar por ahí.
+- Verificar deploys por CONTENIDO del asar (extraer desde scratchpad — `npx asar extract-file` escribe al cwd y una vez pisó `main.js` del repo).
+- La pausa de voz (4,5 s) y los umbrales del endpointer viven en config/`voice-endpointer.js` — sin cambios este tramo.
+- Reglas duras heredadas: WhatsApp siempre con `X-Auth-Token` y prefijo internacional; state crítico mediante `main/atomic-writes.js`; `package.json` `build.files` es whitelist para `.js` nuevos en raíz.
