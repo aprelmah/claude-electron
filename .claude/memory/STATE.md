@@ -11,7 +11,7 @@ _Última actualización: 2026-08-08 (verificado contra git y filesystem en el mi
 - Deploy: `/Applications/POWER-AGENT.app` **redeployado el 2026-08-08 a las 21:32** (verificado por contenido del asar: `main/session-model-reader.js` dentro). La app está abierta.
 - Acceso exterior LAN: sin cambios desde el 2026-08-07. No activo, `cloudflared` sin instalar.
 
-## Sesión 2026-08-08 noche — sesión real siempre, badge de modelo, menú de tareas (pendiente de prueba de Luismi)
+## Sesión 2026-08-08 noche — sesión real siempre, badge de modelo, menú de tareas (**probado en vivo por Luismi: OK**)
 
 - **Fuera la compactación de 20 turnos** (Telegram/LAN): `compactClaudeSessionIfNeeded` tiraba el sessionId con >30 turnos y arrancaba conversación nueva con los turnos pegados — la real quedaba huérfana y la CLI solo enseñaba 20 turnos (bug con pantallazo de Luismi). El headless resume SIEMPRE la sesión real. No reintroducir.
 - **Badge de modelo en la tira de sesión** (`main/session-model-reader.js`): claude del transcript (último assistant no-sidechain, ignora `<synthetic>`), codex del rollout (último `turn_context`, fichero localizado por la fecha del UUIDv7 ±1 día). Cola de 64KB + caché por stat. Se pinta (`meta.model`), jamás se persiste.
