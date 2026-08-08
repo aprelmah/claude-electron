@@ -108,6 +108,7 @@ const sessionStripTitle = document.getElementById('session-strip-title')
 const sessionStripEdit = document.getElementById('session-strip-edit')
 const sessionStripId = document.getElementById('session-strip-id')
 const sessionStripIsolation = document.getElementById('session-strip-isolation')
+const sessionStripModel = document.getElementById('session-strip-model')
 const healthIndicator = document.getElementById('health-indicator')
 const healthGlobalDot = document.getElementById('health-global-dot')
 const healthDotPty = document.getElementById('health-dot-pty')
@@ -2025,6 +2026,14 @@ async function refreshSessionStrip(force = false) {
       sessionStripIsolation.title = iso
         ? `Sesión aislada en worktree git\nRama: ${iso.branch}\nCarpeta real: ${iso.realCwd}\nAl cerrar la sesión se fusiona solo. Configurable en Configuración → CLI.`
         : ''
+    }
+    // Badge de modelo: misma mecánica que el de aislamiento — fuera de la key
+    // de render porque cambia sin que cambien cli/sessionId/título (un /model
+    // a mitad de sesión se ve en el turno siguiente).
+    if (sessionStripModel) {
+      const model = typeof meta?.model === 'string' ? meta.model.trim() : ''
+      sessionStripModel.classList.toggle('hidden', !model)
+      sessionStripModel.textContent = model
     }
     const key = `${meta?.cli || ''}|${meta?.sessionId || ''}|${meta?.title || ''}`
     if (force || key !== sessionMetaLastKey) {

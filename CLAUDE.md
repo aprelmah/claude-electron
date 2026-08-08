@@ -63,6 +63,9 @@ Rama `feat/modo-voz` (40 commits sobre `main`), árbol limpio, **sin push, sin m
 
 ## Relay de Telegram (claude): el JSONL manda, la pantalla no
 
+- **La compactación "últimos 20 turnos" está RETIRADA (2026-08-08) — no reintroducirla.** `compactClaudeSessionIfNeeded` tiraba el sessionId con >30 turnos y arrancaba conversación NUEVA con los turnos pegados como texto: la conversación real quedaba huérfana y abrirla luego en la CLI mostraba solo esos 20 turnos (bug reportado por Luismi con pantallazo). El headless (Telegram y LAN) resume SIEMPRE la sesión real; de los contextos largos se ocupa claude solo.
+- **Badge de modelo en la tira de sesión** (2026-08-08, `main/session-model-reader.js`): el modelo REAL sale del transcript (claude: último evento assistant no-sidechain con `message.model`, ignorando `<synthetic>`) o del rollout (codex: último `turn_context` → model + effort; el fichero se localiza derivando el día de la fecha embebida en el UUIDv7, ±1 día por zona horaria). Lectura SOLO de la cola (64KB) con caché por stat — jamás el fichero entero (lección del relay). Sin turno aún: el `--model` del spawn. Se PINTA (`meta.model` en `get-current-session-meta`), jamás se persiste — misma regla dura de los ids adivinados.
+
 - **Fuente de verdad = transcript**, nunca el TUI. `cleanRelayFallbackText` ya NO se usa en la rama claude: sin texto en el transcript se devuelve error (`RelayEmpty`) en vez de mandar la pantalla raspada. Solo queda vivo para codex.
 - **Fin de turno = `turnComplete`**, o sea: el ÚLTIMO evento `assistant` del turno tiene `stop_reason: 'end_turn'`. `sawEndTurn` a secas no vale — con `tool_use` por medio puede ser cierto mientras el turno sigue vivo. Los eventos con `isSidechain: true` (sub-agentes Task) se ignoran: escriben su propio `end_turn` y cortarían el turno a mitad.
 - **El relay escribe el ENTER APARTE del texto** (2026-08-06, `main/pty-prompt-write.js`): `relayThroughPty` mandaba `message + '\r'` en un solo write y el TUI lo trataba como pegado — el `\r` acababa como salto de línea DENTRO del prompt y el turno se quedaba escrito sin enviar (misma regla dura que el modo voz descubrió el 2026-08-05). Con textos cortos colaba; una transcripción de voz larga lo destapó. Todo write de prompt a un PTY de claude debe pasar por `writePromptThenEnter`.
@@ -288,6 +291,8 @@ Este Mac es Intel → el script usa x64.
   - `/cli claude|codex`
   - `/vinculo` (a qué proyecto/sesión está enganchado el chat: binding PTY vía `onGetLinkStatus` + sesión persistida)
   - `/menu` (botonera inline: cada botón despacha su comando vía callback `mnu:*`)
+  - `/tareas` (lanzar YA una tarea programada: botones inline `tsk:<idx>`, patrón picker de `/proyecto`; pre-chequeo antes de confirmar — tarea borrada o run en curso dan error, no un "Lanzada" falso; el resultado viaja por los sinks de siempre, el bridge no espera al run)
+  - `/autos` (ejecutar YA una automatización launchd instalada: botones `aut:<idx>`, mismo patrón; solo lista `status === 'installed'`)
   - `/modelo` (modelo de Telegram: botones Default/Haiku/Sonnet/Opus para claude vía `mod:*`; codex por argumento; persiste en `telegram.claudeModel`/`codexModel` sin reiniciar el bridge — `onRunQuery` lee la config viva)
   - `/salir` (alias `/desvincular`, `/unlink`), `/cancel`, `/abrir`
 - Al arrancar, el bridge registra los comandos con `setMyCommands` (`_registerCommandMenu`) → botón "Menú" nativo de Telegram junto al campo de texto.

@@ -41,12 +41,12 @@ const {
   safeStat,
   clipText,
   escapeSqlLiteral,
-  escapeForCompactedPrompt,
   extractCodexResumeId,
   extractClaudeResumeId,
   buildResumeArgs
 } = require('./main/session-helpers')
 const { createRecentCwds } = require('./main/recent-cwds')
+const { createSessionModelReader, shortClaudeModel } = require('./main/session-model-reader')
 const { createCodexSessionsIndex } = require('./main/codex-sessions-index')
 const { createLastContext } = require('./main/last-context')
 const { createClaudeSessionsIndex } = require('./main/claude-sessions-index')
@@ -718,14 +718,9 @@ async function runLanSemanticChatTurn({ session, prompt, signal } = {}) {
     return { text: String(result?.text || '').trim(), sessionId: nextSessionId || null }
   }
 
-  const compacted = compactClaudeSessionIfNeeded({
-    sessionId: currentChatSessionId || undefined,
-    prompt: text,
-    cwd
-  })
   const result = await runClaudeHeadless({
-    prompt: compacted.prompt,
-    sessionId: compacted.sessionId || undefined,
+    prompt: text,
+    sessionId: currentChatSessionId || undefined,
     signal,
     cwd,
     model: model || getClaudeModel(),
@@ -2995,6 +2990,44 @@ function initTelegramBridge() {
       if (!healthWatchdog) return { ok: false, error: 'el doctor no está arrancado' }
       return healthWatchdog.runOnce({ force: true, quiet: true })
     },
+    // Late binding: scheduler y automationManager se crean DESPUÉS de este
+    // bridge (mismo patrón que getNotifyBot en los sinks).
+    onListTasks: async () => {
+      if (!tasksScheduler?.persistence) return []
+      const tasks = await tasksScheduler.persistence.loadTasks()
+      return (tasks || []).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled }))
+    },
+    onRunTaskNow: async (taskId) => {
+      if (!tasksScheduler) return { ok: false, error: 'el scheduler no está arrancado' }
+      // Lo que puede fallar YA (tarea borrada, run en curso) se comprueba antes
+      // de confirmar; runNow resuelve al ACABAR el run (minutos) y no se espera
+      // — el resultado viaja por los sinks de la tarea, como un run programado.
+      const task = await tasksScheduler.persistence.getTask(taskId)
+      if (!task) return { ok: false, error: 'tarea no encontrada (¿borrada?)' }
+      if (tasksScheduler.activeRuns.has(taskId)) return { ok: false, error: 'ya hay una ejecución en curso' }
+      tasksScheduler.runNow(taskId).catch((err) => {
+        console.warn('[telegram/tareas] runNow falló:', err?.message || err)
+      })
+      return { ok: true }
+    },
+    onListAutomations: async () => {
+      if (!automationManager) return []
+      const autos = await automationManager.list()
+      return (autos || []).map((a) => ({ id: a.id, name: a.name, slug: a.slug, status: a.status }))
+    },
+    onRunAutomationNow: async (automationId) => {
+      if (!automationManager) return { ok: false, error: 'las automatizaciones no están arrancadas' }
+      const autos = await automationManager.list()
+      const auto = (autos || []).find((a) => a.id === automationId)
+      if (!auto) return { ok: false, error: 'automatización no encontrada' }
+      if (auto.status !== 'installed') return { ok: false, error: 'no está instalada' }
+      automationManager.runOnce(automationId).then((res) => {
+        if (res?.ok === false) console.warn('[telegram/autos] runOnce falló:', res.error || res)
+      }).catch((err) => {
+        console.warn('[telegram/autos] runOnce falló:', err?.message || err)
+      })
+      return { ok: true }
+    },
     onPairingRequest: ({ userId, chatId, username, firstName }) => {
       const res = telegramPairing.requestPairing({ userId, chatId, username, firstName })
       if (res.ok && res.created) {
@@ -3049,9 +3082,8 @@ function initTelegramBridge() {
         // mapea al proyecto donde vive el <sessionId>.jsonl. Localizarlo por
         // sessionId, nunca adivinar por cwd (regla del relay, misma trampa).
         const resumeCwd = resolveResumeCwd(opts.sessionId) || cwd
-        const compacted = compactClaudeSessionIfNeeded({ sessionId: opts.sessionId, prompt: opts?.prompt, cwd: resumeCwd })
         try {
-          return await runClaudeHeadless({ ...opts, ...compacted, cwd: resumeCwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+          return await runClaudeHeadless({ ...opts, cwd: resumeCwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
         } catch (err) {
           if (err?.name === 'AbortError' || !/no conversation found/i.test(String(err?.message || ''))) throw err
           // Sesión huérfana (transcript borrado o ilocalizable): mejor empezar
@@ -3094,8 +3126,7 @@ function initTelegramBridge() {
         throw new Error(`La sesión enlazada de Telegram no está disponible: ${describeRelayUnavailable(binding.session, 'claude')}.`)
       }
 
-      const compacted = compactClaudeSessionIfNeeded({ sessionId: opts?.sessionId, prompt: opts?.prompt, cwd })
-      return runClaudeHeadless({ ...opts, ...compacted, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+      return runClaudeHeadless({ ...opts, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
     },
     onGetActiveCli: async () => getActiveCliSync(),
     onGetCwd: async () => getCwdSync(),
@@ -3197,9 +3228,6 @@ function initTelegramBridge() {
   })
 }
 
-const TG_HISTORY_THRESHOLD = 30
-const TG_HISTORY_KEEP = 20
-
 const codexSessionReader = createCodexSessionReader({
   historyPath: CODEX_HISTORY_PATH,
   sessionIndexPath: CODEX_SESSION_INDEX_PATH,
@@ -3234,6 +3262,27 @@ const {
   buildCurrentSessionMeta
 } = _sessionCache
 
+const sessionModelReader = createSessionModelReader()
+
+// Etiqueta de modelo para la tira de sesión. Verdad = transcript/rollout
+// (un /model a mitad de sesión se refleja en el turno siguiente); sin turno
+// todavía, el --model del spawn. Se PINTA, jamás se persiste en la sesión.
+function resolveSessionModelLabel(session, meta) {
+  if (!meta) return ''
+  if (meta.cli === 'codex') {
+    const ctx = sessionModelReader.readCodexSessionModel(meta.sessionId)
+    if (ctx?.model) return ctx.effort ? `${ctx.model} · ${ctx.effort}` : ctx.model
+    return ''
+  }
+  const fromTranscript = sessionModelReader.readClaudeSessionModel(meta.path)
+  if (fromTranscript) return shortClaudeModel(fromTranscript)
+  const args = Array.isArray(session?.lastPtyArgs) ? session.lastPtyArgs : []
+  const i = args.indexOf('--model')
+  const argModel = i >= 0 ? String(args[i + 1] || '').trim() : ''
+  if (argModel && !argModel.startsWith('--')) return shortClaudeModel(argModel)
+  return ''
+}
+
 function resolveSessionIdForRelay(session) {
   if (!session) return null
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
@@ -3253,44 +3302,11 @@ function resolveSessionIdForRelay(session) {
   return guess?.sessionId || null
 }
 
-function compactClaudeSessionIfNeeded({ sessionId, prompt, cwd }) {
-  if (!sessionId) return { sessionId, prompt }
-  const baseCwd = cwd || getCwdSync()
-  const transcriptPath = path.join(projectDirFor(baseCwd), `${sessionId}.jsonl`)
-  if (!fs.existsSync(transcriptPath)) return { sessionId, prompt }
-
-  let raw
-  try {
-    raw = fs.readFileSync(transcriptPath, 'utf-8')
-  } catch {
-    return { sessionId, prompt }
-  }
-
-  const turns = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    let obj
-    try { obj = JSON.parse(line) } catch { continue }
-    if (obj?.type !== 'user' && obj?.type !== 'assistant') continue
-    const text = extractTurnText(obj)
-    if (!text) continue
-    turns.push({ role: obj.type, text })
-  }
-
-  if (turns.length <= TG_HISTORY_THRESHOLD) return { sessionId, prompt }
-
-  const recent = turns.slice(-TG_HISTORY_KEEP)
-  const transcript = recent
-    .map((t) => `${t.role === 'user' ? 'Usuario' : 'Asistente'}: ${escapeForCompactedPrompt(t.text)}`)
-    .join('\n\n')
-
-  const compactedPrompt =
-    `[Contexto: conversación previa, últimos ${recent.length} turnos]\n\n` +
-    transcript +
-    `\n\n[Nuevo mensaje del usuario]\n${escapeForCompactedPrompt(prompt)}`
-
-  return { sessionId: null, prompt: compactedPrompt }
-}
+// La compactación "últimos 20 turnos" (compactClaudeSessionIfNeeded) se retiró
+// el 2026-08-08: con >30 turnos tiraba el sessionId y arrancaba conversación
+// NUEVA con los turnos pegados como texto — la conversación real quedaba
+// huérfana y abrirla luego en la CLI mostraba solo esos 20 turnos. El headless
+// resume siempre la sesión real; de los contextos largos se ocupa claude.
 
 const { runClaudeHeadless, runCodexHeadless } = createHeadlessRunners({
   cliMeta,
@@ -4482,6 +4498,7 @@ ipcMain.handle('get-current-session-meta', (event) => {
     meta.gitIsolation = s.gitWorkspace
       ? { branch: s.gitWorkspace.branch || '', realCwd: s.gitWorkspace.realCwd || '' }
       : null
+    try { meta.model = resolveSessionModelLabel(s, meta) } catch { meta.model = '' }
   }
   return meta
 })

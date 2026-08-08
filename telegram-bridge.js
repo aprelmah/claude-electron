@@ -234,7 +234,11 @@ class TelegramBridge {
     onListProjects,
     onListSessions,
     onPairingRequest,
-    onRunDoctor
+    onRunDoctor,
+    onListTasks,
+    onRunTaskNow,
+    onListAutomations,
+    onRunAutomationNow
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -254,6 +258,10 @@ class TelegramBridge {
     this.onOpenTaskSession = onOpenTaskSession
     this.onPairingRequest = onPairingRequest
     this.onRunDoctor = onRunDoctor
+    this.onListTasks = onListTasks
+    this.onRunTaskNow = onRunTaskNow
+    this.onListAutomations = onListAutomations
+    this.onRunAutomationNow = onRunAutomationNow
     this.onListProjects = onListProjects
     this.onListSessions = onListSessions
     this.lastRunByChat = new Map()
@@ -816,6 +824,8 @@ class TelegramBridge {
         { command: 'vinculo', description: 'Ver a qué está enganchado este chat' },
         { command: 'status', description: 'Estado del bridge' },
         { command: 'doctor', description: 'Chequeo de salud completo' },
+        { command: 'tareas', description: 'Lanzar una tarea programada ahora' },
+        { command: 'autos', description: 'Ejecutar una automatización ahora' },
         { command: 'abrir', description: 'Abrir la sesión en el Mac' },
         { command: 'reset', description: 'Conversación nueva' },
         { command: 'desvincular', description: 'Cortar el relay PTY' },
@@ -927,6 +937,8 @@ class TelegramBridge {
         '/cancel  -> cancelar respuesta en curso',
         '/cli claude|codex -> cambiar CLI',
         '/abrir   -> abrir en el Mac la sesión del último run programado',
+        '/tareas  -> lanzar una tarea programada ahora',
+        '/autos   -> ejecutar una automatización ahora',
         '/doctor  -> chequeo de salud completo (CLI, bridges, tareas)',
         '',
         'Manda texto normal o una nota de voz para hablar con el CLI activo.'
@@ -997,9 +1009,67 @@ class TelegramBridge {
             [{ text: '📁 Proyecto', callback_data: 'mnu:proyecto' }, { text: '🗂 Sesiones', callback_data: 'mnu:sesiones' }],
             [{ text: '🧠 Modelo', callback_data: 'mnu:modelo' }, { text: '🔗 Vínculo', callback_data: 'mnu:vinculo' }],
             [{ text: '📊 Estado', callback_data: 'mnu:status' }, { text: '🩺 Doctor', callback_data: 'mnu:doctor' }],
+            [{ text: '📌 Tareas', callback_data: 'mnu:tareas' }, { text: '⚙️ Automatizaciones', callback_data: 'mnu:autos' }],
             [{ text: '🖥 Abrir en el Mac', callback_data: 'mnu:abrir' }, { text: '🆕 Conversación nueva', callback_data: 'mnu:reset' }],
             [{ text: '✂️ Desvincular', callback_data: 'mnu:desvincular' }]
           ]
+        }
+      })
+      return
+    }
+
+    if (lower === '/tareas' || lower === '/tasks') {
+      // Mismo patrón que /proyecto: botones con índice (callback_data máx.
+      // 64 bytes), el mapeo real vive en pendingPickers.
+      if (typeof this.onListTasks !== 'function') {
+        await this._sendMessage(chatId, 'Las tareas no están disponibles en esta versión.')
+        return
+      }
+      let tasks = []
+      try { tasks = (await this.onListTasks()) || [] } catch (err) {
+        await this._sendMessage(chatId, `No pude listar las tareas: ${err?.message || err}`)
+        return
+      }
+      if (!tasks.length) {
+        await this._sendMessage(chatId, 'No hay tareas programadas. Se crean en el Mac (botón 📌).')
+        return
+      }
+      const items = tasks.slice(0, 20)
+      this.pendingPickers.set(String(chatId), { type: 'task', items })
+      await this._sendMessage(chatId, 'Tareas programadas — toca una para lanzarla YA:', {
+        reply_markup: {
+          inline_keyboard: items.map((t, i) => ([{
+            text: `▶️ ${String(t.name || t.id).slice(0, 48)}${t.enabled === false ? ' (off)' : ''}`,
+            callback_data: `tsk:${i}`
+          }]))
+        }
+      })
+      return
+    }
+
+    if (lower === '/autos' || lower === '/automatizaciones') {
+      if (typeof this.onListAutomations !== 'function') {
+        await this._sendMessage(chatId, 'Las automatizaciones no están disponibles en esta versión.')
+        return
+      }
+      let autos = []
+      try { autos = (await this.onListAutomations()) || [] } catch (err) {
+        await this._sendMessage(chatId, `No pude listar las automatizaciones: ${err?.message || err}`)
+        return
+      }
+      const installed = autos.filter((a) => a?.status === 'installed')
+      if (!installed.length) {
+        await this._sendMessage(chatId, 'No hay automatizaciones instaladas.')
+        return
+      }
+      const items = installed.slice(0, 20)
+      this.pendingPickers.set(String(chatId), { type: 'automation', items })
+      await this._sendMessage(chatId, 'Automatizaciones — toca una para ejecutarla YA:', {
+        reply_markup: {
+          inline_keyboard: items.map((a, i) => ([{
+            text: `▶️ ${String(a.name || a.slug || a.id).slice(0, 48)}`,
+            callback_data: `aut:${i}`
+          }]))
         }
       })
       return
@@ -1242,6 +1312,51 @@ class TelegramBridge {
         await this._sendMessage(chatId, `No pude cambiar el modelo: ${res.error || 'error'}`)
       } else {
         await this._sendMessage(chatId, `Modelo de claude para Telegram: ${model || 'Default'} (aplica desde el próximo mensaje).`)
+      }
+      return
+    }
+
+    // Lanzar tarea programada YA. El resultado llega por el camino de siempre
+    // (sinks de la tarea: notify bot / bot principal); aquí solo se confirma
+    // el disparo — sin esperar al run, que puede tardar minutos.
+    if (data.startsWith('tsk:')) {
+      const idx = Number(data.slice(4))
+      const item = picker?.type === 'task' ? picker.items[idx] : null
+      if (!item) {
+        await this._sendMessage(chatId, 'Ese listado caducó. Pide /tareas otra vez.')
+        return
+      }
+      this.pendingPickers.delete(key)
+      try {
+        const res = await this.onRunTaskNow?.(item.id)
+        if (res?.ok === false) {
+          await this._sendMessage(chatId, `No pude lanzar «${item.name || item.id}»: ${res.error || 'error'}`)
+          return
+        }
+        await this._sendMessage(chatId, `▶️ Lanzada «${item.name || item.id}». El resultado llega por el aviso de siempre.`)
+      } catch (err) {
+        await this._sendMessage(chatId, `No pude lanzar «${item.name || item.id}»: ${err?.message || err}`)
+      }
+      return
+    }
+
+    if (data.startsWith('aut:')) {
+      const idx = Number(data.slice(4))
+      const item = picker?.type === 'automation' ? picker.items[idx] : null
+      if (!item) {
+        await this._sendMessage(chatId, 'Ese listado caducó. Pide /autos otra vez.')
+        return
+      }
+      this.pendingPickers.delete(key)
+      try {
+        const res = await this.onRunAutomationNow?.(item.id)
+        if (res?.ok === false) {
+          await this._sendMessage(chatId, `No pude ejecutar «${item.name || item.slug}»: ${res.error || 'error'}`)
+          return
+        }
+        await this._sendMessage(chatId, `▶️ Ejecutada «${item.name || item.slug}». Si avisa, lo hará por su canal de siempre.`)
+      } catch (err) {
+        await this._sendMessage(chatId, `No pude ejecutar «${item.name || item.slug}»: ${err?.message || err}`)
       }
       return
     }
