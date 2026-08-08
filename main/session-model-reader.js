@@ -45,9 +45,35 @@ function shortClaudeModel(modelId) {
   return `${family} ${version}`
 }
 
-// Última línea assistant del tail con un model real. Se ignoran sidechains
-// (sub-agentes Task escriben con su propio modelo) y '<synthetic>' (eventos
-// de error del CLI, no un turno del modelo).
+// Un /model en el TUI no genera turno: el cambio solo se ve en el transcript
+// como user event con '<local-command-stdout>Set model to X…'. Sin leer esa
+// línea, el badge se quedaba con el modelo del último turno hasta que
+// escribías otra vez (bug real, pantallazo de Luismi 2026-08-08).
+const MODEL_CMD_RE = /<local-command-stdout>Set model to\s+([^<]+)<\/local-command-stdout>/
+
+function claudeEventText(obj) {
+  const c = obj?.message?.content
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) {
+    return c.map((b) => (typeof b?.text === 'string' ? b.text : '')).join('\n')
+  }
+  return ''
+}
+
+function modelFromLocalCommandStdout(obj) {
+  if (obj?.type !== 'user') return ''
+  const text = claudeEventText(obj)
+  if (!text.includes('Set model to')) return ''
+  const m = MODEL_CMD_RE.exec(text.replace(/\x1b\[[0-9;]*m/g, ''))
+  if (!m) return ''
+  // "Haiku 4.5 and saved as your default…" → "Haiku 4.5"; "Default (recommended)" → "Default"
+  return m[1].split(' and saved')[0].split(' (')[0].trim()
+}
+
+// Última señal de modelo del tail, la MÁS RECIENTE de dos fuentes: un evento
+// assistant con model real (se ignoran sidechains — los sub-agentes Task
+// escriben con su propio modelo — y '<synthetic>', eventos de error del CLI)
+// o un '/model' del TUI (su stdout trae el nombre ya corto).
 function extractClaudeModelFromTail(tailText) {
   const lines = String(tailText || '').split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -55,8 +81,10 @@ function extractClaudeModelFromTail(tailText) {
     if (!line) continue
     let obj
     try { obj = JSON.parse(line) } catch { continue }
-    if (obj?.type !== 'assistant') continue
     if (obj?.isSidechain === true) continue
+    const cmdModel = modelFromLocalCommandStdout(obj)
+    if (cmdModel) return cmdModel
+    if (obj?.type !== 'assistant') continue
     const model = obj?.message?.model
     if (typeof model === 'string' && model && model !== '<synthetic>') return model
   }

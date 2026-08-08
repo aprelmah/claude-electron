@@ -74,9 +74,11 @@ describe('elección de proyecto desde Telegram', () => {
     const msg = bridge._sent[0]
     assert.ok(msg.text.includes('Elige proyecto'))
     const kb = msg.extra.reply_markup.inline_keyboard
-    assert.strictEqual(kb.length, 2)
+    // 2 proyectos + la fila «➕ Nuevo proyecto» (2026-08-08)
+    assert.strictEqual(kb.length, 3)
     assert.strictEqual(kb[0][0].callback_data, 'prj:0')
     assert.ok(kb[0][0].text.includes('turbo e'))
+    assert.strictEqual(kb[2][0].callback_data, 'prj:new')
   })
 
   test('tocar un proyecto lo persiste como cwd del chat y limpia sesiones previas', async () => {

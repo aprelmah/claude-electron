@@ -99,6 +99,21 @@ function buildResumeArgs(cli, sessionId, model = '') {
   return sid ? [...modelArgs, '--resume', sid] : modelArgs
 }
 
+// Nombre de proyecto nuevo llegado por CANAL (Telegram): allowlist estricta,
+// nunca sanear-y-seguir. Sin separadores de ruta ni arranque con punto — el
+// resultado se une a la raíz de proyectos con path.join y ningún nombre debe
+// poder salirse de ella ni crear carpetas ocultas.
+function sanitizeNewProjectName(rawName) {
+  const name = String(rawName || '').trim().replace(/\s+/g, ' ')
+  if (!name) return { ok: false, error: 'nombre vacío' }
+  if (name.length > 60) return { ok: false, error: 'nombre demasiado largo (máx. 60)' }
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(name)) {
+    return { ok: false, error: 'solo letras, números, espacios, ".", "_" y "-" (y sin empezar por punto)' }
+  }
+  if (name.endsWith('.')) return { ok: false, error: 'no puede acabar en punto' }
+  return { ok: true, name }
+}
+
 // Caches con LRU manual: una vez la clave existe se renueva la posición.
 // Capacidad por defecto sensata; quien instancia pasa max.
 function createLruCache(max = 300) {
@@ -133,5 +148,6 @@ module.exports = {
   extractCodexResumeId,
   extractClaudeResumeId,
   buildResumeArgs,
+  sanitizeNewProjectName,
   createLruCache
 }

@@ -238,7 +238,8 @@ class TelegramBridge {
     onListTasks,
     onRunTaskNow,
     onListAutomations,
-    onRunAutomationNow
+    onRunAutomationNow,
+    onCreateProject
   }) {
     this.tmpDir = tmpDir
     this.stateDir = stateDir || tmpDir
@@ -262,6 +263,7 @@ class TelegramBridge {
     this.onRunTaskNow = onRunTaskNow
     this.onListAutomations = onListAutomations
     this.onRunAutomationNow = onRunAutomationNow
+    this.onCreateProject = onCreateProject
     this.onListProjects = onListProjects
     this.onListSessions = onListSessions
     this.lastRunByChat = new Map()
@@ -819,6 +821,7 @@ class TelegramBridge {
       commands: [
         { command: 'menu', description: 'Menú con botones' },
         { command: 'proyecto', description: 'Elegir proyecto' },
+        { command: 'nuevoproyecto', description: 'Crear proyecto nuevo' },
         { command: 'sesiones', description: 'Elegir conversación previa' },
         { command: 'modelo', description: 'Cambiar modelo (Telegram)' },
         { command: 'vinculo', description: 'Ver a qué está enganchado este chat' },
@@ -929,6 +932,7 @@ class TelegramBridge {
         'Comandos:',
         '/status  -> estado del bridge',
         '/proyecto -> elegir proyecto (carpeta) para este chat',
+        '/nuevoproyecto <nombre> -> crear proyecto nuevo y elegirlo',
         '/sesiones -> elegir conversación previa del proyecto',
         '/cwd     -> carpeta actual',
         '/reset   -> empezar conversación nueva (olvida sesión)',
@@ -1231,13 +1235,42 @@ class TelegramBridge {
         .map((p) => (typeof p === 'string' ? p : p?.cwd))
         .filter((p) => typeof p === 'string' && p.trim())
         .slice(0, 10)
-      if (!items.length) {
-        await this._sendMessage(chatId, 'No hay proyectos recientes. Abre alguno en el Mac primero.')
-        return
-      }
       this.pendingPickers.set(String(chatId), { type: 'project', items, ts: Date.now() })
       const keyboard = items.map((cwd, i) => [{ text: this._projectLabel(cwd, items), callback_data: `prj:${i}` }])
-      await this._sendMessage(chatId, 'Elige proyecto:', { reply_markup: { inline_keyboard: keyboard } })
+      keyboard.push([{ text: '➕ Nuevo proyecto', callback_data: 'prj:new' }])
+      await this._sendMessage(chatId, items.length ? 'Elige proyecto:' : 'No hay proyectos recientes.', {
+        reply_markup: { inline_keyboard: keyboard }
+      })
+      return
+    }
+
+    if (lower === '/nuevoproyecto' || lower.startsWith('/nuevoproyecto ')) {
+      if (typeof this.onCreateProject !== 'function') {
+        await this._sendMessage(chatId, 'Crear proyectos no está disponible en esta versión.')
+        return
+      }
+      const name = text.split(/\s+/).slice(1).join(' ').trim()
+      if (!name) {
+        await this._sendMessage(chatId, 'Uso: /nuevoproyecto <nombre>\nEj: /nuevoproyecto mi-web')
+        return
+      }
+      let res
+      try { res = await this.onCreateProject(name) } catch (err) {
+        res = { ok: false, error: err?.message || String(err) }
+      }
+      if (!res?.ok) {
+        await this._sendMessage(chatId, `No pude crear el proyecto: ${res?.error || 'error'}`)
+        return
+      }
+      // Mismo cierre que elegir proyecto en el picker: fuera el relay PTY viejo
+      // y sesión limpia — el siguiente mensaje arranca conversación ahí.
+      try { await this.onUnlinkRelay?.(String(chatId)) } catch {}
+      this._setChatCwd(chatId, res.cwd)
+      this._clearChatSessionIds(chatId)
+      await this._sendMessage(chatId, [
+        res.existed ? `Ya existía — te lo dejo elegido: ${res.cwd}` : `Proyecto creado: ${res.cwd}`,
+        'Escribe y empiezas conversación nueva ahí.'
+      ].join('\n'))
       return
     }
 
@@ -1358,6 +1391,11 @@ class TelegramBridge {
       } catch (err) {
         await this._sendMessage(chatId, `No pude ejecutar «${item.name || item.slug}»: ${err?.message || err}`)
       }
+      return
+    }
+
+    if (data === 'prj:new') {
+      await this._sendMessage(chatId, 'Dime el nombre con: /nuevoproyecto <nombre>\nSe crea donde viven tus proyectos.')
       return
     }
 

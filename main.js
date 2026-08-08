@@ -41,6 +41,7 @@ const {
   safeStat,
   clipText,
   escapeSqlLiteral,
+  sanitizeNewProjectName,
   extractCodexResumeId,
   extractClaudeResumeId,
   buildResumeArgs
@@ -3009,6 +3010,24 @@ function initTelegramBridge() {
         console.warn('[telegram/tareas] runNow falló:', err?.message || err)
       })
       return { ok: true }
+    },
+    // Proyecto nuevo desde el bot: carpeta bajo la raíz de proyectos de Luismi.
+    // Si ya existe no es error — se selecciona (el bridge avisa de que existía).
+    onCreateProject: async (rawName) => {
+      const check = sanitizeNewProjectName(rawName)
+      if (!check.ok) return { ok: false, error: check.error }
+      const root = path.join(os.homedir(), 'Desktop', 'LUISMI')
+      const cwd = path.join(root, check.name)
+      if (!path.resolve(cwd).startsWith(path.resolve(root) + path.sep)) {
+        return { ok: false, error: 'nombre inválido' }
+      }
+      try {
+        if (fs.existsSync(cwd)) return { ok: true, cwd, existed: true }
+        fs.mkdirSync(cwd, { recursive: true })
+        return { ok: true, cwd, existed: false }
+      } catch (err) {
+        return { ok: false, error: err?.message || 'no pude crear la carpeta' }
+      }
     },
     onListAutomations: async () => {
       if (!automationManager) return []

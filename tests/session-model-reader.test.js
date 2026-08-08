@@ -50,6 +50,31 @@ test('extractClaudeModelFromTail: ignora sidechains y synthetic', () => {
   assert.strictEqual(extractClaudeModelFromTail(tail), 'claude-fable-5')
 })
 
+test('extractClaudeModelFromTail: un /model posterior al último turno GANA (con ANSI y sufijo)', () => {
+  const tail = [
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5' } }),
+    JSON.stringify({ type: 'user', message: { content: '<command-name>/model</command-name>' } }),
+    JSON.stringify({ type: 'user', message: { content: '<local-command-stdout>Set model to \x1b[1mHaiku 4.5\x1b[22m and saved as your default for new sessions</local-command-stdout>' } })
+  ].join('\n')
+  assert.strictEqual(extractClaudeModelFromTail(tail), 'Haiku 4.5')
+})
+
+test('extractClaudeModelFromTail: un turno posterior al /model gana él', () => {
+  const tail = [
+    JSON.stringify({ type: 'user', message: { content: '<local-command-stdout>Set model to Haiku 4.5</local-command-stdout>' } }),
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-fable-5' } })
+  ].join('\n')
+  assert.strictEqual(extractClaudeModelFromTail(tail), 'claude-fable-5')
+})
+
+test('extractClaudeModelFromTail: /model con content en array y "Default (recommended)"', () => {
+  const tail = JSON.stringify({
+    type: 'user',
+    message: { content: [{ type: 'text', text: '<local-command-stdout>Set model to Default (recommended)</local-command-stdout>' }] }
+  })
+  assert.strictEqual(extractClaudeModelFromTail(tail), 'Default')
+})
+
 test('extractClaudeModelFromTail: tolera primera línea partida (cola de tail)', () => {
   const tail = 'sistant","message":{"model":"claude-opus-5"}}\n' +
     JSON.stringify({ type: 'assistant', message: { model: 'claude-fable-5' } })
