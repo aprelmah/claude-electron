@@ -1629,6 +1629,10 @@ const voiceSession = createVoiceSession({
   // La voz elegida, LEÍDA en cada consulta: voice-session la reenvía cuando el
   // helper resucita, y el usuario puede haberla cambiado entre medias.
   getVoiceId: () => appConfig?.cli?.voiceId || '',
+  // Misma pausa que se le manda al helper, leída igual de viva: las dos mitades
+  // del corte de turno (el umbral relativo de Node y el absoluto del helper)
+  // tienen que trabajar con el mismo número o una cortaría antes que la otra.
+  getSilenceMs: () => Number(appConfig?.cli?.voiceSilenceMs) || undefined,
   // El modo voz también se apaga SOLO (error fatal del helper, sesión que deja
   // de servir) y por esos caminos no pasa nadie que suelte `voiceOwnerWcId`.
   // Sin esto, el micro queda marcado como ocupado por una ventana que ya no lo

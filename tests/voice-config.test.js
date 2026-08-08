@@ -119,11 +119,15 @@ describe('config del modo voz — sanitizeVoiceSilenceMs (pausa antes de enviar)
     assert.strictEqual(sanitizeVoiceSilenceMs('2500'), '2500')
     assert.strictEqual(sanitizeVoiceSilenceMs(800), '800')
     assert.strictEqual(sanitizeVoiceSilenceMs(3000), '3000')
+    // El techo subió a 6 s el 2026-08-08: con 3 s todavía le cortaba la frase a
+    // Luismi cuando se quedaba pensando.
+    assert.strictEqual(sanitizeVoiceSilenceMs(5000), '5000')
+    assert.strictEqual(sanitizeVoiceSilenceMs(6000), '6000')
   })
 
   test('fuera de rango se acota, no se descarta', () => {
     assert.strictEqual(sanitizeVoiceSilenceMs(100), '800')
-    assert.strictEqual(sanitizeVoiceSilenceMs(99999), '3000')
+    assert.strictEqual(sanitizeVoiceSilenceMs(99999), '6000')
     assert.strictEqual(sanitizeVoiceSilenceMs('0'), '800')
   })
 

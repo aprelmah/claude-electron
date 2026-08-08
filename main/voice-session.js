@@ -32,6 +32,9 @@
 // - retorno de `helper.send` comprobado donde una orden perdida cuelga el
 //   ciclo (la frase y el micro).
 
+const { createVoiceEndpointer, DEFAULT_SILENCE_MS } = require('./voice-endpointer')
+const { createSpeechQueue } = require('./voice-speech-queue')
+
 const VALID_STATES = ['idle', 'listening', 'thinking', 'speaking']
 
 // Guardia de tiempo del estado `speaking`. Solo entra en juego si el helper
@@ -51,9 +54,11 @@ function createVoiceSession({
   sendToTarget,
   getSession,
   getVoiceId,
+  getSilenceMs,
   notifyRenderer,
   onShutdown,
   log,
+  nowFn,
   setTimeoutFn,
   clearTimeoutFn
 } = {}) {
@@ -72,16 +77,33 @@ function createVoiceSession({
   const announceShutdown = typeof onShutdown === 'function' ? onShutdown : () => {}
   const setTimer = typeof setTimeoutFn === 'function' ? setTimeoutFn : setTimeout
   const clearTimer = typeof clearTimeoutFn === 'function' ? clearTimeoutFn : clearTimeout
+  const now = typeof nowFn === 'function' ? nowFn : () => Date.now()
+  const silenceMs = typeof getSilenceMs === 'function' ? getSilenceMs : () => DEFAULT_SILENCE_MS
 
   let enabled = false
   let state = 'idle'
   let forcedMode = null
   let watchHandle = null
-  let speakSeq = 0
-  let speakingId = null
   let speakGuard = null
+  // Hay un turno de claude en vuelo. Distinto del estado: mientras el turno
+  // sigue vivo la máquina está en `thinking` PERO puede estar leyendo avances en
+  // voz alta. Es lo que separa "he terminado esta frase, sigo esperando" de "he
+  // terminado y ya puedo volver a escuchar".
+  let turnLive = false
+  // Si se leyó algo por el camino, el cierre del turno sin texto no es un
+  // "no hay nada que decir": ya se dijo.
+  let leidoEnStreaming = false
+  // Un avance que se quedó a medias (el helper murió con la frase en la boca)
+  // el vigía lo da por dicho en su `remainder`. Al cerrar hay que leer el turno
+  // entero o el usuario se queda sin ese trozo.
+  let releerTurnoEntero = false
   let helperUp = false
   let runId = 0
+  // Quien decide el fin de tu turno. El helper conserva su propio corte por
+  // silencio absoluto como red de seguridad (si este proceso se atasca, el micro
+  // no se queda abierto), pero en la práctica este llega antes: su umbral es
+  // relativo a tu voz y el del helper no.
+  let endpointer = null
 
   // Mismo blindaje que el `safeEmit` de main/voice-helper-process.js, y por el
   // mismo motivo: `notifyRenderer` es código del consumidor y puede lanzar sin
@@ -108,6 +130,26 @@ function createVoiceSession({
     return ok
   }
 
+  // Todo lo que se dice en voz alta pasa por aquí. El helper solo maneja una
+  // frase a la vez, y desde que la respuesta se lee A TROZOS (según claude la
+  // escribe) casi siempre hay una frase esperando a la anterior.
+  const speechQueue = createSpeechQueue({
+    speak: (id, text) => {
+      const ok = sendCmd({ cmd: 'speak', id, text })
+      if (ok) armSpeakGuard(text.length, id)
+      return ok
+    },
+    // La cola se ha quedado sin nada que decir. Si el turno sigue vivo no se
+    // vuelve a escuchar: llegarán más avances y el micro debe seguir cerrado.
+    onIdle: () => {
+      clearSpeakGuard()
+      if (!enabled || turnLive) return
+      leaveSpeaking({ silence: false })
+      listen()
+    },
+    log: trace
+  })
+
   function setState(next) {
     if (!VALID_STATES.includes(next)) return
     if (state === next) return
@@ -117,6 +159,11 @@ function createVoiceSession({
 
   function listen() {
     if (!enabled) return
+    // Endpointer nuevo en cada turno, no solo al encender: la pausa de silencio
+    // es un ajuste vivo (slider de Configuración) y main.js se la manda al
+    // helper sin reiniciar el modo voz. Si aquí se cacheara, las dos mitades del
+    // corte trabajarían con valores distintos.
+    endpointer = createVoiceEndpointer({ silenceMs: Number(silenceMs()) || DEFAULT_SILENCE_MS })
     setState('listening')
     if (!sendCmd({ cmd: 'start' })) {
       // El micro no se ha abierto. El supervisor del helper relanza el proceso
@@ -145,7 +192,7 @@ function createVoiceSession({
   // hay que callarla nosotros o seguiría sonando encima del turno siguiente.
   function leaveSpeaking({ silence }) {
     clearSpeakGuard()
-    speakingId = null
+    speechQueue.clear()
     if (silence) sendCmd({ cmd: 'shutup' })
     setState('listening')
   }
@@ -155,17 +202,22 @@ function createVoiceSession({
   // máquina se queda en `speaking` para siempre: micro cerrado, UI diciendo
   // "hablando" y ni un `final` ni un `empty` la sacan de ahí. `thinking` tiene
   // el tope de 180 s del vigía; `speaking` necesita el suyo.
-  function armSpeakGuard(chars) {
+  function armSpeakGuard(chars, id) {
     clearSpeakGuard()
     const myRun = runId
     const ms = SPEAK_GUARD_BASE_MS + (chars * SPEAK_GUARD_PER_CHAR_MS)
     speakGuard = setTimer(() => {
       speakGuard = null
-      if (!enabled || myRun !== runId || state !== 'speaking') return
-      trace('el helper no avisó del fin de la frase: se rearma el micro')
+      if (!enabled || myRun !== runId) return
+      // Solo si seguimos esperando a ESA frase. Un guardia de una frase que ya
+      // terminó no puede tocar la que esté sonando ahora.
+      if (speechQueue.currentId() !== id) return
+      trace('el helper no avisó del fin de la frase: se sigue con lo siguiente')
       notify({ type: 'warn', message: 'la lectura no avisó de que terminaba; vuelvo a escuchar' })
-      leaveSpeaking({ silence: true })
-      listen()
+      sendCmd({ cmd: 'shutup' })
+      // Por el camino normal: si quedaban frases, sigue; si no, `onIdle` rearma
+      // el micro. Así el guardia no tiene que saber en qué estado estábamos.
+      speechQueue.handleSpeechEnd(id, true)
     }, ms)
   }
 
@@ -183,12 +235,15 @@ function createVoiceSession({
   // prueba real: el helper que no arranca emite `error` con `fatal: true`.
   function shutdown() {
     const estabaEncendida = enabled
-    const estabaHablando = state === 'speaking'
+    // La voz puede estar sonando en `speaking` (respuesta final) o en `thinking`
+    // (avances leídos mientras claude escribe): las dos hay que callarlas.
+    const estabaHablando = state === 'speaking' || speechQueue.isBusy()
     enabled = false
     runId += 1
-    speakingId = null
+    turnLive = false
     helperUp = false
     clearSpeakGuard()
+    speechQueue.clear()
     cancelWatch()
     // Apagar el modo voz calla la frase en curso; no se espera a que acabe.
     if (estabaHablando) sendCmd({ cmd: 'shutup' })
@@ -221,7 +276,8 @@ function createVoiceSession({
 
     enabled = true
     runId += 1
-    speakingId = null
+    turnLive = false
+    speechQueue.clear()
     helperUp = false
     // Tras un error fatal el proceso queda marcado como roto y no vuelve a
     // arrancar jamás. Si el usuario reactiva el modo a mano, se le da otra
@@ -270,6 +326,8 @@ function createVoiceSession({
     const decision = router.routeVoiceText(clean, { forcedMode })
     notify({ type: 'heard', text: clean, mode: decision.mode, reason: decision.reason })
 
+    leidoEnStreaming = false
+    releerTurnoEntero = false
     setState('thinking')
     sendCmd({ cmd: 'stop' })
 
@@ -297,10 +355,27 @@ function createVoiceSession({
     }
 
     cancelWatch()
+    turnLive = true
     watchHandle = watcher.watch({
       sessionId: res.sessionId,
       cwds: res.cwds || [],
       baseOffset: res.baseOffset || 0,
+      // Lectura a trozos MIENTRAS claude escribe. Un turno con herramientas por
+      // medio tarda minutos en cerrar y esperar callado a que termine se hacía
+      // pesado (Luismi, 2026-08-08). El estado sigue siendo `thinking`: el turno
+      // no ha acabado y el micro tiene que seguir cerrado.
+      onChunk: (t) => {
+        if (myRun !== runId || !enabled || state !== 'thinking') return
+        let texto = ''
+        try { texto = speakable(t || '') } catch (err) {
+          trace(`no se pudo preparar un avance para leer: ${err?.message || err}`)
+          return
+        }
+        if (!texto) return
+        leidoEnStreaming = true
+        speechQueue.push(texto)
+        notify({ type: 'saying', text: texto, streaming: true })
+      },
       // Se cancela también aquí, aunque el vigía ya se pare solo al terminar:
       // así el handle se suelta por el MISMO camino en los cinco finales
       // (done, timeout, apagado, error fatal, sesión inválida) y no queda
@@ -331,8 +406,13 @@ function createVoiceSession({
       onTimeout: () => {
         if (myRun !== runId) return
         cancelWatch()
+        turnLive = false
         try {
           notify({ type: 'error', message: 'el turno tardó demasiado' })
+          // Si aún queda algo por leer de los avances, se termina de decir y el
+          // `onIdle` de la cola rearma el micro; cortarlo aquí dejaría la frase
+          // a medias y una orden de habla sin dueño.
+          if (speechQueue.isBusy()) { setState('speaking'); return }
           listen()
         } catch (err) {
           trace(`fallo al vencer el turno de voz: ${err?.message || err}`)
@@ -346,28 +426,40 @@ function createVoiceSession({
     // de apagar, o cuando ya se está hablando otra cosa, no reabre nada.
     if (!enabled || state !== 'thinking') return
 
-    const texto = speakable((result && result.text) || '')
+    turnLive = false
+
+    // `remainder` = lo que el vigía NO entregó ya por el camino. Leer
+    // `result.text` aquí repetiría en voz alta todo lo que se dijo mientras
+    // claude escribía. Un vigía sin streaming no lo trae y se lee el turno
+    // entero, como siempre.
+    const crudo = (result && typeof result.remainder === 'string' && !releerTurnoEntero)
+      ? result.remainder
+      : ((result && result.text) || '')
+    const texto = speakable(crudo)
+
     if (!texto) {
+      // Con la cola aún sonando no se puede rearmar el micro: se entra en
+      // `speaking` y el `onIdle` de la cola lo hará al terminar.
+      if (speechQueue.isBusy()) { setState('speaking'); return }
       // Solo había código, diffs o tablas: no se lee nada y se vuelve a escuchar.
-      notify({ type: 'nothing-to-say' })
+      // Si ya se leyeron avances, no es que no hubiera nada que decir: ya se dijo.
+      if (!leidoEnStreaming) notify({ type: 'nothing-to-say' })
       listen()
       return
     }
 
-    speakSeq += 1
-    const id = `s${speakSeq}`
-    // Si la orden no llega al helper no habrá `speech-end` que esperar: entrar
-    // en `speaking` aquí dejaría la máquina colgada hasta el guardia de tiempo.
-    if (!sendCmd({ cmd: 'speak', id, text: texto })) {
-      notify({ type: 'error', message: 'no se pudo leer la respuesta en voz alta' })
-      listen()
+    const habiaVoz = speechQueue.isBusy()
+    speechQueue.push(texto)
+    // Si el helper rechazó la frase y no quedaba nada sonando, la cola ya avisó
+    // por `onIdle` y estamos escuchando otra vez: entrar en `speaking` aquí
+    // dejaría la máquina colgada esperando un `speech-end` que no va a llegar.
+    if (!speechQueue.isBusy()) {
+      if (!habiaVoz) notify({ type: 'error', message: 'no se pudo leer la respuesta en voz alta' })
       return
     }
 
-    speakingId = id
     setState('speaking')
     notify({ type: 'saying', text: texto })
-    armSpeakGuard(texto.length)
     // MICRO CERRADO MIENTRAS HABLA (cambiado el 2026-08-05 tras la primera
     // prueba real; antes se reabría aquí para tener barge-in por voz).
     //
@@ -410,6 +502,15 @@ function createVoiceSession({
           listen()
           return
         }
+        // Pensando pero leyendo avances: la cola espera un `speech-end` que
+        // murió con el proceso viejo. Se tira lo pendiente (el turno se leerá
+        // entero al cerrar) y se sigue esperando al vigía.
+        if (state === 'thinking' && speechQueue.isBusy()) {
+          clearSpeakGuard()
+          speechQueue.clear()
+          releerTurnoEntero = true
+          return
+        }
         // Pensando no se toca: el vigía sigue leyendo el transcript y el turno
         // se leerá por el proceso nuevo cuando cierre.
         if (state === 'listening') sendCmd({ cmd: 'start' })
@@ -420,8 +521,23 @@ function createVoiceSession({
         return
 
       case 'partial':
+        // Segunda señal del endpointer: si el micro sigue recibiendo ruido pero
+        // el reconocedor no saca palabras nuevas, el turno está terminado.
+        if (enabled && state === 'listening' && endpointer) endpointer.onText(evt.text, now())
         notify({ type: 'partial', text: evt.text })
         return
+
+      case 'audio-level': {
+        // Nivel RMS del micro (un resumen cada ~100 ms, no cada buffer). Solo
+        // cuenta escuchando: mientras piensa el micro está cerrado, y un nivel
+        // rezagado no puede cerrar el turno que ya se está atendiendo.
+        if (!enabled || state !== 'listening' || !endpointer) return
+        const decision = endpointer.onLevel(evt.level, now())
+        if (!decision || !decision.close) return
+        trace(`fin de turno por ${decision.reason}`)
+        sendCmd({ cmd: 'endturn' })
+        return
+      }
 
       case 'final':
         // `onFinal` es async: cualquier fallo suyo se convertiría en un rechazo
@@ -444,16 +560,17 @@ function createVoiceSession({
         // `listening` a mitad de camino. Es una transición ilegal, y el cerrojo
         // está para eso — no para evitar un `start` de más, que el helper ya
         // ignora por su cuenta (`guard !listening`, VoiceHelper.swift:115).
-        if (!enabled || !speakingId || evt.id !== speakingId) return
+        if (!enabled || speechQueue.currentId() !== evt.id) return
         // `finished: false` = síntesis cancelada (barge-in o `shutup` nuestro).
         // Su `user-interrupt` lo emite el hilo de CoreAudio y este evento la
         // cola principal, así que el orden entre ambos depende solo del
         // encolado. Ignorarlo cierra la carrera sin depender de ella: si el
         // `user-interrupt` aún no ha llegado, llegará; y si no llegara nunca,
         // el guardia de tiempo rearma el micro igual.
-        if (evt.finished === false) return
-        leaveSpeaking({ silence: false })
-        listen()
+        if (evt.finished === false) { clearSpeakGuard(); speechQueue.clear(); return }
+        // La cola sigue con lo siguiente; si no queda nada, su `onIdle` rearma
+        // el micro (o no, si el turno aún está vivo y llegarán más avances).
+        speechQueue.handleSpeechEnd(evt.id, true)
         return
 
       case 'user-interrupt':

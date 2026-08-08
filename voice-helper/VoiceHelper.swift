@@ -235,7 +235,32 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         return (sum / Float(n)).squareRoot()
     }
 
+    // Resumen del nivel para Node: el máximo de cada ventana de 100 ms, no cada
+    // buffer (a 1024 frames serían ~47 mensajes por segundo para nada). Node lo
+    // usa para decidir el fin de turno con un umbral relativo a la voz del
+    // usuario (main/voice-endpointer.js); el corte por silencio absoluto de aquí
+    // abajo se queda como red de seguridad por si Node no contesta.
+    //
+    // Ambas variables las toca SOLO el hilo del tap de audio, que es siempre el
+    // mismo: nadie las reinicia desde la cola principal, para no meter una
+    // carrera donde hoy no la hay.
+    private var levelWindowMax: Float = 0
+    private var levelWindowAt: Date?
+    private let levelWindow: TimeInterval = 0.1
+
     private func onAudio(level: Float) {
+        let ahora = Date()
+        levelWindowMax = max(levelWindowMax, level)
+        if let inicio = levelWindowAt {
+            if ahora.timeIntervalSince(inicio) >= levelWindow {
+                emit(["type": "audio-level", "level": Double(levelWindowMax)])
+                levelWindowMax = 0
+                levelWindowAt = ahora
+            }
+        } else {
+            levelWindowAt = ahora
+        }
+
         guard level > voiceThreshold else { return }
 
         // Barge-in: hablas encima → se calla en el acto. Esto es lo que hace
@@ -297,6 +322,16 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         // Node decide si reabrir el micro: mientras Claude piensa, no escuchamos.
     }
 
+    // Cierre pedido por Node, que decide con un umbral relativo a la voz del
+    // usuario y ve además si el reconocedor sigue sacando palabras. Llega antes
+    // que el corte por silencio absoluto de este fichero en cuanto hay ruido de
+    // fondo — y nunca después: el umbral de Node parte del mismo 0,012 y solo
+    // sube, así que si él ve voz, el de aquí también.
+    func endTurn() {
+        guard listening, !finishing else { return }
+        closeTurn()
+    }
+
     func stop() {
         guard listening || finishing else { return }
         stopAudio(); listening = false
@@ -351,7 +386,11 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     // helper no se fía de su stdin. Llega en ms, se guarda en segundos.
     func setSilence(_ ms: Double?) {
         guard let v = ms, v.isFinite else { return }
-        silenceToEndTurn = min(3.0, max(0.8, v / 1000.0))
+        // Techo 6 s, el mismo que sanitizeVoiceSilenceMs en Node. Si aquí se
+        // quedara en 3 s, una pausa configurada de 4-5 s la cortaría ESTE corte
+        // de seguridad antes de que Node llegara a decidir, y el ajuste del
+        // slider no serviría de nada.
+        silenceToEndTurn = min(6.0, max(0.8, v / 1000.0))
     }
 
     // Mismo tope que sanitizeVoiceRate en Node (main/config-store.js): aunque
@@ -579,6 +618,7 @@ func handle(_ line: String) {
         case "authorize": engine.authorize { _ in }
         case "start":  engine.start()
         case "stop":   engine.stop()
+        case "endturn": engine.endTurn()
         case "speak":  engine.speak(id: msg["id"] as? String ?? "", text: msg["text"] as? String ?? "")
         case "shutup": engine.shutUp()
         case "vocab":  engine.setVocabulary(msg["words"] as? [String] ?? [])

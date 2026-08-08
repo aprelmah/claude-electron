@@ -164,14 +164,17 @@ function sanitizeVoiceRate(value) {
 
 // Pausa de silencio (ms) que cierra el turno del modo voz. El 1,1 s medido de
 // estabilización del texto cortaba al usuario al respirar o pensar; el helper
-// usa 1,8 s por defecto. '' = sin preferencia. Acotado a 800–3000: por debajo
-// corta en cada coma, por encima el envío se siente colgado.
+// usa 1,8 s por defecto. '' = sin preferencia. Acotado a 800–6000: por debajo
+// corta en cada coma, y el techo subió de 3 s a 6 s porque 3 s seguían cortando
+// a Luismi cuando se paraba a pensar a mitad de frase (2026-08-08). El precio de
+// una pausa larga es que cada turno tarda eso en salir: es su decisión, con el
+// slider a mano.
 function sanitizeVoiceSilenceMs(value) {
   // Ojo: Number('') === 0. El vacío es "sin preferencia", no "al mínimo".
   if (typeof value === 'string' && !value.trim()) return ''
   const n = typeof value === 'string' ? Number(value) : value
   if (typeof n !== 'number' || !Number.isFinite(n)) return ''
-  return String(Math.min(3000, Math.max(800, Math.round(n))))
+  return String(Math.min(6000, Math.max(800, Math.round(n))))
 }
 
 // Identificador de voz de AVSpeechSynthesis (p. ej.
