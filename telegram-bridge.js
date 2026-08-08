@@ -213,6 +213,10 @@ class TelegramStream {
   }
 }
 
+// Ventana del "siguiente mensaje = nombre del proyecto" tras tocar ➕. Sin
+// TTL, un ➕ olvidado convertiría en carpeta la primera frase del día siguiente.
+const PROJECT_NAME_ARM_TTL_MS = 5 * 60 * 1000
+
 class TelegramBridge {
   constructor({
     tmpDir,
@@ -592,8 +596,22 @@ class TelegramBridge {
     if (!text) return
 
     if (text.startsWith('/')) {
+      // Cualquier comando DESARMA el "siguiente mensaje = nombre de proyecto"
+      // (one-shot a propósito; el resto de pickers sobreviven a comandos).
+      const armed = this.pendingPickers.get(String(chatId))
+      if (armed?.type === 'project-name') this.pendingPickers.delete(String(chatId))
       await this._handleCommand(chatId, text)
       return
+    }
+
+    const armed = this.pendingPickers.get(String(chatId))
+    if (armed?.type === 'project-name') {
+      this.pendingPickers.delete(String(chatId))
+      if (Date.now() - (armed.ts || 0) < PROJECT_NAME_ARM_TTL_MS) {
+        await this._createProjectFlow(chatId, text)
+        return
+      }
+      // Caducó: el mensaje era otra cosa — sigue su camino normal.
     }
 
     await this._enqueueQuery(chatId, text)
@@ -1245,32 +1263,12 @@ class TelegramBridge {
     }
 
     if (lower === '/nuevoproyecto' || lower.startsWith('/nuevoproyecto ')) {
-      if (typeof this.onCreateProject !== 'function') {
-        await this._sendMessage(chatId, 'Crear proyectos no está disponible en esta versión.')
-        return
-      }
       const name = text.split(/\s+/).slice(1).join(' ').trim()
       if (!name) {
         await this._sendMessage(chatId, 'Uso: /nuevoproyecto <nombre>\nEj: /nuevoproyecto mi-web')
         return
       }
-      let res
-      try { res = await this.onCreateProject(name) } catch (err) {
-        res = { ok: false, error: err?.message || String(err) }
-      }
-      if (!res?.ok) {
-        await this._sendMessage(chatId, `No pude crear el proyecto: ${res?.error || 'error'}`)
-        return
-      }
-      // Mismo cierre que elegir proyecto en el picker: fuera el relay PTY viejo
-      // y sesión limpia — el siguiente mensaje arranca conversación ahí.
-      try { await this.onUnlinkRelay?.(String(chatId)) } catch {}
-      this._setChatCwd(chatId, res.cwd)
-      this._clearChatSessionIds(chatId)
-      await this._sendMessage(chatId, [
-        res.existed ? `Ya existía — te lo dejo elegido: ${res.cwd}` : `Proyecto creado: ${res.cwd}`,
-        'Escribe y empiezas conversación nueva ahí.'
-      ].join('\n'))
+      await this._createProjectFlow(chatId, name)
       return
     }
 
@@ -1317,6 +1315,32 @@ class TelegramBridge {
       } catch {}
     }
     return `${when}${s.preview}`.slice(0, 48)
+  }
+
+  // Crear proyecto y dejarlo elegido — compartido por /nuevoproyecto y por el
+  // "siguiente mensaje = nombre" que arma el botón ➕ del picker.
+  async _createProjectFlow(chatId, name) {
+    if (typeof this.onCreateProject !== 'function') {
+      await this._sendMessage(chatId, 'Crear proyectos no está disponible en esta versión.')
+      return
+    }
+    let res
+    try { res = await this.onCreateProject(name) } catch (err) {
+      res = { ok: false, error: err?.message || String(err) }
+    }
+    if (!res?.ok) {
+      await this._sendMessage(chatId, `No pude crear el proyecto: ${res?.error || 'error'}\nPrueba otra vez con /nuevoproyecto <nombre>.`)
+      return
+    }
+    // Mismo cierre que elegir proyecto en el picker: fuera el relay PTY viejo
+    // y sesión limpia — el siguiente mensaje arranca conversación ahí.
+    try { await this.onUnlinkRelay?.(String(chatId)) } catch {}
+    this._setChatCwd(chatId, res.cwd)
+    this._clearChatSessionIds(chatId)
+    await this._sendMessage(chatId, [
+      res.existed ? `Ya existía — te lo dejo elegido: ${res.cwd}` : `Proyecto creado: ${res.cwd}`,
+      'Escribe y empiezas conversación nueva ahí.'
+    ].join('\n'))
   }
 
   async _handleCallback(cb) {
@@ -1395,7 +1419,14 @@ class TelegramBridge {
     }
 
     if (data === 'prj:new') {
-      await this._sendMessage(chatId, 'Dime el nombre con: /nuevoproyecto <nombre>\nSe crea donde viven tus proyectos.')
+      if (typeof this.onCreateProject !== 'function') {
+        await this._sendMessage(chatId, 'Crear proyectos no está disponible en esta versión.')
+        return
+      }
+      // Armar: el siguiente mensaje de texto ES el nombre (bug de UX real,
+      // 2026-08-08: Luismi escribió el nombre a secas y viajó como prompt).
+      this.pendingPickers.set(key, { type: 'project-name', ts: Date.now() })
+      await this._sendMessage(chatId, 'Dime el nombre del proyecto en tu siguiente mensaje (o /cancel para dejarlo).')
       return
     }
 

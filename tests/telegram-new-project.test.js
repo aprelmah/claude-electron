@@ -95,13 +95,58 @@ describe('/nuevoproyecto', () => {
     assert.match(bridge._sentMessages[0].text, /no está disponible/)
   })
 
-  test('el picker de /proyecto lleva el botón ➕ y prj:new explica el uso', async () => {
-    const bridge = makeBridge({ onListProjects: async () => ['/Users/isabel/Desktop/LUISMI/uno'] })
+  test('el picker de /proyecto lleva el botón ➕ y prj:new ARMA el siguiente mensaje', async () => {
+    const bridge = makeBridge({
+      onListProjects: async () => ['/Users/isabel/Desktop/LUISMI/uno'],
+      onCreateProject: async (name) => ({ ok: true, cwd: `/Users/isabel/Desktop/LUISMI/${name}`, existed: false })
+    })
     await bridge._handleCommand('999', '/proyecto')
     const flat = bridge._sentMessages[0].extra.reply_markup.inline_keyboard.flat()
     assert.ok(flat.some((b) => b.callback_data === 'prj:new'))
     await bridge._handleCallback({ id: 'cb1', data: 'prj:new', from: { id: 999 }, message: { chat: { id: 999 } } })
-    assert.match(bridge._sentMessages.at(-1).text, /\/nuevoproyecto <nombre>/)
+    assert.match(bridge._sentMessages.at(-1).text, /siguiente mensaje/)
+    assert.strictEqual(bridge.pendingPickers.get('999')?.type, 'project-name')
+  })
+
+  test('armado: el siguiente mensaje a secas CREA el proyecto, no va al CLI (bug de UX 2026-08-08)', async () => {
+    const queries = []
+    const bridge = makeBridge({
+      onCreateProject: async (name) => ({ ok: true, cwd: `/Users/isabel/Desktop/LUISMI/${name}`, existed: false })
+    })
+    bridge._enqueueQuery = async (chatId, text) => { queries.push(text) }
+    await bridge._handleCallback({ id: 'cb1', data: 'prj:new', from: { id: 999 }, message: { chat: { id: 999 } } })
+    await bridge._handleUpdate({ message: { chat: { id: 999 }, from: { id: 999 }, text: 'Prueba PROYECTO' } })
+    assert.deepStrictEqual(queries, [])
+    assert.match(bridge._sentMessages.at(-1).text, /Proyecto creado: .*Prueba PROYECTO/)
+    assert.strictEqual(bridge._getChatCwd('999'), '/Users/isabel/Desktop/LUISMI/Prueba PROYECTO')
+    assert.strictEqual(bridge.pendingPickers.get('999'), undefined)
+  })
+
+  test('armado + comando → se desarma y el mensaje siguiente viaja como prompt normal', async () => {
+    const queries = []
+    const bridge = makeBridge({
+      onCreateProject: async () => ({ ok: true, cwd: '/x', existed: false })
+    })
+    bridge._enqueueQuery = async (chatId, text) => { queries.push(text) }
+    await bridge._handleCallback({ id: 'cb1', data: 'prj:new', from: { id: 999 }, message: { chat: { id: 999 } } })
+    await bridge._handleUpdate({ message: { chat: { id: 999 }, from: { id: 999 }, text: '/cancel' } })
+    assert.strictEqual(bridge.pendingPickers.get('999'), undefined)
+    await bridge._handleUpdate({ message: { chat: { id: 999 }, from: { id: 999 }, text: 'hola de nuevo' } })
+    assert.deepStrictEqual(queries, ['hola de nuevo'])
+  })
+
+  test('armado caducado (TTL) → el mensaje sigue su camino normal, no crea carpeta', async () => {
+    const queries = []
+    let created = 0
+    const bridge = makeBridge({
+      onCreateProject: async () => { created++; return { ok: true, cwd: '/x', existed: false } }
+    })
+    bridge._enqueueQuery = async (chatId, text) => { queries.push(text) }
+    bridge.pendingPickers.set('999', { type: 'project-name', ts: Date.now() - 6 * 60 * 1000 })
+    await bridge._handleUpdate({ message: { chat: { id: 999 }, from: { id: 999 }, text: 'esto era un prompt' } })
+    assert.strictEqual(created, 0)
+    assert.deepStrictEqual(queries, ['esto era un prompt'])
+    assert.strictEqual(bridge.pendingPickers.get('999'), undefined)
   })
 
   test('sin proyectos recientes el picker sale igual, solo con ➕', async () => {

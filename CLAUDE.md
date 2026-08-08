@@ -284,7 +284,7 @@ Este Mac es Intel → el script usa x64.
 - Comandos soportados:
   - `/help`
   - `/status`
-  - `/proyecto` (elegir proyecto del chat, botones inline; botón «➕ Nuevo proyecto» → `/nuevoproyecto`)
+  - `/proyecto` (elegir proyecto del chat, botones inline; el botón «➕ Nuevo proyecto» ARMA el chat: el siguiente mensaje de texto es el nombre — TTL 5 min, cualquier comando desarma; bug de UX real 2026-08-08, el nombre a secas viajaba como prompt)
   - `/nuevoproyecto <nombre>` (crea la carpeta bajo `~/Desktop/LUISMI/` y la deja elegida para el chat; nombre por allowlist estricta — `sanitizeNewProjectName` en `main/session-helpers.js`, sin separadores de ruta ni carpetas ocultas; si ya existe, se selecciona avisando)
   - `/sesiones` (elegir conversación previa del proyecto, botones inline)
   - `/cwd`
