@@ -31,11 +31,20 @@
 
 - La persona de WhatsApp se edita en **Configuración WhatsApp → General** (textarea bajo la ruta; guarda solo si cambió, y después de la config por si cambió `personaPath`). El botón 👤 de la cabecera y su modal se eliminaron (`147a829`) — un solo sitio de edición.
 
-## Qué NO tiene persona hoy (decisión pendiente)
+## Qué NO tenía persona en v1 (SUPERADO por la v2 de abajo)
 
-- Sub-chat desechable (spawn propio en `subchat-pty`, no pasa por `buildClaudeLocalArgs`).
-- Sesiones headless / pool de Telegram.
+- Sub-chat desechable y sesiones headless/pool de Telegram no recibían el flag. Con la v2 (env heredada + hook) SÍ reciben la persona viva.
 
 ## Riesgo abierto
 
 - Los MCPs marcados en el perfil gatean en LAN/enterprise (`allowedMcpServers`), pero **no está verificado que tengan efecto alguno en sesiones locales** (el spawn local no pasa `--mcp-config`). Ver STATE.md.
+
+## v2 (mismo día): persona VIVA por hook — supera al flag en local
+
+Luismi necesitaba cambiar de persona EN MITAD de una sesión abierta ("ahora senior, ahora experto en ventas") sin reiniciar. El flag del spawn no puede: el system prompt de una sesión arrancada es inmutable.
+
+- **Mecánica**: la app escribe la persona del perfil activo en `userData/active-persona.md` (al arrancar y en cada create/update/delete/set-active de perfiles, vía wrapper del `profilesApi` en main.js). Todos los spawns heredan `POWERAGENT_PERSONA_FILE` por `process.env`. El hook `~/.claude/hooks/poweragent-persona.sh` (UserPromptSubmit en `~/.claude/settings.json`) lee el fichero en CADA mensaje y lo emite por stdout → claude lo recibe como contexto invisible.
+- **Efecto**: cambiar el desplegable de perfil aplica en el SIGUIENTE mensaje, en sesiones ya abiertas. Sin env var (sesiones fuera de la app) el hook es un no-op silencioso — probado en ambos sentidos con `claude -p`.
+- **Reparto de fuentes**: local/subchat/tareas/headless de la app → hook (fuente única; el flag se quitó de `buildClaudeLocalArgs`). LAN → sigue con `--append-system-prompt` (persona de operador) y `delete lanEnv.POWERAGENT_PERSONA_FILE` para no mezclar. WhatsApp → intacto (`--setting-sources ''` no carga hooks).
+- **Regla**: para contexto que deba poder CAMBIAR durante la vida de una sesión, el canal es un hook UserPromptSubmit + fichero de estado; los flags del spawn son solo para lo inmutable.
+- CLAUDE.md queda para lo invariable (normas, seguridad, idioma); la personalidad la gobierna el perfil.
