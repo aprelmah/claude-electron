@@ -1690,6 +1690,36 @@ body.layout-split #terminal-wrap { flex: 1; }
   white-space: nowrap;
 }
 
+.profile-mcps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.profile-mcps-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.profile-mcps-grid label:hover {
+  background: var(--bg3);
+}
+
+.profile-mcps-grid input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
 .enterprise-body {
   padding: 12px 16px;
   overflow: auto;

@@ -722,31 +722,17 @@
         <div class="profiles-form-panel">
           <label class="settings-field">
             <span>Nombre</span>
-            <input id="profile-name" type="text" placeholder="Nombre del perfil" />
+            <input id="profile-name" type="text" placeholder="Frontend, Backend, Auditoría…" />
           </label>
           <label class="settings-field">
-            <span>Ruta a CLAUDE.md</span>
-            <div class="profile-path-row">
-              <input id="profile-claude-md" type="text" placeholder="/ruta/a/CLAUDE.md" />
-              <button id="btn-pick-profile-claude-md" class="icon-btn text-btn" type="button">Elegir</button>
-            </div>
+            <span>Persona del perfil</span>
+            <textarea id="profile-persona-prompt" class="profile-persona-input" placeholder="Instrucciones de personalidad para este perfil (ej: 'Actúa como especialista en frontend')."></textarea>
           </label>
-          <label class="settings-field">
-            <span>Servidores MCP del perfil (separados por comas)</span>
-            <input id="profile-mcps" type="text" placeholder="filesystem, github, slack" />
-          </label>
-          <label class="settings-field">
-            <span>Directorio de trabajo</span>
-            <div class="profile-path-row">
-              <input id="profile-cwd" type="text" placeholder="/ruta/de/trabajo" />
-              <button id="btn-pick-profile-cwd" class="icon-btn text-btn" type="button">Elegir</button>
-            </div>
-          </label>
-          <label class="settings-field">
-            <span>Persona del perfil (opcional)</span>
-            <textarea id="profile-persona-prompt" class="profile-persona-input" placeholder="Instrucciones de personalidad para este perfil (fallback cuando el operador no tenga persona propia)."></textarea>
-          </label>
-          <div id="profile-form-note" class="settings-note">El perfil Personal no se puede borrar.</div>
+          <div class="settings-field">
+            <span>Servidores MCP disponibles para este perfil</span>
+            <div id="profile-mcps-checkboxes" class="profile-mcps-grid"></div>
+          </div>
+          <div id="profile-form-note" class="settings-note">El perfil Personal no se puede borrar. Cambiar de perfil actualiza persona + MCPs al instante.</div>
         </div>
       </div>
       <div class="settings-actions">

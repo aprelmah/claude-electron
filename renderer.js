@@ -135,13 +135,10 @@ const btnProfileNew = document.getElementById('btn-profile-new')
 const btnProfileDelete = document.getElementById('btn-profile-delete')
 const btnProfileSave = document.getElementById('btn-profile-save')
 const profileNameInput = document.getElementById('profile-name')
-const profileClaudeMdInput = document.getElementById('profile-claude-md')
-const profileMcpsInput = document.getElementById('profile-mcps')
-const profileCwdInput = document.getElementById('profile-cwd')
 const profilePersonaPromptInput = document.getElementById('profile-persona-prompt')
 const profileFormNote = document.getElementById('profile-form-note')
-const btnPickProfileClaudeMd = document.getElementById('btn-pick-profile-claude-md')
-const btnPickProfileCwd = document.getElementById('btn-pick-profile-cwd')
+const profileMcpsCheckboxesContainer = document.getElementById('profile-mcps-checkboxes')
+const AVAILABLE_MCP_SERVERS = ['filesystem', 'github', 'slack', 'supabase', 'google-drive', 'google-calendar', 'gmail-luismi']
 const remoteSessionsPanel = document.getElementById('remote-sessions-panel')
 const remoteSessionsListEl = document.getElementById('remote-sessions-list')
 const remoteSessionsEmptyEl = document.getElementById('remote-sessions-empty')
@@ -1213,14 +1210,11 @@ async function refreshProfilesState() {
 }
 
 function readProfileForm() {
+  const mcpsCheckboxes = profileMcpsCheckboxesContainer?.querySelectorAll('input[type="checkbox"]:checked') || []
+  const selectedMcps = Array.from(mcpsCheckboxes).map((cb) => cb.value)
   return {
     name: profileNameInput?.value?.trim() || '',
-    claudeMdPath: profileClaudeMdInput?.value?.trim() || '',
-    mcpServers: (profileMcpsInput?.value || '')
-      .split(',')
-      .map((v) => v.trim())
-      .filter(Boolean),
-    cwd: profileCwdInput?.value?.trim() || '',
+    mcpServers: selectedMcps,
     personaPrompt: profilePersonaPromptInput?.value || ''
   }
 }
@@ -1228,15 +1222,28 @@ function readProfileForm() {
 function fillProfileForm(profile) {
   if (!profile) return
   profileNameInput.value = profile.name || ''
-  profileClaudeMdInput.value = profile.claudeMdPath || ''
-  profileMcpsInput.value = Array.isArray(profile.mcpServers) ? profile.mcpServers.join(', ') : ''
-  profileCwdInput.value = profile.cwd || ''
   if (profilePersonaPromptInput) profilePersonaPromptInput.value = profile.personaPrompt || ''
+
+  const selectedMcps = new Set(Array.isArray(profile.mcpServers) ? profile.mcpServers : [])
+  if (profileMcpsCheckboxesContainer) {
+    profileMcpsCheckboxesContainer.innerHTML = ''
+    for (const mcp of AVAILABLE_MCP_SERVERS) {
+      const label = document.createElement('label')
+      const checkbox = document.createElement('input')
+      checkbox.type = 'checkbox'
+      checkbox.value = mcp
+      checkbox.checked = selectedMcps.has(mcp)
+      label.appendChild(checkbox)
+      label.appendChild(document.createTextNode(mcp))
+      profileMcpsCheckboxesContainer.appendChild(label)
+    }
+  }
+
   const locked = profile.id === DEFAULT_PROFILE_ID
   btnProfileDelete.disabled = locked
   if (profileFormNote) {
     profileFormNote.textContent = locked
-      ? 'El perfil Personal no se puede borrar.'
+      ? 'El perfil Personal no se puede borrar. Cambiar de perfil actualiza persona + MCPs al instante.'
       : 'Puedes borrar este perfil cuando quieras.'
   }
 }
@@ -1283,29 +1290,11 @@ async function applyProfileChange(newProfileId) {
     return false
   }
   profilesState = copyProfilesState(result)
+  const next = getActiveProfile()
   renderProfileSelector()
   renderProfileReminder()
-  const next = getActiveProfile()
-  showStatus(`Cambiando perfil: ${next?.name || newProfileId}…`, 'busy')
-  const restartCwd = next?.cwd || await window.api.ptyCwd()
-  try {
-    await fullRestart(restartCwd)
-    if (next?.cwd) {
-      try { await setRoot(next.cwd) } catch {}
-    }
-    await updateCwdLabel()
-    await refreshSessionStrip(true)
-    await refreshHealth(true)
-    showStatus(`Perfil activo: ${next?.name || newProfileId}`, 'ok', 2000)
-    return true
-  } catch (err) {
-    await window.api.setActiveProfile(previousId)
-    await refreshProfilesState()
-    renderProfileSelector()
-    renderProfileReminder()
-    showStatus(errorMessage(err), 'error', 6500)
-    return false
-  }
+  showStatus(`Perfil: ${next?.name || newProfileId}`, 'ok', 1500)
+  return true
 }
 
 if (profileReminder) {
@@ -2809,19 +2798,6 @@ if (btnProfileDelete) {
   })
 }
 
-if (btnPickProfileClaudeMd) {
-  btnPickProfileClaudeMd.addEventListener('click', async () => {
-    const picked = await window.api.pickProfileClaudeMd()
-    if (picked) profileClaudeMdInput.value = picked
-  })
-}
-
-if (btnPickProfileCwd) {
-  btnPickProfileCwd.addEventListener('click', async () => {
-    const picked = await window.api.pickProfileCwd()
-    if (picked) profileCwdInput.value = picked
-  })
-}
 
 if (btnCloseEnterprise) btnCloseEnterprise.addEventListener('click', closeEnterpriseModal)
 enterpriseModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeEnterpriseModal)
