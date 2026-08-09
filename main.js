@@ -58,6 +58,7 @@ const { createWindowFactory } = require('./main/window-factory')
 const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
 const { registerTasksIpc } = require('./main/tasks-ipc')
 const { registerSkillsIpc } = require('./main/skills-ipc')
+const { registerKbIpc } = require('./main/kb-ipc')
 const { registerDelegationIpc } = require('./main/delegation-ipc')
 const { registerProfilesEnterpriseIpc } = require('./main/profiles-enterprise-ipc')
 const { registerAutomationsIpc } = require('./main/automations-ipc')
@@ -4885,6 +4886,21 @@ registerSkillsIpc({
   ipcMain,
   getUserDataDir: () => app.getPath('userData'),
   getDefaultCwd: () => getCwdSync()
+})
+
+registerKbIpc({
+  ipcMain,
+  shell,
+  getDefaultCwd: () => getCwdSync(),
+  runClaudeHeadless: (opts) => runClaudeHeadless(opts),
+  getModel: () => getClaudeModel(),
+  getUserDataDir: () => app.getPath('userData'),
+  sendPromptToSession: async (event, text) => {
+    const session = getSessionByEvent(event)
+    if (!session || !session.pty) throw new Error('no hay sesión PTY activa en esta ventana')
+    await writePromptThenEnter((chunk) => session.pty.write(chunk), text)
+  },
+  log: (msg) => console.log(msg)
 })
 
 registerDelegationIpc({

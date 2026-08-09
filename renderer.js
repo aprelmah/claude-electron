@@ -4377,6 +4377,340 @@ if (btnDoctorRun) {
 if (btnCloseStatusPanel) btnCloseStatusPanel.addEventListener('click', closeStatusPanel)
 statusPanelModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeStatusPanel)
 
+// --- Panel 📚 Conocimiento del proyecto ---
+const btnKb = document.getElementById('btn-kb')
+const kbModal = document.getElementById('kb-modal')
+const kbBody = document.getElementById('kb-body')
+const kbSub = document.getElementById('kb-sub')
+const kbProgressEl = document.getElementById('kb-progress')
+const btnCloseKb = document.getElementById('btn-close-kb')
+let kbCwd = ''
+let kbBusy = false
+let kbProgressSubscribed = false
+let kbPendingApply = []
+let kbShortcutFormOpen = false
+
+function kbFmtSize(bytes) {
+  if (bytes == null) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  return `${(bytes / 1024).toFixed(1)} KB`
+}
+
+// El conocimiento pertenece al PROYECTO visible en el picker (título = ruta
+// completa), no al cwd del PTY: sin sesión arrancada el PTY devuelve el home, y
+// en worktree devolvería la copia aislada — escribir fichas ahí sería perderlas.
+async function kbResolveCwd() {
+  const uiCwd = (cwdValue?.title || '').trim()
+  if (uiCwd) return uiCwd
+  try { return await window.api.ptyCwd() } catch { return '' }
+}
+
+function kbProgressLine(text, cls) {
+  if (!kbProgressEl) return
+  kbProgressEl.classList.remove('hidden')
+  const div = document.createElement('div')
+  if (cls) div.className = cls
+  div.textContent = text
+  kbProgressEl.appendChild(div)
+  kbProgressEl.scrollTop = kbProgressEl.scrollHeight
+}
+
+function kbSection(title) {
+  const div = document.createElement('div')
+  div.className = 'kb-section-title'
+  div.textContent = title
+  kbBody.appendChild(div)
+}
+
+async function refreshKbPanel() {
+  if (!kbBody) return
+  let data
+  try {
+    data = await window.api.kb.list(kbCwd)
+  } catch (err) {
+    data = { ok: false, error: err?.message || String(err) }
+  }
+  kbBody.innerHTML = ''
+  if (!data.ok) {
+    const div = document.createElement('div')
+    div.className = 'kb-empty'
+    div.textContent = `Error: ${data.error}`
+    kbBody.appendChild(div)
+    return
+  }
+
+  kbSection('Fichas (se precargan al abrir sesión)')
+  if (!data.fichas.length) {
+    const div = document.createElement('div')
+    div.className = 'kb-empty'
+    div.textContent = data.claudeMdExists
+      ? `El CLAUDE.md de ${kbCwd} no tiene fichas importadas todavía.`
+      : `${kbCwd} aún no tiene conocimiento. Arrastra un PDF o pega un enlace abajo.`
+    kbBody.appendChild(div)
+  }
+  for (const ficha of data.fichas) {
+    const row = document.createElement('div')
+    row.className = 'kb-row' + (ficha.missing ? ' kb-missing' : '') + (ficha.active ? '' : ' kb-inactive')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = ficha.active
+    check.disabled = ficha.missing
+    check.addEventListener('change', async () => {
+      const res = await window.api.kb.toggle(kbCwd, ficha.relPath, check.checked)
+      if (!res.ok) kbProgressLine(`✗ ${res.error}`, 'kb-prog-err')
+      else if (check.checked && !kbPendingApply.includes(ficha.relPath)) kbPendingApply.push(ficha.relPath)
+      else if (!check.checked) kbPendingApply = kbPendingApply.filter((r) => r !== ficha.relPath)
+      await refreshKbPanel()
+    })
+    const name = document.createElement('span')
+    name.className = 'kb-name'
+    name.textContent = ficha.name + (ficha.missing ? ' (no encontrada)' : '')
+    name.title = ficha.relPath
+    name.addEventListener('dblclick', () => window.api.kb.reveal(kbCwd, ficha.relPath))
+    const size = document.createElement('span')
+    size.className = 'kb-size'
+    size.textContent = kbFmtSize(ficha.size)
+    const del = document.createElement('button')
+    del.className = 'kb-del'
+    del.textContent = '🗑'
+    const isPanelFicha = ficha.relPath.startsWith('kb/fichas/')
+    del.title = isPanelFicha
+      ? 'Quitar la ficha y mandar el archivo a la Papelera'
+      : 'Quitar del conocimiento (el archivo no se toca)'
+    del.addEventListener('click', async () => {
+      const msg = isPanelFicha
+        ? `¿Quitar "${ficha.name}" y mandar el archivo a la Papelera?`
+        : `¿Quitar "${ficha.name}" del conocimiento? El archivo original no se toca.`
+      if (!window.confirm(msg)) return
+      const res = await window.api.kb.remove(kbCwd, ficha.relPath, isPanelFicha)
+      if (!res.ok) kbProgressLine(`✗ ${res.error}`, 'kb-prog-err')
+      else kbProgressLine(`✔ quitada: ${ficha.name}${res.trashed ? ' (archivo en la Papelera)' : ''}`, 'kb-prog-ok')
+      kbPendingApply = kbPendingApply.filter((r) => r !== ficha.relPath)
+      await refreshKbPanel()
+    })
+    row.appendChild(check)
+    row.appendChild(name)
+    row.appendChild(size)
+    row.appendChild(del)
+    kbBody.appendChild(row)
+  }
+  if (data.fichas.length) {
+    const total = document.createElement('div')
+    total.className = 'kb-total'
+    total.textContent = `Cargado al abrir sesión: ${kbFmtSize(data.totalActiveBytes)} (~${(data.approxTokens / 1000).toFixed(1)}k tokens) · desactivar aplica al abrir sesión nueva`
+    kbBody.appendChild(total)
+  }
+
+  if (kbPendingApply.length) {
+    const bar = document.createElement('div')
+    bar.className = 'kb-apply-bar'
+    const btn = document.createElement('button')
+    btn.textContent = `▶ Aplicar a la sesión abierta (${kbPendingApply.length})`
+    btn.title = 'Manda a la sesión de este proyecto una orden visible de leer las fichas nuevas, sin reiniciar la conversación'
+    btn.addEventListener('click', async () => {
+      btn.disabled = true
+      const res = await window.api.kb.applyToSession(kbCwd, kbPendingApply)
+      if (res.ok) {
+        kbProgressLine(`✔ enviado a la sesión: ${res.applied.join(', ')}`, 'kb-prog-ok')
+        kbPendingApply = []
+      } else {
+        kbProgressLine(`✗ ${res.error}`, 'kb-prog-err')
+      }
+      await refreshKbPanel()
+    })
+    bar.appendChild(btn)
+    kbBody.appendChild(bar)
+  }
+
+  kbSection('Atajos — respuestas preparadas (escribe su número en la sesión)')
+  const shortcutEntries = data.shortcuts?.entries || []
+  for (const entry of shortcutEntries) {
+    const row = document.createElement('div')
+    row.className = 'kb-row'
+    const name = document.createElement('span')
+    name.className = 'kb-name'
+    name.textContent = `${entry.num} · ${entry.title}`
+    name.title = 'En la sesión, escribe el número o el título y el agente responde con el contenido del atajo y sus relacionados'
+    row.appendChild(name)
+    kbBody.appendChild(row)
+  }
+  if (!shortcutEntries.length && !kbShortcutFormOpen) {
+    const div = document.createElement('div')
+    div.className = 'kb-empty'
+    div.textContent = 'Sin atajos aún. Crea el primero: en la sesión bastará con escribir su número.'
+    kbBody.appendChild(div)
+  }
+  if (!kbShortcutFormOpen) {
+    const addBtnRow = document.createElement('div')
+    addBtnRow.className = 'kb-add-bar'
+    const addBtn = document.createElement('button')
+    addBtn.textContent = '➕ Nuevo atajo'
+    addBtn.addEventListener('click', () => { kbShortcutFormOpen = true; refreshKbPanel() })
+    addBtnRow.appendChild(addBtn)
+    kbBody.appendChild(addBtnRow)
+  } else {
+    const form = document.createElement('div')
+    form.className = 'kb-shortcut-form'
+    const titleInput = document.createElement('input')
+    titleInput.type = 'text'
+    titleInput.placeholder = 'Título o pregunta — ej: ¿Qué magneto lleva el trifásico? · Inversor no ve la batería (F58)'
+    const bodyInput = document.createElement('textarea')
+    bodyInput.rows = 5
+    bodyInput.placeholder = 'La respuesta que debe dar el agente: texto libre.\nPuede ser una respuesta directa, pasos, o problema + soluciones numeradas.'
+    const relLabel = document.createElement('div')
+    relLabel.className = 'kb-empty'
+    relLabel.textContent = 'Fichas relacionadas (marca las que apliquen):'
+    const relBoxes = []
+    const relWrap = document.createElement('div')
+    for (const ficha of data.fichas.filter((f) => !f.missing && !f.relPath.endsWith('atajos.md'))) {
+      const lab = document.createElement('label')
+      lab.className = 'kb-row'
+      const cb = document.createElement('input')
+      cb.type = 'checkbox'
+      relBoxes.push({ cb, relPath: ficha.relPath })
+      const span = document.createElement('span')
+      span.className = 'kb-name'
+      span.textContent = ficha.name
+      lab.appendChild(cb)
+      lab.appendChild(span)
+      relWrap.appendChild(lab)
+    }
+    const actions = document.createElement('div')
+    actions.className = 'kb-url-row'
+    const saveBtn = document.createElement('button')
+    saveBtn.textContent = 'Guardar atajo'
+    saveBtn.addEventListener('click', async () => {
+      const res = await window.api.kb.addShortcut(kbCwd, {
+        title: titleInput.value,
+        body: bodyInput.value,
+        related: relBoxes.filter((r) => r.cb.checked).map((r) => r.relPath)
+      })
+      if (res.ok) {
+        kbProgressLine(`✔ atajo ${res.num} guardado`, 'kb-prog-ok')
+        if (!kbPendingApply.includes(res.relPath)) kbPendingApply.push(res.relPath)
+        kbShortcutFormOpen = false
+      } else {
+        kbProgressLine(`✗ ${res.error}`, 'kb-prog-err')
+      }
+      await refreshKbPanel()
+    })
+    const cancelBtn = document.createElement('button')
+    cancelBtn.textContent = 'Cancelar'
+    cancelBtn.addEventListener('click', () => { kbShortcutFormOpen = false; refreshKbPanel() })
+    actions.appendChild(saveBtn)
+    actions.appendChild(cancelBtn)
+    form.appendChild(titleInput)
+    form.appendChild(bodyInput)
+    form.appendChild(relLabel)
+    form.appendChild(relWrap)
+    form.appendChild(actions)
+    kbBody.appendChild(form)
+  }
+
+  if (data.fuentes.length) {
+    kbSection('Fuentes originales (kb/fuentes)')
+    for (const fuente of data.fuentes) {
+      const row = document.createElement('div')
+      row.className = 'kb-row'
+      const name = document.createElement('span')
+      name.className = 'kb-name'
+      name.textContent = `📄 ${fuente.name}`
+      name.title = 'Doble clic: mostrar en Finder'
+      name.addEventListener('dblclick', () => window.api.kb.reveal(kbCwd, fuente.relPath))
+      const size = document.createElement('span')
+      size.className = 'kb-size'
+      size.textContent = kbFmtSize(fuente.size)
+      row.appendChild(name)
+      row.appendChild(size)
+      kbBody.appendChild(row)
+    }
+  }
+
+  const drop = document.createElement('div')
+  drop.className = 'kb-drop'
+  drop.textContent = kbBusy ? '⏳ Destilando… (puede tardar unos minutos)' : '⬇ Arrastra aquí un PDF, doc o subtítulos para destilarlo en una ficha'
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover') })
+  drop.addEventListener('dragleave', () => drop.classList.remove('dragover'))
+  drop.addEventListener('drop', async (e) => {
+    e.preventDefault()
+    drop.classList.remove('dragover')
+    const files = Array.from(e.dataTransfer?.files || [])
+    for (const file of files) {
+      const filePath = window.api.getPathForFile(file)
+      if (!filePath) { kbProgressLine(`✗ no pude leer la ruta de ${file.name}`, 'kb-prog-err'); continue }
+      const added = await window.api.kb.addFile(kbCwd, filePath)
+      if (!added.ok) { kbProgressLine(`✗ ${file.name}: ${added.error}`, 'kb-prog-err'); continue }
+      kbProgressLine(`+ fuente guardada: ${added.relPath}`)
+      await kbRunDistill({ kind: 'file', relPath: added.relPath })
+    }
+    await refreshKbPanel()
+  })
+  kbBody.appendChild(drop)
+
+  const urlRow = document.createElement('div')
+  urlRow.className = 'kb-url-row'
+  const urlInput = document.createElement('input')
+  urlInput.type = 'text'
+  urlInput.placeholder = 'Pega un enlace (YouTube, web, documentación…)'
+  const urlBtn = document.createElement('button')
+  urlBtn.textContent = kbBusy ? 'Destilando…' : 'Destilar enlace'
+  urlBtn.disabled = kbBusy
+  const submitUrl = async () => {
+    const url = urlInput.value.trim()
+    if (!url) return
+    urlInput.value = ''
+    await kbRunDistill({ kind: 'url', url })
+    await refreshKbPanel()
+  }
+  urlBtn.addEventListener('click', submitUrl)
+  urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitUrl() })
+  urlRow.appendChild(urlInput)
+  urlRow.appendChild(urlBtn)
+  kbBody.appendChild(urlRow)
+}
+
+async function kbRunDistill(source) {
+  if (kbBusy) { kbProgressLine('✗ ya hay un destilado en marcha', 'kb-prog-err'); return }
+  kbBusy = true
+  try {
+    const res = await window.api.kb.distill(kbCwd, source)
+    if (res.ok) {
+      kbProgressLine(`✔ ficha creada: ${res.title} → ${res.relPath}`, 'kb-prog-ok')
+      if (!kbPendingApply.includes(res.relPath)) kbPendingApply.push(res.relPath)
+      for (const warning of res.warnings || []) kbProgressLine(`⚠ ${warning}`)
+    } else {
+      kbProgressLine(`✗ ${res.error}`, 'kb-prog-err')
+    }
+  } catch (err) {
+    kbProgressLine(`✗ ${err?.message || err}`, 'kb-prog-err')
+  } finally {
+    kbBusy = false
+  }
+}
+
+function closeKbPanel() {
+  kbModal?.classList.add('hidden')
+}
+
+if (btnKb) {
+  btnKb.addEventListener('click', async () => {
+    kbCwd = await kbResolveCwd()
+    if (kbSub) kbSub.textContent = kbCwd
+    if (kbProgressEl && !kbBusy) { kbProgressEl.innerHTML = ''; kbProgressEl.classList.add('hidden') }
+    if (!kbProgressSubscribed && window.api.kb?.onProgress) {
+      window.api.kb.onProgress(({ stage, detail }) => {
+        if (stage === 'error') kbProgressLine(`✗ ${detail}`, 'kb-prog-err')
+        else if (stage !== 'hecho') kbProgressLine(`… ${stage}: ${detail}`)
+      })
+      kbProgressSubscribed = true
+    }
+    kbModal?.classList.remove('hidden')
+    await refreshKbPanel()
+  })
+}
+if (btnCloseKb) btnCloseKb.addEventListener('click', closeKbPanel)
+kbModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeKbPanel)
+
 async function openSessions() {
   const cwd = await window.api.ptyCwd()
   sessionsCwd.textContent = cwd
@@ -4591,6 +4925,10 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Escape' && !sessionsModal.classList.contains('hidden')) {
     sessionsModal.classList.add('hidden')
+    return
+  }
+  if (e.key === 'Escape' && kbModal && !kbModal.classList.contains('hidden')) {
+    closeKbPanel()
     return
   }
   if (e.key === 'Escape' && profilePopoverOpen) {
