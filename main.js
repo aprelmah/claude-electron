@@ -648,9 +648,7 @@ function resolveLanSessionConfig(remoteMeta = {}) {
   }
   const legacyBootstrap = getProfileStartupMessage(effectiveProfile)
   const personaResolved = sanitizePersonaPrompt(enterpriseContext.personaResolved || '')
-  const bootstrapMessage = personaResolved
-    ? `${personaResolved}\n`
-    : legacyBootstrap
+  const bootstrapMessage = legacyBootstrap
   const allowedMcpServers = Array.isArray(enterpriseContext.allowedMcpServers) && enterpriseContext.allowedMcpServers.length
     ? [...enterpriseContext.allowedMcpServers]
     : [...normalizeMcpServerList(effectiveProfile?.mcpServers || [])]
@@ -1476,8 +1474,6 @@ const {
 const { looksRemotePath, resolveExistingDir } = require('./main/dir-helpers')
 
 function getProfileStartupMessage(profile) {
-  const personaPrompt = sanitizePersonaPrompt(profile?.personaPrompt || '')
-  if (personaPrompt) return `${personaPrompt}\n`
   const claudeMdPath = typeof profile?.claudeMdPath === 'string' ? profile.claudeMdPath.trim() : ''
   if (!claudeMdPath) return ''
   if (looksRemotePath(claudeMdPath)) return ''
