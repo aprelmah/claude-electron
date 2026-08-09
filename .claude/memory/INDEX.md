@@ -40,6 +40,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/tech_macos_bash_rsync_landmines.md` — minas de bash/rsync en macOS (BSD vs GNU).
 - `tech/tech_pilotar_app_por_cdp.md` — pilotar POWER-AGENT por Chrome DevTools Protocol para probar de verdad.
 - `tech/tech_sondar_cli_en_pty.md` — sondar un CLI en un PTY controlado (la sonda que cerró los bugs de codex).
+- `tech/tech_perfiles_persona_invisible.md` — persona por perfil vía `--append-system-prompt` (invisible, aditiva, al spawn); WhatsApp es otro sistema; leerla antes de tocar perfiles o personas.
 - `tech/security_audit_2026-06-01.md` — auditoría de seguridad de junio: hallazgos y estado.
 
 ## Bugs resueltos (leer si reaparece el síntoma)
