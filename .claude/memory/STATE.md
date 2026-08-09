@@ -20,7 +20,8 @@
 
 ## Próximo paso
 
-- **Probar la persona viva en la app**: en una sesión ABIERTA, cambiar el perfil en el desplegable y comprobar que el siguiente mensaje ya responde con la persona nueva (headless probado; la app en vivo aún sin confirmar por Luismi).
+- ~~Probar la persona viva en la app~~ **CONFIRMADO en vivo**: el transcript de la sesión TURBO-ENERGY-RMA de Luismi (2026-08-09 ~19:40) muestra las inyecciones del hook cambiando de "ERS UN PROGRAMADOR SENIOR" a "eres asertivo y gracioso" en mitad de la misma conversación.
+- **Propuesta sin instalar (gate)**: que `npm run doctor` compruebe que el hook de persona existe, es ejecutable y está registrado en `~/.claude/settings.json` — si los settings se regeneran, la persona muere EN SILENCIO (el hook es no-op).
 - **Verificar si los MCPs del perfil tienen efecto real en sesiones locales**: en LAN/enterprise gatean (`allowedMcpServers`); el spawn local no pasa `--mcp-config` ni restringe — los checkboxes podrían ser decorativos en local. Si no gatean, cablearlo o decirlo en la UI.
 - Decidir si la persona debe llegar también a sub-chat y a las sesiones headless/pool de Telegram (hoy no llega).
 - Pendientes heredados de la sesión de la mañana: probar tarea programada con skill `frontend-design` y delegación contra repo Git desde la app empaquetada.
