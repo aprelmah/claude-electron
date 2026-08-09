@@ -151,6 +151,10 @@ function parseVtt(vttText, { markEverySeconds = 30 } = {}) {
   return out.join('\n')
 }
 
+function isYoutubeRateLimit(text) {
+  return /429|Too Many Requests/i.test(String(text || ''))
+}
+
 // --- Resolución de yt-dlp ---------------------------------------------------
 
 // Candidatos en orden: binario en PATH, instalaciones pip de usuario (versión
@@ -273,26 +277,36 @@ function createKbExtractor({
     const workDir = fs.mkdtempSync(path.join(tmpDir, 'kb-yt-'))
     const outTemplate = path.join(workDir, 'sub.%(ext)s')
     const titleFile = path.join(workDir, 'title.txt')
-    const ytArgs = [
+    const baseArgs = [
       '--skip-download', '--no-playlist',
       '--write-subs', '--write-auto-subs',
-      '--sub-langs', 'es,es-orig,es-419,en,en-orig',
       '--sub-format', 'vtt/best',
+      '--sleep-subtitles', '1',
       '--print-to-file', '%(title)s', titleFile,
-      '-o', outTemplate,
-      url
+      '-o', outTemplate
     ]
+    // Español primero y, solo si no hay, inglés: pedir todos los idiomas a la
+    // vez multiplica las peticiones y dispara el 429 de YouTube.
+    const langSets = ['es,es-orig,es-419', 'en,en-orig']
     let lastError = null
     try {
-      for (const cand of resolveYtDlpCandidates()) {
-        try {
-          await runCommand(cand.cmd, [...cand.args, ...ytArgs], { timeoutMs: YTDLP_TIMEOUT_MS, cwd: workDir })
-          lastError = null
-          break
-        } catch (e) {
-          lastError = e
-          if (!/ENOENT/.test(String(e?.code || e?.message))) break
+      for (const langs of langSets) {
+        const ytArgs = [...baseArgs, '--sub-langs', langs, url]
+        lastError = null
+        for (const cand of resolveYtDlpCandidates()) {
+          try {
+            await runCommand(cand.cmd, [...cand.args, ...ytArgs], { timeoutMs: YTDLP_TIMEOUT_MS, cwd: workDir })
+            lastError = null
+            break
+          } catch (e) {
+            lastError = e
+            if (!/ENOENT/.test(String(e?.code || e?.message))) break
+          }
         }
+        if (lastError && isYoutubeRateLimit(lastError.message)) {
+          throw new Error('YouTube está limitando las descargas de subtítulos ahora mismo (HTTP 429). Es temporal: espera unos minutos y reintenta.')
+        }
+        if (!lastError && fs.readdirSync(workDir).some((f) => f.endsWith('.vtt'))) break
       }
       if (lastError) throw lastError
       const vttFiles = fs.readdirSync(workDir).filter((f) => f.endsWith('.vtt'))
@@ -342,6 +356,7 @@ module.exports = {
   detectSourceType,
   isYoutubeUrl,
   isWebUrl,
+  isYoutubeRateLimit,
   stripHtml,
   parseVtt,
   resolveYtDlpCandidates,

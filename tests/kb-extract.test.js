@@ -5,10 +5,18 @@ const path = require('path')
 const {
   detectSourceType,
   isYoutubeUrl,
+  isYoutubeRateLimit,
   stripHtml,
   parseVtt,
   resolveYtDlpCandidates
 } = require('../main/kb-extract')
+
+test('isYoutubeRateLimit detecta el 429 en el ruido de yt-dlp', () => {
+  assert.equal(isYoutubeRateLimit("ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"), true)
+  assert.equal(isYoutubeRateLimit('yt-dlp salió con código 1: ... Too Many Requests'), true)
+  assert.equal(isYoutubeRateLimit('ERROR: Video unavailable'), false)
+  assert.equal(isYoutubeRateLimit(''), false)
+})
 
 test('detectSourceType distingue youtube, web, pdf y texto', () => {
   assert.equal(detectSourceType('https://www.youtube.com/watch?v=abc123'), 'youtube')
