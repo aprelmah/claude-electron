@@ -20,6 +20,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/runbook_telegram_bridge.md` — comandos del bot, notas de voz (Apple/whisper), bot de avisos separado, configuración de la app.
 - `tech/runbook_hermes_robos.md` — pairing por código, saneado de canal, detector de repetidos, doctor, bandeja de decisiones, panel 📈, reglas de tests.
 - `tech/runbook_incidentes_2026_05.md` — crash de arranque de mayo (SIGABRT/savedState), fixes permanentes y notas operativas de recuperación.
+- `tech/runbook_kb_conocimiento.md` — panel 📚: conocimiento por proyecto (imports @ del CLAUDE.md, destilador PDF/web/YouTube, atajos, aplicar a sesión), reglas duras y patrón CDP de verificación de UI. Leer antes de tocar kb-*/panel (09-08-2026).
 
 ## Fichas técnicas (lecciones con el porqué)
 

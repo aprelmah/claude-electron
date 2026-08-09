@@ -57,6 +57,11 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 - Los `<script>` sueltos del renderer comparten ámbito global: un `const` duplicado mata la página entera y los tests no lo ven (`bugs/bug_scripts_renderer_ambito_global.md`); la lógica de renderer que importe se extrae a módulo testeable.
 - Tras Write/Edit, verificar en el filesystem antes de afirmar que está guardado. Los deploys se verifican por CONTENIDO/timestamp del asar, no por haber lanzado el script. El extract del asar SIEMPRE desde el scratchpad: extrae al cwd (2026-08-09 borró `main.js` en la raíz; recuperado de git).
 
+### Conocimiento por proyecto, panel 📚 — `tech/runbook_kb_conocimiento.md`
+- Estado = imports `@` del CLAUDE.md del proyecto (backticks = ficha desactivada); no hay almacén propio. El cwd del panel sale del PROYECTO del picker, jamás de `ptyCwd()` (sin sesión da el home; en worktree, la copia).
+- El destilado headless corre en cwd NEUTRO (`userData/kb-distill`); texto de web/YouTube pasa por `sanitizeChannelText` y va delimitado anti-inyección. La Papelera solo para `kb/fichas/`.
+- Worktree + conocimiento sin commitear = experto invisible: commitear CLAUDE.md y `kb/` es parte del feature. "Aplicar a sesión" usa rutas ABSOLUTAS y `writePromptThenEnter`.
+
 ## Regla crítica WhatsApp (OBLIGATORIA)
 
 - Nunca enviar mensajes a números locales ambiguos (ej. `653765305`) sin prefijo internacional confirmado. Si el usuario no indica país/código, preguntar SIEMPRE antes de enviar: "¿Qué país/código uso para este número?".

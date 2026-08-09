@@ -22,6 +22,7 @@
 
 - **YouTube end-to-end VERIFICADO** (2026-08-09 noche, al cierre): vídeo real de 10 min ("Configurar Baterías en Inversores DEYE"), subtítulos → ficha con [mm:ss], tablas e import, 35 s, usando el handler real `kb:distill` (runner headless sustituido por `claude -p` directo, mismo contrato; la vía IPC ya estaba probada con PDF por CDP).
 - v2 posibles: fallback Whisper para vídeos sin subtítulos (el transcriber existe, `main/whisper-transcribe.js`, un solo pase — ojo timeouts), editor de fichas en el panel, cola de destilados (hoy 1 a la vez).
+- Propuesta sin ejecutar (pide OK aparte, es código): `scripts/deploy.sh` debe matar también el dev (`pkill -f "claude-electron/node_modules/electron"`) — hoy la empaquetada se suicidó ×2 por su SingletonLock.
 - `/wrap` de esta sesión queda pendiente si Luismi lo quiere.
 
 ## Notas operativas
