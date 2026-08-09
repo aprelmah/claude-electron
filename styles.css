@@ -2863,6 +2863,14 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
 .wa-cfg-body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .wa-cfg-pane.hidden { display: none; }
 .wa-cfg-pane { display: flex; flex-direction: column; gap: 10px; }
+
+.wa-cfg-persona-textarea {
+  min-height: 160px;
+  resize: vertical;
+  font-family: Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .wa-cfg-actions { display: flex; gap: 8px; }
 .wa-cfg-allow-row { display: flex; gap: 6px; }
 .wa-cfg-allow-row input {

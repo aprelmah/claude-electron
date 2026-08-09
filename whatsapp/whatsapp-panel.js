@@ -884,6 +884,11 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
               <span>Ruta al persona.md</span>
               <input type="text" id="wa-cfg-persona" placeholder="/ruta/al/persona.md" />
             </label>
+            <label class="settings-field">
+              <span>Personalidad del bot (contenido del persona.md — aplica en el siguiente mensaje)</span>
+              <textarea id="wa-cfg-persona-text" class="wa-cfg-persona-textarea" rows="10" spellcheck="false" placeholder="Cargando…"></textarea>
+            </label>
+            <div class="settings-note" id="wa-cfg-persona-status"></div>
           </div>
           <div class="wa-cfg-pane hidden" data-pane="fichas">
             <div class="wa-kb-list-view" id="wa-kb-list-view">
@@ -2176,6 +2181,66 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
     } catch (e) {
       $('#wa-cfg-status', cfgModalEl).textContent = 'Error cargando config'
     }
+    await loadCfgPersonaText()
+  }
+
+  // Editor de persona en la pestaña General: mismo IPC que el modal 👤.
+  // cfgPersonaLoadedText permite guardar solo si el usuario tocó el texto.
+  let cfgPersonaLoadedText = null
+
+  function setCfgPersonaStatus(msg, isErr) {
+    const s = $('#wa-cfg-persona-status', cfgModalEl)
+    if (!s) return
+    s.textContent = msg || ''
+    s.style.color = isErr ? 'var(--error)' : ''
+  }
+
+  async function loadCfgPersonaText() {
+    const ta = $('#wa-cfg-persona-text', cfgModalEl)
+    if (!ta) return
+    cfgPersonaLoadedText = null
+    if (!wa || typeof wa.getPersona !== 'function') {
+      ta.value = ''
+      ta.placeholder = 'No disponible: bridge desconectado.'
+      return
+    }
+    try {
+      const r = await wa.getPersona()
+      if (r && r.ok) {
+        cfgPersonaLoadedText = r.text || ''
+        ta.value = cfgPersonaLoadedText
+        setCfgPersonaStatus('')
+      } else {
+        ta.value = ''
+        ta.placeholder = (r && r.error) || 'No se pudo leer el persona.md'
+      }
+    } catch (e) {
+      ta.value = ''
+      ta.placeholder = e.message || 'Error leyendo persona.md'
+    }
+  }
+
+  async function saveCfgPersonaTextIfChanged() {
+    const ta = $('#wa-cfg-persona-text', cfgModalEl)
+    if (!ta || cfgPersonaLoadedText === null) return true
+    if (ta.value === cfgPersonaLoadedText) return true
+    if (!wa || typeof wa.savePersona !== 'function') {
+      setCfgPersonaStatus('Persona NO guardada: bridge desconectado.', true)
+      return false
+    }
+    try {
+      const r = await wa.savePersona(ta.value)
+      if (r && r.ok) {
+        cfgPersonaLoadedText = ta.value
+        setCfgPersonaStatus('Persona guardada — aplica en el siguiente mensaje.')
+        return true
+      }
+      setCfgPersonaStatus((r && r.error) || 'No se pudo guardar la persona.', true)
+      return false
+    } catch (e) {
+      setCfgPersonaStatus(e.message || 'Error guardando la persona.', true)
+      return false
+    }
   }
 
   function renderAllowlist(list) {
@@ -2363,8 +2428,12 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       $('#wa-cfg-status', cfgModalEl).textContent = 'Guardando…'
       try {
         const r = await wa.saveConfig(partial)
+        // Persona DESPUÉS de la config: si cambió personaPath, el texto va al destino nuevo.
+        const personaOk = await saveCfgPersonaTextIfChanged()
         await refreshStatus()
-        $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok) ? 'Guardado.' : 'Error guardando'
+        $('#wa-cfg-status', cfgModalEl).textContent = (r && r.ok)
+          ? (personaOk ? 'Guardado.' : 'Config guardada; la persona NO (mira abajo)')
+          : 'Error guardando'
       } catch (e) {
         $('#wa-cfg-status', cfgModalEl).textContent = e.message || 'Error guardando'
       }
