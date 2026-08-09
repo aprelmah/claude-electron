@@ -51,6 +51,20 @@ precargado vía imports `@` en su CLAUDE.md; el panel 📚 de la app lo gestiona
 4. Ojo: un script que peta a mitad deja estado sucio en la página (modal abierto);
    re-ejecutar antes de concluir que hay bug.
 
+## YouTube: 429 y curl_cffi (añadido 2026-08-09 al cierre)
+
+- YouTube limita las descargas de subtítulos (HTTP 429) con llamadas seguidas desde
+  la misma IP. Mitigado en `extractYoutube`: español primero e inglés SOLO de reserva
+  (pedir todos los idiomas a la vez multiplica peticiones), `--sleep-subtitles 1`, y
+  el 429 se traduce a error legible ("espera unos minutos") vía `isYoutubeRateLimit`.
+- **`curl_cffi` 0.11.4 clavada** en el user-site de Python 3.14 (`pip install --user
+  --break-system-packages`): da a yt-dlp impersonation de Chrome (29 targets) y
+  esquiva la mayoría de bloqueos. NO subir a 0.16+ (no carga en Monterey: símbolo
+  `_SCDynamicStoreCopyProxies` ausente) ni bajar a 0.7.x (yt-dlp 2026.03 la rechaza:
+  targets "unavailable"). Si yt-dlp se actualiza, revalidar la pareja de versiones.
+- Verificado con vídeo real que daba 429: tras instalar 0.11.4, subtítulos es a la
+  primera con los args nuevos.
+
 ## Coste medido (piloto turbo e, 2026-08-09)
 
 Precarga ~70 KB (≈20k tokens): 1ª consulta 0,10 $ (crea caché), siguientes ~0,017 $

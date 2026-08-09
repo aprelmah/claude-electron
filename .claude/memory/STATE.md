@@ -6,9 +6,10 @@
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, working tree limpio; últimos commits `23e848a` (módulos kb + tests) y `309be0e` (panel 📚 UI) **pusheados** a origin.
-- Tests: 1.439 totales — 1.433 pass, 0 fail, 6 skipped (suite completa en el pre-commit de `309be0e`).
-- Deploy: `/Applications/POWER-AGENT.app`, 6 deploys esta sesión; el último con atajos "respuestas preparadas". Verificado por CONTENIDO del asar (`kb:remove`, `kbResolveCwd`, "respuestas preparadas" presentes) y app corriendo con `--type=renderer`.
+- Rama `main`, working tree limpio; último commit `afc22d5 fix(kb): YouTube 429` **pusheado** (antes `23e848a` módulos kb + `309be0e` panel UI + docs `1aeeb8d..fb421fd`).
+- Tests: 1.440 totales — 1.434 pass, 0 fail, 6 skipped.
+- Deploy: `/Applications/POWER-AGENT.app`, 7 deploys esta sesión; el último con el manejo del 429 de YouTube. Verificado por CONTENIDO del asar (`isYoutubeRateLimit`, `sleep-subtitles` presentes) y app corriendo con `--type=renderer`.
+- **Entorno**: `curl_cffi` **0.11.4 clavada** en user-site de Python 3.14 (impersonation Chrome para yt-dlp, 29 targets). La 0.16 NO carga en Monterey (símbolo `_SCDynamicStoreCopyProxies`) y la 0.7.4 la rechaza yt-dlp 2026.03. Verificado con el vídeo real que daba 429; Luismi destiló su primera ficha de YouTube en real (turbo e `da38ba7`).
 
 ## Última sesión (2026-08-09 noche — panel 📚 Conocimiento por proyecto)
 
