@@ -12,6 +12,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Runbooks por subsistema (operativo vigente, movido del CLAUDE.md el 2026-08-09)
 
+- `tech/runbook_execution_policy_delegations.md` — política de ejecución, registro de skills y delegaciones: límites, persistencia y worktrees (09-08-2026).
 - `tech/runbook_relay_telegram.md` — relay claude por JSONL, forks del sessionId y sus guardas, badge de modelo, auto-update de CLIs. Leer antes de tocar relay/sesiones/PTY.
 - `tech/runbook_git_por_sesion.md` — aislamiento git por worktree, finalize, regla para spawns nuevos, limitaciones. Leer antes de añadir cualquier spawn.
 - `tech/runbook_modo_voz.md` — modo voz completo: motor, helper Swift, endpointing, lectura a trozos, cola de habla. Leer antes de tocar voz.
@@ -43,6 +44,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Bugs resueltos (leer si reaparece el síntoma)
 
+- `bugs/bug_task_manager_skills_multiselect_2026_08_09.md` — selector nativo múltiple de skills difícil de limpiar en macOS y corrección visual (09-08-2026).
 - `bugs/bug_scripts_renderer_ambito_global.md` — un `const` duplicado en scripts sueltos del renderer mata la página; los tests no lo ven.
 - `bugs/bug_relay_telegram_transcript.md` — el relay mandaba la pantalla raspada en vez de la respuesta (transcript no localizado).
 - `bugs/bug_codex_sessionid_picker_resume_2026_08_07.md` — codex: id equivocado, picker congelado, resume roto (saga completa).
