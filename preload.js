@@ -143,6 +143,22 @@ contextBridge.exposeInMainWorld('api', {
     }
   },
   tasksSessionLinks: (sessionId) => ipcRenderer.invoke('tasks:session-links', { sessionId }),
+  delegations: {
+    list: () => ipcRenderer.invoke('delegations:list'),
+    get: (id) => ipcRenderer.invoke('delegations:get', { id }),
+    start: (payload) => ipcRenderer.invoke('delegations:start', payload || {}),
+    cancel: (id) => ipcRenderer.invoke('delegations:cancel', { id }),
+    onUpdated: (cb) => {
+      const h = (_e, payload) => cb(payload)
+      ipcRenderer.on('delegation:updated', h)
+      return () => ipcRenderer.removeListener('delegation:updated', h)
+    },
+    onProgress: (cb) => {
+      const h = (_e, payload) => cb(payload)
+      ipcRenderer.on('delegation:progress', h)
+      return () => ipcRenderer.removeListener('delegation:progress', h)
+    }
+  },
   taskSession: {
     open: ({ sessionId, cwd, cli, taskName } = {}) =>
       ipcRenderer.invoke('app:open-task-session', { sessionId, cwd, cli, taskName })

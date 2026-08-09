@@ -57,6 +57,8 @@ const { registerWhatsappIpc, WA_SAFE_CONFIG_FIELDS } = require('./main/whatsapp-
 const { createWindowFactory } = require('./main/window-factory')
 const { registerViewerGraphIpc } = require('./main/viewer-graph-ipc')
 const { registerTasksIpc } = require('./main/tasks-ipc')
+const { registerSkillsIpc } = require('./main/skills-ipc')
+const { registerDelegationIpc } = require('./main/delegation-ipc')
 const { registerProfilesEnterpriseIpc } = require('./main/profiles-enterprise-ipc')
 const { registerAutomationsIpc } = require('./main/automations-ipc')
 const { registerBitacoraIpc } = require('./main/bitacora-ipc')
@@ -126,10 +128,12 @@ const {
 } = require('./main/enterprise-policy')
 const { TelegramBridge } = require('./telegram-bridge')
 const { createHeadlessRunners } = require('./headless-runners')
+const { preflightTask } = require('./main/execution-policy')
 const TaskScheduler = require('./scheduler')
 const { createExecutor } = require('./scheduler/executor')
 const { createSinks, createInboxSink } = require('./scheduler/sinks')
 const { createPersistence } = require('./scheduler/persistence')
+const { createDelegationManager } = require('./main/delegation-manager')
 const { createInbox } = require('./main/tasks-inbox')
 const { createSessionLinks } = require('./main/session-links')
 const cronPresets = require('./scheduler/cron-presets')
@@ -2187,6 +2191,7 @@ function createWindow() {
 
 // ── Tasks Manager (singleton) ──
 let tasksScheduler = null
+let delegationManager = null
 let tasksInbox = null
 let sessionLinks = null
 let recentCwds = null
@@ -2318,7 +2323,7 @@ function buildAgentBootstrapPrompt(automation) {
   lines.push('   - Usa exactamente esas rutas. No las cambies, no inventes otras.')
   lines.push('   - Escribe primero los 3 con contenido, ÚLTIMO el READY.')
   lines.push('   - NO pegues el script ni el plist en el chat — solo escríbelos. POWER-AGENT los detectará por filesystem y mostrará el botón "Aplicar al borrador" en su UI (botón verde brillante arriba a la derecha).')
-  lines.push('   - NO necesitas pedir permiso para Write — la app tiene bypassPermissions activo.')
+  lines.push('   - NO necesitas pedir permiso para Write — la app acepta ediciones en este flujo y mantiene el resto de controles.')
   lines.push('   - Si quieres iterar (cambiar versión), simplemente reescribe los 3 archivos de contenido y vuelve a crear el READY. El polling lo detectará.')
   lines.push('   - Después de escribir los 4 archivos, di solo una frase al usuario: "Listo, pulsa el botón verde \\"Aplicar al borrador\\" arriba para guardarlo." Nada más. No expliques qué hiciste — el usuario revisará al aplicar.')
   lines.push('')
@@ -3094,7 +3099,7 @@ function initTelegramBridge() {
       // cualquier comunicación Mac→Telegram que haya enlazado una sesión al chat.
       const hasExplicitSid = !binding.bound && typeof opts?.sessionId === 'string' && opts.sessionId.length > 0
       if (hasExplicitSid && targetCli === 'codex') {
-        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram', securityMode: 'trusted' })
       }
       if (hasExplicitSid && targetCli === 'claude') {
         // El transcript manda: `--resume` solo funciona si el cwd del spawn
@@ -3102,21 +3107,21 @@ function initTelegramBridge() {
         // sessionId, nunca adivinar por cwd (regla del relay, misma trampa).
         const resumeCwd = resolveResumeCwd(opts.sessionId) || cwd
         try {
-          return await runClaudeHeadless({ ...opts, cwd: resumeCwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+          return await runClaudeHeadless({ ...opts, cwd: resumeCwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram', securityMode: 'trusted' })
         } catch (err) {
           if (err?.name === 'AbortError' || !/no conversation found/i.test(String(err?.message || ''))) throw err
           // Sesión huérfana (transcript borrado o ilocalizable): mejor empezar
           // conversación nueva que devolver error para siempre. El sessionId
           // nuevo vuelve al bridge en el result y sustituye al muerto.
           console.warn('[telegram-headless] sessionId huérfano, arrancando conversación nueva:', opts.sessionId)
-          return runClaudeHeadless({ ...opts, sessionId: null, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+          return runClaudeHeadless({ ...opts, sessionId: null, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram', securityMode: 'trusted' })
         }
       }
 
       if (targetCli === 'codex') {
         // Codex por Telegram se mantiene en ruta headless estable (resume por thread_id).
         // El relay PTY en Codex puede no delimitar fin de turno de forma consistente y provocar latencia/doble respuesta.
-        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram' })
+        return runCodexHeadless({ ...opts, cli: 'codex', cwd, model: tg.codexModel || '', effort: tg.codexEffort || '', origin: 'telegram', securityMode: 'trusted' })
       }
 
       // Telegram manda: con proyecto elegido desde el bot no se cae a las sesiones
@@ -3145,7 +3150,7 @@ function initTelegramBridge() {
         throw new Error(`La sesión enlazada de Telegram no está disponible: ${describeRelayUnavailable(binding.session, 'claude')}.`)
       }
 
-      return runClaudeHeadless({ ...opts, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram' })
+      return runClaudeHeadless({ ...opts, cwd, model: tg.claudeModel || getClaudeModel(), effort: tg.claudeEffort || '', origin: 'telegram', securityMode: 'trusted' })
     },
     onGetActiveCli: async () => getActiveCliSync(),
     onGetCwd: async () => getCwdSync(),
@@ -3494,7 +3499,12 @@ app.whenReady().then(async () => {
 
   try {
     const persistence = createPersistence({ userDataDir: app.getPath('userData') })
-    const executor = createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig })
+    const executor = createExecutor({
+      runClaudeHeadless,
+      runCodexHeadless,
+      appConfig,
+      userDataDir: app.getPath('userData')
+    })
     tasksInbox = createInbox({ userDataDir: app.getPath('userData') })
     const broadcastInbox = (channel, payload) => {
       try {
@@ -3516,7 +3526,13 @@ app.whenReady().then(async () => {
     })
     const inboxSink = createInboxSink({ inbox: tasksInbox, broadcast: broadcastInbox })
     const sinks = { ...baseSinks, inbox: inboxSink }
-    tasksScheduler = new TaskScheduler({ executor, sinks, persistence, broadcast: broadcastToAllWindows })
+    tasksScheduler = new TaskScheduler({
+      executor,
+      sinks,
+      persistence,
+      broadcast: broadcastToAllWindows,
+      preflight: preflightTask
+    })
     tasksScheduler.persistence = persistence
     await tasksScheduler.init()
     sessionLinks = createSessionLinks({
@@ -3573,6 +3589,22 @@ app.whenReady().then(async () => {
       console.warn('[session-git] init failed:', err?.message || err)
       sessionGit = null
       sessionGitMap = null
+    }
+    try {
+      delegationManager = createDelegationManager({
+        userDataDir: app.getPath('userData'),
+        maxConcurrent: 3,
+        broadcast: broadcastToAllWindows,
+        prepareWorkspace: ({ realCwd }) => sessionGit?.prepareSessionWorkspace({ realCwd }),
+        finalizeWorkspace: (workspace) => sessionGit?.finalizeSessionWorkspace(workspace),
+        runChild: ({ cli, ...opts }) => cli === 'codex'
+          ? runCodexHeadless({ ...opts, origin: 'delegation' })
+          : runClaudeHeadless({ ...opts, origin: 'delegation' })
+      })
+      await delegationManager.init()
+    } catch (err) {
+      console.warn('[delegation] init failed:', err?.message || err)
+      delegationManager = null
     }
     try {
       claudeSessionsIndex = createClaudeSessionsIndex({ userDataDir: app.getPath('userData') })
@@ -3838,6 +3870,7 @@ app.on('before-quit', (event) => {
   if (whatsappRetryTimer) { clearTimeout(whatsappRetryTimer); whatsappRetryTimer = null }
   try { if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0) } catch {}
   try { tasksScheduler?.destroy() } catch {}
+  try { delegationManager?.destroy() } catch {}
   // PERF-H7: flush índices pendientes para no perder writes en debounce.
   try { claudeSessionsIndex?.flush?.() } catch {}
   try { codexSessionsIndex?.flush?.() } catch {}
@@ -4807,6 +4840,18 @@ registerTasksIpc({
   openTasksManager,
   getInbox: () => tasksInbox,
   getSessionLinks: () => sessionLinks
+})
+
+registerSkillsIpc({
+  ipcMain,
+  getUserDataDir: () => app.getPath('userData'),
+  getDefaultCwd: () => getCwdSync()
+})
+
+registerDelegationIpc({
+  ipcMain,
+  getManager: () => delegationManager,
+  getDefaultCwd: () => getCwdSync()
 })
 
 registerAutomationsIpc({

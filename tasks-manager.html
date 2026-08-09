@@ -401,6 +401,133 @@ select {
   padding-right: 26px;
 }
 
+select.skill-picker {
+  min-height: 82px;
+  padding-right: 9px;
+  background-image: none;
+}
+
+.skill-picker-shell {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.skill-picker-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+  margin-bottom: 5px;
+}
+
+.skill-picker-count {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.skill-picker-clear {
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.skill-picker-clear:hover { color: var(--error); }
+
+.skill-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.skill-option {
+  display: block;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 7px;
+  text-align: left;
+}
+
+.skill-option:hover {
+  background: var(--bg3);
+}
+
+.skill-option.selected {
+  background: rgba(124, 106, 247, 0.14);
+  border-color: var(--accent);
+}
+
+.skill-option-title {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.skill-option-description {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 10px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-missing {
+  align-items: center;
+  background: rgba(240, 192, 96, 0.12);
+  border: 1px solid var(--warn);
+  border-radius: 5px;
+  color: var(--warn);
+  display: flex;
+  font-size: 10px;
+  gap: 6px;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  padding: 5px 7px;
+}
+
+.skill-picker-missing button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.execution-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 7px;
+  padding: 10px 11px;
+  background: linear-gradient(90deg, rgba(240,192,96,0.08), transparent 70%);
+}
+
+.execution-card .field-label {
+  color: var(--warn);
+}
+
+.execution-hint {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+
 .radio-group {
   display: flex;
   gap: 12px;
@@ -728,6 +855,71 @@ input[type="radio"], input[type="checkbox"] {
   overflow: hidden;
 }
 #main-automations.active { display: flex; }
+
+/* ---------- Delegations view ---------- */
+#main-delegations {
+  flex: 1;
+  min-height: 0;
+  display: none;
+  overflow: hidden;
+}
+#main-delegations.active { display: flex; }
+#delegation-list {
+  width: 30%;
+  min-width: 220px;
+  max-width: 380px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+#delegation-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+}
+#delegation-log {
+  width: 32%;
+  min-width: 220px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.delegation-item {
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.delegation-item:hover { background: var(--bg-elev); }
+.delegation-item.selected { background: var(--bg3); border-left: 3px solid var(--accent); padding-left: 10px; }
+.delegation-item .title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.delegation-item .meta { color: var(--fg-muted); font-size: 10px; margin-top: 4px; }
+.delegation-status { font-size: 10px; text-transform: uppercase; letter-spacing: .35px; color: var(--fg-muted); }
+.delegation-status.running { color: var(--warn); }
+.delegation-status.ok { color: var(--ok); }
+.delegation-status.error, .delegation-status.cancelled { color: var(--error); }
+.delegation-form {
+  padding: 18px;
+  overflow-y: auto;
+}
+.delegation-form h2 { font-size: 16px; margin-bottom: 6px; }
+.delegation-form .intro { color: var(--fg-muted); font-size: 12px; line-height: 1.5; margin-bottom: 18px; }
+.delegation-log-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg);
+}
 
 #col-auto-list {
   width: 30%;
@@ -1129,6 +1321,7 @@ input[type="radio"], input[type="checkbox"] {
 
   <div id="tab-bar">
     <button class="tab" data-tab="tasks">Tareas programadas</button>
+    <button class="tab" data-tab="delegations">Delegaciones</button>
     <button class="tab" data-tab="automations">Automatizaciones</button>
   </div>
 
@@ -1265,6 +1458,24 @@ input[type="radio"], input[type="checkbox"] {
           </div>
         </div>
 
+        <div class="field execution-card">
+          <div class="field-row">
+            <div class="grow">
+              <label class="field-label" for="f-security">Seguridad de ejecución</label>
+              <select id="f-security">
+                <option value="safe">Seguro · workspace y permisos controlados</option>
+                <option value="trusted">Confiado · sin barreras adicionales</option>
+              </select>
+            </div>
+          </div>
+          <div class="execution-hint">Las tareas nuevas usan Seguro. Confiado solo debe usarse con prompts y carpetas que controles.</div>
+          <div style="margin-top:10px;">
+            <label class="field-label" for="f-skills">Skills nativas</label>
+            <div id="f-skills-picker" class="skill-picker-shell" role="listbox" aria-multiselectable="true" aria-describedby="f-skills-status"></div>
+            <div id="f-skills-status" class="execution-hint">Selecciona instrucciones reutilizables. Se cargan solo las que marques.</div>
+          </div>
+        </div>
+
         <div class="field">
           <label class="check-label">
             <input type="checkbox" id="f-resume">
@@ -1320,6 +1531,55 @@ input[type="radio"], input[type="checkbox"] {
       <div id="runs-scroll" class="col-scroll">
         <div class="empty-state">Sin runs todavía.</div>
       </div>
+    </div>
+  </div>
+
+  <div id="main-delegations">
+    <div id="delegation-list">
+      <div class="col-header">Cola</div>
+      <div id="delegation-list-scroll" class="col-scroll">
+        <div class="empty-state">Sin delegaciones.</div>
+      </div>
+    </div>
+    <div id="delegation-editor">
+      <div class="col-header">Nueva delegación</div>
+      <div class="delegation-form">
+        <h2>Divide el trabajo</h2>
+        <div class="intro">POWER-AGENT lanzará un hijo limitado y, si el proyecto es Git, lo colocará en un worktree separado para que puedas revisar el resultado.</div>
+        <div class="field">
+          <label class="field-label" for="f-delegation-goal">Objetivo</label>
+          <textarea id="f-delegation-goal" rows="6" placeholder="Ej.: revisa los errores de seguridad y devuelve una lista priorizada"></textarea>
+        </div>
+        <div class="field">
+          <label class="field-label" for="f-delegation-context">Contexto adicional</label>
+          <textarea id="f-delegation-context" rows="4" placeholder="Archivos, restricciones o criterios de aceptación"></textarea>
+        </div>
+        <div class="field">
+          <label class="field-label" for="f-delegation-cwd">Proyecto</label>
+          <input type="text" id="f-delegation-cwd" placeholder="/ruta/al/proyecto">
+        </div>
+        <div class="field">
+          <div class="field-row">
+            <div class="grow">
+              <label class="field-label" for="f-delegation-cli">CLI</label>
+              <select id="f-delegation-cli"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+            </div>
+            <div class="grow">
+              <label class="field-label" for="f-delegation-security">Seguridad</label>
+              <select id="f-delegation-security"><option value="safe">Seguro</option><option value="trusted">Confiado</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="execution-hint">Seguro es el valor recomendado. El worktree no se fusiona automáticamente: el resultado queda para revisión.</div>
+        <div style="display:flex;gap:8px;margin-top:18px;">
+          <button id="btn-delegation-start" class="btn btn-primary">Lanzar delegación</button>
+          <button id="btn-delegation-cancel" class="btn btn-danger" style="display:none;">Cancelar</button>
+        </div>
+      </div>
+    </div>
+    <div id="delegation-log">
+      <div class="col-header">Resultado</div>
+      <pre id="delegation-log-pre" class="delegation-log-pre">Selecciona una delegación para ver el resultado.</pre>
     </div>
   </div>
 

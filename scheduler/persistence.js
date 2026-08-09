@@ -2,6 +2,7 @@ const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
+const { normalizeSecurityMode, normalizeSkills } = require('../main/execution-policy')
 
 const MAX_RUNS = 500
 const TASKS_FILE = 'scheduled-tasks.json'
@@ -25,6 +26,10 @@ function defaultsForTask(input) {
     prompt: typeof input.prompt === 'string' ? input.prompt : '',
     model: typeof input.model === 'string' ? input.model : '',
     effort: typeof input.effort === 'string' ? input.effort : '',
+    securityMode: normalizeSecurityMode(input.securityMode),
+    permissionMode: typeof input.permissionMode === 'string' ? input.permissionMode.trim() : '',
+    codexSandbox: typeof input.codexSandbox === 'string' ? input.codexSandbox.trim() : '',
+    skills: normalizeSkills(input.skills),
     resume: input.resume === true,
     sessionId: input.sessionId || null,
     sinks: {
@@ -122,6 +127,12 @@ function createPersistence({ userDataDir }) {
     const next = { ...tasks[idx], ...patch, id: tasks[idx].id, createdAt: tasks[idx].createdAt, updatedAt: nowIso() }
     if (patch.sinks) {
       next.sinks = { ...tasks[idx].sinks, ...patch.sinks }
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'securityMode')) {
+      next.securityMode = normalizeSecurityMode(patch.securityMode)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'skills')) {
+      next.skills = normalizeSkills(patch.skills)
     }
     tasks[idx] = next
     await saveTasks(tasks)

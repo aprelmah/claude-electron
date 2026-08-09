@@ -1,4 +1,5 @@
 const { spawn } = require('child_process')
+const { resolveHeadlessSecurity } = require('./main/execution-policy')
 
 const MAX_BUF = 1 * 1024 * 1024
 const TRUNCATED_TAG = '...[truncated]...'
@@ -38,7 +39,27 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     try { onAuditEvent({ action, ts: Date.now(), ...details }) } catch {}
   }
 
-  function runClaudeHeadless({ prompt, appendSystemPrompt, sessionId, signal, onText, onToolUse, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+  function runClaudeHeadless({
+    prompt,
+    appendSystemPrompt,
+    sessionId,
+    signal,
+    onText,
+    onToolUse,
+    onSessionId,
+    model,
+    effort,
+    cwd,
+    timeoutMs,
+    origin,
+    securityMode,
+    permissionMode
+  }) {
+    const security = resolveHeadlessSecurity({
+      cli: 'claude',
+      securityMode,
+      permissionMode
+    })
     _audit('headless-claude-invoked', {
       cli: 'claude',
       origin: origin || 'unknown',
@@ -47,7 +68,9 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       effort: effort || null,
       prompt_hash: hashPromptTruncated(prompt),
       prompt_len: String(prompt || '').length,
-      bypass_permissions: true
+      security_mode: security.mode,
+      permission_mode: security.args[1],
+      bypass_permissions: security.bypassPermissions
     })
     const meta = cliMeta('claude')
     const env = buildRuntimeEnv()
@@ -59,7 +82,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       '-p', prompt,
       '--output-format', 'stream-json',
       '--verbose',
-      '--permission-mode', 'bypassPermissions'
+      ...security.args
     ]
     // Las instrucciones de la app (p.ej. cómo localizar un archivo que pide el
     // usuario) van como system prompt, NO pegadas al mensaje. Concatenarlas
@@ -171,7 +194,26 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
     })
   }
 
-  function runCodexHeadless({ prompt, appendSystemPrompt, sessionId, signal, onText, onSessionId, model, effort, cwd, timeoutMs, origin }) {
+  function runCodexHeadless({
+    prompt,
+    appendSystemPrompt,
+    sessionId,
+    signal,
+    onText,
+    onSessionId,
+    model,
+    effort,
+    cwd,
+    timeoutMs,
+    origin,
+    securityMode,
+    codexSandbox
+  }) {
+    const security = resolveHeadlessSecurity({
+      cli: 'codex',
+      securityMode,
+      codexSandbox
+    })
     // codex exec no tiene equivalente a --append-system-prompt, así que aquí la
     // instrucción de la app sí se antepone al mensaje (como se hacía antes para
     // los dos CLIs). El coste es el mismo que tenía claude — el título de la
@@ -185,7 +227,10 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       model: model || null,
       effort: effort || null,
       prompt_hash: hashPromptTruncated(effectivePrompt),
-      prompt_len: String(effectivePrompt || '').length
+      prompt_len: String(effectivePrompt || '').length,
+      security_mode: security.mode,
+      codex_sandbox: security.args[1] || null,
+      bypass_permissions: security.bypassPermissions
     })
     const meta = cliMeta('codex')
     const env = buildRuntimeEnv()
@@ -193,7 +238,7 @@ function createHeadlessRunners({ cliMeta, buildRuntimeEnv, commandExists, buildF
       return Promise.reject(new Error(`Codex no disponible (${meta.bin}). Configura ${meta.envVar}.`))
     }
 
-    const baseFlags = ['--skip-git-repo-check', '--json']
+    const baseFlags = ['--skip-git-repo-check', '--json', ...security.args]
     if (model) baseFlags.push('-m', model)
     if (effort) baseFlags.push('-c', `model_reasoning_effort=${effort}`)
 

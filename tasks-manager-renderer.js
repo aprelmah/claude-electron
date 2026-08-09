@@ -11,6 +11,8 @@ const state = {
   telegramConfigured: false,
   cronPresets: [],
   defaults: { model: '', effort: '' },
+  skills: [],
+  selectedSkills: [],
   validateTimer: null,
 
   // ---------- Automations ----------
@@ -25,6 +27,8 @@ const state = {
   runningAutomationIds: new Set(),
   autoRunningPollTimer: null,
   autoRunningStartedAt: new Map(), // id -> ts ms al detectar running por primera vez
+  delegations: [],
+  selectedDelegationId: null,
 };
 
 const SCHED_TYPES = ['interval-min', 'interval-hour', 'daily', 'weekly', 'monthly', 'once', 'advanced'];
@@ -461,6 +465,106 @@ function populateModelEffort(cli, model = '', effort = '') {
   fillSelect($('#f-effort'), EFFORTS[cli] || EFFORTS.claude, effort);
 }
 
+function readSelectedSkills() {
+  return Array.isArray(state.selectedSkills) ? [...state.selectedSkills] : [];
+}
+
+function populateSkills(selected = []) {
+  const picker = $('#f-skills-picker');
+  const status = $('#f-skills-status');
+  if (!picker) return;
+  state.selectedSkills = [...new Set((Array.isArray(selected) ? selected : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  const selectedSet = new Set(state.selectedSkills);
+  picker.innerHTML = '';
+
+  const toolbar = el('div', { class: 'skill-picker-toolbar' });
+  toolbar.appendChild(el('span', { class: 'skill-picker-count' },
+    state.selectedSkills.length
+      ? state.selectedSkills.length + ' seleccionada' + (state.selectedSkills.length === 1 ? '' : 's')
+      : 'Ninguna seleccionada'
+  ));
+  if (state.selectedSkills.length) {
+    const clear = el('button', {
+      class: 'skill-picker-clear',
+      type: 'button',
+      onClick: () => {
+        state.selectedSkills = [];
+        populateSkills([]);
+        markDirty();
+      },
+    }, 'Limpiar');
+    toolbar.appendChild(clear);
+  }
+  picker.appendChild(toolbar);
+
+  const missing = state.selectedSkills.filter((id) => !state.skills.some((skill) => skill.id === id));
+  for (const id of missing) {
+    const missingRow = el('div', { class: 'skill-picker-missing' },
+      el('span', {}, id + ' · no encontrada en este proyecto'),
+      el('button', {
+        type: 'button',
+        title: 'Quitar skill',
+        'aria-label': 'Quitar ' + id,
+        onClick: () => {
+          state.selectedSkills = state.selectedSkills.filter((skillId) => skillId !== id);
+          populateSkills(state.selectedSkills);
+          markDirty();
+        },
+      }, '×')
+    );
+    picker.appendChild(missingRow);
+  }
+
+  const options = el('div', { class: 'skill-picker-options' });
+  if (!state.skills.length) {
+    options.appendChild(el('div', { class: 'execution-hint' }, 'No hay skills disponibles para esta carpeta.'));
+  } else {
+    for (const skill of state.skills) {
+      const selectedNow = selectedSet.has(skill.id);
+      const option = el('button', {
+        type: 'button',
+        class: 'skill-option' + (selectedNow ? ' selected' : ''),
+        role: 'option',
+        'aria-selected': selectedNow ? 'true' : 'false',
+        onClick: () => {
+          if (state.selectedSkills.includes(skill.id)) {
+            state.selectedSkills = state.selectedSkills.filter((id) => id !== skill.id);
+          } else {
+            state.selectedSkills = [...state.selectedSkills, skill.id];
+          }
+          populateSkills(state.selectedSkills);
+          markDirty();
+        },
+      });
+      option.appendChild(el('span', { class: 'skill-option-title' },
+        (selectedNow ? '✓ ' : '') + skill.name
+      ));
+      if (skill.description) {
+        option.appendChild(el('span', { class: 'skill-option-description' }, skill.description));
+      }
+      options.appendChild(option);
+    }
+  }
+  picker.appendChild(options);
+  if (status) {
+    status.textContent = state.skills.length
+      ? state.skills.length + ' disponibles · haz clic para añadir o quitar.'
+      : 'Añade SKILL.md en .power-agent/skills del proyecto o guárdalas en POWER-AGENT.';
+  }
+}
+
+async function loadSkillsForCwd(cwd, selected = readSelectedSkills()) {
+  if (!api.listSkills) return;
+  try {
+    state.skills = (await api.listSkills(cwd || '')) || [];
+  } catch {
+    state.skills = [];
+  }
+  populateSkills(selected);
+}
+
 function showSchedBlock(type) {
   for (const t of SCHED_TYPES) {
     const b = document.getElementById('sched-' + t);
@@ -556,6 +660,8 @@ function readForm() {
     cwd: $('#f-cwd').value.trim(),
     model: $('#f-model').value,
     effort: $('#f-effort').value,
+    securityMode: $('#f-security').value || 'safe',
+    skills: readSelectedSkills(),
     resume: $('#f-resume').checked,
     prompt: $('#f-prompt').value,
     sinks: {
@@ -575,6 +681,8 @@ function fillForm(task) {
   for (const r of $$('input[name="cli"]')) r.checked = (r.value === (task.cli || 'claude'));
   $('#f-cwd').value = task.cwd || '';
   populateModelEffort(task.cli || 'claude', task.model || '', task.effort || '');
+  $('#f-security').value = task.securityMode || 'safe';
+  populateSkills(task.skills || []);
   $('#f-resume').checked = !!task.resume;
   updateSessionInfoBlock(task);
   $('#f-prompt').value = task.prompt || '';
@@ -599,6 +707,8 @@ function emptyTaskDraft() {
     prompt: '',
     model: state.defaults.model || '',
     effort: state.defaults.effort || '',
+    securityMode: 'safe',
+    skills: [],
     resume: false,
     sinks: { logApp: true, notifyMacOS: false, telegram: false },
   };
@@ -717,6 +827,7 @@ function showEditor(task) {
     $('#btn-save').textContent = 'Guardar';
     fillForm(task);
   }
+  loadSkillsForCwd(task && task.cwd ? task.cwd : '', task && Array.isArray(task.skills) ? task.skills : []);
 }
 
 function onToggleEditorDetails() {
@@ -780,6 +891,10 @@ function renderTaskDetailView(task) {
   host.appendChild(kvDetail('CLI', task.cli || 'claude'));
   if (task.model) host.appendChild(kvDetail('Modelo', task.model));
   if (task.effort) host.appendChild(kvDetail('Effort', task.effort));
+  host.appendChild(kvDetail('Seguridad', task.securityMode === 'trusted' ? 'confiado (sin barreras adicionales)' : 'seguro'));
+  if (Array.isArray(task.skills) && task.skills.length) {
+    host.appendChild(kvDetail('Skills', task.skills.join(' · ')));
+  }
   host.appendChild(kvDetail('Reanudar sesión', task.resume ? 'sí (mantiene contexto entre runs)' : 'no'));
   host.appendChild(kvDetail('CWD', task.cwd || '(sin cwd)'));
   if (task.sessionId) host.appendChild(kvDetail('Session ID', String(task.sessionId).slice(0, 12) + '…'));
@@ -882,6 +997,8 @@ async function saveTask() {
     cwd: data.cwd,
     model: data.model,
     effort: data.effort,
+    securityMode: data.securityMode,
+    skills: data.skills,
     resume: data.resume,
     prompt: data.prompt,
     sinks: data.sinks,
@@ -1024,12 +1141,120 @@ async function refreshAll() {
   }
 }
 
+function delegationStatusLabel(status) {
+  const labels = {
+    queued: 'en cola',
+    running: 'ejecutando',
+    ok: 'terminada',
+    error: 'error',
+    cancelled: 'cancelada',
+    unknown: 'desconocida',
+  };
+  return labels[status] || status || 'desconocida';
+}
+
+function renderDelegationsList() {
+  const host = $('#delegation-list-scroll');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!state.delegations.length) {
+    host.appendChild(el('div', { class: 'empty-state' }, 'Sin delegaciones.'));
+    return;
+  }
+  for (const item of state.delegations) {
+    const row = el('div', {
+      class: 'delegation-item' + (item.id === state.selectedDelegationId ? ' selected' : ''),
+      onClick: () => {
+        state.selectedDelegationId = item.id;
+        renderDelegationsList();
+        renderDelegationDetail();
+      },
+    });
+    row.appendChild(el('div', { class: 'title' }, item.goal || '(sin objetivo)'));
+    row.appendChild(el('div', { class: 'meta' },
+      item.cli || 'claude',
+      ' · ',
+      el('span', { class: 'delegation-status ' + (item.status || '') }, delegationStatusLabel(item.status))
+    ));
+    host.appendChild(row);
+  }
+}
+
+function renderDelegationDetail() {
+  const item = state.delegations.find((entry) => entry.id === state.selectedDelegationId);
+  const pre = $('#delegation-log-pre');
+  const cancel = $('#btn-delegation-cancel');
+  if (!pre || !cancel) return;
+  if (!item) {
+    pre.textContent = 'Selecciona una delegación para ver el resultado.';
+    cancel.style.display = 'none';
+    return;
+  }
+  const lines = [
+    'Estado: ' + delegationStatusLabel(item.status),
+    'CLI: ' + (item.cli || 'claude'),
+    'Seguridad: ' + (item.securityMode || 'safe'),
+    item.workspacePath ? 'Worktree: ' + item.workspacePath : 'Worktree: no disponible',
+    item.workspaceOutcome ? 'Integración: ' + JSON.stringify(item.workspaceOutcome) : '',
+    item.error ? '\nError:\n' + item.error : '',
+    item.output ? '\nSalida:\n' + item.output : '\n(sin salida todavía)',
+  ].filter(Boolean);
+  pre.textContent = lines.join('\n');
+  cancel.style.display = item.status === 'running' || item.status === 'queued' ? '' : 'none';
+}
+
+async function refreshDelegations() {
+  if (!api.delegationsList) return;
+  try {
+    state.delegations = await api.delegationsList() || [];
+  } catch {
+    state.delegations = [];
+  }
+  if (!state.selectedDelegationId && state.delegations[0]) {
+    state.selectedDelegationId = state.delegations[0].id;
+  }
+  renderDelegationsList();
+  renderDelegationDetail();
+}
+
+async function startDelegation() {
+  const goal = $('#f-delegation-goal').value.trim();
+  if (!goal) { toast('Falta el objetivo', 'error'); return; }
+  try {
+    const item = await api.delegationsStart({
+      goal,
+      context: $('#f-delegation-context').value.trim(),
+      cwd: $('#f-delegation-cwd').value.trim(),
+      cli: $('#f-delegation-cli').value,
+      securityMode: $('#f-delegation-security').value,
+    });
+    state.selectedDelegationId = item && item.id ? item.id : null;
+    $('#f-delegation-goal').value = '';
+    $('#f-delegation-context').value = '';
+    toast('Delegación lanzada', 'ok');
+    await refreshDelegations();
+  } catch (e) {
+    toast('Error: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+async function cancelDelegation() {
+  const id = state.selectedDelegationId;
+  if (!id || !api.delegationsCancel) return;
+  try {
+    await api.delegationsCancel(id);
+    await refreshDelegations();
+  } catch (e) {
+    toast('Error: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
 // =====================================================================
 // ============== AUTOMATIONS (system-level) ===========================
 // =====================================================================
 
 function setActiveTab(tab) {
-  if (tab !== 'tasks' && tab !== 'automations') tab = 'tasks';
+  if (tab !== 'tasks' && tab !== 'delegations' && tab !== 'automations') tab = 'tasks';
   state.activeTab = tab;
   try { localStorage.setItem('activeTab', tab); } catch (e) {}
 
@@ -1038,19 +1263,30 @@ function setActiveTab(tab) {
   }
 
   const main = $('#main');
+  const mainDelegations = $('#main-delegations');
   const mainAuto = $('#main-automations');
   const btnNew = $('#btn-new');
   const btnAutoNew = $('#btn-auto-new');
 
   if (tab === 'tasks') {
     main.style.display = 'flex';
+    mainDelegations.classList.remove('active');
     mainAuto.classList.remove('active');
     if (btnNew) btnNew.style.display = '';
     stopAutoLogPolling();
     stopAutoRunningPolling();
     loadTasks();
+  } else if (tab === 'delegations') {
+    main.style.display = 'none';
+    mainDelegations.classList.add('active');
+    mainAuto.classList.remove('active');
+    if (btnNew) btnNew.style.display = 'none';
+    stopAutoLogPolling();
+    stopAutoRunningPolling();
+    refreshDelegations();
   } else {
     main.style.display = 'none';
+    mainDelegations.classList.remove('active');
     mainAuto.classList.add('active');
     if (btnNew) btnNew.style.display = 'none';
     loadAutomations();
@@ -2099,6 +2335,10 @@ function wireEvents() {
   $('#btn-pick-folder').addEventListener('click', pickFolder);
   $('#btn-reset-task-session').addEventListener('click', resetCurrentTaskSession);
   $('#btn-open-task-session').addEventListener('click', openCurrentTaskSession);
+  const btnDelegationStart = $('#btn-delegation-start');
+  if (btnDelegationStart) btnDelegationStart.addEventListener('click', startDelegation);
+  const btnDelegationCancel = $('#btn-delegation-cancel');
+  if (btnDelegationCancel) btnDelegationCancel.addEventListener('click', cancelDelegation);
   $('#f-resume').addEventListener('change', () => {
     const t = state.tasks.find((x) => x.id === state.selectedId);
     updateSessionInfoBlock(t || { resume: $('#f-resume').checked, sessionId: '' });
@@ -2151,12 +2391,18 @@ function wireEvents() {
     });
   }
 
-  const dirtyInputs = ['#f-name','#f-cwd','#f-prompt','#f-model','#f-effort','#f-resume','#f-sink-log','#f-sink-macos','#f-sink-tg'];
+  const dirtyInputs = ['#f-name','#f-cwd','#f-prompt','#f-model','#f-effort','#f-security','#f-resume','#f-sink-log','#f-sink-macos','#f-sink-tg'];
   for (const sel of dirtyInputs) {
     const node = $(sel);
     if (!node) continue;
     node.addEventListener('input', markDirty);
     node.addEventListener('change', markDirty);
+  }
+  const cwdInput = $('#f-cwd');
+  if (cwdInput) {
+    cwdInput.addEventListener('change', () => {
+      loadSkillsForCwd(cwdInput.value.trim(), readSelectedSkills());
+    });
   }
 
   document.addEventListener('keydown', (e) => {
@@ -2170,7 +2416,7 @@ function wireEvents() {
     if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
       e.preventDefault();
       if (state.activeTab === 'automations') newAutomation();
-      else newTask();
+      else if (state.activeTab === 'tasks') newTask();
     }
   });
 
@@ -2214,6 +2460,25 @@ function wireBroadcast() {
       } catch {}
     }
   });
+
+  if (api.onDelegationUpdated) {
+    api.onDelegationUpdated((item) => {
+      if (!item || !item.id) return;
+      const idx = state.delegations.findIndex((entry) => entry.id === item.id);
+      if (idx >= 0) state.delegations[idx] = item;
+      else state.delegations.unshift(item);
+      renderDelegationsList();
+      renderDelegationDetail();
+    });
+  }
+  if (api.onDelegationProgress) {
+    api.onDelegationProgress((item) => {
+      if (!item || !item.id) return;
+      const idx = state.delegations.findIndex((entry) => entry.id === item.id);
+      if (idx >= 0) state.delegations[idx] = item;
+      renderDelegationDetail();
+    });
+  }
 
   if (api.onAutomationsListChanged) {
     api.onAutomationsListChanged(() => {
@@ -2272,6 +2537,12 @@ async function bootstrap() {
     if (d) state.defaults = { model: d.model || '', effort: d.effort || '' };
   } catch (e) {}
 
+  await loadSkillsForCwd('');
+  try {
+    const cwds = await api.listCwds();
+    if (Array.isArray(cwds) && cwds[0]) $('#f-delegation-cwd').value = cwds[0];
+  } catch (e) {}
+
   wireEvents();
   wireBroadcast();
   await refreshAll();
@@ -2280,7 +2551,7 @@ async function bootstrap() {
   let initialTab = 'tasks';
   try {
     const saved = localStorage.getItem('activeTab');
-    if (saved === 'tasks' || saved === 'automations') initialTab = saved;
+    if (saved === 'tasks' || saved === 'delegations' || saved === 'automations') initialTab = saved;
   } catch (e) {}
   setActiveTab(initialTab);
 }

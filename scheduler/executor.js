@@ -3,6 +3,8 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { preflightTask, formatPreflightFailure } = require('../main/execution-policy')
+const { loadSkillsForPrompt } = require('../main/skills-registry')
 
 function resolveModelEffort(task, appConfig) {
   const tg = (appConfig && appConfig.telegram) || {}
@@ -61,14 +63,18 @@ function buildPromptWithMcpWait(originalPrompt) {
   return preamble + (originalPrompt || '')
 }
 
-function createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig }) {
+function createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig, userDataDir }) {
   if (typeof runClaudeHeadless !== 'function' || typeof runCodexHeadless !== 'function') {
     throw new Error('executor: runners requeridos')
   }
 
   return async function executeTask(task, { signal, onProgress } = {}) {
     if (!task) throw new Error('executor: task requerido')
+    const preflight = preflightTask(task)
+    if (!preflight.ok) throw new Error(formatPreflightFailure(preflight))
     const { model, effort } = resolveModelEffort(task, appConfig)
+    const cwd = task.cwd || os.homedir()
+    const skills = loadSkillsForPrompt({ userDataDir, cwd }, preflight.skills)
 
     let buffer = ''
     let capturedSessionId = null
@@ -76,12 +82,19 @@ function createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig }) {
     const effectivePrompt = task.cli === 'claude'
       ? buildPromptWithMcpWait(task.prompt)
       : task.prompt
+    const promptWithSkills = task.cli === 'codex' && skills.text
+      ? skills.text + '\n\n' + effectivePrompt
+      : effectivePrompt
 
     const opts = {
-      prompt: effectivePrompt,
-      cwd: task.cwd || os.homedir(),
+      prompt: promptWithSkills,
+      appendSystemPrompt: task.cli === 'claude' ? skills.text : undefined,
+      cwd,
       model,
       effort,
+      securityMode: preflight.securityMode,
+      permissionMode: task.permissionMode,
+      codexSandbox: task.codexSandbox,
       signal,
       onText: (chunk) => {
         if (typeof chunk !== 'string') return
@@ -105,7 +118,14 @@ function createExecutor({ runClaudeHeadless, runCodexHeadless, appConfig }) {
     const sessionId = (result && result.sessionId) || capturedSessionId || null
     const text = (result && (result.text || result.fullText)) || buffer
 
-    return { output: text, sessionId, durationMs }
+    return {
+      output: text,
+      sessionId,
+      durationMs,
+      securityMode: preflight.securityMode,
+      skillsLoaded: skills.loaded,
+      skillsMissing: skills.missing,
+    }
   }
 }
 

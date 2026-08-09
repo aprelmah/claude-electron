@@ -1,16 +1,18 @@
 const crypto = require('crypto')
 const cron = require('node-cron')
+const { formatPreflightFailure } = require('../main/execution-policy')
 let cronParser = null
 try { cronParser = require('cron-parser') } catch {}
 
 class TaskScheduler {
-  constructor({ executor, sinks, persistence, broadcast }) {
+  constructor({ executor, sinks, persistence, broadcast, preflight }) {
     if (typeof executor !== 'function') throw new Error('TaskScheduler: executor requerido')
     if (!persistence) throw new Error('TaskScheduler: persistence requerido')
     this.executor = executor
     this.sinks = sinks || {}
     this.persistence = persistence
     this.broadcast = typeof broadcast === 'function' ? broadcast : () => {}
+    this.preflight = typeof preflight === 'function' ? preflight : null
     this.jobs = new Map()
     this.activeRuns = new Map()
   }
@@ -85,6 +87,46 @@ class TaskScheduler {
 
     const runId = crypto.randomUUID()
     const startedAt = new Date().toISOString()
+    const preflight = this.preflight ? this.preflight(task) : null
+    if (preflight && !preflight.ok) {
+      const finishedAt = new Date().toISOString()
+      const error = formatPreflightFailure(preflight)
+      const run = {
+        runId,
+        taskId,
+        taskName: task.name,
+        cli: task.cli,
+        cwd: task.cwd || '',
+        sessionId: null,
+        startedAt,
+        finishedAt,
+        durationMs: 0,
+        status: 'blocked_config',
+        output: '',
+        error,
+        securityMode: preflight.securityMode || 'safe',
+        skills: preflight.skills || []
+      }
+      try { await this.persistence.appendRun(run) } catch {}
+      try {
+        await this.persistence.updateTask(taskId, {
+          lastRunAt: finishedAt,
+          lastStatus: 'blocked_config',
+          lastDurationMs: 0
+        })
+      } catch {}
+      this.broadcast('tasks:run-finished', {
+        taskId,
+        runId,
+        status: 'blocked_config',
+        durationMs: 0,
+        output: '',
+        error,
+        warnings: preflight.warnings || []
+      })
+      return { ok: false, runId, status: 'blocked_config', error }
+    }
+
     const abort = new AbortController()
     this.activeRuns.set(taskId, abort)
     this.broadcast('tasks:run-started', { taskId, runId, startedAt })
@@ -141,7 +183,9 @@ class TaskScheduler {
       durationMs,
       status,
       output: truncatedOutput,
-      error
+      error,
+      securityMode: task.securityMode || 'safe',
+      skills: Array.isArray(task.skills) ? task.skills : []
     }
 
     try { await this.persistence.appendRun(run) } catch {}
