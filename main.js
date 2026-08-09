@@ -663,6 +663,9 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     args.push('--append-system-prompt', personaResolved)
   }
   const lanEnv = { ...cliCheck.env }
+  // LAN fuera del hook de persona viva: aquí manda la persona del operador
+  // (fijada al spawn con el flag de arriba), no el perfil activo local.
+  delete lanEnv.POWERAGENT_PERSONA_FILE
   if (cli === 'claude') {
     lanEnv.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = '1'
   }
@@ -1507,16 +1510,33 @@ function getClaudeModel() {
 }
 
 // Args claude para spawn local: prepende --model con el default configurado.
-// La persona del perfil activo viaja como --append-system-prompt: invisible en
-// el terminal, aditiva al CLAUDE.md, fijada al arrancar la sesión. Solo claude
-// (codex no admite el flag).
+// La persona del perfil NO va aquí: viaja por el hook UserPromptSubmit (persona
+// viva, ver syncActivePersonaFile) para poder cambiarla en sesiones abiertas.
 function buildClaudeLocalArgs(cli, sessionId) {
-  const args = buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
-  if (cli === 'claude') {
+  return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
+}
+
+// ── Persona viva por perfil ──
+// La persona del perfil activo vive en un fichero de estado que el hook
+// ~/.claude/hooks/poweragent-persona.sh inyecta como contexto en CADA mensaje
+// de las sesiones nacidas de la app (env POWERAGENT_PERSONA_FILE, heredada por
+// todos los spawns vía process.env). Cambiar de perfil = reescribir el fichero:
+// aplica en el SIGUIENTE mensaje, también en sesiones ya abiertas. Las sesiones
+// LAN quedan fuera (persona de operador fijada al spawn); WhatsApp ni carga
+// settings. Detalle: .claude/memory/tech/tech_perfiles_persona_invisible.md.
+function activePersonaFilePath() {
+  return path.join(app.getPath('userData'), 'active-persona.md')
+}
+
+function syncActivePersonaFile() {
+  const file = activePersonaFilePath()
+  try {
     const persona = sanitizePersonaPrompt(getActiveProfile()?.personaPrompt || '')
-    if (persona) args.push('--append-system-prompt', persona)
+    fs.writeFileSync(file, persona ? `${persona}\n` : '', 'utf-8')
+  } catch (err) {
+    console.warn('[persona] no pude escribir active-persona.md:', err?.message || err)
   }
-  return args
+  return file
 }
 
 // ── Sub-chat desechable (fork de la sesión activa, ver main/subchat-pty.js) ──
@@ -3407,6 +3427,10 @@ if (!gotLock) {
 app.whenReady().then(async () => {
   appConfig = loadAppConfig()
 
+  // Persona viva: fichero de estado + env heredada por todos los spawns.
+  // Debe ir ANTES de cualquier ensureCliAvailable (su env parte de process.env).
+  process.env.POWERAGENT_PERSONA_FILE = syncActivePersonaFile()
+
   // Autorizar getUserMedia (micro) y disparar prompt TCC nativo de macOS
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media' || permission === 'audioCapture') return callback(true)
@@ -4603,7 +4627,15 @@ registerProfilesEnterpriseIpc({
   ipcMain,
   dialog,
   winFromEvent,
-  profilesApi: { listProfilesPayload, createProfile, updateProfile, deleteProfile, setActiveProfile },
+  // Toda mutación de perfiles resincroniza el fichero de persona viva: así el
+  // hook inyecta siempre la persona vigente sin reiniciar sesiones.
+  profilesApi: {
+    listProfilesPayload,
+    createProfile: (...a) => { const r = createProfile(...a); syncActivePersonaFile(); return r },
+    updateProfile: (...a) => { const r = updateProfile(...a); syncActivePersonaFile(); return r },
+    deleteProfile: (...a) => { const r = deleteProfile(...a); syncActivePersonaFile(); return r },
+    setActiveProfile: (...a) => { const r = setActiveProfile(...a); syncActivePersonaFile(); return r }
+  },
   enterpriseApi: {
     listEnterprisePayload, saveEnterpriseConfig,
     createEnterpriseRole, updateEnterpriseRole, deleteEnterpriseRole,

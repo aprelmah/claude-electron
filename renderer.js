@@ -1243,8 +1243,8 @@ function fillProfileForm(profile) {
   btnProfileDelete.disabled = locked
   if (profileFormNote) {
     profileFormNote.textContent = locked
-      ? 'El perfil Personal no se puede borrar. La persona se aplica de forma invisible al abrir o reiniciar una sesión de Claude.'
-      : 'Puedes borrar este perfil cuando quieras. La persona se aplica de forma invisible al abrir o reiniciar una sesión de Claude.'
+      ? 'El perfil Personal no se puede borrar. La persona se aplica de forma invisible desde tu siguiente mensaje, también en sesiones ya abiertas.'
+      : 'Puedes borrar este perfil cuando quieras. La persona se aplica de forma invisible desde tu siguiente mensaje, también en sesiones ya abiertas.'
   }
 }
 
