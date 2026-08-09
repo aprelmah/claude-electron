@@ -659,6 +659,9 @@ function resolveLanSessionConfig(remoteMeta = {}) {
     model: requestedModel,
     effort: requestedEffort
   })
+  if (cli === 'claude' && personaResolved) {
+    args.push('--append-system-prompt', personaResolved)
+  }
   const lanEnv = { ...cliCheck.env }
   if (cli === 'claude') {
     lanEnv.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = '1'
@@ -1504,8 +1507,16 @@ function getClaudeModel() {
 }
 
 // Args claude para spawn local: prepende --model con el default configurado.
+// La persona del perfil activo viaja como --append-system-prompt: invisible en
+// el terminal, aditiva al CLAUDE.md, fijada al arrancar la sesión. Solo claude
+// (codex no admite el flag).
 function buildClaudeLocalArgs(cli, sessionId) {
-  return buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
+  const args = buildResumeArgs(cli, sessionId, cli === 'claude' ? getClaudeModel() : '')
+  if (cli === 'claude') {
+    const persona = sanitizePersonaPrompt(getActiveProfile()?.personaPrompt || '')
+    if (persona) args.push('--append-system-prompt', persona)
+  }
+  return args
 }
 
 // ── Sub-chat desechable (fork de la sesión activa, ver main/subchat-pty.js) ──
@@ -2795,7 +2806,7 @@ function startTaskSessionPty(s) {
     throw new Error(cliCheck.error)
   }
 
-  const args = buildResumeArgs(s.cli, s.sessionId, s.cli === 'claude' ? getClaudeModel() : '')
+  const args = buildClaudeLocalArgs(s.cli, s.sessionId)
 
   // Foto pre-spawn para el vigía de fork (solo claude). Incluye el proyecto
   // ORIGINAL del id resumido: ahí es donde aparecerá el .jsonl forkeado.
