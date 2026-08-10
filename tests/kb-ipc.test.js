@@ -5,10 +5,21 @@ const assert = require('node:assert/strict')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { execFileSync } = require('child_process')
 const { registerKbIpc } = require('../main/kb-ipc')
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+}
+
+function initRepo(dir) {
+  execFileSync('git', ['init', '-q'], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
+}
+
+function gitLogMessages(dir) {
+  return execFileSync('git', ['log', '--format=%s'], { cwd: dir }).toString('utf-8').trim().split('\n').filter(Boolean)
 }
 
 function makeIpcMain() {
@@ -56,6 +67,40 @@ test('kb:read-ficha y kb:write-ficha operan solo dentro de kb/fichas/', async ()
   const blocked = await ipcMain.invoke('kb:write-ficha', {}, { cwd: project, relPath: 'CLAUDE.md', text: 'hackeado' })
   assert.equal(blocked.ok, false)
   assert.equal(fs.existsSync(path.join(project, 'CLAUDE.md')), false)
+})
+
+test('kb:toggle comitea automáticamente el CLAUDE.md cuando el proyecto es un repo git', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  fs.mkdirSync(path.join(project, 'kb', 'fichas'), { recursive: true })
+  fs.writeFileSync(path.join(project, 'kb', 'fichas', 'a.md'), '# A\n')
+  fs.writeFileSync(path.join(project, 'CLAUDE.md'), '## Conocimiento precargado\n\n`@kb/fichas/a.md`\n')
+  execFileSync('git', ['add', '-A'], { cwd: project })
+  execFileSync('git', ['commit', '-q', '-m', 'inicial'], { cwd: project })
+
+  const result = await ipcMain.invoke('kb:toggle', {}, { cwd: project, relPath: 'kb/fichas/a.md', active: true })
+
+  assert.equal(result.ok, true)
+  const messages = gitLogMessages(project)
+  assert.equal(messages[0], 'kb: activa kb/fichas/a.md')
+})
+
+test('kb:write-ficha comitea automáticamente cuando el proyecto es un repo git', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  const fichaPath = path.join(project, 'kb', 'fichas', 'atajos.md')
+  fs.mkdirSync(path.dirname(fichaPath), { recursive: true })
+  fs.writeFileSync(fichaPath, '# Atajos\n')
+  execFileSync('git', ['add', '-A'], { cwd: project })
+  execFileSync('git', ['commit', '-q', '-m', 'inicial'], { cwd: project })
+
+  const result = await ipcMain.invoke('kb:write-ficha', {}, { cwd: project, relPath: 'kb/fichas/atajos.md', text: '# Atajos\n\n## 1 · Nuevo\n' })
+
+  assert.equal(result.ok, true)
+  const messages = gitLogMessages(project)
+  assert.equal(messages[0], 'kb: edita kb/fichas/atajos.md')
 })
 
 test('kb:open-window delega en openKnowledgeWindow con el projectDir resuelto', async () => {

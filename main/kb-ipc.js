@@ -8,6 +8,7 @@
 const fs = require('fs')
 const path = require('path')
 const kb = require('./knowledge-base')
+const { commitKbChanges } = require('./kb-git')
 const { createKbExtractor, detectSourceType } = require('./kb-extract')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { isPathSafe } = require('./path-sandbox')
@@ -78,28 +79,33 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     }
   })
 
-  ipcMain.handle('kb:add-shortcut', (_event, { cwd, title, body, related } = {}) => {
+  ipcMain.handle('kb:add-shortcut', async (_event, { cwd, title, body, related } = {}) => {
     try {
       const projectDir = resolveProjectDir(cwd)
       const cleanRelated = (Array.isArray(related) ? related : [])
         .filter((r) => typeof r === 'string' && r.trim())
         .slice(0, 12)
       for (const r of cleanRelated) assertInsideProject(projectDir, r)
-      return kb.addShortcut(projectDir, {
-        title: sanitizeChannelText(title).text,
+      const cleanTitle = sanitizeChannelText(title).text
+      const result = kb.addShortcut(projectDir, {
+        title: cleanTitle,
         body: sanitizeChannelText(body).text,
         related: cleanRelated
       })
+      if (result.ok) await commitKbChanges(projectDir, `kb: nuevo atajo ${result.num} · ${cleanTitle}`)
+      return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
   })
 
-  ipcMain.handle('kb:toggle', (_event, { cwd, relPath, active } = {}) => {
+  ipcMain.handle('kb:toggle', async (_event, { cwd, relPath, active } = {}) => {
     try {
       const projectDir = resolveProjectDir(cwd)
       assertInsideProject(projectDir, relPath)
-      return kb.toggleImport(projectDir, relPath, !!active)
+      const result = kb.toggleImport(projectDir, relPath, !!active)
+      if (result.ok) await commitKbChanges(projectDir, `kb: ${active ? 'activa' : 'desactiva'} ${relPath}`)
+      return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
@@ -128,6 +134,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
         await shell.trashItem(abs)
         trashed = true
       }
+      await commitKbChanges(projectDir, `kb: quita ${relPath}`)
       return { ok: true, trashed }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -182,12 +189,13 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     }
   })
 
-  ipcMain.handle('kb:write-ficha', (_event, { cwd, relPath, text } = {}) => {
+  ipcMain.handle('kb:write-ficha', async (_event, { cwd, relPath, text } = {}) => {
     try {
       const projectDir = resolveProjectDir(cwd)
       const abs = assertInsideProject(projectDir, relPath)
       if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden editar fichas dentro de kb/fichas/')
       atomicWriteFileSync(abs, String(text ?? ''), 'utf-8')
+      await commitKbChanges(projectDir, `kb: edita ${relPath}`)
       return { ok: true }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -247,6 +255,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       send('guardar', title)
       const written = kb.writeFicha(projectDir, title, fichaMd + '\n')
       kb.addImport(projectDir, written.relPath, { projectName: path.basename(projectDir) })
+      await commitKbChanges(projectDir, `kb: destila ${title}`)
 
       send('hecho', written.relPath)
       return { ok: true, relPath: written.relPath, title, warnings }
