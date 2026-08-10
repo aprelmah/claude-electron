@@ -2150,6 +2150,8 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1000,
     height: 680,
+    minWidth: 640,
+    minHeight: 420,
     frame: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 12, y: 13 },
@@ -2260,7 +2262,6 @@ const windowFactory = createWindowFactory({
   getRootDir: () => __dirname
 })
 const openViewerWindow = windowFactory.openViewerWindow
-const openKnowledgeWindow = windowFactory.openKnowledgeWindow
 const openTasksManager = windowFactory.openTasksManager
 const openBitacoraWindow = windowFactory.openBitacoraWindow
 
@@ -4910,7 +4911,6 @@ registerKbIpc({
   getUserDataDir: () => app.getPath('userData'),
   transcribeAudioFile,
   buildRuntimeEnv,
-  openKnowledgeWindow: (projectDir, hint) => openKnowledgeWindow(projectDir, hint),
   sendPromptToSession: async (projectDir, text) => {
     const session = findSessionByProjectDir(projectDir)
     if (!session || !session.pty) throw new Error('no hay ninguna sesión abierta de este proyecto; ábrela y reinténtalo')

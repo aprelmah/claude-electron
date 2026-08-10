@@ -397,25 +397,97 @@
       <button id="btn-file" class="action icon-btn small" title="Adjuntar archivo" aria-label="Adjuntar archivo">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </button>
-      <div id="project-kb-actions" class="project-kb-actions" aria-label="Herramientas de conocimiento del proyecto">
-        <span class="project-kb-caption">PROYECTO</span>
-        <button id="btn-kb" class="action project-kb-action project-kb-agent" title="Abrir el conocimiento de este proyecto" aria-label="Conocimiento del proyecto">
-          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 8h6M9 12h6"/></svg>
-          <span>Agente conocimiento</span>
+    </div>
+    <div id="content-tabs">
+      <div id="content-tabs-left">
+        <button id="tab-btn-chat" class="content-tab active" data-tab="chat" title="Chat con el CLI" aria-label="Chat">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span>Chat</span>
         </button>
+        <button id="tab-btn-casos" class="content-tab" data-tab="casos" title="Casos del proyecto" aria-label="Casos">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+          <span>Casos</span>
+        </button>
+        <button id="tab-btn-fichas" class="content-tab" data-tab="fichas" title="Fichas del proyecto" aria-label="Fichas">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 8h6M9 12h6"/></svg>
+          <span>Fichas</span>
+        </button>
+      </div>
+      <div id="content-tabs-right">
+        <span id="content-tabs-project" class="content-tabs-project"></span>
+        <button id="kb-btn-apply-session" class="kb-mini-btn" title="Aplicar las fichas activas a la sesión abierta de este proyecto">Aplicar a sesión</button>
       </div>
     </div>
     <div id="terminal-row">
-      <div id="terminal"></div>
-      <div id="subchat-divider" class="hidden"></div>
-      <div id="subchat-pane" class="hidden">
-        <div id="subchat-header">
-          <span>Sub-chat (desechable)</span>
-          <button id="btn-subchat-close" class="icon-btn small" title="Cerrar y descartar sub-chat" aria-label="Cerrar sub-chat">
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
-          </button>
+      <div id="tab-view-chat" class="tab-view">
+        <div id="terminal"></div>
+        <div id="subchat-divider" class="hidden"></div>
+        <div id="subchat-pane" class="hidden">
+          <div id="subchat-header">
+            <span>Sub-chat (desechable)</span>
+            <button id="btn-subchat-close" class="icon-btn small" title="Cerrar y descartar sub-chat" aria-label="Cerrar sub-chat">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+            </button>
+          </div>
+          <div id="subchat-terminal"></div>
         </div>
-        <div id="subchat-terminal"></div>
+      </div>
+      <div id="tab-view-casos" class="tab-view hidden">
+        <div class="kb-col-list">
+          <div class="kb-view-toolbar">
+            <button id="kb-btn-new-caso" class="kb-mini-btn primary">+ Crear Caso</button>
+          </div>
+          <div id="kb-casos-list" class="kb-list"></div>
+        </div>
+        <div class="kb-col-editor">
+          <div id="kb-casos-editor-empty" class="kb-col-editor-empty">Selecciona un caso de la lista o crea uno nuevo.</div>
+          <div id="kb-casos-editor-view" class="kb-editor hidden">
+            <div class="kb-editor-label-row">
+              <label class="kb-editor-label" for="kb-case-title">Título</label>
+              <button id="kb-case-title-mic" class="kb-mic-btn" type="button" title="Dictar título" aria-label="Dictar título" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+              </button>
+            </div>
+            <input type="text" id="kb-case-title" placeholder="Título del caso" />
+            <div class="kb-editor-label-row">
+              <label class="kb-editor-label" for="kb-case-body">Resolución</label>
+              <button id="kb-case-body-mic" class="kb-mic-btn" type="button" title="Dictar resolución" aria-label="Dictar resolución" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+              </button>
+            </div>
+            <textarea id="kb-case-body" rows="10" placeholder="Descripción del caso y su resolución"></textarea>
+            <div class="kb-editor-actions">
+              <button id="kb-case-delete" class="kb-mini-btn danger hidden">Borrar</button>
+              <span class="kb-editor-spacer"></span>
+              <button id="kb-case-cancel" class="kb-mini-btn">Cancelar</button>
+              <button id="kb-case-save" class="kb-mini-btn primary">Guardar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="tab-view-fichas" class="tab-view hidden">
+        <div class="kb-col-list">
+          <div class="kb-view-toolbar">
+            <button id="kb-btn-new-ficha" class="kb-mini-btn primary">+ Crear Ficha</button>
+          </div>
+          <div id="kb-fichas-list" class="kb-list"></div>
+          <div id="kb-ficha-drop" class="kb-drop">⬇ Arrastra un PDF, documento o audio · o haz clic para elegir</div>
+          <div class="kb-url-row">
+            <input type="text" id="kb-ficha-url" placeholder="https://… (web o YouTube)" />
+          </div>
+        </div>
+        <div class="kb-col-editor">
+          <div id="kb-fichas-editor-empty" class="kb-col-editor-empty">Doble clic en una ficha de la lista para verla o editarla.</div>
+          <div id="kb-fichas-editor-view" class="kb-editor hidden">
+            <label class="kb-editor-label" id="kb-ficha-editor-label" for="kb-ficha-editor-text">Ficha</label>
+            <textarea id="kb-ficha-editor-text" rows="16"></textarea>
+            <div class="kb-editor-actions">
+              <span class="kb-editor-spacer"></span>
+              <button id="kb-ficha-editor-cancel" class="kb-mini-btn">Cancelar</button>
+              <button id="kb-ficha-editor-save" class="kb-mini-btn primary">Guardar</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div id="drop-overlay" class="hidden">
@@ -887,6 +959,7 @@
   <script src="voice-ui-state.js"></script>
   <script src="prompt-capture.js"></script>
   <script src="renderer.js"></script>
+  <script src="kb-panel.js"></script>
   <script src="node_modules/d3/dist/d3.min.js"></script>
   <script src="graph-renderer.js"></script>
   <script src="whatsapp/whatsapp-panel.js"></script>

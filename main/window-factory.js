@@ -16,7 +16,6 @@ function createWindowFactory({
   let tasksManagerWin = null
   let bitacoraWin = null
   let whatsappWindow = null
-  const knowledgeWindows = new Map() // projectDir -> BrowserWindow
   const WA_WIN_BOUNDS_FILE = path.join(app.getPath('userData'), 'whatsapp-window-bounds.json')
 
   async function readInitialTheme() {
@@ -211,77 +210,6 @@ function createWindowFactory({
   function getTasksManagerWin() { return tasksManagerWin }
   function getBitacoraWin() { return bitacoraWin }
 
-  async function openKnowledgeWindow(projectDir, hint) {
-    const existing = knowledgeWindows.get(projectDir)
-    if (existing && !existing.isDestroyed()) {
-      if (existing.isMinimized()) existing.restore()
-      existing.show()
-      existing.focus()
-      return existing
-    }
-
-    const initialTheme = await readInitialTheme()
-    const primary = getPrimaryWin?.()
-    let bounds = { width: 980, height: 720, x: undefined, y: undefined }
-    const hasHint = hint && Number.isFinite(hint.x) && Number.isFinite(hint.y) && hint.width > 0 && hint.height > 0
-
-    if (hasHint) {
-      const inset = 6
-      bounds = {
-        width: Math.max(640, Math.round(hint.width) - inset * 2),
-        height: Math.max(460, Math.round(hint.height) - inset * 2),
-        x: undefined,
-        y: undefined
-      }
-      if (primary && !primary.isDestroyed()) {
-        const b = primary.getBounds()
-        bounds.x = b.x + Math.round(hint.x) + inset
-        bounds.y = b.y + Math.round(hint.y) + inset
-      }
-    } else if (primary && !primary.isDestroyed()) {
-      const b = primary.getBounds()
-      const inset = 60
-      bounds = {
-        width: Math.max(760, b.width - inset * 2),
-        height: Math.max(520, b.height - inset * 2),
-        x: b.x + inset,
-        y: b.y + inset
-      }
-    }
-
-    const win = new BrowserWindow({
-      width: bounds.width,
-      height: bounds.height,
-      x: bounds.x,
-      y: bounds.y,
-      minWidth: 640,
-      minHeight: 420,
-      title: `POWER-AGENT — Conocimiento (${path.basename(projectDir)})`,
-      frame: false,
-      titleBarStyle: 'hiddenInset',
-      resizable: true,
-      backgroundColor: initialTheme === 'light' ? '#f4f6fb' : '#0f1117',
-      show: false,
-      webPreferences: {
-        preload: path.join(rootDir, 'kb-window-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    })
-    knowledgeWindows.set(projectDir, win)
-    win.loadFile('kb-window.html', { query: { theme: initialTheme, projectDir } })
-    win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
-    win.on('closed', () => {
-      if (knowledgeWindows.get(projectDir) === win) knowledgeWindows.delete(projectDir)
-    })
-    return win
-  }
-
-  function getKnowledgeWindow(projectDir) {
-    const win = knowledgeWindows.get(projectDir)
-    return win && !win.isDestroyed() ? win : null
-  }
-
   return {
     openViewerWindow,
     openTasksManager,
@@ -289,9 +217,7 @@ function createWindowFactory({
     openWhatsappWindow,
     getWhatsappWindow,
     getTasksManagerWin,
-    getBitacoraWin,
-    openKnowledgeWindow,
-    getKnowledgeWindow
+    getBitacoraWin
   }
 }
 

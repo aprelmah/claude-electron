@@ -1000,40 +1000,40 @@ body.layout-split #terminal-wrap { flex: 1; }
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   flex-shrink: 0;
+  min-width: 0;
 }
 
-/* Acciones del proyecto: son navegación de primer nivel, no opciones
-   escondidas dentro del modal de conocimiento. */
-.project-kb-actions {
-  display: inline-flex;
+/* Barra de pestañas hermanas Chat/Casos/Fichas — navegación de primer nivel
+   dentro de la MISMA columna que el terminal (no una caja lateral aparte). */
+#content-tabs {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+  min-width: 0;
 }
-.project-kb-caption {
-  margin: 0 4px 0 2px;
-  color: var(--text2);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-}
-.project-kb-action {
+
+#content-tabs-left { display: flex; gap: 2px; }
+
+.content-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 0 9px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg2));
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
   color: var(--text2);
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 700;
   white-space: nowrap;
 }
-.project-kb-action svg {
+.content-tab svg {
   flex: 0 0 auto;
   stroke: currentColor;
   fill: none;
@@ -1041,24 +1041,23 @@ body.layout-split #terminal-wrap { flex: 1; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.project-kb-action:hover {
-  border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg2));
-  color: var(--text);
-}
-.project-kb-agent {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg2));
-  color: var(--accent);
-}
-body.light .project-kb-action {
-  background: color-mix(in srgb, var(--accent) 7%, #fff);
+.content-tab:hover { color: var(--text); background: var(--bg3); }
+.content-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+#content-tabs-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.content-tabs-project {
+  color: var(--text2);
+  font-size: 11px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 980px) {
-  .project-kb-caption { display: none; }
-  .project-kb-action { width: 28px; padding: 0; justify-content: center; }
-  .project-kb-action span { display: none; }
+  .content-tab span { display: none; }
+  .content-tab { padding: 8px; }
 }
 
 #terminal {
@@ -1068,14 +1067,20 @@ body.light .project-kb-action {
   padding: 8px 10px 4px 10px;
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
+/* Contenedor de medida para Casos/Fichas más abajo: el ancho real disponible
+   (descuenta sidebar y subchat) no es el de la ventana. Tiene que vivir en
+   un ANCESTRO de las pestañas, no en ellas mismas — un elemento no puede
+   quedar afectado por su propia @container query. */
 #terminal-row {
   flex: 1;
   display: flex;
   flex-direction: row;
   min-height: 0;
   min-width: 0;
+  container-type: inline-size;
 }
 
 #subchat-divider {
@@ -1114,6 +1119,229 @@ body.light .project-kb-action {
   overflow: hidden;
   padding: 8px 10px 4px 10px;
 }
+
+/* Las 3 pestañas hermanas (Chat/Casos/Fichas) ocupan, una a la vez, TODA
+   #terminal-row — ninguna reduce el ancho de las otras (no son un panel
+   lateral). Ocultar ≠ destruir: el terminal del tab Chat nunca se reinicia. */
+.tab-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.tab-view.hidden { display: none; }
+
+.kb-col-list {
+  flex: 0 1 340px;
+  min-width: 220px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.kb-col-editor {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+@container (max-width: 640px) {
+  #tab-view-casos, #tab-view-fichas { flex-direction: column; }
+  #tab-view-casos .kb-col-list, #tab-view-fichas .kb-col-list {
+    flex: 0 1 auto;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    max-height: 42%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  #tab-view-casos .kb-col-editor, #tab-view-fichas .kb-col-editor {
+    flex: 1 1 auto;
+    min-height: 160px;
+  }
+}
+
+.kb-col-editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--text2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.kb-col-editor-empty.hidden { display: none; }
+.kb-editor.hidden { display: none; }
+.kb-mini-btn.hidden { display: none; }
+
+.kb-view-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; flex-shrink: 0; }
+
+.kb-mini-btn {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.kb-mini-btn:hover { border-color: var(--accent); }
+.kb-mini-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.kb-mini-btn.danger { border-color: #e5484d; color: #e5484d; }
+.kb-mini-btn.danger:hover { background: rgba(229, 72, 77, 0.12); }
+
+.kb-list { flex: 1; min-height: 0; }
+
+.kb-list-empty { color: var(--text2); font-size: 12px; padding: 8px 4px; }
+
+/* Mismo lenguaje de scrollbar fino que #tree/.xterm-viewport/.wa-chatlist:
+   6px, pista transparente, pulgar var(--border). */
+.kb-col-list::-webkit-scrollbar,
+.kb-editor::-webkit-scrollbar,
+.kb-editor textarea::-webkit-scrollbar {
+  width: 6px;
+}
+.kb-col-list::-webkit-scrollbar-track,
+.kb-editor::-webkit-scrollbar-track,
+.kb-editor textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.kb-col-list::-webkit-scrollbar-thumb,
+.kb-editor::-webkit-scrollbar-thumb,
+.kb-editor textarea::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.kb-case-item, .kb-ficha-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.kb-case-item:hover, .kb-ficha-item .kb-ficha-name:hover { color: var(--accent); }
+
+.kb-case-item-main { flex: 1; min-width: 0; }
+.kb-case-item-title { font-weight: 600; }
+.kb-case-item-preview {
+  color: var(--text2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kb-ficha-item { cursor: default; }
+.kb-ficha-name { flex: 1; min-width: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-ficha-meta { color: var(--text2); font-size: 10.5px; flex-shrink: 0; }
+
+.kb-drop {
+  margin: 8px 0;
+  padding: 14px 8px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text2);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.kb-drop.dragover { border-color: var(--accent); color: var(--accent); }
+
+.kb-url-row { flex-shrink: 0; }
+.kb-url-row input[type="text"] {
+  width: 100%;
+  font: inherit;
+  background: var(--bg2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.kb-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 22px;
+  overflow-y: auto;
+}
+
+.kb-editor-label { font-size: 10.5px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
+
+.kb-editor-label-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+
+/* Mismo lenguaje visual que #btn-mic (botón plano sin borde, icono trazado
+   currentColor, mismo tamaño que .icon-btn.small) — antes tenía caja propia
+   con borde y el SVG se pintaba relleno en negro por falta de stroke/fill. */
+.kb-mic-btn {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--text2);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+.kb-mic-btn svg {
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kb-mic-btn:hover { background: var(--bg3); color: var(--text); transform: scale(1.14); }
+.kb-mic-btn:active { transform: scale(0.93); }
+.kb-mic-btn.recording {
+  background: var(--rec) !important;
+  color: white !important;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.kb-mic-btn.busy { opacity: 0.5; cursor: wait; }
+.kb-mic-btn.kb-mic-error { background: rgba(229, 72, 77, 0.15) !important; color: var(--error) !important; }
+
+.kb-editor input[type="text"], .kb-editor textarea {
+  font: inherit;
+  background: var(--bg2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  width: 100%;
+  resize: vertical;
+}
+
+.kb-editor textarea { flex: 1; min-height: 240px; }
+
+.kb-editor-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.kb-editor-spacer { flex: 1; }
 
 .xterm {
   /*

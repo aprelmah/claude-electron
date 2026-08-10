@@ -511,7 +511,29 @@ window.addEventListener('keydown', (e) => {
   })
 })()
 
+// Un ancho/alto de sidebar persistido de una ventana más grande puede dejar
+// casi sin sitio al contenido principal si luego la ventana se encoge. Se
+// recorta contra el hueco real disponible en cada resize de VENTANA (el
+// arrastre a mano del #divider ya se clampa solo en su propio handler).
+const MIN_MAIN_CONTENT_PX = 360
+function clampSidebarToWindow() {
+  if (sidebar.classList.contains('collapsed')) return
+  if (document.body.classList.contains('layout-split')) return // ancho en %, ya se autoajusta
+  if (document.body.classList.contains('layout-horizontal')) {
+    const current = parseFloat(sidebar.style.height)
+    if (!Number.isFinite(current)) return
+    const maxAllowed = Math.max(80, window.innerHeight - MIN_MAIN_CONTENT_PX)
+    if (current > maxAllowed) sidebar.style.height = maxAllowed + 'px'
+  } else {
+    const current = parseFloat(sidebar.style.width)
+    if (!Number.isFinite(current)) return
+    const maxAllowed = Math.max(160, window.innerWidth - MIN_MAIN_CONTENT_PX)
+    if (current > maxAllowed) sidebar.style.width = maxAllowed + 'px'
+  }
+}
+
 window.addEventListener('resize', () => {
+  clampSidebarToWindow()
   mainTermFit.fitDebounced()
   if (subchatFit) subchatFit.fitDebounced()
 })
@@ -4377,21 +4399,17 @@ if (btnDoctorRun) {
 if (btnCloseStatusPanel) btnCloseStatusPanel.addEventListener('click', closeStatusPanel)
 statusPanelModal?.querySelector('.modal-backdrop')?.addEventListener('click', closeStatusPanel)
 
-const btnKb = document.getElementById('btn-kb')
-async function kbButtonResolveCwd() {
+// cwd del proyecto activo para las pestañas Casos/Fichas (kb-panel.js). Es la
+// misma resolución que usaba el antiguo botón "Conocimiento": prioriza el cwd
+// mostrado en la barra (el del proyecto elegido en el picker) y solo cae a
+// ptyCwd() si esa barra está vacía — evita el bug de coger el cwd del PTY
+// (home si no hay sesión, o la copia si hay worktree) en vez del proyecto real.
+async function resolveProjectCwd() {
   const uiCwd = (cwdValue?.title || '').trim()
   if (uiCwd) return uiCwd
   try { return await window.api.ptyCwd() } catch { return '' }
 }
-if (btnKb) {
-  btnKb.addEventListener('click', async () => {
-    const tw = document.getElementById('terminal-wrap')
-    const r = tw ? tw.getBoundingClientRect() : null
-    const hint = r ? { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) } : null
-    const cwd = await kbButtonResolveCwd()
-    window.api.kb.openWindow(cwd, hint)
-  })
-}
+window.__resolveProjectCwd = resolveProjectCwd
 
 async function openSessions() {
   const cwd = await window.api.ptyCwd()
