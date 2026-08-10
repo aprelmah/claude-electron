@@ -20,10 +20,11 @@ formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cu
   PATH → `~/Library/Python/*/bin` → `python3 -m yt_dlp`). Sin subtítulos → error claro
   (fallback Whisper = v2, el transcriber existe en `main/whisper-transcribe.js`).
 - IPC (`main/kb-ipc.js`): `kb:list/toggle/add-file/remove/distill/apply-to-session/
-  open-window/edit-apply/read-ficha/write-ficha`. No existe `kb:edit-propose` — el
-  chat devuelve la propuesta de edición INLINE en la respuesta de `kb:ask` (campo
-  `edit`), no como llamada aparte; una spec antigua lo nombraba distinto, ver sección
-  2026-08-10.
+  open-window/add-shortcut/read-ficha/write-ficha`. **`kb:ask`/`kb:edit-apply`/
+  `kb:chat-history`/`kb:chat-clear` retirados el 2026-08-10 noche** (ver esa
+  sección) — no hay chat ni edición por IA, solo gestión de fichas/atajos.
+  Cada escritura (`toggle`/`distill`/`add-shortcut`/`write-ficha`/`remove`)
+  dispara `commitKbChanges` (`main/kb-git.js`).
 - Atajos: `kb/fichas/atajos.md`, entradas `## N · título` = respuestas preparadas
   (pregunta→respuesta, formato libre — corrección de Luismi: NO solo problema→
   soluciones). La cabecera del fichero lleva las instrucciones de uso Y de añadido:
@@ -47,8 +48,10 @@ formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cu
   worktree no tiene las fichas nuevas en su copia) y pasa por `writePromptThenEnter`.
   Desactivar fichas NO se puede aplicar en vivo: del contexto cargado no se des-sabe.
 - **Worktree + conocimiento sin commitear = experto invisible**: la sesión 🌿 clona
-  del último commit. Commitear el CLAUDE.md y `kb/` del proyecto es parte del feature,
-  no un extra.
+  del último commit. **Mitigado desde 2026-08-10 noche**: cada escritura del panel
+  comitea sola (`commitKbChanges`, ver esa sección) — pero si el proyecto NO es un
+  repo git, o el commit falla por lo que sea, sigue siendo responsabilidad de
+  Luismi commitear a mano.
 
 ## Patrón: verificar UI de Electron por CDP (lo que cazó el bug del cwd)
 
@@ -74,7 +77,57 @@ formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cu
 - Verificado con vídeo real que daba 429: tras instalar 0.11.4, subtítulos es a la
   primera con los args nuevos.
 
+## 2026-08-10 (noche) — Chat y edición IA retirados; auto-commit del conocimiento
+
+Tras cuestionar el diseño (no la UX, la arquitectura), Luismi decidió cortar la
+columna Chat y la tarjeta de edición por IA de la sección "2026-08-10" de abajo:
+una sesión de terminal normal con `@import` ya carga el texto COMPLETO de la
+ficha (no snippets de retrieval) y edita con `Edit` real (exige match exacto,
+guardarraíl más duro que la validación a medida del chat) — mejor en ambos
+frentes. Lo irreducible frente al agente normal: **destilar** (extracción fuera
+de la sesión, para no comerse el contexto), **atajos**, **toggle**. Eso se queda.
+
+- Borrado `main/kb-chat.js` entero (376 líneas) + su test. Quitados de
+  `kb-ipc.js`/preload: `kb:ask`, `kb:edit-apply`, `kb:chat-history`,
+  `kb:chat-clear`. Ventana a 2 columnas: Fuentes | Atajos. Commit `34a7d4d`.
+- **Causa raíz real de "el agente no se entera de nada"** (bug reportado por
+  Luismi, reproducido con su proyecto real `turbo-e`): NO es el toggle ni el
+  mecanismo `@import` — ambos funcionan bien (probado con `claude -p` real,
+  responde exacto). Es que **un worktree de sesión es una copia congelada del
+  último commit**: si `kb:toggle`/`kb:distill`/atajos escriben en disco pero
+  nadie commitea, cualquier worktree nuevo (o existente) no lo ve — turbo-e
+  tenía 8 ficheros de `kb/`+`CLAUDE.md` sin commitear, la sesión del worktree
+  solo veía 1 de 4 atajos reales. Esto YA estaba anotado como riesgo teórico
+  arriba ("Worktree + conocimiento sin commitear = experto invisible") —
+  ahora tiene mitigación automática, ver siguiente punto.
+- **`main/kb-git.js` — `commitKbChanges(projectDir, message)`**: auto-commit
+  acotado a `CLAUDE.md` + `kb/` (nunca `-A`, nunca push, best-effort: si git
+  falla, la operación del panel que lo llamó ya se guardó en disco igual, no
+  se bloquea). Enganchado en los 5 puntos de escritura: `kb:toggle`,
+  `kb:distill`, `kb:add-shortcut`, `kb:write-ficha`, `kb:remove`. Mensajes de
+  commit por operación (`kb: activa/desactiva <relPath>`, `kb: destila
+  <título>`, etc.), fáciles de leer en `git log -- kb/`. Commit `5d22916`.
+  TDD: 5 tests unitarios (`tests/kb-git.test.js`) + 2 de integración con git
+  real (`tests/kb-ipc.test.js`).
+- **Bug real cazado en el camino**: `git add -- CLAUDE.md kb` falla ENTERO
+  (exit 128, nada se stagea) si UNO de los dos paths no existe en disco (p.
+  ej. proyecto nuevo sin `kb/` aún creado). Fix: filtrar a los paths que
+  `fs.existsSync` antes de pasarlos a `git add`.
+- **UX pendiente, sin arreglar**: el toggle (checkbox nativo pequeño) es poco
+  visible — Luismi no lo encontraba a simple vista. Los modales de "editar
+  ficha a mano" y "+ nuevo atajo" (`position:fixed` sin backdrop/overlay) se
+  ven flotando sobre el panel, no leen como modal real. El botón "Agente
+  conocimiento" en la barra del terminal debería perder la palabra "Agente"
+  (ya no hay IA conversacional detrás) — discutido, no ejecutado.
+- Verificado en dev real por CDP (no solo tests): clic real en el checkbox del
+  toggle → `CLAUDE.md` cambia en disco Y se genera el commit solo, `git
+  status` queda limpio. Deploy verificado por contenido del asar.
+
 ## 2026-08-10 — Ventana propia (sustituye al panel acoplado)
+
+**Parte de esta sección ya NO aplica** — la columna Chat y `kb:edit-apply` se
+retiraron la misma noche (ver sección de arriba). El resto (destilado, fichas,
+atajos, "Aplicar a sesión", reglas de seguridad de escritura) sigue vigente.
 
 Diseño completo en `docs/superpowers/specs/2026-08-10-notebook-conocimiento-design.md`,
 plan en `docs/superpowers/plans/2026-08-10-notebook-conocimiento.md` (13 tasks + 1 extra
