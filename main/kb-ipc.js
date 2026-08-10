@@ -12,6 +12,7 @@ const { createProjectKbChat } = require('./kb-chat')
 const { createKbExtractor, detectSourceType } = require('./kb-extract')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { isPathSafe } = require('./path-sandbox')
+const { atomicWriteFileSync } = require('./atomic-writes')
 
 const DISTILL_TIMEOUT_MS = 240_000
 
@@ -52,7 +53,7 @@ function extractFichaTitle(markdown, fallback) {
   return (m ? m[1].trim() : '') || fallback
 }
 
-function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, transcribeAudioFile, buildRuntimeEnv, sendPromptToSession, log = () => {} } = {}) {
+function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, transcribeAudioFile, buildRuntimeEnv, sendPromptToSession, openKnowledgeWindow, log = () => {} } = {}) {
   function resolveProjectDir(cwd) {
     const candidate = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : (typeof getDefaultCwd === 'function' ? getDefaultCwd() : '')
     if (!candidate || !path.isAbsolute(candidate)) throw new Error('cwd inválido')
@@ -198,8 +199,39 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       if (!list.length) throw new Error('nada que aplicar')
       const absPaths = list.map((r) => assertInsideProject(projectDir, r))
       const prompt = sanitizeChannelText(kb.buildApplyPrompt(absPaths)).text
-      await sendPromptToSession(event, prompt)
+      await sendPromptToSession(projectDir, prompt)
       return { ok: true, applied: list }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:open-window', async (_event, { cwd, hint } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      if (typeof openKnowledgeWindow !== 'function') throw new Error('ventana de conocimiento no disponible')
+      await openKnowledgeWindow(projectDir, hint)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:edit-apply', (_event, { cwd, relPath, find, replace } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      const abs = assertInsideProject(projectDir, relPath)
+      if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden editar fichas dentro de kb/fichas/')
+      if (!fs.existsSync(abs)) throw new Error(`no existe: ${relPath}`)
+      const current = fs.readFileSync(abs, 'utf-8')
+      const needle = String(find || '')
+      if (!needle.trim()) throw new Error('falta el fragmento a sustituir')
+      const firstIdx = current.indexOf(needle)
+      if (firstIdx === -1) throw new Error('el fragmento ya no aparece en el fichero (pudo cambiar); edítalo a mano')
+      if (current.indexOf(needle, firstIdx + 1) !== -1) throw new Error('el fragmento aparece más de una vez; sé más específico o edita a mano')
+      const updated = current.slice(0, firstIdx) + String(replace || '') + current.slice(firstIdx + needle.length)
+      atomicWriteFileSync(abs, updated, 'utf-8')
+      return { ok: true }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
