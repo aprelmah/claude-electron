@@ -4895,6 +4895,8 @@ registerKbIpc({
   runClaudeHeadless: (opts) => runClaudeHeadless(opts),
   getModel: () => getClaudeModel(),
   getUserDataDir: () => app.getPath('userData'),
+  transcribeAudioFile,
+  buildRuntimeEnv,
   sendPromptToSession: async (event, text) => {
     const session = getSessionByEvent(event)
     if (!session || !session.pty) throw new Error('no hay sesión PTY activa en esta ventana')

@@ -8,6 +8,7 @@
 const fs = require('fs')
 const path = require('path')
 const kb = require('./knowledge-base')
+const { createProjectKbChat } = require('./kb-chat')
 const { createKbExtractor, detectSourceType } = require('./kb-extract')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { isPathSafe } = require('./path-sandbox')
@@ -51,7 +52,7 @@ function extractFichaTitle(markdown, fallback) {
   return (m ? m[1].trim() : '') || fallback
 }
 
-function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, sendPromptToSession, log = () => {} } = {}) {
+function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, transcribeAudioFile, buildRuntimeEnv, sendPromptToSession, log = () => {} } = {}) {
   function resolveProjectDir(cwd) {
     const candidate = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : (typeof getDefaultCwd === 'function' ? getDefaultCwd() : '')
     if (!candidate || !path.isAbsolute(candidate)) throw new Error('cwd inválido')
@@ -65,13 +66,58 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     return resolved
   }
 
-  const extractor = createKbExtractor({ userDataDir: getUserDataDir(), log })
+  const extractor = createKbExtractor({ userDataDir: getUserDataDir(), transcribeAudioFile, buildRuntimeEnv, log })
+  const projectChat = createProjectKbChat({
+    userDataDir: getUserDataDir(),
+    runClaudeHeadless,
+    getModel,
+    log
+  })
   let distillBusy = false
 
   ipcMain.handle('kb:list', (_event, { cwd } = {}) => {
     try {
       const projectDir = resolveProjectDir(cwd)
       return { ...kb.listKnowledge(projectDir), shortcuts: kb.listShortcuts(projectDir), projectDir }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:chat-history', async (_event, { cwd } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      return { ok: true, history: await projectChat.history(projectDir), projectDir }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:chat-clear', async (_event, { cwd } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      return { ok: true, history: await projectChat.clear(projectDir), projectDir }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:ask', async (_event, { cwd, question, selectedRelPaths, projectName } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      const selected = Array.isArray(selectedRelPaths)
+        ? selectedRelPaths.filter((r) => typeof r === 'string' && r.trim()).slice(0, 40)
+        : []
+      for (const relPath of selected) assertInsideProject(projectDir, relPath)
+      return {
+        ok: true,
+        ...(await projectChat.ask({
+          projectDir,
+          projectName: typeof projectName === 'string' ? projectName.trim() : path.basename(projectDir),
+          question,
+          selectedRelPaths: selected
+        }))
+      }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }

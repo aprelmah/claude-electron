@@ -211,6 +211,9 @@ contextBridge.exposeInMainWorld('api', {
 
   kb: {
     list: (cwd) => ipcRenderer.invoke('kb:list', { cwd }),
+    history: (cwd) => ipcRenderer.invoke('kb:chat-history', { cwd }),
+    clearHistory: (cwd) => ipcRenderer.invoke('kb:chat-clear', { cwd }),
+    ask: (cwd, question, selectedRelPaths, projectName) => ipcRenderer.invoke('kb:ask', { cwd, question, selectedRelPaths, projectName }),
     toggle: (cwd, relPath, active) => ipcRenderer.invoke('kb:toggle', { cwd, relPath, active }),
     addFile: (cwd, filePath) => ipcRenderer.invoke('kb:add-file', { cwd, filePath }),
     distill: (cwd, source) => ipcRenderer.invoke('kb:distill', { cwd, source }),

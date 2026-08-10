@@ -8,7 +8,8 @@ const {
   isYoutubeRateLimit,
   stripHtml,
   parseVtt,
-  resolveYtDlpCandidates
+  resolveYtDlpCandidates,
+  createKbExtractor
 } = require('../main/kb-extract')
 
 test('isYoutubeRateLimit detecta el 429 en el ruido de yt-dlp', () => {
@@ -18,7 +19,7 @@ test('isYoutubeRateLimit detecta el 429 en el ruido de yt-dlp', () => {
   assert.equal(isYoutubeRateLimit(''), false)
 })
 
-test('detectSourceType distingue youtube, web, pdf y texto', () => {
+test('detectSourceType distingue youtube, web, pdf, texto y audio', () => {
   assert.equal(detectSourceType('https://www.youtube.com/watch?v=abc123'), 'youtube')
   assert.equal(detectSourceType('https://youtu.be/abc123'), 'youtube')
   assert.equal(detectSourceType('https://m.youtube.com/shorts/xyz'), 'youtube')
@@ -26,9 +27,30 @@ test('detectSourceType distingue youtube, web, pdf y texto', () => {
   assert.equal(detectSourceType('/tmp/manual deye.PDF'), 'pdf')
   assert.equal(detectSourceType('/tmp/notas.md'), 'text')
   assert.equal(detectSourceType('/tmp/subs.vtt'), 'text')
+  assert.equal(detectSourceType('/tmp/reunion.m4a'), 'audio')
+  assert.equal(detectSourceType('/tmp/nota-voz.webm'), 'audio')
+  assert.equal(detectSourceType('/tmp/manual.mp3'), 'audio')
   assert.equal(detectSourceType('/tmp/binario.dmg'), null)
   assert.equal(detectSourceType(''), null)
   assert.equal(detectSourceType(null), null)
+})
+
+test('extractSource transcribe audio con el motor común y conserva el origen', async () => {
+  const calls = []
+  const extractor = createKbExtractor({
+    userDataDir: '/tmp/kb-test-userdata',
+    buildRuntimeEnv: () => ({ TEST_ENV: 'ok' }),
+    transcribeAudioFile: async (filePath, env) => {
+      calls.push({ filePath, env })
+      return 'Primera decisión: usar 24 V.\nSiguiente paso: revisar el fusible.'
+    }
+  })
+  const result = await extractor.extractSource({ kind: 'file', path: '/tmp/reunion.m4a' })
+  assert.equal(result.type, 'audio')
+  assert.equal(result.title, 'reunion')
+  assert.equal(result.origin, '/tmp/reunion.m4a')
+  assert.match(result.text, /24 V/)
+  assert.deepEqual(calls, [{ filePath: '/tmp/reunion.m4a', env: { TEST_ENV: 'ok' } }])
 })
 
 test('isYoutubeUrl no confunde webs normales', () => {

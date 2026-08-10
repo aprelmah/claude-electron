@@ -397,9 +397,21 @@
       <button id="btn-file" class="action icon-btn small" title="Adjuntar archivo" aria-label="Adjuntar archivo">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </button>
-      <button id="btn-kb" class="action icon-btn small" title="Conocimiento del proyecto (fichas precargadas)" aria-label="Conocimiento del proyecto">
-        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-      </button>
+      <div id="project-kb-actions" class="project-kb-actions" aria-label="Herramientas de conocimiento del proyecto">
+        <span class="project-kb-caption">PROYECTO</span>
+        <button id="btn-kb" class="action project-kb-action project-kb-agent" title="Abrir el agente de conocimiento de este proyecto" aria-label="Agente de conocimiento">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 8h6M9 12h6"/></svg>
+          <span>Agente conocimiento</span>
+        </button>
+        <button id="btn-kb-ficha" class="action project-kb-action" title="Dar de alta fichas desde PDF, documento o audio" aria-label="Alta de fichas">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 20h16"/></svg>
+          <span>Alta de fichas</span>
+        </button>
+        <button id="btn-kb-shortcut" class="action project-kb-action" title="Crear atajos de respuesta para este proyecto" aria-label="Alta de atajos">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h5"/><path d="M16 15v5M13.5 17.5h5"/></svg>
+          <span>Alta de atajos</span>
+        </button>
+      </div>
     </div>
     <div id="terminal-row">
       <div id="terminal"></div>
@@ -413,6 +425,63 @@
         </div>
         <div id="subchat-terminal"></div>
       </div>
+      <div id="kb-divider" class="hidden"></div>
+      <aside id="kb-modal" class="hidden" aria-label="Herramienta de conocimiento del proyecto">
+        <header class="kb-tool-header">
+          <div>
+            <div class="kb-tool-kicker">CONOCIMIENTO DEL PROYECTO</div>
+            <div id="kb-tool-heading" class="kb-tool-heading">Agente conocimiento</div>
+            <div id="kb-sub" class="kb-tool-project"></div>
+          </div>
+          <div class="kb-tool-header-actions">
+            <button id="btn-kb-dock" class="kb-window-action" type="button" title="Desacoplar y poder mover/redimensionar" aria-pressed="false">Desacoplar</button>
+            <button id="btn-close-kb" class="modal-close" aria-label="Cerrar herramienta">×</button>
+          </div>
+        </header>
+        <section id="kb-chat-view" class="kb-tool-view">
+          <div class="kb-chat-layout">
+            <aside class="kb-chat-rail">
+              <div class="kb-rail-kicker">PROYECTO ACTIVO</div>
+              <div id="kb-chat-project" class="kb-chat-project">—</div>
+              <div class="kb-rail-rule"></div>
+              <div class="kb-rail-heading">Fuentes de esta conversación</div>
+              <div id="kb-chat-sources" class="kb-chat-sources"></div>
+              <button id="kb-chat-all-sources" class="kb-link-btn" type="button">Seleccionar todas</button>
+              <div class="kb-rail-note">Solo se consultan las fichas seleccionadas de este proyecto.</div>
+              <button id="kb-chat-clear" class="kb-link-btn kb-clear-btn" type="button">Borrar esta conversación</button>
+            </aside>
+            <section class="kb-chat-main">
+              <div id="kb-chat-messages" class="kb-chat-messages" aria-live="polite"></div>
+              <div id="kb-chat-status" class="kb-chat-status hidden"></div>
+              <form id="kb-chat-form" class="kb-chat-composer">
+                <textarea id="kb-chat-input" rows="2" placeholder="Pregunta sobre este proyecto…  (⌘↵ para enviar)" aria-label="Pregunta al conocimiento del proyecto"></textarea>
+                <div class="kb-composer-footer">
+                  <span class="kb-composer-hint">Respuestas con fuente, página o minuto cuando exista.</span>
+                  <button id="kb-chat-send" class="kb-send-btn" type="submit">Preguntar <span>↵</span></button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+        <section id="kb-ficha-view" class="kb-tool-view hidden">
+          <div class="kb-tool-intro">
+            <div class="kb-tool-eyebrow">ALTA DE FICHAS</div>
+            <h2>Convierte una fuente en conocimiento</h2>
+            <p>Sube un PDF, documento o audio. POWER-AGENT lo transcribe o extrae, lo destila y lo guarda en este proyecto.</p>
+          </div>
+          <div id="kb-body"></div>
+        </section>
+        <section id="kb-shortcut-view" class="kb-tool-view hidden">
+          <div class="kb-tool-intro">
+            <div class="kb-tool-eyebrow">ALTA DE ATAJOS</div>
+            <h2>Respuestas listas para reutilizar</h2>
+            <p>Crea respuestas numeradas para que el agente las reconozca desde la sesión de este proyecto.</p>
+          </div>
+          <div id="kb-shortcut-body"></div>
+        </section>
+        <div id="kb-progress" class="hidden" aria-live="polite"></div>
+        <div id="kb-resize-handle" class="kb-resize-handle" role="separator" aria-label="Redimensionar herramienta" title="Arrastrar para redimensionar"></div>
+      </aside>
     </div>
     <div id="drop-overlay" class="hidden">
       <div class="drop-msg">Suelta para adjuntar</div>
@@ -494,18 +563,7 @@
     </div>
   </div>
 
-  <div id="kb-modal" class="hidden">
-    <div class="modal-backdrop"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <span class="modal-title">📚 Conocimiento del proyecto</span>
-        <span class="modal-sub" id="kb-sub"></span>
-        <button id="btn-close-kb" class="modal-close" aria-label="Cerrar panel">×</button>
-      </div>
-      <div id="kb-body"></div>
-      <div id="kb-progress" class="hidden"></div>
-    </div>
-  </div>
+
 
   <div id="settings-modal" class="hidden">
     <div class="modal-backdrop"></div>

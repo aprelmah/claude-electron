@@ -1,7 +1,8 @@
 'use strict'
 // Extractores de texto para la base de conocimiento por proyecto (panel 📚).
 // PDF vía PDFKit (swift, compilado una vez en userData), web vía fetch + strip
-// HTML, YouTube vía yt-dlp (subtítulos VTT; no descarga el vídeo).
+// HTML, YouTube vía yt-dlp (subtítulos VTT; no descarga el vídeo) y audio vía
+// el transcriptor existente de POWER-AGENT.
 // Todo lo que sale de aquí es contenido NO CONFIABLE: el llamador lo pasa por
 // sanitizeChannelText y lo delimita en el prompt del destilador.
 
@@ -14,6 +15,7 @@ const MAX_EXTRACT_CHARS = 180_000
 const YTDLP_TIMEOUT_MS = 120_000
 const PDF_TIMEOUT_MS = 60_000
 const WEB_TIMEOUT_MS = 30_000
+const AUDIO_EXTENSIONS = new Set(['.3gp', '.aac', '.aiff', '.amr', '.caf', '.flac', '.m4a', '.mp3', '.mpga', '.oga', '.ogg', '.opus', '.wav', '.webm'])
 
 // Fuente Swift del extractor PDF (PDFKit conserva tablas mejor que pypdf en
 // los manuales técnicos). Se compila una única vez a userData/kb-tools/pdftxt.
@@ -43,7 +45,7 @@ function isWebUrl(input) {
   return /^https?:\/\/\S+$/i.test(input.trim())
 }
 
-// 'youtube' | 'web' | 'pdf' | 'text' | null
+// 'youtube' | 'web' | 'pdf' | 'text' | 'audio' | null
 function detectSourceType(input) {
   if (typeof input !== 'string' || !input.trim()) return null
   const s = input.trim()
@@ -52,6 +54,7 @@ function detectSourceType(input) {
   const ext = path.extname(s).toLowerCase()
   if (ext === '.pdf') return 'pdf'
   if (['.md', '.txt', '.markdown', '.csv', '.json', '.html', '.htm', '.vtt', '.srt'].includes(ext)) return 'text'
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio'
   return null
 }
 
@@ -186,6 +189,8 @@ function createKbExtractor({
   tmpDir = os.tmpdir(),
   spawnFn = spawn,
   fetchFn = globalThis.fetch,
+  transcribeAudioFile,
+  buildRuntimeEnv,
   log = () => {}
 } = {}) {
   function runCommand(cmd, args, { timeoutMs, cwd } = {}) {
@@ -247,6 +252,19 @@ function createKbExtractor({
       return { title: path.basename(filePath, ext), text: parseVtt(raw), origin: filePath }
     }
     return { title: path.basename(filePath, ext), text: raw, origin: filePath }
+  }
+
+  async function extractAudioFile(filePath) {
+    if (typeof transcribeAudioFile !== 'function') {
+      throw new Error('transcripción de audio no disponible')
+    }
+    const env = typeof buildRuntimeEnv === 'function' ? buildRuntimeEnv() : undefined
+    const text = await transcribeAudioFile(filePath, env)
+    return {
+      title: path.basename(filePath, path.extname(filePath)),
+      text: String(text || ''),
+      origin: filePath
+    }
   }
 
   async function extractWeb(url) {
@@ -337,6 +355,7 @@ function createKbExtractor({
     else if (type === 'web') result = await extractWeb(ref)
     else if (type === 'pdf') result = await extractPdf(ref)
     else if (type === 'text') result = await extractTextFile(ref)
+    else if (type === 'audio') result = await extractAudioFile(ref)
     else throw new Error(`tipo de fuente no soportado: ${ref}`)
     let truncated = false
     if (result.text.length > MAX_EXTRACT_CHARS) {
@@ -348,7 +367,7 @@ function createKbExtractor({
     return { ...result, type, truncated }
   }
 
-  return { extractSource, extractPdf, extractWeb, extractYoutube, extractTextFile, ensurePdftxtBin }
+  return { extractSource, extractPdf, extractWeb, extractYoutube, extractTextFile, extractAudioFile, ensurePdftxtBin }
 }
 
 module.exports = {
@@ -360,5 +379,6 @@ module.exports = {
   stripHtml,
   parseVtt,
   resolveYtDlpCandidates,
+  AUDIO_EXTENSIONS,
   MAX_EXTRACT_CHARS
 }
