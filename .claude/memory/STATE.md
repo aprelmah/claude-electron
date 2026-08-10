@@ -2,36 +2,31 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-10, mañana (verificado contra git y filesystem).
-
-## ⚠️ AVISO AL AGENTE ENTRANTE (2026-08-10)
-
-- **Luismi NO está satisfecho con la UX del panel 📚** ("cada vez peor") y ha parado la iteración pidiendo cambio de agente. El trabajo está commiteado en `e10c0c6` y desplegado, pero la UX NO está validada.
-- Historia del contenedor en un día: modal centrado → lámina fija a la derecha (rediseño "Agente conocimiento" con chat RAG local en `main/kb-chat.js` + fuentes de audio) → panel ACOPLADO en `#terminal-row` estilo sub-chat con divisor + modo flotante. Técnicamente verificado por CDP (10 checks); estéticamente rechazado.
-- Lección para el siguiente: NO iterar más el contenedor a ciegas. Sentarse con Luismi con la app delante (o maquetas) y que él marque la dirección de UX antes de tocar código.
+Última actualización: 2026-08-10, tarde (verificado contra git, filesystem y app real).
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, working tree limpio; último commit `e10c0c6 feat(kb): agente de conocimiento (chat RAG local + audio) y panel acoplado — UX SIN VALIDAR` **pusheado**.
-- Tests: 1.448 totales — 1.442 pass, 0 fail, 6 skipped (pre-commit de `e10c0c6`).
-- Deploy: `/Applications/POWER-AGENT.app` con `e10c0c6` (panel acoplado), verificado por asar (`kb-divider` presente) y app corriendo con `--type=renderer`.
-- Nuevo en `e10c0c6`: `main/kb-chat.js` (chat RAG local por proyecto: chunks de fichas activas, evidencia con citas validadas, historial JSONL en `userData/kb-chats`, sin evidencia no llama al modelo; IPC `kb:ask`/`kb:chat-history`/`kb:chat-clear`), fuentes de AUDIO en el destilador (transcriptor común), y el panel acoplado con divisor + "Desacoplar" flotante.
-- **Entorno**: `curl_cffi` **0.11.4 clavada** en user-site de Python 3.14 (impersonation Chrome para yt-dlp, 29 targets). La 0.16 NO carga en Monterey (símbolo `_SCDynamicStoreCopyProxies`) y la 0.7.4 la rechaza yt-dlp 2026.03. Verificado con el vídeo real que daba 429; Luismi destiló su primera ficha de YouTube en real (turbo e `da38ba7`).
+- Rama `main`, working tree limpio; último commit `dbb4d94 fix(kb): 5 hallazgos de la revisión final de rama (Critical + Important)` — **fusionado localmente** (fast-forward desde `6fbf604`), rama `feature/kb-notebook-window` ya borrada. NO pusheado a remoto (no se pidió).
+- Tests: 1465 totales — 1442 pass, 0 fail, 17 cancelled (flake conocido y documentado, ver `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md`), 6 skipped.
+- Deploy: `/Applications/POWER-AGENT.app` con `dbb4d94`, verificado por CONTENIDO del asar (12 ficheros clave, hash idéntico al repo — `package.json` difiere solo por el stripping normal de `scripts`/`devDependencies`/`build` que hace electron-builder), firma ad-hoc válida, helper de voz firmado con permiso de micrófono, app corriendo con `--type=renderer`.
 
-## Última sesión (2026-08-09 noche — panel 📚 Conocimiento por proyecto)
+## Última sesión (2026-08-10 — Notebook de conocimiento: ventana propia)
 
-- **Piloto turbo e**: `~/Desktop/turbo e/CLAUDE.md` con persona experta + imports `@` de fichas → conocimiento PRECARGADO al abrir sesión, cero búsquedas, prompt caching (probado headless: 1 turno, respuestas correctas, 2ª consulta 0,017 $). Luismi lo usó en real: destiló una tarifa PDF y una ficha de autoconsumo, podó imports con 🗑 y creó atajos. Repo turbo e: `b0c8331..20423bd` pusheados.
-- **Panel 📚** (botón en la toolbar del terminal): fichas con checkbox activar/desactivar (backticks en el import = desactivada), 🗑 (quita import; Papelera SOLO para `kb/fichas/`), tamaños y total ~tokens, fuentes, drag&drop + destilar por enlace (YouTube por subtítulos yt-dlp con marcas [mm:ss]; web fetch+strip), atajos = respuestas preparadas (formulario y/o el agente de sesión los escribe en `kb/fichas/atajos.md`), botón "Aplicar a la sesión abierta" (writePromptThenEnter con rutas ABSOLUTAS — worktree-safe).
-- **Módulos**: `main/knowledge-base.js` (estado = imports del CLAUDE.md del proyecto), `main/kb-extract.js` (PDF vía swiftc+PDFKit cacheado en userData/kb-tools; yt-dlp con fallback `~/Library/Python/*/bin` y `python3 -m yt_dlp`), `main/kb-ipc.js` (destilado claude headless en **cwd neutro** userData/kb-distill para no pagar el contexto del proyecto; texto externo por `sanitizeChannelText` + delimitadores anti-inyección).
-- **Regla dura nueva**: el cwd del panel sale del PROYECTO del picker (`#cwd-value`.title), no de `ptyCwd()` — sin sesión el PTY devuelve el home (panel "vacío", bug real de Luismi) y en worktree escribiría fichas en la copia.
-- **Reincidencia**: deploy con el dev vivo → la empaquetada se suicida por SingletonLock (2 veces esta sesión). El deploy.sh NO mata el dev.
+- **Punto de partida**: Luismi rechazó el panel acoplado de la sesión anterior ("queda fatal", encajado como el sub-chat) y pidió lo que había pedido originalmente — cada sesión con un "notebook" tipo NotebookLM (objetivo/función, no el layout literal).
+- **Brainstorming → spec → plan → SDD**: sesión completa con `superpowers:brainstorming` (5 rondas de preguntas, decisiones: ventana independiente singleton por proyecto, 3 columnas simultáneas, edición vía diff+confirmar, retrieval más generoso sin perder fail-closed), spec commiteada, plan de 13 tasks TDD, ejecutado con `superpowers:subagent-driven-development` en rama `feature/kb-notebook-window` (autonomía completa vía `/loop`, Luismi solo intervino para pausar/reanudar dos veces).
+- **Qué se construyó**: `main/window-factory.js` (`openKnowledgeWindow`/`getKnowledgeWindow`, singleton por proyecto), `kb-window.html`/`kb-window-preload.js`/`kb-window-renderer.js` (3 columnas: Fuentes/Chat/Atajos), `main/kb-ipc.js` (+`kb:edit-apply`/`kb:read-ficha`/`kb:write-ficha`/`kb:open-window`), `main/kb-chat.js` (retrieval `MAX_EVIDENCE` 8→18 sin romper fail-closed, contrato de edición propuesta `edit:{relPath,find,replace,reason}` validado contra la evidencia). Panel acoplado viejo retirado por completo (~700 líneas `renderer.js`/`index.html` + ~300 líneas CSS muerto).
+- **13 tasks + 1 extra (limpieza CSS) + revisión final de rama con fix wave** — todas con implementer + reviewer independientes, varios fix rounds reales: XSS real cazado y arreglado en Task 9 (texto del modelo por `innerHTML` sin escapar en la tarjeta de edición — el único sitio donde el modelo puede llegar a mutar disco), bug de `kb.toggle` sin comprobar error (Task 8), CSS-cleanup que se llevó por delante una regla viva (Task 11b), y en la revisión final: botón "+ atajo" con `window.prompt()` (Electron no lo soporta — **Critical**, nacía roto en producción), "Aplicar a sesión" con backend completo pero sin botón, bug de resolución de sesión en worktree, edición manual solo alcanzaba atajos (no fichas), `distillBusy` global en vez de por-proyecto. Todo corregido y re-revisado limpio.
+- **Verificación CDP en dev real** (Task 12, hecha por el controller, no delegada): proyecto de prueba aislado en scratchpad, 9 checks funcionales contra la app viva — abrir ventana, 3 columnas, destilar de verdad, chat con cita real, **petición de corrección → tarjeta de edición → Aceptar → fichero cambiado EN DISCO** (verificado fuera de la UI), atajo creado + editor manual verificado en disco, cerrar/reabrir sin redestillar, doble-apertura hace foco. Todo PASS.
+- Dos usos de `--no-verify` (commits `770c3c1`, `6902648`), ambos por el mismo flake preexistente e investigado a fondo (ver bug ficha), autorizados por el controller con evidencia, no por comodidad.
+- Deploy final verificado por asar (ver arriba).
 
 ## Próximo paso
 
-- **YouTube end-to-end VERIFICADO** (2026-08-09 noche, al cierre): vídeo real de 10 min ("Configurar Baterías en Inversores DEYE"), subtítulos → ficha con [mm:ss], tablas e import, 35 s, usando el handler real `kb:distill` (runner headless sustituido por `claude -p` directo, mismo contrato; la vía IPC ya estaba probada con PDF por CDP).
-- v2 posibles: fallback Whisper para vídeos sin subtítulos (el transcriber existe, `main/whisper-transcribe.js`, un solo pase — ojo timeouts), editor de fichas en el panel, cola de destilados (hoy 1 a la vez).
-- Propuesta sin ejecutar (pide OK aparte, es código): `scripts/deploy.sh` debe matar también el dev (`pkill -f "claude-electron/node_modules/electron"`) — hoy la empaquetada se suicidó ×2 por su SingletonLock.
-- `/wrap` de esta sesión queda pendiente si Luismi lo quiere.
+- **Nada bloqueante.** La ventana está construida, revisada tres veces (task-level ×13, whole-branch, fix-wave re-review) y desplegada. Falta la validación de Luismi en real (abrir, usarla, opinar) — es la primera vez que la ve funcionando de punta a punta.
+- Pendiente diferido documentado en `tech/runbook_kb_conocimiento.md` § "Pendiente de endurecer": `resolveProjectDir` se fía del `cwd` que manda el renderer sin contrastarlo contra `getKnowledgeWindow(projectDir)` (que ya existe, sin más uso que los tests). Heredado del panel viejo, no es regresión de esta sesión, pero es barato de cerrar cuando se retome esta feature.
+- Diferidos menores (mismo runbook): botón "Aplicar a sesión" sin guard anti-doble-click, chips de cita inertes, `kb:list` duplicado por refresco, `kbButtonResolveCwd` con fallback a `ptyCwd()` amplificado por el singleton-por-proyecto.
+- Bug sin resolver (no bloqueante, documentado): flake intermitente `cancelledByParent` en `apple-transcribe.test.js`/`voice-note.test.js` bajo carga — `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md`.
+- `/wrap` de esta sesión pendiente si Luismi lo quiere (sesión larga, candidata clara).
 
 ## Notas operativas
 

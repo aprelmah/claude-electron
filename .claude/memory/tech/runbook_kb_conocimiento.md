@@ -1,7 +1,12 @@
-# Runbook — Conocimiento por proyecto (panel 📚)
+# Runbook — Conocimiento por proyecto (panel 📚 → ventana 📚)
 
 Creado 2026-08-09 (sesión panel 📚). Subsistema: cada proyecto lleva su conocimiento
-precargado vía imports `@` en su CLAUDE.md; el panel 📚 de la app lo gestiona.
+precargado vía imports `@` en su CLAUDE.md. **2026-08-10: el panel acoplado (rechazado
+en UX) se sustituyó por una ventana Electron independiente, singleton por proyecto**
+(`main/window-factory.js` `openKnowledgeWindow`/`getKnowledgeWindow`,
+`kb-window.html`/`kb-window-preload.js`/`kb-window-renderer.js`). Ver sección
+"2026-08-10" más abajo para lo que cambió; el resto de esta ficha (extractores,
+formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cual.
 
 ## Arquitectura
 
@@ -14,7 +19,11 @@ precargado vía imports `@` en su CLAUDE.md; el panel 📚 de la app lo gestiona
   yt-dlp (VTT con dedupe de cues rodantes y marcas `[mm:ss]`; resolución del binario:
   PATH → `~/Library/Python/*/bin` → `python3 -m yt_dlp`). Sin subtítulos → error claro
   (fallback Whisper = v2, el transcriber existe en `main/whisper-transcribe.js`).
-- IPC (`main/kb-ipc.js`): `kb:list/toggle/add-file/remove/distill/apply-to-session`.
+- IPC (`main/kb-ipc.js`): `kb:list/toggle/add-file/remove/distill/apply-to-session/
+  open-window/edit-apply/read-ficha/write-ficha`. No existe `kb:edit-propose` — el
+  chat devuelve la propuesta de edición INLINE en la respuesta de `kb:ask` (campo
+  `edit`), no como llamada aparte; una spec antigua lo nombraba distinto, ver sección
+  2026-08-10.
 - Atajos: `kb/fichas/atajos.md`, entradas `## N · título` = respuestas preparadas
   (pregunta→respuesta, formato libre — corrección de Luismi: NO solo problema→
   soluciones). La cabecera del fichero lleva las instrucciones de uso Y de añadido:
@@ -64,6 +73,63 @@ precargado vía imports `@` en su CLAUDE.md; el panel 📚 de la app lo gestiona
   targets "unavailable"). Si yt-dlp se actualiza, revalidar la pareja de versiones.
 - Verificado con vídeo real que daba 429: tras instalar 0.11.4, subtítulos es a la
   primera con los args nuevos.
+
+## 2026-08-10 — Ventana propia (sustituye al panel acoplado)
+
+Diseño completo en `docs/superpowers/specs/2026-08-10-notebook-conocimiento-design.md`,
+plan en `docs/superpowers/plans/2026-08-10-notebook-conocimiento.md` (13 tasks + 1 extra
++ fix wave de revisión final, todo con reviews limpias — commit final `dbb4d94`).
+
+- **Una ventana por proyecto** (`Map<projectDir, win>` en `window-factory.js`), no
+  multi-instancia libre: reabrir sobre el mismo proyecto hace foco, no duplica.
+- **3 columnas simultáneas** en la ventana (Fuentes | Chat | Atajos), sin pestañas —
+  la queja original era justo eso: fichas/atajos eran pantallas aparte.
+- **El chat puede proponer ediciones**: si Luismi pide una corrección, `kb:ask`
+  devuelve `edit: {relPath, find, replace, reason}` (validado server-side: `relPath`
+  SOLO puede ser una ficha que ya estaba en la evidencia de esa respuesta — allowlist
+  estricta, no puede inventarse un fichero). La UI la muestra como tarjeta con
+  Aceptar/Descartar; solo al aceptar se llama a `kb:edit-apply`, que sustituye el
+  fragmento (`find` debe aparecer EXACTAMENTE una vez, si no rechaza sin escribir) vía
+  `atomicWriteFileSync`. Dos puertas independientes (contrato del modelo + reescritura
+  server-side) antes de que nada mute disco.
+- **Edición manual** (`kb:read-ficha`/`kb:write-ficha`, reescritura completa, no
+  fragmento): doble-click en una ficha de Fuentes O en un atajo abre un editor inline.
+  Mismo límite de seguridad que `kb:edit-apply` (`kb.isPanelFicha`, solo `kb/fichas/`).
+- **"Aplicar a sesión" SÍ está cableado** (botón en la cabecera de la columna Fuentes,
+  aplica las fichas activas) — estuvo a punto de quedarse huérfano entre tasks (backend
+  completo, sin botón) hasta que la revisión final de rama lo cazó.
+- **Retrieval del chat más generoso sin perder el fail-closed**: `MAX_EVIDENCE` 8→18,
+  se retiró el fallback que volcaba fichas al azar en preguntas de orientación
+  ("resumen", "de qué va"...) — ese fallback era la causa real de "vomita lo que
+  encuentra". El umbral `score > 0` se mantiene: sin coincidencia real, sigue sin
+  llamar al modelo.
+- **`distillBusy` es por proyecto** (`Map`), no un booleano global — con panel único
+  bastaba, con N ventanas bloqueaba proyectos entre sí con un mensaje que no decía
+  cuál era el culpable.
+- **`kb:apply-to-session` resuelve por `projectDir`, no por `event.sender`** (roto en
+  cuanto el panel dejó de vivir en la ventana del terminal). `findSessionByProjectDir`
+  en `main.js` compara contra `session.gitWorkspace?.realCwd || session.cwd` — un
+  descuido inicial comparaba solo `session.cwd`, que en sesiones con aislamiento
+  worktree es la copia, no el proyecto real; nunca habría encontrado sesión.
+
+### Pendiente de endurecer (diferido, NO regresión de esta sesión)
+
+`resolveProjectDir` en `main/kb-ipc.js` se fía del `cwd` que manda el renderer de la
+ventana; main ya tiene el auténtico (es la clave del `Map` de `window-factory` y el
+query param que él mismo puso al abrir). Nada los contrasta hoy — heredado del panel
+acoplado, no lo introdujo esta sesión, pero ahora es barato de cerrar:
+`window-factory` ya exporta `getKnowledgeWindow(projectDir)` sin más uso que los
+tests. Si se compromete el renderer de esta ventana, `kb:write-ficha`/`kb:edit-apply`
+escriben en `<cualquier dir existente>/kb/fichas/*`, no solo en el proyecto de esa
+ventana. Property de "próximo paso" antes de tocar más esta feature.
+
+### Otros diferidos (menores, en el ledger de la sesión, no en disco)
+
+Botón "Aplicar a sesión" sin guard anti-doble-click; chips de cita `.citation-chip`
+inertes (sin listener); `kb:list` se pide dos veces por refresco (Fuentes + Atajos
+por separado); `kbButtonResolveCwd` conserva el fallback a `ptyCwd()` (heredado,
+no regresión — amplificado por el singleton por proyecto: un cwd de worktree abriría
+una ventana cacheada sobre la copia).
 
 ## Coste medido (piloto turbo e, 2026-08-09)
 

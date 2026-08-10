@@ -1,6 +1,6 @@
 # INDEX — mapa de fichas de `.claude/memory/`
 
-Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-09.
+Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-10.
 
 ## Estado y proyecto
 
@@ -20,7 +20,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/runbook_telegram_bridge.md` — comandos del bot, notas de voz (Apple/whisper), bot de avisos separado, configuración de la app.
 - `tech/runbook_hermes_robos.md` — pairing por código, saneado de canal, detector de repetidos, doctor, bandeja de decisiones, panel 📈, reglas de tests.
 - `tech/runbook_incidentes_2026_05.md` — crash de arranque de mayo (SIGABRT/savedState), fixes permanentes y notas operativas de recuperación.
-- `tech/runbook_kb_conocimiento.md` — panel 📚: conocimiento por proyecto (imports @ del CLAUDE.md, destilador PDF/web/YouTube, atajos, aplicar a sesión), reglas duras y patrón CDP de verificación de UI. Leer antes de tocar kb-*/panel (09-08-2026).
+- `tech/runbook_kb_conocimiento.md` — conocimiento por proyecto: ventana propia por proyecto (ya no panel acoplado, 10-08-2026), imports @ del CLAUDE.md, destilador PDF/web/YouTube, atajos, edición con diff+confirmar, aplicar a sesión, reglas duras y patrón CDP de verificación de UI. Leer antes de tocar kb-*/kb-window-*.
 
 ## Fichas técnicas (lecciones con el porqué)
 
@@ -46,6 +46,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Bugs resueltos (leer si reaparece el síntoma)
 
+- `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md` — flake intermitente `cancelledByParent` en esos dos tests, sin relación con lo que se toque; SIN resolver, solo documentado (10-08-2026).
 - `bugs/bug_task_manager_skills_multiselect_2026_08_09.md` — selector nativo múltiple de skills difícil de limpiar en macOS y corrección visual (09-08-2026).
 - `bugs/bug_scripts_renderer_ambito_global.md` — un `const` duplicado en scripts sueltos del renderer mata la página; los tests no lo ven.
 - `bugs/bug_relay_telegram_transcript.md` — el relay mandaba la pantalla raspada en vez de la respuesta (transcript no localizado).
