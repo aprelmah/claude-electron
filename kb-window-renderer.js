@@ -35,7 +35,12 @@ async function refreshSources() {
     check.title = ficha.active ? 'Desactivar' : 'Activar'
     check.addEventListener('change', async () => {
       check.disabled = true
-      await window.api.kb.toggle(projectDir, ficha.relPath, check.checked)
+      const res = await window.api.kb.toggle(projectDir, ficha.relPath, check.checked)
+      if (!res.ok) {
+        alert(res.error)
+        await refreshSources()
+        return
+      }
       check.disabled = false
     })
     const name = document.createElement('span')
