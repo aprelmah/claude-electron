@@ -239,23 +239,68 @@ Catálogo numerado. Cada entrada es la respuesta preparada a una pregunta o a un
 caso: puede ser problema→soluciones, una pregunta frecuente, un procedimiento o
 cualquier respuesta que Luismi quiera tener lista. Cuando escriba el número de
 un atajo (p. ej. "1") o parte de su título, responde con el contenido de esa
-entrada y sus relacionados. Si pide "atajos", lista los títulos numerados.
+entrada y sus relacionados. Si pide "atajos" o "casos", lista los títulos numerados.
 
-Para AÑADIR un atajo (cuando Luismi diga "guarda esto como atajo" o similar):
-añade al final de este fichero una entrada \`## <número siguiente> · <título>\`
-con su contenido y, si aplica, una línea \`Relacionados:\` con rutas de fichas
-entre backticks. No renumeres los existentes.
+Para AÑADIR un atajo (cuando Luismi diga "esto ponlo como caso", "guarda esto
+como atajo" o similar): añade al final de este fichero una entrada
+\`## <número siguiente> · <título>\` con su contenido y, si aplica, una línea
+\`Relacionados:\` con rutas de fichas entre backticks. No renumeres los
+existentes: el número siguiente es el más alto existente + 1, aunque haya
+huecos. Después de escribir el fichero, comitéalo (ya tienes git por sesión
+disponible): \`git add CLAUDE.md kb/ && git commit -m "kb: nuevo atajo <número> · <título>"\`.
 `
 
 const SHORTCUT_TITLE_RE = /^## (\d+) · (.+)$/
+const SHORTCUT_RELATED_RE = /^Relacionados: (.+)$/
+const SHORTCUT_RELATED_ITEM_RE = /`([^`]+)`/g
 
+function formatRelatedLine(related) {
+  const items = (Array.isArray(related) ? related : [])
+    .map((r) => String(r || '').trim())
+    .filter(Boolean)
+  return items.length ? `Relacionados: ${items.map((r) => `\`${r}\``).join(', ')}` : null
+}
+
+function parseRelatedLine(line) {
+  const m = String(line || '').match(SHORTCUT_RELATED_RE)
+  if (!m) return null
+  const items = []
+  let mm
+  SHORTCUT_RELATED_ITEM_RE.lastIndex = 0
+  while ((mm = SHORTCUT_RELATED_ITEM_RE.exec(m[1]))) items.push(mm[1])
+  return items
+}
+
+// Cada entrada devuelve también el cuerpo completo (todo el texto entre su
+// cabecera "## N · título" y la siguiente, o el final del fichero) y, si la
+// última línea no vacía es "Relacionados: ...", esa línea se separa en
+// `related` (array) y `relatedLine` (texto crudo, para preservarla tal cual
+// al reescribir la entrada aunque no se toque).
 function parseShortcuts(text) {
-  const entries = []
-  for (const line of String(text || '').split('\n')) {
-    const m = line.match(SHORTCUT_TITLE_RE)
-    if (m) entries.push({ num: Number(m[1]), title: m[2].trim() })
+  const lines = String(text || '').split('\n')
+  const headers = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(SHORTCUT_TITLE_RE)
+    if (m) headers.push({ num: Number(m[1]), title: m[2].trim(), line: i })
   }
-  return entries
+  return headers.map((h, idx) => {
+    const end = idx + 1 < headers.length ? headers[idx + 1].line : lines.length
+    const bodyLines = lines.slice(h.line + 1, end)
+    while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop()
+    while (bodyLines.length && bodyLines[0].trim() === '') bodyLines.shift()
+    let related = []
+    let relatedLine = null
+    if (bodyLines.length) {
+      const parsed = parseRelatedLine(bodyLines[bodyLines.length - 1])
+      if (parsed) {
+        related = parsed
+        relatedLine = bodyLines[bodyLines.length - 1]
+        bodyLines.pop()
+        while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop()
+      }
+    }
+    return { num: h.num, title: h.title, body: bodyLines.join('\n'), related, relatedLine }
+  })
 }
 
 function listShortcuts(projectDir) {
@@ -263,6 +308,14 @@ function listShortcuts(projectDir) {
   let entries = []
   try { entries = parseShortcuts(fs.readFileSync(abs, 'utf-8')) } catch {}
   return { relPath: ATAJOS_RELPATH, entries }
+}
+
+// Líneas [num, title, ...] de una entrada tal y como las escribe el catálogo.
+function buildShortcutLines(num, title, body, relatedLine) {
+  const out = [`## ${num} · ${title}`, '', ...String(body).split('\n')]
+  if (relatedLine) out.push('', relatedLine)
+  out.push('')
+  return out
 }
 
 function addShortcut(projectDir, { title, body, related = [] } = {}) {
@@ -277,21 +330,72 @@ function addShortcut(projectDir, { title, body, related = [] } = {}) {
   if (!text.trim()) text = ATAJOS_HEADER
   const nums = parseShortcuts(text).map((e) => e.num)
   const num = nums.length ? Math.max(...nums) + 1 : 1
-  const relatedLine = (Array.isArray(related) ? related : [])
-    .map((r) => String(r || '').trim())
-    .filter(Boolean)
-    .map((r) => `\`${r}\``)
-    .join(', ')
-  const entry = [
-    '',
-    `## ${num} · ${cleanTitle}`,
-    '',
-    cleanBody,
-    relatedLine ? `\nRelacionados: ${relatedLine}` : ''
-  ].filter((l) => l !== '').join('\n')
+  const relatedLine = formatRelatedLine(related)
+  const entry = [''].concat(buildShortcutLines(num, cleanTitle, cleanBody, relatedLine).slice(0, -1)).join('\n')
   const joined = text.replace(/\n*$/, '\n') + entry + '\n'
   atomicWriteFileSync(abs, joined, 'utf-8')
   addImport(projectDir, ATAJOS_RELPATH)
+  return { ok: true, num, relPath: ATAJOS_RELPATH }
+}
+
+// Reescribe SOLO la entrada `id`, dejando cabecera y demás entradas intactas
+// byte a byte (se localizan por rango de líneas entre cabeceras "## N · …").
+// Si `related` no se pasa, conserva la línea "Relacionados:" tal cual estaba.
+function updateShortcut(projectDir, id, { title, body, related } = {}) {
+  const num = Number(id)
+  if (!Number.isInteger(num) || num <= 0) return { ok: false, error: `id inválido: ${id}` }
+  const cleanTitle = String(title || '').trim().replace(/\s+/g, ' ')
+  const cleanBody = String(body || '').trim()
+  if (!cleanTitle) return { ok: false, error: 'el atajo necesita título' }
+  if (!cleanBody) return { ok: false, error: 'el atajo necesita contenido' }
+  const abs = path.resolve(projectDir, ATAJOS_RELPATH)
+  let text
+  try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, error: 'atajos.md no existe' } }
+
+  const lines = text.split('\n')
+  const headers = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(SHORTCUT_TITLE_RE)
+    if (m) headers.push({ num: Number(m[1]), line: i })
+  }
+  const idx = headers.findIndex((h) => h.num === num)
+  if (idx === -1) return { ok: false, error: `atajo no encontrado: ${num}` }
+
+  const relatedLine = Array.isArray(related)
+    ? formatRelatedLine(related)
+    : (parseShortcuts(text).find((e) => e.num === num)?.relatedLine || null)
+
+  const start = headers[idx].line
+  const end = idx + 1 < headers.length ? headers[idx + 1].line : lines.length
+  lines.splice(start, end - start, ...buildShortcutLines(num, cleanTitle, cleanBody, relatedLine))
+  atomicWriteFileSync(abs, lines.join('\n'), 'utf-8')
+  return { ok: true, num, relPath: ATAJOS_RELPATH }
+}
+
+// Quita la entrada `id` sin renumerar el resto: los números son un catálogo
+// estable (los "Relacionados" de otras fichas o lo que Luismi recuerde de
+// memoria pueden citarlos), no un índice de array que deba recompactarse.
+function deleteShortcut(projectDir, id) {
+  const num = Number(id)
+  if (!Number.isInteger(num) || num <= 0) return { ok: false, error: `id inválido: ${id}` }
+  const abs = path.resolve(projectDir, ATAJOS_RELPATH)
+  let text
+  try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, error: 'atajos.md no existe' } }
+
+  const lines = text.split('\n')
+  const headers = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(SHORTCUT_TITLE_RE)
+    if (m) headers.push({ num: Number(m[1]), line: i })
+  }
+  const idx = headers.findIndex((h) => h.num === num)
+  if (idx === -1) return { ok: false, error: `atajo no encontrado: ${num}` }
+
+  const start = headers[idx].line
+  const end = idx + 1 < headers.length ? headers[idx + 1].line : lines.length
+  lines.splice(start, end - start)
+  while (lines.length > 1 && lines[lines.length - 1] === '' && lines[lines.length - 2] === '') lines.pop()
+  atomicWriteFileSync(abs, lines.join('\n'), 'utf-8')
   return { ok: true, num, relPath: ATAJOS_RELPATH }
 }
 
@@ -309,7 +413,10 @@ module.exports = {
   parseShortcuts,
   listShortcuts,
   addShortcut,
+  updateShortcut,
+  deleteShortcut,
   ATAJOS_RELPATH,
+  ATAJOS_HEADER,
   listKnowledge,
   parseImports,
   toggleImport,

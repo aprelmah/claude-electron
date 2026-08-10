@@ -53,7 +53,7 @@ function extractFichaTitle(markdown, fallback) {
   return (m ? m[1].trim() : '') || fallback
 }
 
-function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, transcribeAudioFile, buildRuntimeEnv, sendPromptToSession, openKnowledgeWindow, log = () => {} } = {}) {
+function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getModel, getUserDataDir, transcribeAudioFile, buildRuntimeEnv, sendPromptToSession, log = () => {} } = {}) {
   function resolveProjectDir(cwd) {
     const candidate = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : (typeof getDefaultCwd === 'function' ? getDefaultCwd() : '')
     if (!candidate || !path.isAbsolute(candidate)) throw new Error('cwd inválido')
@@ -93,6 +93,38 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
         related: cleanRelated
       })
       if (result.ok) await commitKbChanges(projectDir, `kb: nuevo atajo ${result.num} · ${cleanTitle}`)
+      return result
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:update-shortcut', async (_event, { cwd, id, title, body, related } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      let cleanRelated
+      if (Array.isArray(related)) {
+        cleanRelated = related.filter((r) => typeof r === 'string' && r.trim()).slice(0, 12)
+        for (const r of cleanRelated) assertInsideProject(projectDir, r)
+      }
+      const cleanTitle = sanitizeChannelText(title).text
+      const result = kb.updateShortcut(projectDir, id, {
+        title: cleanTitle,
+        body: sanitizeChannelText(body).text,
+        ...(cleanRelated ? { related: cleanRelated } : {})
+      })
+      if (result.ok) await commitKbChanges(projectDir, `kb: edita caso ${result.num} · ${cleanTitle}`)
+      return result
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:delete-shortcut', async (_event, { cwd, id } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      const result = kb.deleteShortcut(projectDir, id)
+      if (result.ok) await commitKbChanges(projectDir, `kb: borra caso ${result.num}`)
       return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -162,17 +194,6 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       const prompt = sanitizeChannelText(kb.buildApplyPrompt(absPaths)).text
       await sendPromptToSession(projectDir, prompt)
       return { ok: true, applied: list }
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
-    }
-  })
-
-  ipcMain.handle('kb:open-window', async (_event, { cwd, hint } = {}) => {
-    try {
-      const projectDir = resolveProjectDir(cwd)
-      if (typeof openKnowledgeWindow !== 'function') throw new Error('ventana de conocimiento no disponible')
-      await openKnowledgeWindow(projectDir, hint)
-      return { ok: true }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }

@@ -43,7 +43,6 @@ function makeDeps(overrides = {}) {
     transcribeAudioFile: async () => '',
     buildRuntimeEnv: () => ({}),
     sendPromptToSession: overrides.sendPromptToSession || (async () => {}),
-    openKnowledgeWindow: overrides.openKnowledgeWindow || (async () => {}),
     log: () => {}
   })
   return { ipcMain }
@@ -103,17 +102,75 @@ test('kb:write-ficha comitea automáticamente cuando el proyecto es un repo git'
   assert.equal(messages[0], 'kb: edita kb/fichas/atajos.md')
 })
 
-test('kb:open-window delega en openKnowledgeWindow con el projectDir resuelto', async () => {
-  const calls = []
-  const { ipcMain } = makeDeps({ openKnowledgeWindow: async (projectDir, hint) => { calls.push({ projectDir, hint }) } })
+test('kb:update-shortcut edita título y cuerpo, y comitea', async () => {
+  const { ipcMain } = makeDeps()
   const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  const addResult = await ipcMain.invoke('kb:add-shortcut', {}, { cwd: project, title: 'Original', body: 'Cuerpo original.', related: [] })
+  assert.equal(addResult.ok, true) // kb:add-shortcut ya comitea; no hace falta un commit "inicial" aparte
 
-  const result = await ipcMain.invoke('kb:open-window', {}, { cwd: project, hint: { x: 1, y: 2, width: 300, height: 400 } })
+  const result = await ipcMain.invoke('kb:update-shortcut', {}, { cwd: project, id: 1, title: 'Editado', body: 'Cuerpo editado.' })
 
   assert.equal(result.ok, true)
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].projectDir, project)
-  assert.deepEqual(calls[0].hint, { x: 1, y: 2, width: 300, height: 400 })
+  assert.equal(result.num, 1)
+  assert.equal(result.relPath, path.join('kb', 'fichas', 'atajos.md'))
+  const text = fs.readFileSync(path.join(project, 'kb', 'fichas', 'atajos.md'), 'utf-8')
+  assert.ok(text.includes('## 1 · Editado'))
+  assert.ok(text.includes('Cuerpo editado.'))
+  const messages = gitLogMessages(project)
+  assert.equal(messages[0], 'kb: edita caso 1 · Editado')
+})
+
+test('kb:update-shortcut rechaza cwd inválido y related fuera del proyecto', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  await ipcMain.invoke('kb:add-shortcut', {}, { cwd: project, title: 'Original', body: 'Cuerpo original.' })
+
+  const badCwd = await ipcMain.invoke('kb:update-shortcut', {}, { cwd: 'no-es-absoluto', id: 1, title: 'x', body: 'y' })
+  assert.equal(badCwd.ok, false)
+
+  const before = fs.readFileSync(path.join(project, 'kb', 'fichas', 'atajos.md'), 'utf-8')
+  const traversal = await ipcMain.invoke('kb:update-shortcut', {}, {
+    cwd: project,
+    id: 1,
+    title: 'x',
+    body: 'y',
+    related: ['../../etc/passwd']
+  })
+  assert.equal(traversal.ok, false)
+  assert.match(traversal.error, /fuera del proyecto/)
+  assert.equal(fs.readFileSync(path.join(project, 'kb', 'fichas', 'atajos.md'), 'utf-8'), before)
+})
+
+test('kb:delete-shortcut borra la entrada y comitea', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  await ipcMain.invoke('kb:add-shortcut', {}, { cwd: project, title: 'Uno', body: 'Cuerpo uno.' })
+  await ipcMain.invoke('kb:add-shortcut', {}, { cwd: project, title: 'Dos', body: 'Cuerpo dos.' })
+
+  const result = await ipcMain.invoke('kb:delete-shortcut', {}, { cwd: project, id: 1 })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.num, 1)
+  const text = fs.readFileSync(path.join(project, 'kb', 'fichas', 'atajos.md'), 'utf-8')
+  assert.ok(!text.includes('Uno'))
+  assert.ok(text.includes('## 2 · Dos'))
+  const messages = gitLogMessages(project)
+  assert.equal(messages[0], 'kb: borra caso 1')
+})
+
+test('kb:delete-shortcut rechaza cwd inválido e id inexistente', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  await ipcMain.invoke('kb:add-shortcut', {}, { cwd: project, title: 'Uno', body: 'Cuerpo uno.' })
+
+  const badCwd = await ipcMain.invoke('kb:delete-shortcut', {}, { cwd: 'relativo', id: 1 })
+  assert.equal(badCwd.ok, false)
+
+  const missing = await ipcMain.invoke('kb:delete-shortcut', {}, { cwd: project, id: 99 })
+  assert.equal(missing.ok, false)
 })
 
 test('kb:apply-to-session pasa projectDir (no el event) a sendPromptToSession', async () => {

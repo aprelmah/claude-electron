@@ -203,3 +203,194 @@ test('copySourceFile copia a kb/fuentes con dedupe', () => {
   assert.equal(second.relPath, path.join('kb', 'fuentes', 'manual-2.pdf'))
   assert.equal(fs.readFileSync(path.join(root, first.relPath), 'utf-8'), 'pdf-bytes')
 })
+
+test('parseShortcuts extrae cuerpo multilínea y relacionados, tolerante a formato sin blanco tras la cabecera', () => {
+  const text = [
+    '## 1 · Título Uno',
+    'Línea 1 del cuerpo.',
+    'Línea 2 del cuerpo.',
+    '',
+    '## 2 · Título Dos',
+    '',
+    'Cuerpo del dos.',
+    'Relacionados: `kb/fichas/a.md`, `kb/fichas/b.md`',
+    '',
+    '## 3 · Título Tres',
+    '',
+    'Último cuerpo,',
+    'con dos líneas.'
+  ].join('\n')
+  const entries = kb.parseShortcuts(text)
+  assert.deepEqual(entries.map((e) => e.num), [1, 2, 3])
+
+  assert.equal(entries[0].title, 'Título Uno')
+  assert.equal(entries[0].body, 'Línea 1 del cuerpo.\nLínea 2 del cuerpo.')
+  assert.deepEqual(entries[0].related, [])
+  assert.equal(entries[0].relatedLine, null)
+
+  assert.equal(entries[1].title, 'Título Dos')
+  assert.equal(entries[1].body, 'Cuerpo del dos.')
+  assert.deepEqual(entries[1].related, ['kb/fichas/a.md', 'kb/fichas/b.md'])
+  assert.equal(entries[1].relatedLine, 'Relacionados: `kb/fichas/a.md`, `kb/fichas/b.md`')
+
+  assert.equal(entries[2].title, 'Título Tres')
+  assert.equal(entries[2].body, 'Último cuerpo,\ncon dos líneas.')
+  assert.deepEqual(entries[2].related, [])
+})
+
+test('parseShortcuts sobre un atajos.md real (sin blanco tras la cabecera) no revienta', () => {
+  const text = kb.ATAJOS_HEADER + '## 1 · LAS RANAS CRIAN PELO\nNUNCA\n'
+  const entries = kb.parseShortcuts(text)
+  assert.deepEqual(entries, [{ num: 1, title: 'LAS RANAS CRIAN PELO', body: 'NUNCA', related: [], relatedLine: null }])
+})
+
+function buildCatalog(root) {
+  const one = kb.addShortcut(root, { title: 'Primero', body: 'Cuerpo primero.\nSegunda línea.', related: ['kb/fichas/a.md'] })
+  const two = kb.addShortcut(root, { title: 'Segundo', body: 'Cuerpo segundo.' })
+  const three = kb.addShortcut(root, { title: 'Tercero', body: 'Cuerpo tercero.', related: ['kb/fichas/c.md', 'kb/fichas/d.md'] })
+  return { one, two, three }
+}
+
+test('updateShortcut reescribe una entrada del medio y deja cabecera y demás entradas intactas', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  const abs = path.join(root, kb.ATAJOS_RELPATH)
+  const before = fs.readFileSync(abs, 'utf-8')
+  const entry1Before = before.slice(before.indexOf('## 1 ·'), before.indexOf('## 2 ·'))
+  const entry3Before = before.slice(before.indexOf('## 3 ·'))
+
+  const result = kb.updateShortcut(root, 2, { title: 'Segundo (editado)', body: 'Cuerpo nuevo del segundo.' })
+  assert.equal(result.ok, true)
+  assert.equal(result.num, 2)
+  assert.equal(result.relPath, kb.ATAJOS_RELPATH)
+
+  const after = fs.readFileSync(abs, 'utf-8')
+  assert.ok(after.startsWith(kb.ATAJOS_HEADER.split('\n')[0]))
+  assert.ok(after.includes('Catálogo numerado'))
+  assert.equal(after.slice(after.indexOf('## 1 ·'), after.indexOf('## 2 ·')), entry1Before)
+  assert.equal(after.slice(after.indexOf('## 3 ·')), entry3Before)
+  assert.ok(after.includes('## 2 · Segundo (editado)'))
+  assert.ok(after.includes('Cuerpo nuevo del segundo.'))
+  assert.ok(!after.includes('Cuerpo segundo.\n'))
+
+  const entries = kb.listShortcuts(root).entries
+  assert.deepEqual(entries.map((e) => e.num), [1, 2, 3])
+})
+
+test('updateShortcut preserva "Relacionados:" si no se toca', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  const result = kb.updateShortcut(root, 1, { title: 'Primero (editado)', body: 'Solo cambio el cuerpo.' })
+  assert.equal(result.ok, true)
+  const entries = kb.listShortcuts(root).entries
+  const one = entries.find((e) => e.num === 1)
+  assert.equal(one.title, 'Primero (editado)')
+  assert.equal(one.body, 'Solo cambio el cuerpo.')
+  assert.deepEqual(one.related, ['kb/fichas/a.md'])
+})
+
+test('updateShortcut con `related` explícito reemplaza los relacionados', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  const result = kb.updateShortcut(root, 3, { title: 'Tercero', body: 'Cuerpo tercero.', related: ['kb/fichas/nuevo.md'] })
+  assert.equal(result.ok, true)
+  const entries = kb.listShortcuts(root).entries
+  const three = entries.find((e) => e.num === 3)
+  assert.deepEqual(three.related, ['kb/fichas/nuevo.md'])
+
+  const cleared = kb.updateShortcut(root, 3, { title: 'Tercero', body: 'Cuerpo tercero.', related: [] })
+  assert.equal(cleared.ok, true)
+  const threeCleared = kb.listShortcuts(root).entries.find((e) => e.num === 3)
+  assert.deepEqual(threeCleared.related, [])
+})
+
+test('updateShortcut edita la primera y la última entrada preservando el resto', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  const abs = path.join(root, kb.ATAJOS_RELPATH)
+
+  const first = kb.updateShortcut(root, 1, { title: 'Primero editado', body: 'Nuevo cuerpo uno.' })
+  assert.equal(first.ok, true)
+  let text = fs.readFileSync(abs, 'utf-8')
+  assert.ok(text.includes('Catálogo numerado'))
+  assert.ok(text.includes('## 2 · Segundo'))
+  assert.ok(text.includes('## 3 · Tercero'))
+
+  const last = kb.updateShortcut(root, 3, { title: 'Tercero editado', body: 'Nuevo cuerpo tres.' })
+  assert.equal(last.ok, true)
+  text = fs.readFileSync(abs, 'utf-8')
+  assert.ok(text.endsWith('\n'))
+  assert.ok(!text.endsWith('\n\n'))
+  const entries = kb.listShortcuts(root).entries
+  assert.deepEqual(entries.map((e) => [e.num, e.title]), [
+    [1, 'Primero editado'],
+    [2, 'Segundo'],
+    [3, 'Tercero editado']
+  ])
+})
+
+test('updateShortcut valida id, título, cuerpo y fichero inexistente', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  assert.equal(kb.updateShortcut(root, 99, { title: 'x', body: 'y' }).ok, false)
+  assert.equal(kb.updateShortcut(root, 1, { title: '', body: 'y' }).ok, false)
+  assert.equal(kb.updateShortcut(root, 1, { title: 'x', body: '  ' }).ok, false)
+  assert.equal(kb.updateShortcut(root, 'abc', { title: 'x', body: 'y' }).ok, false)
+
+  const other = tmpProject()
+  assert.equal(kb.updateShortcut(other, 1, { title: 'x', body: 'y' }).ok, false)
+})
+
+test('deleteShortcut quita la entrada del medio sin renumerar el resto', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  const abs = path.join(root, kb.ATAJOS_RELPATH)
+
+  const result = kb.deleteShortcut(root, 2)
+  assert.equal(result.ok, true)
+  assert.equal(result.num, 2)
+
+  const entries = kb.listShortcuts(root).entries
+  assert.deepEqual(entries.map((e) => e.num), [1, 3])
+  const text = fs.readFileSync(abs, 'utf-8')
+  assert.ok(text.includes('Catálogo numerado'))
+  assert.ok(!text.includes('Segundo'))
+  assert.ok(text.includes('## 1 · Primero'))
+  assert.ok(text.includes('## 3 · Tercero'))
+  assert.ok(!/\n\n\n/.test(text))
+
+  // el siguiente atajo usa max(existentes)+1, no recompacta el hueco dejado
+  const four = kb.addShortcut(root, { title: 'Cuarto', body: 'Cuerpo cuarto.' })
+  assert.equal(four.num, 4)
+})
+
+test('deleteShortcut quita la primera y la última entrada, y deja solo la cabecera si no queda ninguna', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+
+  assert.equal(kb.deleteShortcut(root, 1).ok, true)
+  assert.equal(kb.deleteShortcut(root, 3).ok, true)
+  let entries = kb.listShortcuts(root).entries
+  assert.deepEqual(entries.map((e) => e.num), [2])
+
+  assert.equal(kb.deleteShortcut(root, 2).ok, true)
+  entries = kb.listShortcuts(root).entries
+  assert.deepEqual(entries, [])
+
+  const abs = path.join(root, kb.ATAJOS_RELPATH)
+  const text = fs.readFileSync(abs, 'utf-8')
+  assert.ok(text.includes('Catálogo numerado'))
+  assert.ok(!/## \d/.test(text))
+  assert.ok(text.endsWith('\n'))
+  assert.ok(!text.endsWith('\n\n'))
+})
+
+test('deleteShortcut valida id inexistente y fichero inexistente', () => {
+  const root = tmpProject()
+  buildCatalog(root)
+  assert.equal(kb.deleteShortcut(root, 99).ok, false)
+  assert.equal(kb.deleteShortcut(root, 'abc').ok, false)
+
+  const other = tmpProject()
+  assert.equal(kb.deleteShortcut(other, 1).ok, false)
+})
