@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('api', {
     reveal: (cwd, relPath) => ipcRenderer.invoke('kb:reveal', { cwd, relPath }),
     remove: (cwd, relPath, deleteFile) => ipcRenderer.invoke('kb:remove', { cwd, relPath, deleteFile }),
     editApply: (cwd, relPath, find, replace) => ipcRenderer.invoke('kb:edit-apply', { cwd, relPath, find, replace }),
+    readFicha: (cwd, relPath) => ipcRenderer.invoke('kb:read-ficha', { cwd, relPath }),
+    writeFicha: (cwd, relPath, text) => ipcRenderer.invoke('kb:write-ficha', { cwd, relPath, text }),
     onProgress: (cb) => {
       const h = (_e, payload) => cb(payload)
       ipcRenderer.on('kb:progress', h)

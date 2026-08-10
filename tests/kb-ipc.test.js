@@ -86,6 +86,26 @@ test('kb:edit-apply rechaza si el fragmento no aparece o aparece más de una vez
   assert.match(ambiguous.error, /más de una vez/)
 })
 
+test('kb:read-ficha y kb:write-ficha operan solo dentro de kb/fichas/', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  const fichaPath = path.join(project, 'kb', 'fichas', 'atajos.md')
+  fs.mkdirSync(path.dirname(fichaPath), { recursive: true })
+  fs.writeFileSync(fichaPath, '# Atajos\n')
+
+  const read = await ipcMain.invoke('kb:read-ficha', {}, { cwd: project, relPath: 'kb/fichas/atajos.md' })
+  assert.equal(read.ok, true)
+  assert.equal(read.text, '# Atajos\n')
+
+  const write = await ipcMain.invoke('kb:write-ficha', {}, { cwd: project, relPath: 'kb/fichas/atajos.md', text: '# Atajos\n\n## 1 · Nuevo\n' })
+  assert.equal(write.ok, true)
+  assert.equal(fs.readFileSync(fichaPath, 'utf-8'), '# Atajos\n\n## 1 · Nuevo\n')
+
+  const blocked = await ipcMain.invoke('kb:write-ficha', {}, { cwd: project, relPath: 'CLAUDE.md', text: 'hackeado' })
+  assert.equal(blocked.ok, false)
+  assert.equal(fs.existsSync(path.join(project, 'CLAUDE.md')), false)
+})
+
 test('kb:open-window delega en openKnowledgeWindow con el projectDir resuelto', async () => {
   const calls = []
   const { ipcMain } = makeDeps({ openKnowledgeWindow: async (projectDir, hint) => { calls.push({ projectDir, hint }) } })

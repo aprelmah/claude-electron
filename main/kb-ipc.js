@@ -237,6 +237,29 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     }
   })
 
+  ipcMain.handle('kb:read-ficha', (_event, { cwd, relPath } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      const abs = assertInsideProject(projectDir, relPath)
+      if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden leer fichas dentro de kb/fichas/')
+      return { ok: true, text: fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : '' }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('kb:write-ficha', (_event, { cwd, relPath, text } = {}) => {
+    try {
+      const projectDir = resolveProjectDir(cwd)
+      const abs = assertInsideProject(projectDir, relPath)
+      if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden editar fichas dentro de kb/fichas/')
+      atomicWriteFileSync(abs, String(text ?? ''), 'utf-8')
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
   ipcMain.handle('kb:distill', async (event, { cwd, source } = {}) => {
     if (distillBusy) return { ok: false, error: 'ya hay un destilado en marcha; espera a que termine' }
     distillBusy = true

@@ -262,4 +262,76 @@ btnClearChat.addEventListener('click', async () => {
   chatMessages.innerHTML = ''
 })
 
+const colShortcuts = document.getElementById('col-shortcuts')
+const btnAddShortcut = document.getElementById('btn-add-shortcut')
+const ATAJOS_RELPATH = 'kb/fichas/atajos.md'
+
+async function refreshShortcuts() {
+  const data = await window.api.kb.list(projectDir)
+  colShortcuts.innerHTML = ''
+  if (!data.ok) { colShortcuts.innerHTML = `<div class="empty">${data.error}</div>`; return }
+  if (!data.shortcuts.entries.length) {
+    colShortcuts.innerHTML = '<div class="empty">Sin atajos todavía.</div>'
+  }
+  for (const entry of data.shortcuts.entries) {
+    const row = document.createElement('div')
+    row.className = 'shortcut-item'
+    const title = document.createElement('span')
+    title.className = 'title'
+    title.textContent = `${entry.num} · ${entry.title}`
+    title.title = 'Click: usar en el chat · doble click: editar a mano'
+    title.addEventListener('click', () => {
+      chatInput.value = `${entry.num}`
+      submitQuestion()
+    })
+    title.addEventListener('dblclick', () => editFichaFile(ATAJOS_RELPATH))
+    row.appendChild(title)
+    colShortcuts.appendChild(row)
+  }
+}
+
+async function editFichaFile(relPath) {
+  const box = document.createElement('div')
+  box.style.cssText = 'position:fixed;inset:40px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;z-index:1000;display:flex;flex-direction:column;gap:8px;'
+  const textarea = document.createElement('textarea')
+  textarea.rows = 16
+  textarea.value = 'Cargando…'
+  textarea.disabled = true
+  const actions = document.createElement('div')
+  actions.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;'
+  const save = document.createElement('button')
+  save.className = 'primary'
+  save.textContent = 'Guardar'
+  const cancel = document.createElement('button')
+  cancel.textContent = 'Cancelar'
+  cancel.addEventListener('click', () => box.remove())
+  actions.append(cancel, save)
+  box.append(textarea, actions)
+  document.body.appendChild(box)
+
+  const raw = await window.api.kb.readFicha(projectDir, relPath)
+  textarea.value = raw.ok ? raw.text : ''
+  textarea.disabled = false
+
+  save.addEventListener('click', async () => {
+    const res = await window.api.kb.writeFicha(projectDir, relPath, textarea.value)
+    if (!res.ok) { alert(res.error); return }
+    box.remove()
+    refreshShortcuts()
+    refreshSources()
+  })
+}
+
+btnAddShortcut.addEventListener('click', async () => {
+  const title = prompt('Título del atajo:')
+  if (!title) return
+  const body = prompt('Contenido:')
+  if (!body) return
+  const res = await window.api.kb.addShortcut(projectDir, { title, body, related: [] })
+  if (!res.ok) { alert(res.error); return }
+  refreshShortcuts()
+})
+
+refreshShortcuts()
+
 loadChatHistory()
