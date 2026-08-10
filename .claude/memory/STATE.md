@@ -2,13 +2,20 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-09, noche (verificado contra git y filesystem).
+Última actualización: 2026-08-10, mañana (verificado contra git y filesystem).
+
+## ⚠️ AVISO AL AGENTE ENTRANTE (2026-08-10)
+
+- **Luismi NO está satisfecho con la UX del panel 📚** ("cada vez peor") y ha parado la iteración pidiendo cambio de agente. El trabajo está commiteado en `e10c0c6` y desplegado, pero la UX NO está validada.
+- Historia del contenedor en un día: modal centrado → lámina fija a la derecha (rediseño "Agente conocimiento" con chat RAG local en `main/kb-chat.js` + fuentes de audio) → panel ACOPLADO en `#terminal-row` estilo sub-chat con divisor + modo flotante. Técnicamente verificado por CDP (10 checks); estéticamente rechazado.
+- Lección para el siguiente: NO iterar más el contenedor a ciegas. Sentarse con Luismi con la app delante (o maquetas) y que él marque la dirección de UX antes de tocar código.
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, working tree limpio; último commit `afc22d5 fix(kb): YouTube 429` **pusheado** (antes `23e848a` módulos kb + `309be0e` panel UI + docs `1aeeb8d..fb421fd`).
-- Tests: 1.440 totales — 1.434 pass, 0 fail, 6 skipped.
-- Deploy: `/Applications/POWER-AGENT.app`, 7 deploys esta sesión; el último con el manejo del 429 de YouTube. Verificado por CONTENIDO del asar (`isYoutubeRateLimit`, `sleep-subtitles` presentes) y app corriendo con `--type=renderer`.
+- Rama `main`, working tree limpio; último commit `e10c0c6 feat(kb): agente de conocimiento (chat RAG local + audio) y panel acoplado — UX SIN VALIDAR` **pusheado**.
+- Tests: 1.448 totales — 1.442 pass, 0 fail, 6 skipped (pre-commit de `e10c0c6`).
+- Deploy: `/Applications/POWER-AGENT.app` con `e10c0c6` (panel acoplado), verificado por asar (`kb-divider` presente) y app corriendo con `--type=renderer`.
+- Nuevo en `e10c0c6`: `main/kb-chat.js` (chat RAG local por proyecto: chunks de fichas activas, evidencia con citas validadas, historial JSONL en `userData/kb-chats`, sin evidencia no llama al modelo; IPC `kb:ask`/`kb:chat-history`/`kb:chat-clear`), fuentes de AUDIO en el destilador (transcriptor común), y el panel acoplado con divisor + "Desacoplar" flotante.
 - **Entorno**: `curl_cffi` **0.11.4 clavada** en user-site de Python 3.14 (impersonation Chrome para yt-dlp, 29 targets). La 0.16 NO carga en Monterey (símbolo `_SCDynamicStoreCopyProxies`) y la 0.7.4 la rechaza yt-dlp 2026.03. Verificado con el vídeo real que daba 429; Luismi destiló su primera ficha de YouTube en real (turbo e `da38ba7`).
 
 ## Última sesión (2026-08-09 noche — panel 📚 Conocimiento por proyecto)
