@@ -494,6 +494,16 @@ function getSessionByEvent(event) {
   return sessions.get(event.sender.id) || null
 }
 
+// No hay tracking de foco entre sesiones distintas del mismo proyecto hoy:
+// si hay más de una sesión abierta sobre el mismo cwd, se aplica a la primera
+// encontrada (orden de Map, que es orden de apertura).
+function findSessionByProjectDir(projectDir) {
+  for (const session of sessions.values()) {
+    if (session && session.cwd === projectDir && session.pty) return session
+  }
+  return null
+}
+
 // Roots permitidos para IPC handlers de FS: cwds vivos + userData + ~/.claude/.
 // Se evalúa por petición (la lista de cwds cambia con cada ventana abierta).
 function allowedFsRoots() {
@@ -2248,6 +2258,7 @@ const windowFactory = createWindowFactory({
   getRootDir: () => __dirname
 })
 const openViewerWindow = windowFactory.openViewerWindow
+const openKnowledgeWindow = windowFactory.openKnowledgeWindow
 const openTasksManager = windowFactory.openTasksManager
 const openBitacoraWindow = windowFactory.openBitacoraWindow
 
@@ -4897,9 +4908,10 @@ registerKbIpc({
   getUserDataDir: () => app.getPath('userData'),
   transcribeAudioFile,
   buildRuntimeEnv,
-  sendPromptToSession: async (event, text) => {
-    const session = getSessionByEvent(event)
-    if (!session || !session.pty) throw new Error('no hay sesión PTY activa en esta ventana')
+  openKnowledgeWindow: (projectDir, hint) => openKnowledgeWindow(projectDir, hint),
+  sendPromptToSession: async (projectDir, text) => {
+    const session = findSessionByProjectDir(projectDir)
+    if (!session || !session.pty) throw new Error('no hay ninguna sesión abierta de este proyecto; ábrela y reinténtalo')
     await writePromptThenEnter((chunk) => session.pty.write(chunk), text)
   },
   log: (msg) => console.log(msg)
