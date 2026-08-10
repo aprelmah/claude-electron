@@ -8,12 +8,10 @@
     :root {
       --bg: #0f1117; --panel: #171a22; --panel-2: #1d212b; --line: #2a3140;
       --text: #e8ebf3; --muted: #a2acbf; --accent: #79a8ff;
-      --ok: #4cc38a; --err: #ff6b78; --warn: #e8b34a;
     }
     body.light {
       --bg: #f4f6fb; --panel: #ffffff; --panel-2: #f0f2f8; --line: #d7dde9;
       --text: #1f2533; --muted: #59647a; --accent: #2f6fed;
-      --ok: #2a8f61; --err: #c83e4d; --warn: #a9740f;
     }
     * { box-sizing: border-box; }
     body {
@@ -29,10 +27,9 @@
     .toolbar button { -webkit-app-region: no-drag; }
     .toolbar h1 { margin: 0 0 0 70px; font-size: 13px; font-weight: 700; }
     .toolbar .project { color: var(--muted); }
-    .columns { flex: 1; display: grid; grid-template-columns: 260px 1fr 260px; min-height: 0; }
+    .columns { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
     .col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
     .col:last-child { border-right: none; }
-    .col-chat { background: var(--bg); }
     .col-header {
       padding: 10px 12px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
       text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line);
@@ -60,18 +57,6 @@
       color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; cursor: pointer;
     }
     .kb-drop.dragover { border-color: var(--accent); color: var(--accent); }
-    .chat-composer { border-top: 1px solid var(--line); padding: 8px; display: flex; gap: 6px; }
-    .chat-composer textarea { flex: 1; resize: none; }
-    .msg { margin: 0 0 12px; max-width: 92%; }
-    .msg.user { margin-left: auto; text-align: right; }
-    .msg .bubble { display: inline-block; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; text-align: left; white-space: pre-wrap; }
-    .msg.user .bubble { background: var(--accent); color: #0b0d12; border-color: var(--accent); }
-    .citations { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
-    .citation-chip { font-size: 10.5px; padding: 2px 6px; }
-    .edit-card { margin-top: 8px; border: 1px solid var(--warn); border-radius: 8px; padding: 8px; background: var(--panel-2); }
-    .edit-card .diff-before { color: var(--err); text-decoration: line-through; white-space: pre-wrap; }
-    .edit-card .diff-after { color: var(--ok); white-space: pre-wrap; }
-    .edit-card .actions { margin-top: 6px; display: flex; gap: 6px; }
     .empty { color: var(--muted); font-size: 12px; padding: 8px 4px; }
   </style>
 </head>
@@ -87,17 +72,6 @@
         <button id="btn-apply-session" title="Aplicar las fichas activas a la sesión abierta de este proyecto">Aplicar a sesión</button>
       </div>
       <div class="col-body" id="col-sources"></div>
-    </section>
-    <section class="col col-chat">
-      <div class="col-header">
-        <span>Chat</span>
-        <button id="btn-clear-chat" title="Borrar esta conversación">Borrar</button>
-      </div>
-      <div class="col-body" id="col-chat-messages"></div>
-      <form class="chat-composer" id="col-chat-form">
-        <textarea id="col-chat-input" rows="2" placeholder="Pregunta sobre este proyecto… (⌘↵ para enviar)"></textarea>
-        <button type="submit" class="primary">Preguntar</button>
-      </form>
     </section>
     <section class="col">
       <div class="col-header">

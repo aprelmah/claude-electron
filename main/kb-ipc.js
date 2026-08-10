@@ -8,7 +8,6 @@
 const fs = require('fs')
 const path = require('path')
 const kb = require('./knowledge-base')
-const { createProjectKbChat } = require('./kb-chat')
 const { createKbExtractor, detectSourceType } = require('./kb-extract')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { isPathSafe } = require('./path-sandbox')
@@ -68,57 +67,12 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
   }
 
   const extractor = createKbExtractor({ userDataDir: getUserDataDir(), transcribeAudioFile, buildRuntimeEnv, log })
-  const projectChat = createProjectKbChat({
-    userDataDir: getUserDataDir(),
-    runClaudeHeadless,
-    getModel,
-    log
-  })
   const distillBusyByProject = new Map()
 
   ipcMain.handle('kb:list', (_event, { cwd } = {}) => {
     try {
       const projectDir = resolveProjectDir(cwd)
       return { ...kb.listKnowledge(projectDir), shortcuts: kb.listShortcuts(projectDir), projectDir }
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
-    }
-  })
-
-  ipcMain.handle('kb:chat-history', async (_event, { cwd } = {}) => {
-    try {
-      const projectDir = resolveProjectDir(cwd)
-      return { ok: true, history: await projectChat.history(projectDir), projectDir }
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
-    }
-  })
-
-  ipcMain.handle('kb:chat-clear', async (_event, { cwd } = {}) => {
-    try {
-      const projectDir = resolveProjectDir(cwd)
-      return { ok: true, history: await projectChat.clear(projectDir), projectDir }
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
-    }
-  })
-
-  ipcMain.handle('kb:ask', async (_event, { cwd, question, selectedRelPaths, projectName } = {}) => {
-    try {
-      const projectDir = resolveProjectDir(cwd)
-      const selected = Array.isArray(selectedRelPaths)
-        ? selectedRelPaths.filter((r) => typeof r === 'string' && r.trim()).slice(0, 40)
-        : []
-      for (const relPath of selected) assertInsideProject(projectDir, relPath)
-      return {
-        ok: true,
-        ...(await projectChat.ask({
-          projectDir,
-          projectName: typeof projectName === 'string' ? projectName.trim() : path.basename(projectDir),
-          question,
-          selectedRelPaths: selected
-        }))
-      }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
@@ -211,26 +165,6 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       const projectDir = resolveProjectDir(cwd)
       if (typeof openKnowledgeWindow !== 'function') throw new Error('ventana de conocimiento no disponible')
       await openKnowledgeWindow(projectDir, hint)
-      return { ok: true }
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
-    }
-  })
-
-  ipcMain.handle('kb:edit-apply', (_event, { cwd, relPath, find, replace } = {}) => {
-    try {
-      const projectDir = resolveProjectDir(cwd)
-      const abs = assertInsideProject(projectDir, relPath)
-      if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden editar fichas dentro de kb/fichas/')
-      if (!fs.existsSync(abs)) throw new Error(`no existe: ${relPath}`)
-      const current = fs.readFileSync(abs, 'utf-8')
-      const needle = String(find || '')
-      if (!needle.trim()) throw new Error('falta el fragmento a sustituir')
-      const firstIdx = current.indexOf(needle)
-      if (firstIdx === -1) throw new Error('el fragmento ya no aparece en el fichero (pudo cambiar); edítalo a mano')
-      if (current.indexOf(needle, firstIdx + 1) !== -1) throw new Error('el fragmento aparece más de una vez; sé más específico o edita a mano')
-      const updated = current.slice(0, firstIdx) + String(replace || '') + current.slice(firstIdx + needle.length)
-      atomicWriteFileSync(abs, updated, 'utf-8')
       return { ok: true }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }

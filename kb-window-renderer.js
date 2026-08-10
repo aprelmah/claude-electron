@@ -146,136 +146,6 @@ async function runDistill(source) {
 
 refreshSources()
 
-const chatMessages = document.getElementById('col-chat-messages')
-const chatForm = document.getElementById('col-chat-form')
-const chatInput = document.getElementById('col-chat-input')
-const btnClearChat = document.getElementById('btn-clear-chat')
-
-function renderCitations(citations) {
-  const div = document.createElement('div')
-  div.className = 'citations'
-  if (!citations?.length) return div
-  for (const c of citations) {
-    const btn = document.createElement('button')
-    btn.className = 'citation-chip'
-    btn.dataset.relpath = c.relPath
-    btn.title = c.location || ''
-    btn.textContent = c.title
-    div.appendChild(btn)
-  }
-  return div
-}
-
-function renderEditCard(edit) {
-  if (!edit) return null
-  const card = document.createElement('div')
-  card.className = 'edit-card'
-
-  const header = document.createElement('div')
-  const strong = document.createElement('strong')
-  strong.textContent = 'Propuesta de corrección'
-  header.append(strong, document.createTextNode(' — ' + edit.relPath))
-  card.appendChild(header)
-
-  const before = document.createElement('div')
-  before.className = 'diff-before'
-  before.textContent = '− ' + edit.find
-  card.appendChild(before)
-
-  const after = document.createElement('div')
-  after.className = 'diff-after'
-  after.textContent = '+ ' + edit.replace
-  card.appendChild(after)
-
-  if (edit.reason) {
-    const reason = document.createElement('div')
-    reason.style.cssText = 'color:var(--muted);font-size:11px;'
-    reason.textContent = edit.reason
-    card.appendChild(reason)
-  }
-
-  const actions = document.createElement('div')
-  actions.className = 'actions'
-  const acceptBtn = document.createElement('button')
-  acceptBtn.className = 'primary'
-  acceptBtn.textContent = 'Aceptar'
-  const discardBtn = document.createElement('button')
-  discardBtn.textContent = 'Descartar'
-  actions.append(acceptBtn, discardBtn)
-  card.appendChild(actions)
-
-  discardBtn.addEventListener('click', () => card.remove())
-  acceptBtn.addEventListener('click', async () => {
-    const res = await window.api.kb.editApply(projectDir, edit.relPath, edit.find, edit.replace)
-    if (!res.ok) { alert(res.error); return }
-    card.innerHTML = ''
-    const ok = document.createElement('div')
-    ok.style.color = 'var(--ok)'
-    ok.textContent = '✓ Aplicado'
-    card.appendChild(ok)
-    refreshSources()
-  })
-
-  return card
-}
-
-function appendMessage({ role, content, citations, edit }) {
-  const wrap = document.createElement('div')
-  wrap.className = `msg ${role}`
-  const bubble = document.createElement('div')
-  bubble.className = 'bubble'
-  bubble.textContent = content
-  wrap.appendChild(bubble)
-  if (role === 'assistant' && citations?.length) {
-    wrap.appendChild(renderCitations(citations))
-  }
-  if (role === 'assistant' && edit) {
-    const card = renderEditCard(edit)
-    if (card) wrap.appendChild(card)
-  }
-  chatMessages.appendChild(wrap)
-  chatMessages.scrollTop = chatMessages.scrollHeight
-}
-
-async function loadChatHistory() {
-  const data = await window.api.kb.history(projectDir)
-  chatMessages.innerHTML = ''
-  if (data.ok) {
-    for (const entry of data.history) appendMessage(entry)
-  }
-}
-
-async function submitQuestion() {
-  const question = chatInput.value.trim()
-  if (!question) return
-  chatInput.value = ''
-  appendMessage({ role: 'user', content: question })
-  const pending = document.createElement('div')
-  pending.className = 'msg assistant'
-  pending.innerHTML = '<div class="bubble">…</div>'
-  chatMessages.appendChild(pending)
-  chatMessages.scrollTop = chatMessages.scrollHeight
-  try {
-    const result = await window.api.kb.ask(projectDir, question, [], document.getElementById('project-name').textContent)
-    pending.remove()
-    if (!result.ok) { appendMessage({ role: 'assistant', content: result.error }); return }
-    appendMessage({ role: 'assistant', content: result.answer, citations: result.citations, edit: result.edit })
-  } catch (e) {
-    pending.remove()
-    appendMessage({ role: 'assistant', content: String(e?.message || e) })
-  }
-}
-
-chatForm.addEventListener('submit', (e) => { e.preventDefault(); submitQuestion() })
-chatInput.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submitQuestion() }
-})
-btnClearChat.addEventListener('click', async () => {
-  if (!confirm('¿Borrar esta conversación?')) return
-  await window.api.kb.clearHistory(projectDir)
-  chatMessages.innerHTML = ''
-})
-
 const colShortcuts = document.getElementById('col-shortcuts')
 const btnAddShortcut = document.getElementById('btn-add-shortcut')
 const ATAJOS_RELPATH = 'kb/fichas/atajos.md'
@@ -293,11 +163,7 @@ async function refreshShortcuts() {
     const title = document.createElement('span')
     title.className = 'title'
     title.textContent = `${entry.num} · ${entry.title}`
-    title.title = 'Click: usar en el chat · doble click: editar a mano'
-    title.addEventListener('click', () => {
-      chatInput.value = `${entry.num}`
-      submitQuestion()
-    })
+    title.title = 'Doble click: editar a mano'
     title.addEventListener('dblclick', () => editFichaFile(ATAJOS_RELPATH))
     row.appendChild(title)
     colShortcuts.appendChild(row)
@@ -374,5 +240,3 @@ function promptAddShortcut() {
 btnAddShortcut.addEventListener('click', () => promptAddShortcut())
 
 refreshShortcuts()
-
-loadChatHistory()

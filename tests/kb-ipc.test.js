@@ -38,54 +38,6 @@ function makeDeps(overrides = {}) {
   return { ipcMain }
 }
 
-test('kb:edit-apply reemplaza el fragmento cuando aparece una sola vez', async () => {
-  const { ipcMain } = makeDeps()
-  const project = tmpDir('kb-ipc-project-')
-  const fichaPath = path.join(project, 'kb', 'fichas', 'manual.md')
-  fs.mkdirSync(path.dirname(fichaPath), { recursive: true })
-  fs.writeFileSync(fichaPath, '# Manual\n\nVoltaje: 220 V.\n')
-
-  const result = await ipcMain.invoke('kb:edit-apply', {}, {
-    cwd: project, relPath: 'kb/fichas/manual.md', find: 'Voltaje: 220 V.', replace: 'Voltaje: 230 V.'
-  })
-
-  assert.equal(result.ok, true)
-  assert.equal(fs.readFileSync(fichaPath, 'utf-8'), '# Manual\n\nVoltaje: 230 V.\n')
-})
-
-test('kb:edit-apply rechaza rutas fuera de kb/fichas/', async () => {
-  const { ipcMain } = makeDeps()
-  const project = tmpDir('kb-ipc-project-')
-  fs.writeFileSync(path.join(project, 'CLAUDE.md'), '# X\n')
-
-  const result = await ipcMain.invoke('kb:edit-apply', {}, {
-    cwd: project, relPath: 'CLAUDE.md', find: 'X', replace: 'Y'
-  })
-
-  assert.equal(result.ok, false)
-  assert.match(result.error, /kb\/fichas/)
-  assert.equal(fs.readFileSync(path.join(project, 'CLAUDE.md'), 'utf-8'), '# X\n')
-})
-
-test('kb:edit-apply rechaza si el fragmento no aparece o aparece más de una vez', async () => {
-  const { ipcMain } = makeDeps()
-  const project = tmpDir('kb-ipc-project-')
-  const fichaPath = path.join(project, 'kb', 'fichas', 'manual.md')
-  fs.mkdirSync(path.dirname(fichaPath), { recursive: true })
-  fs.writeFileSync(fichaPath, '220 V y otra vez 220 V.\n')
-
-  const noMatch = await ipcMain.invoke('kb:edit-apply', {}, {
-    cwd: project, relPath: 'kb/fichas/manual.md', find: '110 V', replace: '230 V'
-  })
-  assert.equal(noMatch.ok, false)
-
-  const ambiguous = await ipcMain.invoke('kb:edit-apply', {}, {
-    cwd: project, relPath: 'kb/fichas/manual.md', find: '220 V', replace: '230 V'
-  })
-  assert.equal(ambiguous.ok, false)
-  assert.match(ambiguous.error, /más de una vez/)
-})
-
 test('kb:read-ficha y kb:write-ficha operan solo dentro de kb/fichas/', async () => {
   const { ipcMain } = makeDeps()
   const project = tmpDir('kb-ipc-project-')

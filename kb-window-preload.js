@@ -7,9 +7,6 @@ contextBridge.exposeInMainWorld('api', {
   },
   kb: {
     list: (cwd) => ipcRenderer.invoke('kb:list', { cwd }),
-    history: (cwd) => ipcRenderer.invoke('kb:chat-history', { cwd }),
-    clearHistory: (cwd) => ipcRenderer.invoke('kb:chat-clear', { cwd }),
-    ask: (cwd, question, selectedRelPaths, projectName) => ipcRenderer.invoke('kb:ask', { cwd, question, selectedRelPaths, projectName }),
     toggle: (cwd, relPath, active) => ipcRenderer.invoke('kb:toggle', { cwd, relPath, active }),
     addFile: (cwd, filePath) => ipcRenderer.invoke('kb:add-file', { cwd, filePath }),
     distill: (cwd, source) => ipcRenderer.invoke('kb:distill', { cwd, source }),
@@ -17,7 +14,6 @@ contextBridge.exposeInMainWorld('api', {
     addShortcut: (cwd, entry) => ipcRenderer.invoke('kb:add-shortcut', { cwd, ...entry }),
     reveal: (cwd, relPath) => ipcRenderer.invoke('kb:reveal', { cwd, relPath }),
     remove: (cwd, relPath, deleteFile) => ipcRenderer.invoke('kb:remove', { cwd, relPath, deleteFile }),
-    editApply: (cwd, relPath, find, replace) => ipcRenderer.invoke('kb:edit-apply', { cwd, relPath, find, replace }),
     readFicha: (cwd, relPath) => ipcRenderer.invoke('kb:read-ficha', { cwd, relPath }),
     writeFicha: (cwd, relPath, text) => ipcRenderer.invoke('kb:write-ficha', { cwd, relPath, text }),
     onProgress: (cb) => {
