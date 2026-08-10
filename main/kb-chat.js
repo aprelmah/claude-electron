@@ -248,7 +248,9 @@ function buildAskPrompt({ projectName, question, evidence, history }) {
     '- Cada afirmación técnica debe llevar una o más citas inline con formato [KB1], [KB2] usando solo IDs de la evidencia.',
     '- Conserva cifras, unidades, advertencias y condiciones. No mezcles modelos ni inventes equivalencias.',
     '- Responde en español de España, claro y directo. Usa pasos o una tabla si mejora la respuesta.',
-    '- Devuelve SOLO JSON válido: {"answer":"...","citationIds":["KB1"],"confidence":"alta|media|baja"}.',
+    '- Entiende la intención real de la pregunta y responde a ESO de forma directa y editorial; no enumeres ni listes todos los fragmentos recuperados, cita solo los que de verdad sustentan la respuesta.',
+    '- Si Luismi pide corregir o ajustar una ficha (p. ej. "corrige…", "cambia…", "en la ficha X pon…"), añade el campo "edit" con la corrección: {"relPath":"<ruta de UNA ficha de la evidencia>","find":"<fragmento EXACTO y literal tal cual aparece en esa ficha>","replace":"<texto nuevo>","reason":"<por qué, una frase>"}. "find" debe ser un fragmento corto que aparezca una sola vez — NO reescribas la ficha entera. Si no te piden corregir nada, pon "edit" a null.',
+    '- Devuelve SOLO JSON válido: {"answer":"...","citationIds":["KB1"],"confidence":"alta|media|baja","edit":null}.',
     '',
     'CONVERSACIÓN RECIENTE (solo para resolver referencias como «eso»):',
     '<<<HISTORIAL>>>', historyText, '<<<FIN HISTORIAL>>>',
@@ -263,6 +265,7 @@ function buildAskPrompt({ projectName, question, evidence, history }) {
 
 function normalizeAnswer(raw, evidence) {
   const allowed = new Map(evidence.map((chunk, index) => [`KB${index + 1}`, chunk]))
+  const allowedRelPaths = new Set(evidence.map((chunk) => chunk.relPath))
   const parsed = extractJsonObject(raw)
   const answer = String(parsed?.answer || raw || '').trim()
   const citationIds = [...new Set((Array.isArray(parsed?.citationIds) ? parsed.citationIds : [])
@@ -271,6 +274,19 @@ function normalizeAnswer(raw, evidence) {
   const inlineIds = [...new Set((answer.match(/\[KB\d+\]/gi) || []).map((id) => id.toUpperCase()).filter((id) => allowed.has(id)))]
   const allIds = [...new Set([...citationIds, ...inlineIds])]
   const cleanAnswer = answer.replace(/\s*\[KB\d+\]/gi, '').replace(/\n{3,}/g, '\n\n').trim()
+
+  let edit = null
+  const rawEdit = parsed?.edit
+  if (rawEdit && typeof rawEdit === 'object') {
+    const relPath = String(rawEdit.relPath || '').trim()
+    const find = String(rawEdit.find || '')
+    const replace = String(rawEdit.replace || '')
+    const reason = String(rawEdit.reason || '').trim()
+    if (relPath && allowedRelPaths.has(relPath) && find.trim() && replace !== find) {
+      edit = { relPath, find, replace, reason }
+    }
+  }
+
   return {
     answer: cleanAnswer || 'No consta en el conocimiento de este proyecto.',
     citationIds: allIds,
@@ -285,7 +301,8 @@ function normalizeAnswer(raw, evidence) {
         location: chunk.location,
         snippet: clampText(chunk.text.replace(/\n+/g, ' '), 360)
       }
-    })
+    }),
+    edit
   }
 }
 

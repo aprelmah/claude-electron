@@ -10,7 +10,8 @@ const {
   tokenize,
   splitMarkdownIntoChunks,
   selectEvidence,
-  normalizeAnswer
+  normalizeAnswer,
+  buildAskPrompt
 } = require('../main/kb-chat')
 
 function tmpDir(prefix) {
@@ -56,6 +57,37 @@ test('normalizeAnswer solo acepta citas de la evidencia', () => {
   const forged = normalizeAnswer('{"answer":"Respuesta inventada [KB99].","citationIds":["KB99"],"confidence":"alta"}', evidence)
   assert.equal(forged.grounded, false)
   assert.deepEqual(forged.citations, [])
+})
+
+test('normalizeAnswer acepta una propuesta de edición sobre una ficha de la evidencia', () => {
+  const evidence = [{ title: 'Manual', relPath: 'kb/fichas/manual.md', text: 'Voltaje: 220 V.', location: '' }]
+  const raw = '{"answer":"Corregido.","citationIds":["KB1"],"confidence":"alta","edit":{"relPath":"kb/fichas/manual.md","find":"Voltaje: 220 V.","replace":"Voltaje: 230 V.","reason":"dato mal transcrito"}}'
+  const result = normalizeAnswer(raw, evidence)
+  assert.deepEqual(result.edit, {
+    relPath: 'kb/fichas/manual.md',
+    find: 'Voltaje: 220 V.',
+    replace: 'Voltaje: 230 V.',
+    reason: 'dato mal transcrito'
+  })
+})
+
+test('normalizeAnswer rechaza una edición fuera de la evidencia', () => {
+  const evidence = [{ title: 'Manual', relPath: 'kb/fichas/manual.md', text: 'Voltaje: 220 V.', location: '' }]
+  const raw = '{"answer":"—","citationIds":[],"confidence":"baja","edit":{"relPath":"kb/fichas/otra.md","find":"x","replace":"y"}}'
+  const result = normalizeAnswer(raw, evidence)
+  assert.equal(result.edit, null)
+})
+
+test('normalizeAnswer ignora un edit sin find', () => {
+  const evidence = [{ title: 'Manual', relPath: 'kb/fichas/manual.md', text: 'Voltaje: 220 V.', location: '' }]
+  const raw = '{"answer":"—","citationIds":[],"confidence":"baja","edit":{"relPath":"kb/fichas/manual.md","find":"","replace":"y"}}'
+  const result = normalizeAnswer(raw, evidence)
+  assert.equal(result.edit, null)
+})
+
+test('buildAskPrompt instruye sobre cuándo proponer una edición', () => {
+  const prompt = buildAskPrompt({ projectName: 'X', question: 'corrige el voltaje', evidence: [], history: [] })
+  assert.ok(prompt.includes('"edit"'))
 })
 
 test('el chat carga solo las fichas activas y queda aislado por proyecto', async () => {
