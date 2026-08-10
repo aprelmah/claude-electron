@@ -138,32 +138,70 @@ const chatInput = document.getElementById('col-chat-input')
 const btnClearChat = document.getElementById('btn-clear-chat')
 
 function renderCitations(citations) {
-  if (!citations?.length) return ''
-  const chips = citations.map((c) => `<button class="citation-chip" data-relpath="${c.relPath}" title="${c.location || ''}">${c.title}</button>`).join(' ')
-  return `<div class="citations">${chips}</div>`
+  const div = document.createElement('div')
+  div.className = 'citations'
+  if (!citations?.length) return div
+  for (const c of citations) {
+    const btn = document.createElement('button')
+    btn.className = 'citation-chip'
+    btn.dataset.relpath = c.relPath
+    btn.title = c.location || ''
+    btn.textContent = c.title
+    div.appendChild(btn)
+  }
+  return div
 }
 
 function renderEditCard(edit) {
-  if (!edit) return ''
+  if (!edit) return null
   const card = document.createElement('div')
   card.className = 'edit-card'
-  card.innerHTML = `
-    <div><strong>Propuesta de corrección</strong> — ${edit.relPath}</div>
-    <div class="diff-before">− ${edit.find}</div>
-    <div class="diff-after">+ ${edit.replace}</div>
-    ${edit.reason ? `<div style="color:var(--muted);font-size:11px;">${edit.reason}</div>` : ''}
-    <div class="actions">
-      <button class="primary" data-action="accept">Aceptar</button>
-      <button data-action="discard">Descartar</button>
-    </div>
-  `
-  card.querySelector('[data-action="discard"]').addEventListener('click', () => card.remove())
-  card.querySelector('[data-action="accept"]').addEventListener('click', async () => {
+
+  const header = document.createElement('div')
+  const strong = document.createElement('strong')
+  strong.textContent = 'Propuesta de corrección'
+  header.append(strong, document.createTextNode(' — ' + edit.relPath))
+  card.appendChild(header)
+
+  const before = document.createElement('div')
+  before.className = 'diff-before'
+  before.textContent = '− ' + edit.find
+  card.appendChild(before)
+
+  const after = document.createElement('div')
+  after.className = 'diff-after'
+  after.textContent = '+ ' + edit.replace
+  card.appendChild(after)
+
+  if (edit.reason) {
+    const reason = document.createElement('div')
+    reason.style.cssText = 'color:var(--muted);font-size:11px;'
+    reason.textContent = edit.reason
+    card.appendChild(reason)
+  }
+
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  const acceptBtn = document.createElement('button')
+  acceptBtn.className = 'primary'
+  acceptBtn.textContent = 'Aceptar'
+  const discardBtn = document.createElement('button')
+  discardBtn.textContent = 'Descartar'
+  actions.append(acceptBtn, discardBtn)
+  card.appendChild(actions)
+
+  discardBtn.addEventListener('click', () => card.remove())
+  acceptBtn.addEventListener('click', async () => {
     const res = await window.api.kb.editApply(projectDir, edit.relPath, edit.find, edit.replace)
     if (!res.ok) { alert(res.error); return }
-    card.innerHTML = '<div style="color:var(--ok);">✓ Aplicado</div>'
+    card.innerHTML = ''
+    const ok = document.createElement('div')
+    ok.style.color = 'var(--ok)'
+    ok.textContent = '✓ Aplicado'
+    card.appendChild(ok)
     refreshSources()
   })
+
   return card
 }
 
@@ -175,12 +213,11 @@ function appendMessage({ role, content, citations, edit }) {
   bubble.textContent = content
   wrap.appendChild(bubble)
   if (role === 'assistant' && citations?.length) {
-    const citeDiv = document.createElement('div')
-    citeDiv.innerHTML = renderCitations(citations)
-    wrap.appendChild(citeDiv)
+    wrap.appendChild(renderCitations(citations))
   }
   if (role === 'assistant' && edit) {
-    wrap.appendChild(renderEditCard(edit))
+    const card = renderEditCard(edit)
+    if (card) wrap.appendChild(card)
   }
   chatMessages.appendChild(wrap)
   chatMessages.scrollTop = chatMessages.scrollHeight
