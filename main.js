@@ -499,7 +499,9 @@ function getSessionByEvent(event) {
 // encontrada (orden de Map, que es orden de apertura).
 function findSessionByProjectDir(projectDir) {
   for (const session of sessions.values()) {
-    if (session && session.cwd === projectDir && session.pty) return session
+    if (!session || !session.pty) continue
+    const realCwd = session.gitWorkspace?.realCwd || session.cwd
+    if (realCwd === projectDir) return session
   }
   return null
 }

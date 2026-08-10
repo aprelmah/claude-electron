@@ -74,7 +74,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     getModel,
     log
   })
-  let distillBusy = false
+  const distillBusyByProject = new Map()
 
   ipcMain.handle('kb:list', (_event, { cwd } = {}) => {
     try {
@@ -261,13 +261,18 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
   })
 
   ipcMain.handle('kb:distill', async (event, { cwd, source } = {}) => {
-    if (distillBusy) return { ok: false, error: 'ya hay un destilado en marcha; espera a que termine' }
-    distillBusy = true
     const send = (stage, detail = '') => {
       try { event.sender.send('kb:progress', { stage, detail }) } catch {}
     }
+    let projectDir
     try {
-      const projectDir = resolveProjectDir(cwd)
+      projectDir = resolveProjectDir(cwd)
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+    if (distillBusyByProject.get(projectDir)) return { ok: false, error: 'ya hay un destilado en marcha para este proyecto; espera a que termine' }
+    distillBusyByProject.set(projectDir, true)
+    try {
       const src = source?.kind === 'url'
         ? { kind: 'url', url: String(source.url || '').trim() }
         : { kind: 'file', path: assertInsideProject(projectDir, source?.relPath || source?.path) }
@@ -315,7 +320,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       send('error', String(e?.message || e))
       return { ok: false, error: String(e?.message || e) }
     } finally {
-      distillBusy = false
+      distillBusyByProject.delete(projectDir)
     }
   })
 }

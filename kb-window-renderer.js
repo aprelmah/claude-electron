@@ -7,7 +7,21 @@ const projectDir = params.get('projectDir') || ''
 document.getElementById('project-name').textContent = projectDir.split('/').pop() || projectDir
 
 const colSources = document.getElementById('col-sources')
+const btnApplySession = document.getElementById('btn-apply-session')
 let kbBusy = false
+
+if (btnApplySession) {
+  btnApplySession.addEventListener('click', async () => {
+    const data = await window.api.kb.list(projectDir)
+    const relPaths = data.ok ? data.fichas.filter(f => f.active).map(f => f.relPath) : []
+    if (!relPaths.length) { alert('No hay fichas activas que aplicar'); return }
+    const res = await window.api.kb.applyToSession(projectDir, relPaths)
+    if (!res.ok) { alert(res.error); return }
+    const original = btnApplySession.textContent
+    btnApplySession.textContent = '✓ Aplicado'
+    setTimeout(() => { btnApplySession.textContent = original }, 1500)
+  })
+}
 
 function fmtSize(bytes) {
   if (!Number.isFinite(bytes)) return ''
@@ -47,7 +61,7 @@ async function refreshSources() {
     name.className = 'name'
     name.textContent = ficha.name + (ficha.missing ? ' (falta el fichero)' : '')
     name.title = ficha.relPath
-    name.addEventListener('dblclick', () => window.api.kb.reveal(projectDir, ficha.relPath))
+    name.addEventListener('dblclick', () => editFichaFile(ficha.relPath))
     const meta = document.createElement('span')
     meta.className = 'meta'
     meta.textContent = fmtSize(ficha.size)
@@ -322,15 +336,42 @@ async function editFichaFile(relPath) {
   })
 }
 
-btnAddShortcut.addEventListener('click', async () => {
-  const title = prompt('Título del atajo:')
-  if (!title) return
-  const body = prompt('Contenido:')
-  if (!body) return
-  const res = await window.api.kb.addShortcut(projectDir, { title, body, related: [] })
-  if (!res.ok) { alert(res.error); return }
-  refreshShortcuts()
-})
+function promptAddShortcut() {
+  const box = document.createElement('div')
+  box.style.cssText = 'position:fixed;inset:40px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;z-index:1000;display:flex;flex-direction:column;gap:8px;'
+  const titleLabel = document.createElement('label')
+  titleLabel.textContent = 'Título del atajo'
+  const titleInput = document.createElement('input')
+  titleInput.type = 'text'
+  const bodyLabel = document.createElement('label')
+  bodyLabel.textContent = 'Contenido'
+  const bodyInput = document.createElement('textarea')
+  bodyInput.rows = 10
+  const actions = document.createElement('div')
+  actions.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;'
+  const save = document.createElement('button')
+  save.className = 'primary'
+  save.textContent = 'Guardar'
+  const cancel = document.createElement('button')
+  cancel.textContent = 'Cancelar'
+  cancel.addEventListener('click', () => box.remove())
+  actions.append(cancel, save)
+  box.append(titleLabel, titleInput, bodyLabel, bodyInput, actions)
+  document.body.appendChild(box)
+  titleInput.focus()
+
+  save.addEventListener('click', async () => {
+    const title = titleInput.value.trim()
+    const body = bodyInput.value.trim()
+    if (!title || !body) { alert('Título y contenido son obligatorios'); return }
+    const res = await window.api.kb.addShortcut(projectDir, { title, body, related: [] })
+    if (!res.ok) { alert(res.error); return }
+    box.remove()
+    refreshShortcuts()
+  })
+}
+
+btnAddShortcut.addEventListener('click', () => promptAddShortcut())
 
 refreshShortcuts()
 
