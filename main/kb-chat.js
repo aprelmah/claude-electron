@@ -18,7 +18,7 @@ const kb = require('./knowledge-base')
 const MAX_FILE_BYTES = 4 * 1024 * 1024
 const MAX_CHUNK_CHARS = 4200
 const CHUNK_OVERLAP_CHARS = 420
-const MAX_EVIDENCE = 8
+const MAX_EVIDENCE = 18
 const MAX_EVIDENCE_CHARS = 34_000
 const MAX_HISTORY = 24
 const CHAT_TIMEOUT_MS = 240_000
@@ -215,14 +215,7 @@ function selectEvidence(chunks, question) {
     .map((chunk) => ({ ...chunk, score: scoreChunk(chunk, queryTokens, question) }))
     .filter((chunk) => chunk.score > 0)
     .sort((a, b) => b.score - a.score || a.relPath.localeCompare(b.relPath) || a.index - b.index)
-  if (ranked.length) return ranked.slice(0, MAX_EVIDENCE)
-  // Las preguntas de orientación no contienen términos del corpus por diseño.
-  // En ese caso sí tiene sentido enseñar al modelo el comienzo de las fichas;
-  // para una pregunta concreta sin coincidencias seguimos siendo fail-closed.
-  if (/\b(resumen|importante|riesgo|riesgos|error|errores|problema|problemas|contiene|de qué va)\b/i.test(String(question || ''))) {
-    return chunks.slice(0, MAX_EVIDENCE).map((chunk) => ({ ...chunk, score: 0 }))
-  }
-  return []
+  return ranked.slice(0, MAX_EVIDENCE)
 }
 
 function evidenceText(evidence) {

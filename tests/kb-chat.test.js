@@ -107,3 +107,21 @@ test('pregunta sin coincidencias no llama al modelo', async () => {
   assert.equal(result.grounded, false)
   assert.equal(calls, 0)
 })
+
+test('selectEvidence ya no vuelca fichas al azar en preguntas de orientación sin coincidencia léxica', () => {
+  const chunks = [
+    { title: 'Parámetros de red', relPath: 'a.md', text: 'Tensión nominal 230 V, frecuencia 50 Hz.', tokens: tokenize('Tensión nominal 230 V, frecuencia 50 Hz.') }
+  ]
+  // antes de este fix, la palabra "resumen" disparaba el volcado de las primeras fichas
+  const result = selectEvidence(chunks, 'Dame un resumen')
+  assert.deepEqual(result, [])
+})
+
+test('selectEvidence no corta coincidencias reales por debajo de 8 candidatos', () => {
+  const chunks = Array.from({ length: 15 }, (_, i) => {
+    const text = `Especificación de la batería modelo ${i}: capacidad y voltaje nominal.`
+    return { title: `Batería ${i}`, relPath: `bateria-${i}.md`, text, tokens: tokenize(text) }
+  })
+  const result = selectEvidence(chunks, '¿Qué batería tiene más capacidad y voltaje?')
+  assert.ok(result.length > 8, `esperaba más de 8 candidatos, hubo ${result.length}`)
+})
