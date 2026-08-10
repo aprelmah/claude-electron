@@ -131,3 +131,98 @@ async function runDistill(source) {
 }
 
 refreshSources()
+
+const chatMessages = document.getElementById('col-chat-messages')
+const chatForm = document.getElementById('col-chat-form')
+const chatInput = document.getElementById('col-chat-input')
+const btnClearChat = document.getElementById('btn-clear-chat')
+
+function renderCitations(citations) {
+  if (!citations?.length) return ''
+  const chips = citations.map((c) => `<button class="citation-chip" data-relpath="${c.relPath}" title="${c.location || ''}">${c.title}</button>`).join(' ')
+  return `<div class="citations">${chips}</div>`
+}
+
+function renderEditCard(edit) {
+  if (!edit) return ''
+  const card = document.createElement('div')
+  card.className = 'edit-card'
+  card.innerHTML = `
+    <div><strong>Propuesta de corrección</strong> — ${edit.relPath}</div>
+    <div class="diff-before">− ${edit.find}</div>
+    <div class="diff-after">+ ${edit.replace}</div>
+    ${edit.reason ? `<div style="color:var(--muted);font-size:11px;">${edit.reason}</div>` : ''}
+    <div class="actions">
+      <button class="primary" data-action="accept">Aceptar</button>
+      <button data-action="discard">Descartar</button>
+    </div>
+  `
+  card.querySelector('[data-action="discard"]').addEventListener('click', () => card.remove())
+  card.querySelector('[data-action="accept"]').addEventListener('click', async () => {
+    const res = await window.api.kb.editApply(projectDir, edit.relPath, edit.find, edit.replace)
+    if (!res.ok) { alert(res.error); return }
+    card.innerHTML = '<div style="color:var(--ok);">✓ Aplicado</div>'
+    refreshSources()
+  })
+  return card
+}
+
+function appendMessage({ role, content, citations, edit }) {
+  const wrap = document.createElement('div')
+  wrap.className = `msg ${role}`
+  const bubble = document.createElement('div')
+  bubble.className = 'bubble'
+  bubble.textContent = content
+  wrap.appendChild(bubble)
+  if (role === 'assistant' && citations?.length) {
+    const citeDiv = document.createElement('div')
+    citeDiv.innerHTML = renderCitations(citations)
+    wrap.appendChild(citeDiv)
+  }
+  if (role === 'assistant' && edit) {
+    wrap.appendChild(renderEditCard(edit))
+  }
+  chatMessages.appendChild(wrap)
+  chatMessages.scrollTop = chatMessages.scrollHeight
+}
+
+async function loadChatHistory() {
+  const data = await window.api.kb.history(projectDir)
+  chatMessages.innerHTML = ''
+  if (data.ok) {
+    for (const entry of data.history) appendMessage(entry)
+  }
+}
+
+async function submitQuestion() {
+  const question = chatInput.value.trim()
+  if (!question) return
+  chatInput.value = ''
+  appendMessage({ role: 'user', content: question })
+  const pending = document.createElement('div')
+  pending.className = 'msg assistant'
+  pending.innerHTML = '<div class="bubble">…</div>'
+  chatMessages.appendChild(pending)
+  chatMessages.scrollTop = chatMessages.scrollHeight
+  try {
+    const result = await window.api.kb.ask(projectDir, question, [], document.getElementById('project-name').textContent)
+    pending.remove()
+    if (!result.ok) { appendMessage({ role: 'assistant', content: result.error }); return }
+    appendMessage({ role: 'assistant', content: result.answer, citations: result.citations, edit: result.edit })
+  } catch (e) {
+    pending.remove()
+    appendMessage({ role: 'assistant', content: String(e?.message || e) })
+  }
+}
+
+chatForm.addEventListener('submit', (e) => { e.preventDefault(); submitQuestion() })
+chatInput.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submitQuestion() }
+})
+btnClearChat.addEventListener('click', async () => {
+  if (!confirm('¿Borrar esta conversación?')) return
+  await window.api.kb.clearHistory(projectDir)
+  chatMessages.innerHTML = ''
+})
+
+loadChatHistory()
