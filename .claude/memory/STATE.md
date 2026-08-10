@@ -2,11 +2,11 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-10, tarde (verificado contra git, filesystem y app real).
+Última actualización: 2026-08-10, noche (verificado contra git, filesystem y app real).
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, working tree limpio; último commit `dbb4d94 fix(kb): 5 hallazgos de la revisión final de rama (Critical + Important)` — **fusionado localmente** (fast-forward desde `6fbf604`), rama `feature/kb-notebook-window` ya borrada. NO pusheado a remoto (no se pidió).
+- Rama `main`, working tree limpio; último commit `ac5360e docs(memory): STATE al cierre — notebook de conocimiento desplegado y verificado` — fusionado (fast-forward desde `6fbf604`) y **pusheado a `origin/main`** (`aaab645..ac5360e`). Rama `feature/kb-notebook-window` ya borrada.
 - Tests: 1465 totales — 1442 pass, 0 fail, 17 cancelled (flake conocido y documentado, ver `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md`), 6 skipped.
 - Deploy: `/Applications/POWER-AGENT.app` con `dbb4d94`, verificado por CONTENIDO del asar (12 ficheros clave, hash idéntico al repo — `package.json` difiere solo por el stripping normal de `scripts`/`devDependencies`/`build` que hace electron-builder), firma ad-hoc válida, helper de voz firmado con permiso de micrófono, app corriendo con `--type=renderer`.
 
@@ -22,11 +22,10 @@
 
 ## Próximo paso
 
-- **Nada bloqueante.** La ventana está construida, revisada tres veces (task-level ×13, whole-branch, fix-wave re-review) y desplegada. Falta la validación de Luismi en real (abrir, usarla, opinar) — es la primera vez que la ve funcionando de punta a punta.
-- Pendiente diferido documentado en `tech/runbook_kb_conocimiento.md` § "Pendiente de endurecer": `resolveProjectDir` se fía del `cwd` que manda el renderer sin contrastarlo contra `getKnowledgeWindow(projectDir)` (que ya existe, sin más uso que los tests). Heredado del panel viejo, no es regresión de esta sesión, pero es barato de cerrar cuando se retome esta feature.
+- ⚠️ **DECISIÓN DE ALCANCE PENDIENTE — no dar por cerrada la columna Chat ni la tarjeta de edición.** Tras el deploy, Luismi cuestionó a fondo el diseño (no la UX, la arquitectura): razonando juntos, la conclusión fue que el chat de conocimiento y la aprobación de ediciones NO aportan nada que una sesión normal de terminal (que ya tiene las fichas precargadas por `@import` en el `CLAUDE.md`) no haga ya — y esa la hace mejor (`Edit` real sobre el fichero, no una tarjeta de aceptar/descartar sobre una llamada sin herramientas). Lo único irreducible frente al agente normal es: **destilar** (extracción+resumen fuera de la sesión, para no comerse el contexto con el texto en bruto de un PDF/vídeo), **crear atajos**, y **activar/desactivar fichas** (toggle del import). Luismi quiere probar la ventana él mismo antes de decidir. Si confirma el recorte: quitar de `kb-window-renderer.js` `renderCitations`/`appendMessage`/`submitQuestion`/`renderEditCard`/`loadChatHistory`, la columna Chat de `kb-window.html`, y los handlers `kb:ask`/`kb:edit-apply` de `main/kb-ipc.js` (dejar `kb:list/toggle/add-file/remove/distill/add-shortcut/read-ficha/write-ficha/open-window`); `main/kb-chat.js` quedaría sin uso, valorar si se borra.
+- Pendiente diferido documentado en `tech/runbook_kb_conocimiento.md` § "Pendiente de endurecer": `resolveProjectDir` se fía del `cwd` que manda el renderer sin contrastarlo contra `getKnowledgeWindow(projectDir)` (que ya existe, sin más uso que los tests). Heredado del panel viejo, no es regresión de esta sesión — si el recorte de arriba se confirma, este hallazgo pierde peso porque desaparecen los dos handlers de escritura basados en el modelo (`kb:edit-apply` ya no importaría; `kb:write-ficha`/`kb:read-ficha` seguirían).
 - Diferidos menores (mismo runbook): botón "Aplicar a sesión" sin guard anti-doble-click, chips de cita inertes, `kb:list` duplicado por refresco, `kbButtonResolveCwd` con fallback a `ptyCwd()` amplificado por el singleton-por-proyecto.
 - Bug sin resolver (no bloqueante, documentado): flake intermitente `cancelledByParent` en `apple-transcribe.test.js`/`voice-note.test.js` bajo carga — `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md`.
-- `/wrap` de esta sesión pendiente si Luismi lo quiere (sesión larga, candidata clara).
 
 ## Notas operativas
 
