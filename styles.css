@@ -1204,7 +1204,7 @@ body.layout-split #terminal-wrap { flex: 1; }
 .kb-mini-btn.danger { border-color: #e5484d; color: #e5484d; }
 .kb-mini-btn.danger:hover { background: rgba(229, 72, 77, 0.12); }
 
-.kb-list { flex: 1; min-height: 0; }
+.kb-list { flex: 1; min-height: 0; overflow-y: auto; }
 
 .kb-list-empty { color: var(--text2); font-size: 12px; padding: 8px 4px; }
 

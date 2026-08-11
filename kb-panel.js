@@ -314,10 +314,12 @@
       fichasList.innerHTML = `<div class="kb-list-empty">${data.error}</div>`
       return
     }
-    if (!data.fichas.length) {
+    const atajosRelPath = data.shortcuts?.relPath
+    const fichas = data.fichas.filter((f) => f.relPath !== atajosRelPath)
+    if (!fichas.length) {
       fichasList.innerHTML = '<div class="kb-list-empty">Sin fichas todavía.</div>'
     }
-    for (const ficha of data.fichas) {
+    for (const ficha of fichas) {
       const row = document.createElement('div')
       row.className = 'kb-ficha-item'
       const check = document.createElement('input')

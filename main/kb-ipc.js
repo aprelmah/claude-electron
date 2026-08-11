@@ -67,6 +67,12 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     return resolved
   }
 
+  // atajos.md sostiene todos los Casos; se gestiona desde esa pestaña
+  // (parseShortcuts/addShortcut/...), nunca como una ficha suelta.
+  function assertNotAtajos(relPath) {
+    if (String(relPath || '').trim() === kb.ATAJOS_RELPATH) throw new Error('atajos.md se gestiona desde la pestaña Casos')
+  }
+
   const extractor = createKbExtractor({ userDataDir: getUserDataDir(), transcribeAudioFile, buildRuntimeEnv, log })
   const distillBusyByProject = new Map()
 
@@ -135,6 +141,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     try {
       const projectDir = resolveProjectDir(cwd)
       assertInsideProject(projectDir, relPath)
+      assertNotAtajos(relPath)
       const result = kb.toggleImport(projectDir, relPath, !!active)
       if (result.ok) await commitKbChanges(projectDir, `kb: ${active ? 'activa' : 'desactiva'} ${relPath}`)
       return result
@@ -159,6 +166,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     try {
       const projectDir = resolveProjectDir(cwd)
       const abs = assertInsideProject(projectDir, relPath)
+      assertNotAtajos(relPath)
       const removed = kb.removeImport(projectDir, relPath)
       if (!removed.ok) return removed
       let trashed = false
