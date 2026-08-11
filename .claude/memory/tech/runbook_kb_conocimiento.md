@@ -268,3 +268,21 @@ corrección en vivo tras el primer deploy.
 - 2 commits (`a0d1c6f` backend, `5581102` UI+voz+auto-ajuste), pre-commit hook con
   la suite completa en verde las dos veces (Node del sistema v24.13.0, sin
   `nvm use 20.18.0`), pusheados a `origin/main`, deploy final verificado por asar.
+
+### 2026-08-11 (tarde) — atajos.md fuera de Fichas + blindaje + overlap dropzone/URL
+
+`atajos.md` (sostiene todos los Casos) aparecía también como ficha normal en la
+pestaña Fichas, con papelera — un clic de más borraba TODOS los Casos. Arreglado:
+
+- `kb-panel.js` filtra `atajos.md` de la lista de Fichas por
+  `data.shortcuts.relPath` (viene de `kb:list`, calculado desde `ATAJOS_RELPATH` en
+  `knowledge-base.js` — no hardcodear la ruta por nombre en ningún sitio nuevo).
+- `main/kb-ipc.js`: `assertNotAtajos(relPath)` rechaza `kb:toggle`/`kb:remove`
+  sobre `ATAJOS_RELPATH`, cinturón de seguridad además del filtro de UI (cubre
+  cualquier otra vía de llamada a esos canales, no solo el clic en el panel).
+- Bug de overlap (dropzone/URL pintados encima de filas de la lista): `.kb-list`
+  (`#kb-fichas-list`) tenía `flex:1; min-height:0` sin `overflow`, así que
+  desbordaba en `overflow:visible` (default) sobre sus hermanos siguientes. Fix:
+  `overflow-y:auto` en `.kb-list`.
+- Commits `edd83b3` (memoria) + `89072a5` (fix), tests 1459/0 fail, verificado por
+  CDP real (hit-testing con la lista scrolleada al fondo, 5 casos reales intactos).
