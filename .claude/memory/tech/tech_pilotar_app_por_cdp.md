@@ -61,3 +61,9 @@ porque el script vive fuera del repo):
   ("A JavaScript error occurred in the main process") **encima de la pantalla de
   Luismi**, y al matarlo deja un `.ips` con SIGILL que parece un crash de la app.
   No lo es. Comprobar `procLaunch` en el `.ips` antes de alarmarse.
+- **El CDP que expone Electron NO tiene `Browser.setWindowBounds`/
+  `Browser.getWindowForTarget`** (error `-32601`, confirmado 2026-08-11 contra la
+  app real al probar auto-ajuste de layout al redimensionar). Para cambiar el
+  tamaño de la ventana de verdad desde un script CDP, usar `window.resizeTo(w, h)`
+  vía `Runtime.evaluate` — Electron sí lo reenvía a la ventana nativa del SO
+  (confirmable leyendo `window.outerWidth`/`outerHeight` antes y después).

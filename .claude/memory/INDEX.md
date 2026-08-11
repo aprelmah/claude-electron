@@ -1,6 +1,6 @@
 # INDEX — mapa de fichas de `.claude/memory/`
 
-Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-10.
+Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-11.
 
 ## Estado y proyecto
 
@@ -20,7 +20,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/runbook_telegram_bridge.md` — comandos del bot, notas de voz (Apple/whisper), bot de avisos separado, configuración de la app.
 - `tech/runbook_hermes_robos.md` — pairing por código, saneado de canal, detector de repetidos, doctor, bandeja de decisiones, panel 📈, reglas de tests.
 - `tech/runbook_incidentes_2026_05.md` — crash de arranque de mayo (SIGABRT/savedState), fixes permanentes y notas operativas de recuperación.
-- `tech/runbook_kb_conocimiento.md` — conocimiento por proyecto: ventana propia (Fuentes+Atajos, chat/edición IA retirados 10-08-2026 noche), imports @ del CLAUDE.md, destilador PDF/web/YouTube, atajos, auto-commit del conocimiento tras cada escritura, aplicar a sesión, reglas duras y patrón CDP de verificación de UI. Leer antes de tocar kb-*/kb-window-*.
+- `tech/runbook_kb_conocimiento.md` — conocimiento por proyecto: **11-08-2026: ventana modal retirada, ahora 3 pestañas hermanas Chat/Casos/Fichas dentro del IDE** (`kb-panel.js`), Casos editables/borrables individualmente, voz en el editor de Caso, auto-ajuste al redimensionar. Imports @ del CLAUDE.md, destilador PDF/web/YouTube, auto-commit tras cada escritura, aplicar a sesión, reglas duras y patrón CDP de verificación de UI. Leer antes de tocar `kb-panel.js`/`kb-ipc.js`/`knowledge-base.js`.
 
 ## Fichas técnicas (lecciones con el porqué)
 

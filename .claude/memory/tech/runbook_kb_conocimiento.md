@@ -1,12 +1,16 @@
-# Runbook — Conocimiento por proyecto (panel 📚 → ventana 📚)
+# Runbook — Conocimiento por proyecto (panel 📚 → ventana 📚 → pestañas 📚)
 
 Creado 2026-08-09 (sesión panel 📚). Subsistema: cada proyecto lleva su conocimiento
 precargado vía imports `@` en su CLAUDE.md. **2026-08-10: el panel acoplado (rechazado
 en UX) se sustituyó por una ventana Electron independiente, singleton por proyecto**
 (`main/window-factory.js` `openKnowledgeWindow`/`getKnowledgeWindow`,
-`kb-window.html`/`kb-window-preload.js`/`kb-window-renderer.js`). Ver sección
-"2026-08-10" más abajo para lo que cambió; el resto de esta ficha (extractores,
-formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cual.
+`kb-window.html`/`kb-window-preload.js`/`kb-window-renderer.js`). **2026-08-11: esa
+ventana también se retiró — ahora es `kb-panel.js`, 3 pestañas hermanas Chat/Casos/
+Fichas dentro de la ventana principal.** Ver sección "2026-08-11" al final de esta
+ficha para la arquitectura vigente; las secciones "2026-08-10" que siguen son
+arqueología (documentan por qué se llegó hasta ahí, no el estado actual). El resto de
+esta ficha (extractores, formato de fichas/atajos, reglas de seguridad de escritura)
+sigue vigente tal cual.
 
 ## Arquitectura
 
@@ -20,11 +24,12 @@ formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cu
   PATH → `~/Library/Python/*/bin` → `python3 -m yt_dlp`). Sin subtítulos → error claro
   (fallback Whisper = v2, el transcriber existe en `main/whisper-transcribe.js`).
 - IPC (`main/kb-ipc.js`): `kb:list/toggle/add-file/remove/distill/apply-to-session/
-  open-window/add-shortcut/read-ficha/write-ficha`. **`kb:ask`/`kb:edit-apply`/
-  `kb:chat-history`/`kb:chat-clear` retirados el 2026-08-10 noche** (ver esa
-  sección) — no hay chat ni edición por IA, solo gestión de fichas/atajos.
-  Cada escritura (`toggle`/`distill`/`add-shortcut`/`write-ficha`/`remove`)
-  dispara `commitKbChanges` (`main/kb-git.js`).
+  add-shortcut/update-shortcut/delete-shortcut/read-ficha/write-ficha`. **`kb:ask`/
+  `kb:edit-apply`/`kb:chat-history`/`kb:chat-clear` retirados el 2026-08-10 noche**
+  (ver esa sección) — no hay chat ni edición por IA, solo gestión de fichas/casos.
+  **`kb:open-window` retirado el 2026-08-11** (ya no hay ventana, ver esa sección).
+  Cada escritura (`toggle`/`distill`/`add-shortcut`/`update-shortcut`/
+  `delete-shortcut`/`write-ficha`/`remove`) dispara `commitKbChanges` (`main/kb-git.js`).
 - Atajos: `kb/fichas/atajos.md`, entradas `## N · título` = respuestas preparadas
   (pregunta→respuesta, formato libre — corrección de Luismi: NO solo problema→
   soluciones). La cabecera del fichero lleva las instrucciones de uso Y de añadido:
@@ -32,10 +37,11 @@ formato de fichas/atajos, reglas de seguridad de escritura) sigue vigente tal cu
 
 ## Reglas duras
 
-- **El cwd del panel sale del PROYECTO del picker** (`#cwd-value`.title), jamás de
-  `ptyCwd()`: sin sesión el PTY devuelve el home (panel "vacío", bug real reportado
-  por Luismi) y en worktree devolvería la copia aislada — fichas escritas ahí se
-  pierden de la vista del panel.
+- **El cwd del panel sale del PROYECTO del picker**, jamás de `ptyCwd()`: sin sesión
+  el PTY devuelve el home (panel "vacío", bug real reportado por Luismi) y en
+  worktree devolvería la copia aislada — fichas escritas ahí se pierden de la vista
+  del panel. Desde 2026-08-11, la función canónica es `window.__resolveProjectCwd()`
+  (`renderer.js`), reutilizada por `kb-panel.js` — no reinventarla.
 - **El destilado headless corre en cwd NEUTRO** (`userData/kb-distill`): en el cwd
   del proyecto cargaría su propio CLAUDE.md con todas las fichas y pagaría ese
   contexto en cada destilado.
@@ -188,3 +194,77 @@ una ventana cacheada sobre la copia).
 
 Precarga ~70 KB (≈20k tokens): 1ª consulta 0,10 $ (crea caché), siguientes ~0,017 $
 (caché 67k), 1 turno, 0 búsquedas. Destilado YouTube 10 min → ficha en 35 s.
+
+## 2026-08-11 — Ventana retirada; 3 pestañas hermanas Chat/Casos/Fichas (arquitectura vigente)
+
+Petición de Luismi: quitar el botón "Agente conocimiento", separar Atajos→**Casos**
+(editables con resolución) y **Fichas** (editables) como dos acciones de creación
+distintas, y sacar el panel de la ventana modal a **pestañas dentro del IDE** — no
+una caja lateral. Ejecutado con `/loop` (4 fases con agentes en background) y una
+corrección en vivo tras el primer deploy.
+
+- **No existe sistema de tabs tipo VS Code en la app** (cada sesión es una
+  `BrowserWindow` independiente) — no se tocó ese modelo. Primer intento: panel
+  lateral dockeado (patrón sub-chat) con mini-pestañas internas Casos/Fichas.
+  Luismi lo probó desplegado y lo **rechazó**: quería pestañas hermanas al mismo
+  nivel que el terminal, no una caja aparte que le quitara ancho.
+- **Arquitectura final**: `kb-panel.js` (nuevo fichero, IIFE — los `<script>` sueltos
+  del renderer comparten ámbito global, ver `bugs/bug_scripts_renderer_ambito_global.md`)
+  monta 3 vistas dentro de `#terminal-row`: `#tab-view-chat` (el terminal de siempre)
+  más las vistas de Casos y Fichas, cada una a `flex:1`, conmutadas con `display:none`
+  — solo una visible a la vez, ocupando TODO el ancho disponible (ya no ~700px de
+  caja lateral). El terminal **nunca se destruye/reinicia** al cambiar de pestaña,
+  solo se oculta; al volver a Chat se dispara `scheduleTerminalRefit()` por si el
+  layout cambió mientras estaba oculto. API pública: `window.__contentTabs.setActiveTab()`
+  (sustituye a `window.__kbPanel.toggle()`, que ya no existe).
+- **Ventana modal retirada del todo**: `kb-window.html`, `kb-window-renderer.js`,
+  `kb-window-preload.js`, `openKnowledgeWindow`/`getKnowledgeWindow` en
+  `window-factory.js`, canal `kb:open-window`, y `tests/window-factory.test.js`
+  (solo testeaba la función retirada). Botón `#btn-kb` y su grupo "PROYECTO"
+  eliminados de `index.html` — ya no hace falta un botón que abra/cierre nada,
+  las 3 pestañas están siempre visibles.
+- **Casos editables/borrables individualmente** (antes solo se podía añadir al
+  final de `atajos.md` o editar el fichero entero a mano): `updateShortcut(projectDir,
+  id, {title, body, related})` y `deleteShortcut(projectDir, id)` en
+  `knowledge-base.js`, canales `kb:update-shortcut`/`kb:delete-shortcut`.
+  `parseShortcuts` ahora extrae el cuerpo completo de cada entrada (antes solo el
+  título). `deleteShortcut` NO renumera el resto — huecos tolerados, igual que
+  `addShortcut` ya usaba `max(nums)+1`, no `length+1`.
+- **El agente de sesión puede crear un caso por chat** ("esto ponlo como caso"):
+  `ATAJOS_HEADER` (cabecera de `atajos.md`, se carga vía `@import` cuando el fichero
+  está activo) le instruye el formato exacto (`## <n+1> · <título>` + cuerpo) y que
+  comitee él mismo (`git add CLAUDE.md kb/ && git commit -m "..."`, ya tiene
+  git-por-sesión). **Decidido NO construir un script auxiliar** (`kb-add-case.js`):
+  el agente trabaja en el cwd del proyecto DEL USUARIO (p. ej. turbo-e), no en el
+  de POWER-AGENT — un script en `scripts/` de este repo no sería alcanzable sin
+  plumbear una ruta de recursos nueva (`main/cli-resolver.js` no expone hoy ningún
+  env var así). Calcular el número siguiente leyendo el fichero es trivial para
+  cualquier agente con Read/Grep; no compensaba la complejidad de distribución.
+- **Voz en el editor de Caso**: `insertTranscribedText(el, text)` en `kb-panel.js`,
+  desacoplada de `injectToPty`/`writePty` (esas siguen sirviendo solo al terminal —
+  NO tocarlas para esto). Botones `#kb-case-title-mic`/`#kb-case-body-mic`, mismo
+  motor de transcripción (Apple Speech/whisper.cpp) que `#btn-mic`. Bug real cazado
+  en la revisión estética: el SVG de estos botones no llevaba `stroke`/`fill` (se
+  pintaba mal) — corregido para usar exactamente el mismo lenguaje visual que
+  `#btn-mic` (24×24, trazo `currentColor` 2.2px, mismo hover/estado de grabación).
+- **Auto-ajuste al redimensionar la ventana** (pedido tras probar el segundo
+  deploy): la `BrowserWindow` principal no tenía `minWidth`/`minHeight` — a tamaños
+  patológicos el sidebar (ancho persistido en px) se comía todo el hueco. Fix:
+  `main.js` con `minWidth:640/minHeight:420`; `renderer.js` con
+  `clampSidebarToWindow()` enganchada al listener de `resize`, recorta el ancho/alto
+  persistido del sidebar contra el hueco real disponible (no toca el arrastre a mano
+  del `#divider`). `.kb-col-list` tenía `flex: 0 0 340px` (`shrink:0`, nunca encogía
+  — en ventana estrecha dejaba el editor a 0px de ancho real) → `flex: 0 1 340px` +
+  `min-width:220px`. `container-type: inline-size` en `#terminal-row` (el ANCESTRO,
+  no las pestañas mismas — Chromium no aplica `@container` al propio contenedor) +
+  `@container (max-width:640px)`: Casos/Fichas pasan de 2 columnas a apiladas
+  verticalmente cuando el hueco real cae por debajo de ese umbral.
+- **Nota técnica de verificación**: el CDP que expone Electron NO tiene
+  `Browser.setWindowBounds`/`Browser.getWindowForTarget` (error `-32601`, confirmado
+  con la app real) — para redimensionar la ventana de verdad desde un script CDP hay
+  que usar `window.resizeTo()` vía `Runtime.evaluate` (Electron sí lo reenvía a la
+  ventana nativa; confirmable leyendo `outerWidth`/`outerHeight` antes/después). Ver
+  también `tech_pilotar_app_por_cdp.md`.
+- 2 commits (`a0d1c6f` backend, `5581102` UI+voz+auto-ajuste), pre-commit hook con
+  la suite completa en verde las dos veces (Node del sistema v24.13.0, sin
+  `nvm use 20.18.0`), pusheados a `origin/main`, deploy final verificado por asar.
