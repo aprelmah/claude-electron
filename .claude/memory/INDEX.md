@@ -46,6 +46,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Bugs resueltos (leer si reaparece el síntoma)
 
+- `bugs/bug_kb_conocimiento_zombi_2026_08_13.md` — fichas y casos borrados resucitaban en la sesión siguiente (el worktree nace de HEAD). Leer antes de tocar `session-git.js`/`kb-git.js`, o si un agente vuelve a citar conocimiento retirado. Trae también la trampa de verificación: `pty-start` es idempotente (13-08-2026).
 - `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md` — flake intermitente `cancelledByParent` en esos dos tests, sin relación con lo que se toque; SIN resolver, solo documentado (10-08-2026).
 - `bugs/bug_task_manager_skills_multiselect_2026_08_09.md` — selector nativo múltiple de skills difícil de limpiar en macOS y corrección visual (09-08-2026).
 - `bugs/bug_scripts_renderer_ambito_global.md` — un `const` duplicado en scripts sueltos del renderer mata la página; los tests no lo ven.

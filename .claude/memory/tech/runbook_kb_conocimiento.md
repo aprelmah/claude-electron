@@ -286,3 +286,45 @@ pestaña Fichas, con papelera — un clic de más borraba TODOS los Casos. Arreg
   `overflow-y:auto` en `.kb-list`.
 - Commits `edd83b3` (memoria) + `89072a5` (fix), tests 1459/0 fail, verificado por
   CDP real (hit-testing con la lista scrolleada al fondo, 5 casos reales intactos).
+
+### 2026-08-13 — INVARIANTE: ninguna sesión arranca con conocimiento retirado
+
+Bug crítico: fichas y casos borrados por Luismi seguían precargados en la sesión
+siguiente (el experto SAT respondía con conocimiento derogado sobre instalaciones
+reales). Detalle completo, evidencia y lecciones de método en
+`bugs/bug_kb_conocimiento_zombi_2026_08_13.md`.
+
+Causa: el worktree de sesión nace de `HEAD` (`git worktree add … HEAD`), así que un
+borrado que no llega a un commit es **inmortal** — la cara letal de la regla ya
+conocida "worktree + conocimiento sin commitear = experto invisible".
+
+Reglas duras que salen de aquí:
+
+- **El invariante se garantiza donde NACE el worktree** (`prepareSessionWorkspace` en
+  `main/session-git.js`), no en cada escritura. Hay al menos tres vías de borrar
+  conocimiento — panel, agente de sesión (`rm` + `Edit` del CLAUDE.md), Finder/terminal
+  — y parchear rutas nunca las cubre todas. En el bug real, el borrado NO pasó por el
+  panel.
+- `main/kb-git.js` gana `hasPendingKbChanges()` y `ensureKbCommitted()`. Éste, a
+  diferencia del best-effort de `commitKbChanges`, devuelve `ok:false` cuando lo
+  pendiente no llega a HEAD: el que llama tiene que reaccionar.
+- **Si el conocimiento no se puede commitear, NO se crea worktree**: la sesión arranca
+  en el cwd real, donde el disco es la verdad, con aviso al usuario
+  (`onDegraded` → `notifyKbNotCommitted`). Un worktree obsoleto miente; sin aislamiento
+  el agente al menos lee lo que hay.
+- `commitKbChanges` comitea con `--no-verify`. El conocimiento no es código: un
+  pre-commit del proyecto destino (lint/tests) bloqueando el commit dejaría el borrado
+  fuera de HEAD, que es exactamente el fallo que se está evitando.
+- Sigue acotado a `CLAUDE.md` + `kb/`, **nunca `-A`**: el código a medias del usuario no
+  se toca jamás (verificado en la app real).
+- **El auto-commit del panel deja de ser mudo**: las 7 rutas de `main/kb-ipc.js`
+  propagan `commitWarning` y `kb-panel.js` lo canta (`reportKbResult`). Un borrado que
+  el usuario da por hecho y que git no registró es el bug entero; callarlo lo esconde.
+  Toda ruta nueva del panel que escriba conocimiento pasa por `commitKb(...)`, no por
+  `commitKbChanges` a pelo.
+- El CLAUDE.md de un proyecto experto que instruya "si trabajas en worktree, escribe en
+  la ruta REAL" es correcto (si no, el cambio se pierde) pero deja el repo real sucio;
+  con este invariante ya no es peligroso, y conviene saberlo al escribir esas instrucciones.
+
+Commits `7da86fe` (invariante) + `6563cc2` (fin del fallo mudo), tests 1475/0/6, deploy
+verificado por asar. Estado de turbo e reparado con `fada081`.

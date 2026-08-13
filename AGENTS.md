@@ -60,7 +60,8 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 ### Conocimiento por proyecto, panel 📚 — `tech/runbook_kb_conocimiento.md`
 - Estado = imports `@` del CLAUDE.md del proyecto (backticks = ficha desactivada); no hay almacén propio. El cwd del panel sale del PROYECTO del picker, jamás de `ptyCwd()` (sin sesión da el home; en worktree, la copia).
 - El destilado headless corre en cwd NEUTRO (`userData/kb-distill`); texto de web/YouTube pasa por `sanitizeChannelText` y va delimitado anti-inyección. La Papelera solo para `kb/fichas/`.
-- Worktree + conocimiento sin commitear = experto invisible: commitear CLAUDE.md y `kb/` es parte del feature. "Aplicar a sesión" usa rutas ABSOLUTAS y `writePromptThenEnter`.
+- El worktree de sesión nace de HEAD, así que el conocimiento sin commitear miente en las dos direcciones: una ficha nueva es invisible y **un borrado es inmortal** (fichas retiradas resucitaban en la sesión siguiente — `bugs/bug_kb_conocimiento_zombi_2026_08_13.md`). El invariante se garantiza donde NACE el worktree (`prepareSessionWorkspace` comitea CLAUDE.md+`kb/`, nunca `-A`), no parcheando cada ruta de escritura; si ese commit no es posible, la sesión arranca SIN aislar y avisa. Nunca dejar mudo un fallo de `commitKbChanges`: rutas del panel vía `commitKb(...)` → `commitWarning`.
+- "Aplicar a sesión" usa rutas ABSOLUTAS y `writePromptThenEnter`.
 
 ## Regla crítica WhatsApp (OBLIGATORIA)
 
