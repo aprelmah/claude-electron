@@ -1810,6 +1810,31 @@ function finalizeWorkspaceForSession(session) {
   return p
 }
 
+// El conocimiento del proyecto no se pudo commitear: la sesión arranca en el
+// cwd real (sin worktree) para que lea el disco tal cual, que es lo seguro. Se
+// avisa porque el aislamiento desaparece sin que el usuario haya tocado nada.
+function notifyKbNotCommitted(realCwd, detail) {
+  const msg = `El conocimiento de ${realCwd} tiene cambios que git no pudo registrar${detail ? ` (${detail})` : ''}. La sesión arranca SIN aislamiento para que lea las fichas tal como están en disco.`
+  notifyNative({
+    title: 'POWER-AGENT · conocimiento',
+    body: msg,
+    fallback: () => {
+      try {
+        const box = {
+          type: 'warning',
+          title: 'POWER-AGENT · conocimiento',
+          message: 'Conocimiento sin registrar en git',
+          detail: msg,
+          buttons: ['Entendido']
+        }
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        if (win) dialog.showMessageBox(win, box); else dialog.showMessageBox(box)
+      } catch {}
+    }
+  })
+  console.warn('[session-git]', msg)
+}
+
 function notifySessionGitIssue(ws, r) {
   const msg = r.outcome === 'conflict'
     ? `Conflicto al integrar la sesión. Sus cambios quedaron en la rama ${r.branch} de ${ws.realCwd}.`
@@ -3602,7 +3627,11 @@ app.whenReady().then(async () => {
           if (appConfig?.cli?.gitSessionIsolation === false) return false
           return !cwdExcludedFromIsolation(realCwd, appConfig?.cli?.gitIsolationExcludes || [])
         },
-        resolveClaudeProjectDir
+        resolveClaudeProjectDir,
+        // El aislamiento se ha desactivado para esta sesión porque el
+        // conocimiento del proyecto no llegó a HEAD: sin aviso, el usuario no
+        // tiene forma de saber por qué su fichas/casos no cuadran con git.
+        onDegraded: ({ realCwd, detail }) => notifyKbNotCommitted(realCwd, detail)
       })
       // Recuperación tras crash + barrido de huérfanos (fire-and-forget).
       // Al arrancar no hay ningún PTY vivo → toda entrada activa del registro

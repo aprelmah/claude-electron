@@ -37,7 +37,9 @@ function createSessionGit({
   isEnabled,
   execFileImpl = execFile,
   log = console,
-  resolveClaudeProjectDir
+  resolveClaudeProjectDir,
+  ensureKbCommitted = require('./kb-git').ensureKbCommitted,
+  onDegraded
 } = {}) {
   function git(args, cwd, { timeout = GIT_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {
@@ -66,6 +68,20 @@ function createSessionGit({
       if (looksRemotePath(realCwd)) return null
       if (!(await isGitRepo(realCwd))) return null
       try { await git(['rev-parse', '--verify', 'HEAD'], realCwd) } catch { return null }
+      // El worktree se crea desde HEAD, así que HEAD tiene que decir la verdad
+      // sobre el conocimiento: una ficha borrada en disco pero viva en HEAD
+      // reaparece precargada en la sesión (bug 2026-08-11, fichas de turbo e
+      // retiradas a las 16:55 y servidas al día siguiente). Se comitea acotado a
+      // CLAUDE.md/kb — el resto del working tree no se toca jamás.
+      const kb = await ensureKbCommitted(realCwd, 'kb: conocimiento al día antes de aislar la sesión')
+      if (kb && kb.ok === false) {
+        // Sin garantía de que HEAD esté al día, un worktree serviría
+        // conocimiento retirado: se degrada a correr en el cwd real, donde lo
+        // que hay en disco es lo que el agente ve.
+        log.warn?.(`[session-git] conocimiento pendiente sin commitear en ${realCwd}: ${kb.error || 'desconocido'} — sesión sin aislar`)
+        try { onDegraded?.({ realCwd, reason: 'kb-sin-commitear', detail: String(kb.error || '') }) } catch { /* mejor esfuerzo */ }
+        return null
+      }
       const key = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`
       const branch = `poweragent/session-${key}`
       const worktreePath = path.join(worktreesRoot, `${slugFor(realCwd)}-${key}`)
