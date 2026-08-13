@@ -6,6 +6,7 @@ const os = require('os')
 const fs = require('fs')
 const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
+const { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick } = require('./main/app-config-allowlists')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createNotifier } = require('./main/native-notify')
@@ -4692,17 +4693,6 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // SEC-H2/H3: allowlist estricta. enterprise.roles/operators/enabled NO se aceptan
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
-  const SAFE_CLI = ['defaultCli', 'claudeBin', 'codexBin', 'whisperBin', 'claudeModel', 'gitSessionIsolation', 'gitIsolationExcludes', 'voiceId', 'voiceRate', 'voiceSilenceMs']
-  const SAFE_TELEGRAM = ['enabled', 'botToken', 'allowedUsers', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort', 'notifyBotToken', 'notifyChatId', 'healthWatchdog']
-  const SAFE_LAN = ['enabled', 'port']
-  function pick(src, keys) {
-    const out = {}
-    if (!src || typeof src !== 'object') return out
-    for (const k of keys) {
-      if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k]
-    }
-    return out
-  }
   const partial = partialConfig || {}
   const merged = normalizeAppConfig({
     ...appConfig,
