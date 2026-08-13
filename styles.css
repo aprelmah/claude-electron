@@ -3415,6 +3415,31 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
   background: var(--bg3);
   border-radius: 6px;
 }
+.picker-profile-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--bg3);
+  border-radius: 6px;
+}
+.picker-profile-select {
+  flex: 0 1 240px;
+  min-width: 160px;
+  background: var(--bg2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.picker-profile-select:focus-visible {
+  outline: 2px solid var(--accent, #6c5ce7);
+  outline-offset: 1px;
+}
+.picker-profile-bar.hidden { display: none; }
+.picker-profile-hint-error { color: var(--error, #ff6b7a); }
 .picker-label {
   font-size: 11px;
   text-transform: uppercase;

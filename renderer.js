@@ -1315,9 +1315,18 @@ async function applyProfileChange(newProfileId) {
   const next = getActiveProfile()
   renderProfileSelector()
   renderProfileReminder()
+  window.dispatchEvent(new CustomEvent('poweragent:profile-changed-external', { detail: { profileId: newProfileId } }))
   showStatus(`Perfil: ${next?.name || newProfileId}`, 'ok', 1500)
   return true
 }
+
+// El picker de arranque también cambia el perfil activo: resincronizamos la
+// barra superior para que no muestre el anterior.
+window.addEventListener('poweragent:profile-changed', async () => {
+  await refreshProfilesState()
+  renderProfileSelector()
+  renderProfileReminder()
+})
 
 if (profileReminder) {
   profileReminder.addEventListener('click', (ev) => {

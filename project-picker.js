@@ -19,12 +19,15 @@
   const sessionsEmptyEl = document.getElementById('picker-sessions-empty')
   const sessionsLoadingEl = document.getElementById('picker-sessions-loading')
   const btnNewSession = document.getElementById('btn-picker-new-session')
+  const profileSelectEl = document.getElementById('picker-profile-selector')
+  const profileHintEl = document.getElementById('picker-profile-hint')
 
   const state = {
     cwd: null,
     cli: 'claude',
     onSpawn: null,
-    dragDepth: 0
+    dragDepth: 0,
+    activeProfileId: ''
   }
 
   function shorten(p, max = 56) {
@@ -40,6 +43,7 @@
     viewSession.classList.add('hidden')
     titleEl.textContent = 'Elige proyecto'
     subtitleEl.textContent = 'Selecciona una carpeta para empezar.'
+    refreshProfiles().catch(() => {})
     refreshRecents().catch(() => {})
   }
 
@@ -60,6 +64,64 @@
     btnCliClaude.setAttribute('aria-selected', String(state.cli === 'claude'))
     btnCliCodex.classList.toggle('active', state.cli === 'codex')
     btnCliCodex.setAttribute('aria-selected', String(state.cli === 'codex'))
+  }
+
+  function setProfileHint(text, tone = '') {
+    if (!profileHintEl) return
+    profileHintEl.textContent = text
+    profileHintEl.classList.toggle('picker-profile-hint-error', tone === 'error')
+  }
+
+  async function refreshProfiles() {
+    if (!profileSelectEl) return
+    const bar = profileSelectEl.closest('.picker-profile-bar')
+    if (typeof window.api?.listProfiles !== 'function') {
+      bar?.classList.add('hidden')
+      return
+    }
+    let payload = null
+    try {
+      payload = await window.api.listProfiles()
+    } catch {}
+    const profiles = Array.isArray(payload?.profiles) ? payload.profiles : []
+    if (!profiles.length) {
+      bar?.classList.add('hidden')
+      return
+    }
+    bar?.classList.remove('hidden')
+    state.activeProfileId = String(payload?.activeProfile || profiles[0].id || '')
+    profileSelectEl.innerHTML = ''
+    for (const profile of profiles) {
+      const opt = document.createElement('option')
+      opt.value = profile.id
+      opt.textContent = profile.name || profile.id
+      profileSelectEl.appendChild(opt)
+    }
+    const known = profiles.some((p) => p.id === state.activeProfileId)
+    if (!known) state.activeProfileId = profiles[0].id
+    profileSelectEl.value = state.activeProfileId
+    setProfileHint('Se usará en la sesión que abras.')
+  }
+
+  async function selectProfile(profileId) {
+    const wanted = String(profileId || '').trim()
+    if (!wanted || wanted === state.activeProfileId) return
+    if (typeof window.api?.setActiveProfile !== 'function') return
+    let result = null
+    try {
+      result = await window.api.setActiveProfile(wanted)
+    } catch (err) {
+      result = { ok: false, error: err?.message || String(err) }
+    }
+    if (!result?.ok) {
+      profileSelectEl.value = state.activeProfileId
+      setProfileHint(result?.error || 'No se pudo cambiar la personalidad', 'error')
+      return
+    }
+    state.activeProfileId = wanted
+    const name = profileSelectEl.selectedOptions?.[0]?.textContent || wanted
+    setProfileHint(`${name} quedará activa al abrir.`)
+    window.dispatchEvent(new CustomEvent('poweragent:profile-changed', { detail: { profileId: wanted } }))
   }
 
   async function refreshRecents() {
@@ -264,6 +326,18 @@
     await window.api.recentCwds.push(candidatePath).catch(() => {})
     await selectCwd(candidatePath)
   }, true)
+
+  if (profileSelectEl) {
+    profileSelectEl.addEventListener('change', (e) => {
+      selectProfile(e?.target?.value).catch(() => {})
+    })
+  }
+
+  // El perfil también se puede cambiar desde la barra superior mientras el
+  // picker está abierto: mantenemos el selector en sintonía.
+  window.addEventListener('poweragent:profile-changed-external', () => {
+    refreshProfiles().catch(() => {})
+  })
 
   btnPickCwd.addEventListener('click', pickFolderViaDialog)
   btnChangeCwd.addEventListener('click', () => showViewProject())
