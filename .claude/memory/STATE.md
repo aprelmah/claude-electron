@@ -6,10 +6,10 @@
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, **2 commits por delante de `origin/main`** (`git status -sb`). Working tree limpio salvo los cambios de memoria de este wrap.
-- Últimos commits: `18dfe81 docs(spec): soporte a cliente por enlace autorizador` sobre `4ff868b fix(lan): las URLs públicas del túnel dejan de perderse al guardar`, sobre `789e560` (wrap del conocimiento zombi).
-- Tests: **1484 pass, 0 fail, 6 skipped** (1490 totales) — suite completa, pre-commit hook en los dos commits, Node del sistema v24.13.0. (+8 tests nuevos.)
-- Deploy: `/Applications/POWER-AGENT.app` con asar del **2026-08-13 10:17**, es decir **SIN el fix de esta sesión**. La app de desarrollo está cerrada.
+- Rama `main`, **sincronizada con `origin/main`** (`789e560..feaa7d1` pusheado). Working tree limpio.
+- Últimos commits: `feaa7d1 docs(memory): wrap` sobre `18dfe81 docs(spec): soporte a cliente por enlace autorizador`, sobre `4ff868b fix(lan): las URLs públicas del túnel dejan de perderse al guardar`.
+- Tests: **1484 pass, 0 fail, 6 skipped** (1490 totales) — suite completa, pre-commit hook en los tres commits, Node del sistema v24.13.0. (+8 tests nuevos.)
+- Deploy: `/Applications/POWER-AGENT.app`, asar del **2026-08-13 14:07** verificado por CONTENIDO (`main/app-config-allowlists.js` con las dos URLs en `SAFE_LAN`, y el `require` en `main.js` del propio asar). App abierta por `deploy.sh`.
 - `cloudflared` 2026.7.3 instalado por brew. Los dos Quick Tunnels de la prueba están **apagados** (verificado: 530 desde fuera).
 
 ## Última sesión (2026-08-13 noche — soporte a cliente por enlace + fix de la allowlist LAN)
@@ -21,7 +21,6 @@
 
 ## Próximo paso
 
-- **Push de los 2 commits** y **deploy** — `/Applications` sigue con el bug de la allowlist.
 - **Rotar el `authToken` del servidor LAN**: quedó expuesto en una captura compartida en el chat y en el contexto de la sesión. Es la llave del panel de operador; mientras no se rote, cualquiera que lo tenga entra si se vuelve a levantar un túnel.
 - La feature de soporte está diseñada y commiteada, **sin implementar**. El plan de implementación no se ha escrito.
 - Sin probar: con **modo empresa activo**, la invitación exige que la carpeta de la sesión caiga dentro de las raíces autorizadas del rol.
