@@ -54,6 +54,7 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 - Regex de saneado: clases Unicode con escapes `\uXXXX` (nunca invisibles literales); nada de `.test()` sobre regex `/g`.
 - Batching IPC solo en `main/pty-data-batcher.js`. Índices con `flush()` en before-quit. `atomicWriteJsonSync` 0o600 para secretos. Allowlists `SAFE_CLI`/`SAFE_TELEGRAM`/`SAFE_LAN` en save-app-config. LAN con Bearer. `looksRemotePath` antes de statSync.
 - `package.json` `build.files` es WHITELIST — todo `.js`/`.html` nuevo en raíz se añade a mano.
+- Las allowlists `SAFE_*` de `save-app-config` viven en `main/app-config-allowlists.js` y **descartan en silencio**: campo de config nuevo que envíe el renderer → añadirlo ahí, o desaparece al guardar sin error (`bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md`). `authToken` y `enterprise.*` siguen fuera a propósito.
 - Los `<script>` sueltos del renderer comparten ámbito global: un `const` duplicado mata la página entera y los tests no lo ven (`bugs/bug_scripts_renderer_ambito_global.md`); la lógica de renderer que importe se extrae a módulo testeable.
 - Tras Write/Edit, verificar en el filesystem antes de afirmar que está guardado. Los deploys se verifican por CONTENIDO/timestamp del asar, no por haber lanzado el script. El extract del asar SIEMPRE desde el scratchpad: extrae al cwd (2026-08-09 borró `main.js` en la raíz; recuperado de git).
 

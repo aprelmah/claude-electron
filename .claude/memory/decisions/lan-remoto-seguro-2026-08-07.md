@@ -37,6 +37,30 @@ Cloudflare Access con una política Allow limitada al equipo.
 - `/Applications/POWER-AGENT.app` no contiene aún este commit; la app de
   desarrollo sí está abierta desde Terminal.
 
+## Delta 2026-08-13 — probado en real, y dos matices
+
+Ejecutado el pendiente "`cloudflared` no está instalado/configurado todavía":
+instalado 2026.7.3 por brew y validado de punta a punta. El WebSocket
+**atraviesa el túnel** (`101 Switching Protocols`) y una sesión real se abrió
+desde el móvil con datos, sin abrir puertos del router.
+
+Dos matices a lo decidido arriba:
+
+1. **Quick Tunnel sí vale para asistencia efímera.** El "no usar Quick Tunnel"
+   de esta decisión apuntaba a la *publicación permanente del equipo*, y ahí
+   sigue vigente. Para un túnel que nace al crear un enlace y muere al
+   cerrarlo, la URL cambiante es irrelevante: el enlace se genera en ese
+   momento y se manda ya construido. Permite operar sin dominio.
+2. **Cloudflare Access no aplica cuando el invitado es un cliente externo.**
+   No tiene ni va a tener identidad en el equipo. Un hostname para clientes
+   queda necesariamente público, con el invite como única llave — y por eso no
+   puede apuntar al `ws-server` actual, que sirve el panel de operador con
+   terminal. Ver `docs/superpowers/specs/2026-08-13-soporte-cliente-enlace-design.md`.
+
+Bug encontrado al probarlo: las URLs públicas nunca se guardaban
+(`bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md`, commit `4ff868b`), así
+que esta parte de la decisión llevaba inaplicable desde el día que se escribió.
+
 ## Riesgos y límites
 
 - Cambiar de proyecto requiere desconectar la sesión activa; cambiar de sesión

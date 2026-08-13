@@ -50,6 +50,38 @@ necesita IP pública fija ni puertos entrantes en el router. Cloudflare Tunnel
 admite WebSockets; aun así, la prueba desde fuera debe hacerse antes de
 compartir el enlace con el equipo.
 
+## Probarlo sin dominio (Quick Tunnel)
+
+Para una prueba o una asistencia puntual no hace falta dominio ni túnel
+administrado. Un `cloudflared` por puerto, y las URLs que imprime van a los dos
+campos de Ajustes:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:10000   # cliente  -> URL pública del cliente + /lan-client.html
+cloudflared tunnel --url http://127.0.0.1:9999    # WebSocket -> misma URL con esquema wss://
+```
+
+La URL cambia en cada arranque, lo cual da igual si el enlace se genera y se
+manda en ese momento. No sirve como publicación permanente del equipo: para eso,
+túnel administrado + Access, como arriba.
+
+Verificar antes de compartir nada:
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' https://<cliente>.trycloudflare.com/   # 401 = llega y exige token
+curl -i --http1.1 https://<ws>.trycloudflare.com/ \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='
+```
+
+El `--http1.1` es obligatorio: por HTTP/2 la respuesta es `426 Upgrade
+Required` y parece que el túnel no soporta WebSockets cuando sí lo hace.
+
+Al terminar, `pkill -f "cloudflared tunnel"` y comprobar que desde fuera
+devuelve `530` (Cloudflare ya no tiene a dónde enviar el tráfico). Mientras el
+túnel viva, lo publicado es el panel de operador **con terminal**, y su única
+llave es el Bearer: si se filtra, rotarlo.
+
 ## Operación segura
 
 - Comparte una invitación, no la URL base ni el token Bearer de configuración.
