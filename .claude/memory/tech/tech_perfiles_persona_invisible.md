@@ -48,3 +48,14 @@ Luismi necesitaba cambiar de persona EN MITAD de una sesión abierta ("ahora sen
 - **Reparto de fuentes**: local/subchat/tareas/headless de la app → hook (fuente única; el flag se quitó de `buildClaudeLocalArgs`). LAN → sigue con `--append-system-prompt` (persona de operador) y `delete lanEnv.POWERAGENT_PERSONA_FILE` para no mezclar. WhatsApp → intacto (`--setting-sources ''` no carga hooks).
 - **Regla**: para contexto que deba poder CAMBIAR durante la vida de una sesión, el canal es un hook UserPromptSubmit + fichero de estado; los flags del spawn son solo para lo inmutable.
 - CLAUDE.md queda para lo invariable (normas, seguridad, idioma); la personalidad la gobierna el perfil.
+
+## 2026-08-13: elegir la personalidad en la pantalla de arranque
+
+El picker de proyecto gana una fila **PERSONALIDAD** (`#picker-profile-selector`, cabecera de `.picker-card`, visible en las vistas de proyecto y de sesión). Al cambiarla llama a `window.api.setActiveProfile(id)`, que ya persiste en config — o sea, queda como la de por defecto la próxima vez que se abra la app. Commit `98ecd11`.
+
+- **El perfil activo es config GLOBAL, no por sesión**: `startPty` (main.js:1867) hace `getActiveProfile()` **en el momento del spawn** y le clava `session.profileId`. Por eso basta con fijar el perfil antes de arrancar el PTY; no hizo falta tocar el spawn ni pasar el perfil por parámetro.
+- El `cwd` del perfil es solo **fallback** del cwd pedido (main.js:1874-1877): elegir personalidad en el picker no puede cambiar la carpeta que el usuario acaba de elegir.
+- **Sincronización picker ↔ barra superior por `CustomEvent` de `window`**, en dos sentidos y con nombres distintos para que no haya bucle: el picker (IIFE, sin acceso al ámbito de `renderer.js`) emite `poweragent:profile-changed`; `applyProfileChange` en el renderer emite `poweragent:profile-changed-external`. Cada lado escucha solo el del otro.
+- El fichero de config en `userData` es **`claude-novak.config.json`** (no `app-config.json`).
+- `styles.css` **no tiene un `.hidden` global**: cada componente declara el suyo (`.picker-profile-bar.hidden { display: none }`). Olvidarlo deja el elemento visible aunque el JS le ponga la clase.
+- Sin cobertura automática: la suite es solo de `main/`; ningún test carga renderer/HTML. Verificación por CDP (skill `verify`): opciones correctas, cambio → config en disco, y sincronía en ambos sentidos.
