@@ -19,6 +19,16 @@
   const paneProject = document.getElementById('content-tabs-project')
   const btnApplySession = document.getElementById('kb-btn-apply-session')
 
+  // Devuelve false si la operación falló. Un `commitWarning` NO la anula (el
+  // cambio ya está en disco) pero se canta: lo que no llega a git reaparece en
+  // la siguiente sesión, y un borrado que revive es el peor fallo del panel.
+  function reportKbResult(res) {
+    if (!res) return true
+    if (!res.ok) { alert(res.error || 'La operación falló'); return false }
+    if (res.commitWarning) alert(`⚠️ ${res.commitWarning}`)
+    return true
+  }
+
   const casosList = document.getElementById('kb-casos-list')
   const btnNewCaso = document.getElementById('kb-btn-new-caso')
   const caseEditorEmpty = document.getElementById('kb-casos-editor-empty')
@@ -204,7 +214,7 @@
       const res = currentCaseId
         ? await window.api.kb.updateShortcut(currentCwd, currentCaseId, { title, body })
         : await window.api.kb.addShortcut(currentCwd, { title, body, related: [] })
-      if (!res.ok) { alert(res.error); return }
+      if (!reportKbResult(res)) return
       closeCaseEditor()
       await refreshCasos()
     } finally {
@@ -216,7 +226,7 @@
     if (currentCaseId == null) return
     if (!confirm(`¿Borrar el caso ${currentCaseId}?`)) return
     const res = await window.api.kb.deleteShortcut(currentCwd, currentCaseId)
-    if (!res.ok) { alert(res.error); return }
+    if (!reportKbResult(res)) return
     closeCaseEditor()
     await refreshCasos()
   }
@@ -295,7 +305,7 @@
     btnFichaEditorSave.disabled = true
     try {
       const res = await window.api.kb.writeFicha(currentCwd, currentFichaRelPath, fichaEditorText.value)
-      if (!res.ok) { alert(res.error); return }
+      if (!reportKbResult(res)) return
       closeFichaEditor()
       await refreshFichas()
     } finally {
@@ -329,7 +339,7 @@
       check.addEventListener('change', async () => {
         check.disabled = true
         const res = await window.api.kb.toggle(currentCwd, ficha.relPath, check.checked)
-        if (!res.ok) { alert(res.error); await refreshFichas(); return }
+        if (!reportKbResult(res)) { await refreshFichas(); return }
         check.disabled = false
       })
       const name = document.createElement('span')
@@ -347,7 +357,7 @@
       del.addEventListener('click', async (e) => {
         e.stopPropagation()
         if (!confirm(`¿Quitar «${ficha.name}»?`)) return
-        await window.api.kb.remove(currentCwd, ficha.relPath, true)
+        reportKbResult(await window.api.kb.remove(currentCwd, ficha.relPath, true))
         refreshFichas()
       })
       row.append(check, name, meta, del)
@@ -383,7 +393,7 @@
     })
     try {
       const res = await window.api.kb.distill(currentCwd, source)
-      if (!res.ok) alert(res.error)
+      reportKbResult(res)
     } finally {
       if (stopProgress) { stopProgress(); stopProgress = null }
       kbBusy = false

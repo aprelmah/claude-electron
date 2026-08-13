@@ -33,6 +33,7 @@ function makeIpcMain() {
 function makeDeps(overrides = {}) {
   const ipcMain = makeIpcMain()
   const userDataDir = tmpDir('kb-ipc-userdata-')
+  const logs = []
   registerKbIpc({
     ipcMain,
     shell: { trashItem: async () => {}, showItemInFolder: () => {} },
@@ -43,9 +44,9 @@ function makeDeps(overrides = {}) {
     transcribeAudioFile: async () => '',
     buildRuntimeEnv: () => ({}),
     sendPromptToSession: overrides.sendPromptToSession || (async () => {}),
-    log: () => {}
+    log: (...args) => logs.push(args.join(' '))
   })
-  return { ipcMain }
+  return { ipcMain, logs }
 }
 
 test('kb:read-ficha y kb:write-ficha operan solo dentro de kb/fichas/', async () => {
@@ -83,6 +84,43 @@ test('kb:toggle comitea automáticamente el CLAUDE.md cuando el proyecto es un r
   assert.equal(result.ok, true)
   const messages = gitLogMessages(project)
   assert.equal(messages[0], 'kb: activa kb/fichas/a.md')
+})
+
+// Un borrado que el usuario da por hecho y que git no llegó a registrar es el
+// bug entero: si el commit falla, tiene que verse (aviso al panel + log).
+test('kb:remove avisa cuando el borrado no se pudo commitear, en vez de callar', async () => {
+  const { ipcMain, logs } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  fs.mkdirSync(path.join(project, 'kb', 'fichas'), { recursive: true })
+  fs.writeFileSync(path.join(project, 'kb', 'fichas', 'a.md'), '# A\n')
+  fs.writeFileSync(project + '/CLAUDE.md', '## Conocimiento precargado\n\n@kb/fichas/a.md\n')
+  execFileSync('git', ['add', '-A'], { cwd: project })
+  execFileSync('git', ['commit', '-q', '-m', 'inicial'], { cwd: project })
+  fs.writeFileSync(path.join(project, '.git', 'index.lock'), '')
+
+  const result = await ipcMain.invoke('kb:remove', {}, { cwd: project, relPath: 'kb/fichas/a.md', deleteFile: true })
+
+  assert.equal(result.ok, true, 'la ficha sí se quitó del disco: la operación no se deshace')
+  assert.ok(result.commitWarning, 'la respuesta debe avisar de que no quedó registrado en git')
+  assert.ok(logs.some((l) => /kb-git|commit/i.test(l)), 'y dejar rastro en el log')
+})
+
+test('kb:remove sin incidencias no mete ruido de aviso en la respuesta', async () => {
+  const { ipcMain } = makeDeps()
+  const project = tmpDir('kb-ipc-project-')
+  initRepo(project)
+  fs.mkdirSync(path.join(project, 'kb', 'fichas'), { recursive: true })
+  fs.writeFileSync(path.join(project, 'kb', 'fichas', 'a.md'), '# A\n')
+  fs.writeFileSync(path.join(project, 'CLAUDE.md'), '## Conocimiento precargado\n\n@kb/fichas/a.md\n')
+  execFileSync('git', ['add', '-A'], { cwd: project })
+  execFileSync('git', ['commit', '-q', '-m', 'inicial'], { cwd: project })
+
+  const result = await ipcMain.invoke('kb:remove', {}, { cwd: project, relPath: 'kb/fichas/a.md', deleteFile: true })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.commitWarning, undefined)
+  assert.equal(gitLogMessages(project)[0], 'kb: quita kb/fichas/a.md')
 })
 
 test('kb:write-ficha comitea automáticamente cuando el proyecto es un repo git', async () => {

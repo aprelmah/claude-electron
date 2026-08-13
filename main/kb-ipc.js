@@ -61,6 +61,16 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     return candidate
   }
 
+  // El auto-commit es best-effort para la operación (que ya se guardó en disco),
+  // pero su fallo NO puede ser mudo: lo que no llega a HEAD reaparece en el
+  // siguiente worktree de sesión. Devuelve el aviso para pintarlo en el panel.
+  async function commitKb(projectDir, message, result = { ok: true }) {
+    const r = await commitKbChanges(projectDir, message)
+    if (!r || !r.error) return result
+    log(`[kb-git] no se pudo registrar en git (${message}): ${r.error}`)
+    return { ...result, commitWarning: `Guardado en disco, pero git no lo registró: ${r.error}` }
+  }
+
   function assertInsideProject(projectDir, relPath) {
     const resolved = path.resolve(projectDir, String(relPath || ''))
     if (!isPathSafe(resolved, [projectDir])) throw new Error(`ruta fuera del proyecto: ${relPath}`)
@@ -98,7 +108,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
         body: sanitizeChannelText(body).text,
         related: cleanRelated
       })
-      if (result.ok) await commitKbChanges(projectDir, `kb: nuevo atajo ${result.num} · ${cleanTitle}`)
+      if (result.ok) return await commitKb(projectDir, `kb: nuevo atajo ${result.num} · ${cleanTitle}`, result)
       return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -119,7 +129,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
         body: sanitizeChannelText(body).text,
         ...(cleanRelated ? { related: cleanRelated } : {})
       })
-      if (result.ok) await commitKbChanges(projectDir, `kb: edita caso ${result.num} · ${cleanTitle}`)
+      if (result.ok) return await commitKb(projectDir, `kb: edita caso ${result.num} · ${cleanTitle}`, result)
       return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -130,7 +140,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
     try {
       const projectDir = resolveProjectDir(cwd)
       const result = kb.deleteShortcut(projectDir, id)
-      if (result.ok) await commitKbChanges(projectDir, `kb: borra caso ${result.num}`)
+      if (result.ok) return await commitKb(projectDir, `kb: borra caso ${result.num}`, result)
       return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -143,7 +153,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       assertInsideProject(projectDir, relPath)
       assertNotAtajos(relPath)
       const result = kb.toggleImport(projectDir, relPath, !!active)
-      if (result.ok) await commitKbChanges(projectDir, `kb: ${active ? 'activa' : 'desactiva'} ${relPath}`)
+      if (result.ok) return await commitKb(projectDir, `kb: ${active ? 'activa' : 'desactiva'} ${relPath}`, result)
       return result
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
@@ -174,8 +184,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
         await shell.trashItem(abs)
         trashed = true
       }
-      await commitKbChanges(projectDir, `kb: quita ${relPath}`)
-      return { ok: true, trashed }
+      return await commitKb(projectDir, `kb: quita ${relPath}`, { ok: true, trashed })
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
@@ -224,8 +233,7 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       const abs = assertInsideProject(projectDir, relPath)
       if (!kb.isPanelFicha(projectDir, relPath)) throw new Error('solo se pueden editar fichas dentro de kb/fichas/')
       atomicWriteFileSync(abs, String(text ?? ''), 'utf-8')
-      await commitKbChanges(projectDir, `kb: edita ${relPath}`)
-      return { ok: true }
+      return await commitKb(projectDir, `kb: edita ${relPath}`, { ok: true })
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
@@ -284,10 +292,10 @@ function registerKbIpc({ ipcMain, shell, getDefaultCwd, runClaudeHeadless, getMo
       send('guardar', title)
       const written = kb.writeFicha(projectDir, title, fichaMd + '\n')
       kb.addImport(projectDir, written.relPath, { projectName: path.basename(projectDir) })
-      await commitKbChanges(projectDir, `kb: destila ${title}`)
+      const distilled = await commitKb(projectDir, `kb: destila ${title}`, { ok: true, relPath: written.relPath, title, warnings })
 
       send('hecho', written.relPath)
-      return { ok: true, relPath: written.relPath, title, warnings }
+      return distilled
     } catch (e) {
       send('error', String(e?.message || e))
       return { ok: false, error: String(e?.message || e) }
