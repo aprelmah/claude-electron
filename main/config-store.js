@@ -221,25 +221,75 @@ function sanitizeCliBinaryPath(value) {
   return resolved
 }
 
+// URLs públicas de la publicación exterior (Cloudflare Tunnel y compañía).
+// El MISMO host sirve el panel del cliente y el WebSocket, y `cloudflared`
+// imprime una sola dirección `https://...trycloudflare.com`: exigir el esquema
+// exacto de cada campo hacía que pegar esa dirección en el campo del WS
+// devolviera el campo vacío tras Guardar, sin decir nada (el mismo descarte
+// mudo de la allowlist que arregló 4ff868b, una capa más abajo). Ahora se
+// coerciona al esquema equivalente y todo descarte se explica.
+//   - campo WS      → `wss:` tal cual, `https:` coercionado a `wss:`.
+//   - campo cliente → `https:` tal cual, `wss:` coercionado a `https:`.
+// `http:`/`ws:` siguen prohibidos: texto plano hacia el exterior, no.
+const LAN_PUBLIC_URL_KINDS = {
+  client: { target: 'https:', label: 'La URL pública del cliente' },
+  ws: { target: 'wss:', label: 'La URL pública del WebSocket' }
+}
+const LAN_PUBLIC_URL_ACCEPTED = ['https:', 'wss:']
+const LAN_PUBLIC_URL_MAX = 500
+
+function resolveLanPublicUrlKind(kind) {
+  // Compat: antes se pasaba la lista de protocolos aceptados (['wss:']).
+  if (Array.isArray(kind)) return kind.includes('wss:') ? LAN_PUBLIC_URL_KINDS.ws : LAN_PUBLIC_URL_KINDS.client
+  return LAN_PUBLIC_URL_KINDS[kind] || LAN_PUBLIC_URL_KINDS.client
+}
+
+// Devuelve { value, error }. `error` es null cuando no había nada que guardar
+// (borrar el campo a propósito es legítimo) o cuando la URL se aceptó. Los
+// mensajes NUNCA repiten credenciales ni query: solo el esquema recibido.
+function explainLanPublicUrl(raw, kind) {
+  const { target, label } = resolveLanPublicUrlKind(kind)
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (!text) return { value: '', error: null }
+  if (text.length > LAN_PUBLIC_URL_MAX) {
+    return { value: '', error: `${label} es demasiado larga (máximo ${LAN_PUBLIC_URL_MAX} caracteres).` }
+  }
+  if (/[\x00-\x1f\x7f]/.test(text)) {
+    return { value: '', error: `${label} contiene saltos de línea o caracteres de control.` }
+  }
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch {
+    return { value: '', error: `${label} no es una URL válida (usa https://host o wss://host).` }
+  }
+  if (!LAN_PUBLIC_URL_ACCEPTED.includes(parsed.protocol)) {
+    return {
+      value: '',
+      error: `${label} debe ser https:// o wss:// (recibido: ${parsed.protocol}//…)`
+    }
+  }
+  if (parsed.username || parsed.password) {
+    return { value: '', error: `${label} no puede llevar usuario ni contraseña en la dirección.` }
+  }
+  // Los parámetros los añade el servidor (token, invite, wsUrl). No
+  // persistimos query/hash escritos a mano para evitar guardar secretos.
+  parsed.search = ''
+  parsed.hash = ''
+  // https↔wss son ambos esquemas "special": el setter reescribe el esquema sin
+  // tocar host, puerto ni path.
+  if (parsed.protocol !== target) parsed.protocol = target
+  return { value: parsed.toString().replace(/\/$/, ''), error: null }
+}
+
+// Misma lógica, devolviendo solo el string (compatibilidad).
+function normalizeLanPublicUrl(raw, kind) {
+  return explainLanPublicUrl(raw, kind).value
+}
+
 // Factory: pass clampLanPort + normalizeEnterpriseConfig + defaultEnterpriseRoleId
 // so we don't depend on ws-server / enterprise-policy at load time.
 function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defaultEnterpriseRoleId }) {
-  function normalizeLanPublicUrl(raw, protocols) {
-    const text = typeof raw === 'string' ? raw.trim() : ''
-    if (!text || text.length > 500 || /[\u0000\r\n]/.test(text)) return ''
-    try {
-      const parsed = new URL(text)
-      if (!protocols.includes(parsed.protocol) || parsed.username || parsed.password) return ''
-      // Los parámetros los añade el servidor (token, invite, wsUrl). No
-      // persistimos query/hash escritos a mano para evitar guardar secretos.
-      parsed.search = ''
-      parsed.hash = ''
-      return parsed.toString().replace(/\/$/, '')
-    } catch {
-      return ''
-    }
-  }
-
   function normalizeLanServerConfig(raw) {
     const cfg = raw && typeof raw === 'object' ? raw : {}
     return {
@@ -248,10 +298,11 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
       // SEC-C1: token Bearer para auth WS+HTTP. Si vacío, server queda inseguro
       // (compat hacia atrás); main.js genera y persiste uno al primer arranque.
       authToken: typeof cfg.authToken === 'string' ? cfg.authToken.trim() : '',
-      // Opcionales: solo aceptamos HTTPS/WSS para una publicación exterior.
+      // Opcionales: solo aceptamos HTTPS/WSS para una publicación exterior, con
+      // coerción entre esquemas equivalentes (ver explainLanPublicUrl).
       // Vacíos = solo LAN/local, sin publicar nada.
-      publicClientUrl: normalizeLanPublicUrl(cfg.publicClientUrl, ['https:']),
-      publicWsUrl: normalizeLanPublicUrl(cfg.publicWsUrl, ['wss:'])
+      publicClientUrl: normalizeLanPublicUrl(cfg.publicClientUrl, 'client'),
+      publicWsUrl: normalizeLanPublicUrl(cfg.publicWsUrl, 'ws')
     }
   }
 
@@ -313,6 +364,8 @@ function createConfigNormalizers({ clampLanPort, normalizeEnterpriseConfig, defa
   return {
     normalizeAppConfig,
     normalizeLanServerConfig,
+    normalizeLanPublicUrl,
+    explainLanPublicUrl,
     sanitizeCliBinaryPath,
     sanitizeClaudeModel,
     sanitizeGitSessionIsolation,
@@ -350,6 +403,8 @@ module.exports = {
   resolveActiveProfileId,
   makeProfileIdFromName,
   createConfigNormalizers,
+  normalizeLanPublicUrl,
+  explainLanPublicUrl,
   readConfigFromFile,
   writeConfigToFile,
   sanitizeCliBinaryPath,
