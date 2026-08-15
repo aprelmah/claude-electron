@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld('api', {
     push: (cwd) => ipcRenderer.invoke('recent-cwds:push', cwd),
     remove: (cwd) => ipcRenderer.invoke('recent-cwds:remove', cwd)
   },
+  kbPrefs: {
+    get: (cwd) => ipcRenderer.invoke('kb-prefs:get', cwd),
+    set: (cwd, enabled) => ipcRenderer.invoke('kb-prefs:set', { cwd, enabled })
+  },
   lastContext: {
     get: () => ipcRenderer.invoke('last-context:get'),
     mostRecent: () => ipcRenderer.invoke('last-context:most-recent'),

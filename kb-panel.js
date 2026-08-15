@@ -105,6 +105,36 @@
   tabBtnCasos.addEventListener('click', () => setActiveTab('casos'))
   tabBtnFichas.addEventListener('click', () => setActiveTab('fichas'))
 
+  // --- Conocimiento sí/no por proyecto -------------------------------------
+  // No todos los proyectos llevan Casos/Fichas: la pref se elige en el picker
+  // (o en el popover AGENTE) y vive atada al cwd. Con el conocimiento apagado
+  // las dos pestañas desaparecen y solo queda Chat.
+  async function applyKbVisibility(enabledHint = null) {
+    let enabled = enabledHint
+    if (typeof enabled !== 'boolean') {
+      const cwd = await resolveActiveCwd()
+      if (!cwd) return
+      try { enabled = await window.api.kbPrefs.get(cwd) } catch { enabled = true }
+    }
+    const plan = window.KbTabsState.decideKbTabs({ enabled, activeTab })
+    tabBtnCasos.classList.toggle('hidden', !plan.showCasos)
+    tabBtnFichas.classList.toggle('hidden', !plan.showFichas)
+    btnApplySession?.classList.toggle('hidden', !plan.showApply)
+    if (plan.tabChanged) await setActiveTab(plan.nextTab)
+  }
+
+  window.addEventListener('poweragent:kb-pref-changed', (ev) => {
+    applyKbVisibility(ev?.detail?.enabled).catch(() => {})
+  })
+  window.addEventListener('poweragent:kb-pref-changed-external', (ev) => {
+    applyKbVisibility(ev?.detail?.enabled).catch(() => {})
+  })
+  window.addEventListener('poweragent:project-cwd-changed', () => {
+    applyKbVisibility().catch(() => {})
+  })
+  window.__applyKbVisibility = applyKbVisibility
+  setTimeout(() => { applyKbVisibility().catch(() => {}) }, 1200)
+
   // --- Casos -------------------------------------------------------------
 
   function showCasoEmpty() {

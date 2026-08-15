@@ -356,6 +356,22 @@ button {
   min-width: 0;
 }
 
+.profile-popover-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.profile-popover-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent, #6c5ce7);
+  cursor: pointer;
+}
+
 .profile-popover-main {
   font-size: 12px;
   color: var(--text);
@@ -1080,6 +1096,7 @@ body.layout-split #terminal-wrap { flex: 1; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.content-tab.hidden { display: none; }
 .content-tab:hover { color: var(--text); background: var(--bg3); }
 .content-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
@@ -3478,6 +3495,20 @@ body.light .wa-bubble-row.me .wa-bubble-check { color: rgba(0,0,0,0.45); }
   outline-offset: 1px;
 }
 .picker-profile-bar.hidden { display: none; }
+.picker-kb-row {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  cursor: pointer;
+}
+.picker-kb-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent, #6c5ce7);
+  cursor: pointer;
+}
 .picker-profile-hint-error { color: var(--error, #ff6b7a); }
 .picker-label {
   font-size: 11px;

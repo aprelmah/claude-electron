@@ -315,6 +315,13 @@
         <span class="profile-popover-control-label">Personalidad</span>
         <select id="profile-selector" title="Seleccionar perfil de encargo" aria-label="Perfil activo"></select>
       </label>
+      <label class="profile-popover-control">
+        <span class="profile-popover-control-label">Conocimiento</span>
+        <span class="profile-popover-check">
+          <input type="checkbox" id="agent-kb-toggle" checked />
+          <span id="agent-kb-hint">Casos y Fichas de este proyecto</span>
+        </span>
+      </label>
     </div>
     <div id="profile-popover-main" class="profile-popover-main">Sin datos</div>
     <div class="profile-popover-list">
@@ -522,6 +529,11 @@
         <span class="picker-label">Personalidad</span>
         <select id="picker-profile-selector" class="picker-profile-select" aria-label="Personalidad de la sesión"></select>
         <span id="picker-profile-hint" class="picker-hint">Se usará en la sesión que abras.</span>
+        <label class="picker-kb-row">
+          <input type="checkbox" id="picker-kb-toggle" checked />
+          <span class="picker-label">Conocimiento</span>
+          <span id="picker-kb-hint" class="picker-hint">Pestañas Casos y Fichas de este proyecto.</span>
+        </label>
       </div>
 
       <section id="picker-view-project" class="picker-view">
@@ -974,6 +986,7 @@
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="project-picker.js"></script>
   <script src="voice-ui-state.js"></script>
+  <script src="kb-tabs-state.js"></script>
   <script src="prompt-capture.js"></script>
   <script src="renderer.js"></script>
   <script src="kb-panel.js"></script>

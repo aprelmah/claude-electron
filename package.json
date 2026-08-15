@@ -60,6 +60,7 @@
       "renderer.js",
       "project-picker.js",
       "voice-ui-state.js",
+      "kb-tabs-state.js",
       "prompt-capture.js",
       "index.html",
       "lan-client.html",

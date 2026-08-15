@@ -21,13 +21,16 @@
   const btnNewSession = document.getElementById('btn-picker-new-session')
   const profileSelectEl = document.getElementById('picker-profile-selector')
   const profileHintEl = document.getElementById('picker-profile-hint')
+  const kbToggleEl = document.getElementById('picker-kb-toggle')
+  const kbHintEl = document.getElementById('picker-kb-hint')
 
   const state = {
     cwd: null,
     cli: 'claude',
     onSpawn: null,
     dragDepth: 0,
-    activeProfileId: ''
+    activeProfileId: '',
+    kbEnabled: true
   }
 
   function shorten(p, max = 56) {
@@ -38,11 +41,67 @@
   function showOverlay() { overlay.classList.remove('hidden') }
   function hideOverlay() { overlay.classList.add('hidden') }
 
+  // ── Conocimiento (Casos/Fichas) por carpeta ──
+  // La pref vive atada al cwd porque el conocimiento vive en la carpeta. Si se
+  // toca la casilla ANTES de elegir carpeta, queda pendiente y se aplica a la
+  // que se abra a continuación; con carpeta ya elegida se guarda al momento.
+  let kbPending = null
+
+  function paintKbToggle(enabled, { hasCwd }) {
+    state.kbEnabled = Boolean(enabled)
+    if (kbToggleEl) kbToggleEl.checked = state.kbEnabled
+    if (!kbHintEl) return
+    kbHintEl.textContent = hasCwd
+      ? (state.kbEnabled ? 'Este proyecto muestra Casos y Fichas.' : 'Este proyecto va sin Casos ni Fichas.')
+      : 'Pestañas Casos y Fichas del proyecto que abras.'
+  }
+
+  async function loadKbForCwd(cwd) {
+    if (!cwd) return
+    if (kbPending !== null) {
+      const wanted = kbPending
+      kbPending = null
+      await saveKbForCwd(cwd, wanted)
+      return
+    }
+    let enabled = true
+    try { enabled = await window.api.kbPrefs.get(cwd) } catch {}
+    paintKbToggle(enabled, { hasCwd: true })
+  }
+
+  async function saveKbForCwd(cwd, enabled) {
+    paintKbToggle(enabled, { hasCwd: true })
+    try { await window.api.kbPrefs.set(cwd, enabled) } catch {}
+    window.dispatchEvent(new CustomEvent('poweragent:kb-pref-changed', { detail: { cwd, enabled: Boolean(enabled) } }))
+  }
+
+  if (kbToggleEl) {
+    kbToggleEl.addEventListener('change', (e) => {
+      const enabled = Boolean(e?.target?.checked)
+      if (!state.cwd) {
+        kbPending = enabled
+        paintKbToggle(enabled, { hasCwd: false })
+        return
+      }
+      saveKbForCwd(state.cwd, enabled).catch(() => {})
+    })
+  }
+
+  // El popover AGENTE también cambia esta pref: mantenemos la casilla en sintonía.
+  window.addEventListener('poweragent:kb-pref-changed-external', (ev) => {
+    const detail = ev?.detail || {}
+    if (!state.cwd || detail.cwd !== state.cwd) return
+    paintKbToggle(detail.enabled, { hasCwd: true })
+  })
+
   function showViewProject() {
     viewProject.classList.remove('hidden')
     viewSession.classList.add('hidden')
     titleEl.textContent = 'Elige proyecto'
     subtitleEl.textContent = 'Selecciona una carpeta para empezar.'
+    // Sin carpeta elegida mostramos el default, no lo que valía la carpeta
+    // anterior: al elegir otra se cargará SU pref y la casilla saltaría sola.
+    paintKbToggle(kbPending === null ? true : kbPending, { hasCwd: false })
     refreshProfiles().catch(() => {})
     refreshRecents().catch(() => {})
   }
@@ -228,6 +287,7 @@
   async function selectCwd(cwd) {
     if (!cwd) return
     state.cwd = cwd
+    await loadKbForCwd(cwd)
     // Determinar CLI inicial: si hay last-context para este cwd, usarlo
     try {
       const last = await window.api.lastContext.mostRecent()

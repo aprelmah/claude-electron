@@ -49,6 +49,7 @@ const {
   buildResumeArgs
 } = require('./main/session-helpers')
 const { createRecentCwds } = require('./main/recent-cwds')
+const { createKbPrefs, KB_PREFS_DEFAULT } = require('./main/kb-prefs')
 const { createSessionModelReader, shortClaudeModel } = require('./main/session-model-reader')
 const { createCodexSessionsIndex } = require('./main/codex-sessions-index')
 const { createLastContext } = require('./main/last-context')
@@ -2268,6 +2269,7 @@ let delegationManager = null
 let tasksInbox = null
 let sessionLinks = null
 let recentCwds = null
+let kbPrefs = null
 let lastContext = null
 let sessionGit = null
 let sessionGitMap = null
@@ -3616,6 +3618,7 @@ app.whenReady().then(async () => {
       getWhatsAppLinks: null
     })
     recentCwds = createRecentCwds({ userDataDir: app.getPath('userData') })
+    kbPrefs = createKbPrefs({ userDataDir: app.getPath('userData') })
     lastContext = createLastContext({ userDataDir: app.getPath('userData') })
     try {
       sessionGitMap = createSessionGitMap({
@@ -4061,6 +4064,12 @@ ipcMain.handle('recent-cwds:push', (_event, cwd) => {
 })
 ipcMain.handle('recent-cwds:remove', (_event, cwd) => {
   try { return recentCwds ? recentCwds.remove(cwd) : [] } catch { return [] }
+})
+ipcMain.handle('kb-prefs:get', (_event, cwd) => {
+  try { return kbPrefs ? kbPrefs.get(cwd) : KB_PREFS_DEFAULT } catch { return KB_PREFS_DEFAULT }
+})
+ipcMain.handle('kb-prefs:set', (_event, { cwd, enabled } = {}) => {
+  try { return kbPrefs ? kbPrefs.set(cwd, enabled) : KB_PREFS_DEFAULT } catch { return KB_PREFS_DEFAULT }
 })
 ipcMain.handle('last-context:get', (event) => {
   try {

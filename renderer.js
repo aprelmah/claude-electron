@@ -35,6 +35,8 @@ const profileSelector = document.getElementById('profile-selector')
 const profileReminder = document.getElementById('profile-reminder')
 const profileReminderName = document.getElementById('profile-reminder-name')
 const profileReminderMcp = document.getElementById('profile-reminder-mcp')
+const agentKbToggle = document.getElementById('agent-kb-toggle')
+const agentKbHint = document.getElementById('agent-kb-hint')
 const termEl = document.getElementById('terminal')
 const termWrap = document.getElementById('terminal-wrap')
 const dropOverlay = document.getElementById('drop-overlay')
@@ -1194,9 +1196,42 @@ function closeProfilePopover() {
   }
 }
 
+// El conocimiento (Casos/Fichas) se elige por PROYECTO, no por perfil: aquí
+// solo reflejamos y cambiamos la pref de la carpeta abierta ahora mismo.
+async function refreshAgentKbToggle() {
+  if (!agentKbToggle) return
+  // OJO: aquí NO vale resolveProjectCwd(), que cae a ptyCwd() — sin sesión eso
+  // da el HOME y guardaríamos la pref contra /Users/isabel. Para escribir solo
+  // sirve el proyecto de la barra.
+  const cwd = (cwdValue?.title || '').trim()
+  agentKbToggle.dataset.cwd = cwd
+  if (!cwd) {
+    agentKbToggle.disabled = true
+    if (agentKbHint) agentKbHint.textContent = 'Sin proyecto abierto'
+    return
+  }
+  agentKbToggle.disabled = false
+  let enabled = true
+  try { enabled = await window.api.kbPrefs.get(cwd) } catch {}
+  agentKbToggle.checked = Boolean(enabled)
+  if (agentKbHint) agentKbHint.textContent = enabled ? 'Casos y Fichas de este proyecto' : 'Este proyecto va sin Casos ni Fichas'
+}
+
+if (agentKbToggle) {
+  agentKbToggle.addEventListener('change', async (ev) => {
+    const enabled = Boolean(ev?.target?.checked)
+    const cwd = agentKbToggle.dataset.cwd || ''
+    if (!cwd) return
+    try { await window.api.kbPrefs.set(cwd, enabled) } catch {}
+    if (agentKbHint) agentKbHint.textContent = enabled ? 'Casos y Fichas de este proyecto' : 'Este proyecto va sin Casos ni Fichas'
+    window.dispatchEvent(new CustomEvent('poweragent:kb-pref-changed-external', { detail: { cwd, enabled } }))
+  })
+}
+
 function openProfilePopover() {
   if (!profilePopover || !profileReminder) return
   renderProfilePopover()
+  refreshAgentKbToggle().catch(() => {})
   profilePopover.classList.remove('hidden')
   profilePopoverOpen = true
   profileReminder.setAttribute('aria-expanded', 'true')
@@ -4143,8 +4178,12 @@ btnRefreshTree.addEventListener('click', async () => {
 
 async function updateCwdLabel() {
   const cwd = await window.api.ptyCwd()
+  const cwdChanged = cwdValue.title !== cwd
   cwdValue.textContent = shortenPath(cwd, 32)
   cwdValue.title = cwd
+  // Las pestañas Casos/Fichas dependen del proyecto: al cambiar de carpeta hay
+  // que releer si ESE proyecto lleva conocimiento (kb-panel.js escucha).
+  if (cwdChanged) window.dispatchEvent(new CustomEvent('poweragent:project-cwd-changed', { detail: { cwd } }))
   // sync work-here button state (highlight si rootPath != cwd)
   if (rootPath && rootPath !== cwd) btnWorkHere.classList.add('attention')
   else btnWorkHere.classList.remove('attention')
