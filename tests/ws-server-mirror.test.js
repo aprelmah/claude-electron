@@ -267,6 +267,77 @@ test('audio y adjuntos en espejo: transcript con ENTER aparte y ruta del fichero
   }
 })
 
+// El QR espejo es 1 uso / 90 s. Para que la reconexión del móvil no muera con
+// él, el servidor emite al conectar un RENEWAL por el propio WS (jamás por un
+// canal externo). El renewal reconecta pero NO genera otro: sin cadena, el
+// acceso tiene un techo absoluto.
+test('al conectar el espejo llega un renewal por el WS; el renewal reconecta pero no se encadena', async () => {
+  const { html } = makeFixture()
+  const port = PORT_BASE + 220 + Math.floor(Math.random() * 40)
+  const host = makeMirrorHost()
+  const server = createLanWsServer({
+    clientHtmlPath: html,
+    getAuthToken: () => 'bearer-renewal',
+    attachLocalMirror: host.attachLocalMirror
+  })
+  let ws = null
+  let ws2 = null
+  try {
+    await server.start({ port, clientHtmlPath: html })
+    const created = server.createSessionInvite({ mode: 'mirror', mirrorId: 'mirror-id-valido-123', cli: 'claude', ttlMs: 90_000, maxUses: 1 })
+    const inviteToken = new URL(created.clientUrl).searchParams.get('invite')
+    const wsUrl = new URL(`ws://127.0.0.1:${port}/`)
+    wsUrl.searchParams.set('invite', inviteToken)
+    ws = new WebSocket(wsUrl)
+    const renewalPromise = waitForMessage(ws, (m) => m.type === 'mirror-renewal', 'renewal')
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    const renewal = await renewalPromise
+    assert.ok(renewal.invite)
+    assert.notEqual(renewal.invite, inviteToken)
+    assert.ok(renewal.expiresAt > Date.now())
+    ws.close()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // El invite del QR era de 1 uso: quemado — el handshake ya lo rechaza (401).
+    const burnedUrl = new URL(`ws://127.0.0.1:${port}/`)
+    burnedUrl.searchParams.set('invite', inviteToken)
+    const burned = new WebSocket(burnedUrl)
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('burned timeout')), 5000)
+      burned.once('error', () => { clearTimeout(timer); resolve() })
+      burned.once('open', () => { clearTimeout(timer); reject(new Error('el invite quemado abrió conexión')) })
+    })
+    try { burned.close() } catch {}
+
+    // Reconectar con el renewal funciona — y NO emite otro renewal (sin cadena).
+    const renewUrl = new URL(`ws://127.0.0.1:${port}/`)
+    renewUrl.searchParams.set('invite', renewal.invite)
+    ws2 = new WebSocket(renewUrl)
+    let secondRenewal = null
+    ws2.on('message', (raw) => {
+      try {
+        const m = JSON.parse(String(raw))
+        if (m.type === 'mirror-renewal') secondRenewal = m
+      } catch {}
+    })
+    const reconnected = waitForMessage(ws2, (m) => m.type === 'status' && m.state === 'connected', 'reconnected')
+    await new Promise((resolve, reject) => {
+      ws2.once('open', resolve)
+      ws2.once('error', reject)
+    })
+    await reconnected
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(secondRenewal, null)
+  } finally {
+    try { ws?.close() } catch {}
+    try { ws2?.close() } catch {}
+    await server.stop()
+  }
+})
+
 test('la invitación espejo no exige cwd ni sessionId (no hay nada que resumir)', async () => {
   const { html } = makeFixture()
   const port = PORT_BASE + 140 + Math.floor(Math.random() * 40)

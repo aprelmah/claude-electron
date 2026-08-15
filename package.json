@@ -37,6 +37,7 @@
     "electron-updater": "^6.6.2",
     "node-cron": "^4.6.0",
     "node-pty": "^1.0.0",
+    "qrcode-generator": "^2.0.4",
     "ws": "^8.21.1"
   },
   "devDependencies": {
@@ -102,7 +103,10 @@
       "node_modules/**/*"
     ],
     "extraResources": [
-      { "from": "resources/voice-helper", "to": "voice-helper" }
+      {
+        "from": "resources/voice-helper",
+        "to": "voice-helper"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

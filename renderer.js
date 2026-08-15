@@ -125,6 +125,8 @@ const btnShareInternetCut = document.getElementById('btn-share-internet-cut')
 const btnShareInternetClose = document.getElementById('btn-share-internet-close')
 const btnShareMirror = document.getElementById('btn-share-mirror')
 const btnShareClient = document.getElementById('btn-share-client')
+const shareInternetQr = document.getElementById('share-internet-qr')
+const shareInternetQrImg = document.getElementById('share-internet-qr-img')
 const cfgEnterpriseEnabled = document.getElementById('cfg-enterprise-enabled')
 const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
 const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
@@ -3052,7 +3054,7 @@ if (btnLanShareSession) {
 
 // ── Compartir por internet desde la propia sesión (botón 🌐 de la topbar) ──
 
-function showShareInternetBar({ text, url, canCut, choice } = {}) {
+function showShareInternetBar({ text, url, canCut, choice, qr } = {}) {
   if (!shareInternetBar) return
   shareInternetBar.hidden = false
   if (shareInternetText) shareInternetText.textContent = text || ''
@@ -3064,11 +3066,17 @@ function showShareInternetBar({ text, url, canCut, choice } = {}) {
   if (btnShareClient) btnShareClient.hidden = !choice
   if (btnShareInternetCopy) btnShareInternetCopy.hidden = !url
   if (btnShareInternetCut) btnShareInternetCut.hidden = !canCut
+  // QR espejo: data URL de imagen generada en main — un <img>, nunca innerHTML.
+  if (shareInternetQr) {
+    shareInternetQr.hidden = !qr
+    if (shareInternetQrImg) shareInternetQrImg.src = qr || ''
+  }
 }
 
 // Un clic lo hace todo: servidor LAN si falta, túnel si falta, invitación
-// nueva, copia al portapapeles y el enlace visible en la banda para copiarlo
-// a mano o reenviarlo. Cada clic genera invitación fresca (caducan a los 10 min).
+// nueva y la banda con el resultado. Espejo = QR en pantalla (1 uso / 90 s;
+// el token va de la pantalla a la cámara, jamás por un canal) con el enlace
+// de texto como fallback. Cliente = enlace copiado (caduca a los 10 min).
 // mode: 'mirror' = espejo del terminal vivo (mismo hilo); 'session' = copia
 // aislada para un cliente (fork con --resume en su propio worktree).
 async function shareSessionViaInternet(mode) {
@@ -3104,6 +3112,16 @@ async function shareSessionViaInternet(mode) {
     }
     const copied = await window.api.copyText(invite.clientUrl)
     const expires = invite.expiresAt ? new Date(invite.expiresAt).toLocaleTimeString() : ''
+    if (isMirror && invite.qrDataUrl) {
+      showShareInternetBar({
+        text: 'Espejo — escanea el QR con la cámara del móvil (un uso, caduca en 90 s). Si caduca, vuelve a pulsar 🪞:',
+        url: invite.clientUrl,
+        canCut: true,
+        qr: invite.qrDataUrl
+      })
+      showStatus('QR del espejo listo — escanéalo', 'ok', 5000)
+      return
+    }
     const kindLabel = isMirror ? 'Espejo (tu sesión real)' : 'Invitación para cliente (copia)'
     showShareInternetBar({
       text: copied

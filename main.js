@@ -924,17 +924,20 @@ function createLanSessionInvite(event, payload = {}) {
     const mirrorId = require('crypto').randomBytes(18).toString('base64url')
     lanMirrorTargets.set(mirrorId, session.wcId)
     try {
-      // Espejo = uso personal prolongado: margen ancho (30 min de puerta, 10
-      // aperturas) porque cada reconexión del móvil gasta una apertura.
+      // QR espejo: 1 uso / 90 s — el token no viaja por ningún canal (pantalla
+      // → cámara) y quemado al conectar. La reconexión del móvil vive del
+      // RENEWAL que el ws-server emite por el propio WS al conectar.
+      const { MIRROR_QR_TTL_MS, MIRROR_QR_MAX_USES } = require('./main/lan-session-invites')
       const created = server.createSessionInvite({
         mode: 'mirror',
         mirrorId,
         cli,
         label: 'Espejo del terminal',
-        ttlMs: 30 * 60 * 1000,
-        maxUses: 10
+        ttlMs: MIRROR_QR_TTL_MS,
+        maxUses: MIRROR_QR_MAX_USES
       })
-      return { ...created, mirror: true }
+      const { buildQrSvgDataUrl } = require('./main/qr-svg')
+      return { ...created, mirror: true, qrDataUrl: buildQrSvgDataUrl(created.clientUrl) }
     } catch (err) {
       lanMirrorTargets.delete(mirrorId)
       return { ok: false, error: err?.message || String(err) }

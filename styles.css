@@ -1060,6 +1060,7 @@ body.layout-split #terminal-wrap { flex: 1; }
 
 .share-internet-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -1070,6 +1071,21 @@ body.layout-split #terminal-wrap { flex: 1; }
   font-size: 12px;
 }
 .share-internet-bar[hidden] { display: none; }
+/* QR del espejo: cuelga debajo de la fila de controles, grande para escanear.
+   El SVG no trae fondo: el blanco del img es la quiet zone que exige el QR. */
+.share-internet-qr {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+.share-internet-qr[hidden] { display: none; }
+.share-internet-qr img {
+  width: 200px;
+  height: 200px;
+  background: #fff;
+  border-radius: 10px;
+}
 .share-internet-text { color: var(--text); white-space: nowrap; }
 .share-internet-url {
   flex: 1;

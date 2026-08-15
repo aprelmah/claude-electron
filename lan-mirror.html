@@ -100,7 +100,10 @@
 
     // ── Conexión ──
     const q = new URLSearchParams(location.search)
-    const invite = q.get('invite') || ''
+    // El invite del QR es 1 uso / 90 s: se quema al conectar. El servidor manda
+    // entonces un RENEWAL por el WS que lo sustituye (variable + URL, para que
+    // reconexiones y recargas de página sigan vivas hasta su techo de 4 h).
+    let invite = q.get('invite') || ''
     function wsUrl() {
       const explicit = q.get('wsUrl')
       let base
@@ -147,12 +150,12 @@
         if (closedForGood) return
         if (event.code === 4403) {
           setStatus('error', 'Invitación caducada')
-          showOverlay('La invitación caducó (30 min o 10 aperturas). Genera un enlace nuevo desde la app: 🌐 → 🪞.')
+          showOverlay('La invitación caducó. Genera un QR nuevo desde la app: 🌐 → 🪞.')
           return
         }
         if (retryCount >= RETRY_DELAYS.length) {
           setStatus('error', 'Sin conexión')
-          showOverlay('No consigo reconectar. Comprueba la cobertura o genera un enlace nuevo desde la app (🌐 → 🪞).')
+          showOverlay('No consigo reconectar. Comprueba la cobertura o genera un QR nuevo desde la app (🌐 → 🪞).')
           return
         }
         const delay = RETRY_DELAYS[retryCount]
@@ -168,6 +171,17 @@
         if (!msg) return
         if (msg.type === 'output') { term.write(String(msg.data || '')); return }
         if (msg.type === 'pong') return
+        if (msg.type === 'mirror-renewal') {
+          if (msg.invite) {
+            invite = String(msg.invite)
+            try {
+              const u = new URL(location.href)
+              u.searchParams.set('invite', invite)
+              history.replaceState(null, '', u)
+            } catch {}
+          }
+          return
+        }
         if (msg.type === 'transcript') { setStatus('online', `🎤 «${String(msg.text || '').slice(0, 60)}»`); return }
         if (msg.type === 'mirror:attach-ok') { setStatus('online', 'Adjunto en el prompt — añade texto y envía'); return }
         if (msg.type !== 'status') return

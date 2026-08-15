@@ -6,7 +6,7 @@ const crypto = require('crypto')
 const pty = require('node-pty')
 const { WebSocketServer } = require('ws')
 const { looksRemotePath } = require('./dir-helpers')
-const { createLanSessionInvites } = require('./lan-session-invites')
+const { createLanSessionInvites, MIRROR_RENEWAL_TTL_MS, MIRROR_RENEWAL_MAX_USES } = require('./lan-session-invites')
 const { shellQuote } = require('./shell-quote')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { resolveFsWatchPollAction } = require('./fs-watch-poll')
@@ -3246,6 +3246,30 @@ function createLanWsServer(options = {}) {
     const snapshot = String(target.snapshot || '')
     if (snapshot) {
       safeSend(session.ws, { type: 'output', data: snapshot, sessionId: session.id })
+    }
+    // El QR espejo es 1 uso / 90 s: la reconexión del móvil vive de este
+    // renewal, que viaja SOLO por el WS ya abierto. Un renewal no genera otro:
+    // sin cadena, el acceso tiene un techo absoluto (MIRROR_RENEWAL_TTL_MS).
+    if (session.sessionInvite && session.sessionInvite.renewal !== true) {
+      try {
+        const renewal = sessionInvites.create({
+          mode: 'mirror',
+          mirrorId: String(session.sessionInvite.mirrorId || ''),
+          cli: session.cli,
+          label: trimToString(session.sessionInvite.label, 180) || 'Espejo del terminal',
+          ttlMs: MIRROR_RENEWAL_TTL_MS,
+          maxUses: MIRROR_RENEWAL_MAX_USES,
+          renewal: true
+        })
+        safeSend(session.ws, {
+          type: 'mirror-renewal',
+          sessionId: session.id,
+          invite: renewal.token,
+          expiresAt: renewal.expiresAt
+        })
+      } catch (err) {
+        logger(`[lan] mirror renewal failed: ${err?.message || err}`)
+      }
     }
     emitAudit('lan_espejo_conectado', { sessionId: session.id, ip: session.ip, cli: session.cli })
     logger(`[lan] mirror connected ${session.id} from ${session.ip || 'unknown'}`)

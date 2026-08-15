@@ -7,6 +7,16 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000
 const MAX_TTL_MS = 30 * 60 * 1000
 const DEFAULT_MAX_USES = 3
 
+// QR espejo: 1 uso / 90 s — quien fotografíe el QR a tu espalda tiene una
+// ventana mínima y, si tú ya lo usaste, está quemado. La continuidad la da un
+// RENEWAL que solo emite el servidor tras conectar (viaja por el propio WS,
+// jamás por un canal externo) y que NO se encadena: su TTL es el techo
+// absoluto de acceso de esa sesión espejo.
+const MIRROR_QR_TTL_MS = 90 * 1000
+const MIRROR_QR_MAX_USES = 1
+const MIRROR_RENEWAL_TTL_MS = 4 * 60 * 60 * 1000
+const MIRROR_RENEWAL_MAX_USES = 60
+
 function trim(value, max = 300) {
   const text = String(value == null ? '' : value).trim()
   return text.length > max ? text.slice(0, max) : text
@@ -42,16 +52,16 @@ function isSafeMirrorId(value) {
   return /^[A-Za-z0-9_-]{10,80}$/.test(String(value || ''))
 }
 
-function normalizeTtl(value, fallback = DEFAULT_TTL_MS) {
+function normalizeTtl(value, fallback = DEFAULT_TTL_MS, maxMs = MAX_TTL_MS) {
   const ttl = Number(value)
   if (!Number.isFinite(ttl)) return fallback
-  return Math.max(30 * 1000, Math.min(Math.floor(ttl), MAX_TTL_MS))
+  return Math.max(30 * 1000, Math.min(Math.floor(ttl), maxMs))
 }
 
-function normalizeMaxUses(value) {
+function normalizeMaxUses(value, maxCap = 10) {
   const uses = Number.parseInt(String(value ?? ''), 10)
   if (!Number.isFinite(uses)) return DEFAULT_MAX_USES
-  return Math.max(1, Math.min(uses, 10))
+  return Math.max(1, Math.min(uses, maxCap))
 }
 
 function createLanSessionInvites(options = {}) {
@@ -61,7 +71,7 @@ function createLanSessionInvites(options = {}) {
     : (size) => crypto.randomBytes(size)
   const entries = new Map()
 
-  function create({ cwd, sessionId, cli, label, ttlMs, maxUses, mode, mirrorId } = {}) {
+  function create({ cwd, sessionId, cli, label, ttlMs, maxUses, mode, mirrorId, renewal } = {}) {
     const normalizedMode = normalizeMode(mode)
     const normalizedCwd = normalizeCwd(cwd)
     const normalizedSessionId = normalizeSessionId(sessionId)
@@ -74,6 +84,9 @@ function createLanSessionInvites(options = {}) {
       if (!normalizedSessionId) throw new Error('El ID de sesión no es válido.')
       if (!normalizedCli) throw new Error('El CLI de la sesión no es válido.')
     }
+    // Solo el servidor crea renewals (nunca la superficie pública), y solo en
+    // espejo: es lo único que puede rebasar el techo de 30 min.
+    const isRenewal = normalizedMode === 'mirror' && renewal === true
 
     let token = ''
     do {
@@ -81,7 +94,7 @@ function createLanSessionInvites(options = {}) {
     } while (!token || entries.has(token))
 
     const createdAt = Number(now()) || Date.now()
-    const expiresAt = createdAt + normalizeTtl(ttlMs)
+    const expiresAt = createdAt + normalizeTtl(ttlMs, DEFAULT_TTL_MS, isRenewal ? MIRROR_RENEWAL_TTL_MS : MAX_TTL_MS)
     const entry = {
       mode: normalizedMode,
       mirrorId: normalizedMode === 'mirror' ? normalizedMirrorId : '',
@@ -92,7 +105,8 @@ function createLanSessionInvites(options = {}) {
       createdAt,
       expiresAt,
       uses: 0,
-      maxUses: normalizeMaxUses(maxUses)
+      maxUses: normalizeMaxUses(maxUses, isRenewal ? MIRROR_RENEWAL_MAX_USES : 10),
+      renewal: isRenewal
     }
     entries.set(token, entry)
     return { token, expiresAt, maxUses: entry.maxUses }
@@ -118,6 +132,7 @@ function createLanSessionInvites(options = {}) {
       cli: entry.cli,
       label: entry.label,
       expiresAt: entry.expiresAt,
+      renewal: entry.renewal === true,
       usesRemaining: Math.max(0, entry.maxUses - entry.uses)
     }
   }
@@ -158,6 +173,10 @@ module.exports = {
   DEFAULT_TTL_MS,
   MAX_TTL_MS,
   DEFAULT_MAX_USES,
+  MIRROR_QR_TTL_MS,
+  MIRROR_QR_MAX_USES,
+  MIRROR_RENEWAL_TTL_MS,
+  MIRROR_RENEWAL_MAX_USES,
   __test__: {
     normalizeCwd,
     normalizeSessionId,
