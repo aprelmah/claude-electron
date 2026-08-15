@@ -328,3 +328,41 @@ Reglas duras que salen de aquí:
 
 Commits `7da86fe` (invariante) + `6563cc2` (fin del fallo mudo), tests 1475/0/6, deploy
 verificado por asar. Estado de turbo e reparado con `fada081`.
+
+---
+
+## 2026-08-15 — El conocimiento es OPCIONAL por proyecto (commit `ba4bc92`)
+
+Hasta hoy las pestañas Casos/Fichas salían en TODA sesión. Ya no: **no todos los
+proyectos llevan conocimiento**, y quien lo decide es el usuario.
+
+- **Dónde se elige**: casilla CONOCIMIENTO en el picker (barra de PERSONALIDAD) y en el
+  popover **AGENTE** de la tira superior. Con OFF desaparecen `tab-btn-casos`,
+  `tab-btn-fichas` y el botón "Aplicar a sesión"; queda solo Chat.
+- **A qué se ata**: al **cwd**, no al perfil — el conocimiento vive físicamente en la
+  carpeta (`CLAUDE.md` + `kb/`), así que el mismo perfil en otro proyecto no tiene esas
+  fichas. Decisión de producto de Luismi (2026-08-15).
+- **Dónde vive**: `main/kb-prefs.js` → `userData/kb-prefs.json`
+  (`{version, byCwd:{<path>:false}}`), escritura atómica, paths normalizados con
+  `path.resolve`. **Default ON** (comportamiento histórico) y volver al default BORRA la
+  entrada en vez de guardar `true`: el fichero solo contiene excepciones. IPC
+  `kb-prefs:get`/`kb-prefs:set` → `window.api.kbPrefs`.
+- **Quién escribe y con qué cwd**: solo el picker (con la carpeta ya elegida) y el
+  popover AGENTE (con `cwdValue.title`). **Nunca con `resolveProjectCwd()`**: cae a
+  `ptyCwd()` y sin sesión eso da el HOME — ficha
+  `bugs/bug_pref_proyecto_cwd_home_2026_08_15.md`. Si se toca la casilla del picker
+  ANTES de elegir carpeta, la intención queda pendiente y se aplica a la que se abra.
+- **Qué pestañas se ven** lo decide `kb-tabs-state.js` (raíz, doble carga
+  `window.KbTabsState` + `module.exports`, en `build.files`), no `kb-panel.js`: la suite
+  corre sin Electron y lo que decide un script de renderer no lo cubre nadie. El fallo
+  que evita: apagar el conocimiento estando EN Casos y quedarte en una pestaña que ya no
+  existe (vuelve a Chat).
+- **Eventos**: el picker emite `poweragent:kb-pref-changed`, el popover
+  `poweragent:kb-pref-changed-external`, y `updateCwdLabel()` emite
+  `poweragent:project-cwd-changed` al cambiar de carpeta. `kb-panel.js` escucha los tres.
+  El picker es un IIFE sin acceso al ámbito de `renderer.js`: la sincronía es por
+  `CustomEvent`, como el selector de personalidad.
+
+Tests 1544/0/6 (8 de `kb-prefs`, 6 de `kb-tabs-state`). Deploy verificado por contenido
+del asar. Verificado en la app real por CDP con clics reales, en las dos direcciones y
+en las dos casillas.
