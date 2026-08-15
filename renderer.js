@@ -2262,6 +2262,53 @@ function renderRemoteSessions(list) {
   }
 }
 
+// Las dos URLs públicas del túnel las escribe el operador y las repinta un poll
+// cada 5 s. Dos reglas para que el poll no le quite el teclado de las manos:
+//   1) Si el campo está SUCIO (editado y aún sin guardar) no se toca. Antes solo
+//      se miraba el foco: vaciabas el campo para dejar de publicar, movías el
+//      foco y en <5 s volvía la URL vieja del snapshot — invaciable desde la UI.
+//   2) `??` y no `||`: un '' que llega del servidor es un valor legítimo ("ya no
+//      publico") y debe pintarse vacío; solo si NO llega nada se conserva lo que
+//      hay escrito.
+function markLanPublicInputDirty(input) {
+  if (input) input.dataset.dirty = '1'
+}
+
+function clearLanPublicInputsDirty() {
+  if (cfgLanPublicClient) delete cfgLanPublicClient.dataset.dirty
+  if (cfgLanPublicWs) delete cfgLanPublicWs.dataset.dirty
+}
+
+function syncLanPublicInput(input, snapshotValue) {
+  if (!input) return
+  if (document.activeElement === input) return
+  if (input.dataset.dirty === '1') return
+  input.value = String(snapshotValue ?? input.value ?? '')
+}
+
+if (cfgLanPublicClient) cfgLanPublicClient.addEventListener('input', () => markLanPublicInputDirty(cfgLanPublicClient))
+if (cfgLanPublicWs) cfgLanPublicWs.addEventListener('input', () => markLanPublicInputDirty(cfgLanPublicWs))
+
+// Aviso de configuración a medias (solo una de las dos URLs públicas): lo
+// calcula el servidor LAN en getStatus(). Si el campo aún no existe llega
+// undefined y aquí no se pinta nada.
+function renderLanPublicUrlWarning(message) {
+  const text = typeof message === 'string' ? message.trim() : ''
+  let el = document.getElementById('cfg-lan-public-warning')
+  if (!el) {
+    if (!text) return
+    const anchor = cfgLanStatus || cfgLanUrl
+    if (!anchor || !anchor.parentNode) return
+    el = document.createElement('div')
+    el.id = 'cfg-lan-public-warning'
+    el.className = 'settings-note'
+    el.style.color = 'var(--warn)'
+    anchor.parentNode.insertBefore(el, anchor)
+  }
+  el.textContent = text ? `⚠ ${text}` : ''
+  el.style.display = text ? '' : 'none'
+}
+
 function renderLanStatus(snapshot, errorText = '') {
   lanServerSnapshot = snapshot || null
   const running = Boolean(snapshot?.running)
@@ -2285,12 +2332,9 @@ function renderLanStatus(snapshot, errorText = '') {
       cfgLanQr.textContent = 'QR no disponible'
     }
   }
-  if (cfgLanPublicClient && document.activeElement !== cfgLanPublicClient) {
-    cfgLanPublicClient.value = String(snapshot?.publicClientUrl || cfgLanPublicClient.value || '')
-  }
-  if (cfgLanPublicWs && document.activeElement !== cfgLanPublicWs) {
-    cfgLanPublicWs.value = String(snapshot?.publicWsUrl || cfgLanPublicWs.value || '')
-  }
+  syncLanPublicInput(cfgLanPublicClient, snapshot?.publicClientUrl)
+  syncLanPublicInput(cfgLanPublicWs, snapshot?.publicWsUrl)
+  renderLanPublicUrlWarning(snapshot?.publicUrlWarning)
   renderRemoteSessionsToggle()
   renderRemoteSessions(snapshot?.sessions || [])
   renderProfileReminder()
@@ -2476,6 +2520,8 @@ async function refreshSettings() {
   if (cfgLanPort) cfgLanPort.value = String(clampLanPort(config?.lanServer?.port ?? 9999))
   if (cfgLanPublicClient) cfgLanPublicClient.value = config?.lanServer?.publicClientUrl || ''
   if (cfgLanPublicWs) cfgLanPublicWs.value = config?.lanServer?.publicWsUrl || ''
+  // Lo pintado viene de la config persistida: ya no hay edición pendiente.
+  clearLanPublicInputsDirty()
   await refreshEnterpriseState(config)
   renderTelegramStatus(await window.api.getTelegramStatus())
   await refreshPairingList()
@@ -2955,6 +3001,9 @@ btnSaveSettings.addEventListener('click', async () => {
     await refreshSettings()
     return
   }
+  // Guardado con éxito: lo que hay en los campos ya es lo persistido, así que el
+  // poll de estado puede volver a repintarlos con el snapshot del servidor.
+  clearLanPublicInputsDirty()
 
   const currentCli = await window.api.getActiveCli()
   cliSelector.value = currentCli

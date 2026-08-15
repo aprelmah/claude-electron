@@ -32,4 +32,15 @@ function pick(src, keys) {
   return out
 }
 
-module.exports = { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick }
+// Claves que `pick` tiraría a la basura. El descarte silencioso fue la causa
+// del bug de las URLs públicas (seis días de diagnóstico): quien llame a `pick`
+// puede llamar también a esto y avisar por log/warning de lo que se ha perdido,
+// en vez de dejar al usuario mirando un campo que vuelve vacío sin explicación.
+// No altera `pick`: solo informa.
+function pickDropped(src, keys) {
+  if (!src || typeof src !== 'object') return []
+  const allowed = new Set(keys || [])
+  return Object.keys(src).filter((k) => !allowed.has(k))
+}
+
+module.exports = { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick, pickDropped }
