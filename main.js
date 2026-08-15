@@ -482,9 +482,7 @@ const { transcribeAudioFile } = createTranscriber({
   log: (m) => console.log('[transcribe]', m)
 })
 
-function shellQuote(s) {
-  return `'${String(s).replace(/'/g, "'\\''")}'`
-}
+const { shellQuote } = require('./main/shell-quote')
 
 function buildFdLimitCommand(bin, args = []) {
   const parts = [shellQuote(bin), ...args.map(shellQuote)]
@@ -1980,12 +1978,18 @@ function startPty(session, cols, rows, cwd, args = []) {
   })
 
   // Poll continuo para capturar el sessionId que claude cree/actualice en ~/.claude/projects/...
-  // Sigue hasta detectarlo o hasta que el PTY muera.
+  // Sigue hasta detectarlo o hasta que el PTY muera. Con backoff: una ventana
+  // abierta sin primer prompt no tiene .jsonl que detectar — tras el primer
+  // minuto el sondeo se espacia (máx 15 s) en vez de leer el proyecto cada 2 s
+  // para siempre. Coste asumido: si el primer prompt llega con la ventana ya
+  // "fría", el id se aprende hasta 15 s tarde; las rutas con prompt lo reparan.
   if (sessionFilesBefore) {
-    const detect = setInterval(() => {
+    let detectDelay = 2000
+    let detectTicks = 0
+    const detectTick = () => {
       const s = sessions.get(myWcId)
-      if (!s || !s.pty || s.pty !== proc) { clearInterval(detect); return }
-      if (s.claudeSessionId) { clearInterval(detect); return }
+      if (!s || !s.pty || s.pty !== proc) return
+      if (s.claudeSessionId) return
       const sid = findUpdatedOrNewClaudeSessionId(s.gitWorkspace?.workCwd || s.cwd, sessionFilesBefore)
       if (sid) {
         s.claudeSessionId = sid
@@ -1995,9 +1999,13 @@ function startPty(session, cols, rows, cwd, args = []) {
           branch: s.gitWorkspace.branch,
           worktreePath: s.gitWorkspace.worktreePath
         })
-        clearInterval(detect)
+        return
       }
-    }, 2000)
+      detectTicks += 1
+      if (detectTicks >= 30) detectDelay = Math.min(15000, Math.round(detectDelay * 1.5))
+      setTimeout(detectTick, detectDelay)
+    }
+    setTimeout(detectTick, detectDelay)
   }
 
   // Gemelo del anterior para la sesión resumida: aquí el id no está vacío, está
@@ -3474,6 +3482,22 @@ if (!gotLock) {
   })
 }
 
+// Endurecimiento global de navegación: la app es 100% local (todo loadFile,
+// cero loadURL/webview). Cualquier window.open — p.ej. un enlace clicado en el
+// terminal vía WebLinksAddon — se abre en el navegador del sistema, nunca en
+// una BrowserWindow nueva; y ninguna ventana puede navegar fuera de file://.
+app.on('web-contents-created', (_event, wc) => {
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) { try { shell.openExternal(url) } catch {} }
+    return { action: 'deny' }
+  })
+  wc.on('will-navigate', (event, url) => {
+    if (/^file:/i.test(url)) return
+    event.preventDefault()
+    if (/^https?:/i.test(url)) { try { shell.openExternal(url) } catch {} }
+  })
+})
+
 app.whenReady().then(async () => {
   appConfig = loadAppConfig()
 
@@ -3915,6 +3939,16 @@ app.whenReady().then(async () => {
       first.win.isVisible() ? first.win.hide() : first.win.show()
     }
   })
+}).catch((err) => {
+  // Un throw en el arranque (config corrupta, persona, etc.) dejaba la app
+  // sin ventana y sin mensaje — el patrón del incidente "arrancó sin ventana".
+  try { console.error('[main] fallo de arranque:', err?.stack || err) } catch {}
+  try { dialog.showErrorBox('POWER-AGENT no pudo arrancar', String(err?.stack || err?.message || err)) } catch {}
+  app.quit()
+})
+
+process.on('unhandledRejection', (err) => {
+  try { console.error('[main] unhandledRejection:', err?.stack || err) } catch {}
 })
 
 app.on('activate', () => {
