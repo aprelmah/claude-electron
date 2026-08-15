@@ -45,6 +45,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/tech_perfiles_persona_invisible.md` — persona por perfil vía `--append-system-prompt` (invisible, aditiva, al spawn) y persona VIVA por hook; el perfil activo es config GLOBAL que `startPty` lee en el spawn, y se puede elegir desde el picker de arranque; WhatsApp es otro sistema. Leerla antes de tocar perfiles, personas o el selector del picker.
 - `tech/security_audit_2026-06-01.md` — auditoría de seguridad de junio: hallazgos y estado.
 - `tech/tech_auditoria_limpieza_2026_08_15.md` — auditoría senior de agosto: mapa de los módulos nuevos (graph-worker, fs-watch-poll, shell-quote, retitle, extract-runner, bridge-control), decisiones (worker+fallback, coalescing) y lecciones (la dev sobrevive al deploy; guard de parentPort). Leerla antes de tocar el grafo, el poll de fs-watch o el deploy.
+- `tech/tech_lan_tunel_espejo_2026_08_15.md` — túnel Quick Tunnel de un clic + modo espejo: los 3 casos de uso del acceso remoto, piezas (lan-tunnel, attachLanMirror, lan-mirror.html), invariantes (facade que desengancha, write RAW invite-gated, URLs efímeras jamás persistidas, PATH de la empaquetada) y los 3 bugs cazados en real. Leerla antes de tocar túnel, espejo o el cliente LAN.
 
 ## Bugs resueltos (leer si reaparece el síntoma)
 

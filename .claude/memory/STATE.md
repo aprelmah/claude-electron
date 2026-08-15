@@ -2,43 +2,41 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-15 noche (verificado contra git, filesystem y el asar en el mismo turno).
+Última actualización: 2026-08-15 noche, 2ª sesión (verificado contra git, filesystem y el asar en el mismo turno).
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, **sincronizada con `origin/main`** (9 commits `2c52da3..17ae15a` pusheados). Working tree limpio salvo la memoria de este cierre.
-- Último commit: `17ae15a fix(main): red de arranque, endurecimiento de navegación y backoff del detect`.
-- Tests: **1604 pass, 0 fail, 6 skipped** (1610 totales; +60 nuevos) — suite completa en el pre-commit hook de los 9 commits, Node del sistema v24.13.0.
-- Deploy: `/Applications/POWER-AGENT.app`, asar del **2026-08-15 19:42** verificado por CONTENIDO (los 6 módulos nuevos dentro; `main.js` del asar con `web-contents-created`, `graph-worker-client` y `retitleTranscript`) y app corriendo con ventana tras relanzarla — el primer arranque se suicidó porque la dev seguía viva con el lock.
-- `authToken` del servidor LAN rotado el 2026-08-15 por la mañana; sin túneles levantados.
+- Rama `main`, **sincronizada con `origin/main`** (`git status -sb` limpio; 2 commits `4736ec3` + `e613228` pusheados esta sesión). Working tree limpio salvo la memoria de este cierre.
+- Último commit: `e613228 feat(lan): modo espejo — tu terminal vivo en el móvil, con botón 🌐 en sesión`.
+- Tests: **1624 pass, 0 fail, 6 skipped** (1630 totales; +20 sobre la sesión anterior) — suite completa en el pre-commit hook de ambos commits, Node del sistema v24.13.0.
+- Deploy: `/Applications/POWER-AGENT.app`, asar del **2026-08-15 22:57** = el código commiteado (verificado por contenido: `lan-mirror.html` con reconexión dentro) y app corriendo con ventana, sin dev viva.
+- Túnel: apagado al cierre (se enciende por botón; nada persiste).
 
-## Última sesión (2026-08-15 noche — auditoría senior: verificar, limpiar, arreglar)
+## Última sesión (2026-08-15 noche 2ª — túnel de un clic + modo espejo)
 
-- Encargo "producto fiable, seguro, ligero" ejecutado con `/loop` autónomo: **3 auditorías en paralelo** (renderer/seguridad, proceso main, peso muerto) → ~20 hallazgos, todos los accionables arreglados en **9 commits temáticos** (`main.js` troceado por hunks con `git apply --cached`, reconstrucción byte-exacta verificada).
-- Rendimiento: **grafo a `worker_thread`** (`main/graph-worker*.js`, fallback síncrono + coalescing por sesión) y **poll de fs-watch solo sin watcher nativo** (`main/fs-watch-poll.js`) — los dos únicos hallazgos capaces de congelar PTYs en uso normal. `fs:read`/audio del cliente LAN a I/O async; `commandExists` memoizado (bash de login por spawn); backoff del detect de sessionId.
-- Fiabilidad: `prepareSessionWorkspace` AVISA al degradar (cualquier fallo, no solo kb) y comparte cola por repo con finalize (carrera por index.lock demostrada por test antes del fix); red de arranque (`whenReady.catch` con diálogo + `unhandledRejection` global).
-- Seguridad: 7 escapes de `innerHTML` (helper global en `renderer.js:7`; viewer con copia local); transcript de audio LAN por `sanitizeChannelText` (cerraba el único hueco del invariante de canal); navegación endurecida global (`web-contents-created`: `window.open` → navegador del sistema, nada navega fuera de `file://`).
-- Limpieza: subsistema TASK muerto (~127 líneas), `createLruCache`, PNG huérfano de 582 KB que viajaba en cada build; `shellQuote` y `stripAnsi` únicos; escalera launchctl del bridge y matriz del extractor extraídas a módulos puros con tests.
-- Detalle completo y mapa de módulos nuevos: `tech/tech_auditoria_limpieza_2026_08_15.md`.
+- **Salir a internet con un clic** (`4736ec3`): `main/lan-tunnel.js` levanta dos Quick Tunnels cloudflared (cliente 10000 + WS 9999), URLs efímeras que mandan por getter y JAMÁS se persisten; muere con el servidor, con "Cortar acceso" o al salir. 14 tests con spawn inyectable. Bug real: la app EMPAQUETADA no hereda el PATH del shell → `cloudflared` a pelo daba ENOENT; fix `FALLBACK_CLOUDFLARED_BIN` en `main/cli-resolver.js`.
+- **Modo espejo** (`e613228`): el botón 🌐 de la topbar ofrece "🪞 Seguir yo (espejo)" vs "👥 Invitar a un cliente (copia)". El espejo engancha al PTY VIVO (`attachLanMirror` en main: registry mirrorId→wcId + ring de chunks O(1) para snapshot + watchers; `initializeMirrorSession` en ws-server con facade cuyo `kill()` DESENGANCHA — jamás mata el PTY del host, con test). Invitación espejo sin cwd/sessionId, 30 min / 10 aperturas.
+- **Página dedicada `lan-mirror.html`** (spec de Luismi: "solo el espejo + audios, fotos y archivos, lo más claro posible"): xterm a pantalla completa con letra ajustada al ancho del host, teclas TUI, 🎤 (Whisper local, ENTER en escritura APARTE), 📷 con `capture="environment"`, 📎 → fichero a `/tmp/poweragent-espejo` + ruta al prompt SIN enter. Reconexión automática (6 reintentos + visibilitychange) y latido `ping`/`pong` cada 30 s. Chat semántico APAGADO en espejo (contestaría un headless aparte).
+- Bugs cazados probando en real: "del espejo nada" = el cliente enterprise arranca en vista **Chat**, que no pinta stream crudo; 📷 abría galería sin `capture`; cortes por invitación corta sin reconexión.
+- Mapa de producto acordado: 3 casos — operador/enterprise (config) · espejo (uso personal) · invitación a cliente (copia con `--resume` = fork). Verificado en código que la invitación clásica FORKEA, no espeja.
+- Detalle técnico completo: `tech/tech_lan_tunel_espejo_2026_08_15.md`.
 
 ## Próximo paso
 
-- **3 decisiones de Luismi pospuestas**: check de Origin/Host en el WS (riesgo de romper el acceso por túnel), poda de ~45 exports sin consumidores, `claude-session-listing` async.
-- LAN/voz remota sin probar en real tras estos cambios; el worker del grafo en la app EMPAQUETADA sin verificar en runtime (asar + worker_threads; el fallback síncrono cubre si no arranca).
-- Flake de puerto 16849 en `ws-server-codex-sessions` (1 de 3 runs de la suite) — vigilar si repite.
-- La feature de soporte a cliente por enlace (spec `18dfe81`) sigue diseñada y sin implementar.
-- Arrastrados: picker y `kb-panel.js` sin cobertura; pegamento IPC sin test; commit `9bbb40f` en turbo-e con autor "ISABEL"; flake `cancelledByParent` en tests de voz bajo carga; una sesión YA abierta en worktree no ve borrados posteriores del conocimiento.
+- **Prueba en vivo pendiente de la última tanda**: 📷 cámara directa, reconexión tras corte y latido (desplegado 22:57, Luismi no confirmó aún).
+- **Caso "invitar a cliente" a medias como producto**: sigue siendo copia aislada SIN visibilidad para Luismi ("somos tres" — él quiere ver/participar en la conversación del cliente). Decidir y diseñar.
+- Seguridad decidida-no-ejecutada: Cloudflare Access (túnel fijo con dominio + login por email) si POWER-AGENT se usa con clientes reales. Hoy: enlace espejo vivo = control del Mac (bypassPermissions); higiene = canal privado + "Cortar acceso".
+- Arrastrados de la sesión anterior: Origin-check del WS, poda de exports, session-listing async, flake puerto 16849, picker/`kb-panel.js` sin cobertura, LAN/voz remota y worker del grafo empaquetado sin prueba en real.
 
 ## Notas operativas
 
-- Dev/deploy vía osascript; Mac Intel → `dist/mac/POWER-AGENT.app`. Verificar deploys por contenido del asar DESDE el scratchpad **y comprobando el PROCESO**: una dev viva (con o sin CDP) puede sobrevivir al kill del deploy, retiene el `SingletonLock` y la empaquetada se suicida en silencio al abrir (mordió el 2026-08-15 noche).
-- **El grafo corre en worker** (`computeProjectGraphAsync` de `main/graph-worker-client.js`); jamás llamar `computeProjectGraph` síncrono desde el hilo main.
-- **Un CDP que responde en 9222 no prueba que hables con el proceso que acabas de lanzar.** Confirmar identidad de instancia antes de teorizar.
-- El pre-commit hook corre la suite completa con el Node del sistema (v24.13.0) sin `nvm use`.
-- "Comitea y despliega" en este proyecto **incluye push** a `origin/main`.
-- Campo de config nuevo del renderer → allowlist `SAFE_*` (`main/app-config-allowlists.js`). Fichero nuevo en la RAÍZ → `build.files` (whitelist).
-- **Ningún enlace público lleva credencial persistente; solo invites.** Al verificar, enmascarar antes de imprimir (el booleano, nunca la URL con token).
-- El clasificador bloquea escribir `claude-novak.config.json`; rotar el token lo ejecuta Luismi con la app cerrada.
-- Túnel de prueba: `cloudflared tunnel --url http://127.0.0.1:<puerto>`, uno por puerto; WS con `curl --http1.1`.
-- "Copiar invitación de la sesión actual" exige sesión que ya haya hablado; si falla, **no copia nada** (el portapapeles conserva lo anterior).
-- El explorador rechaza rutas fuera de `allowedFsRoots()` (`main.js:511`). Conocimiento: reglas duras en `tech/runbook_kb_conocimiento.md`.
+- **Binario externo que la app spawnee → ruta absoluta vía `main/cli-resolver.js`**: la app empaquetada (Finder) no hereda `/usr/local/bin` y el ENOENT solo aparece en la empaquetada, nunca en dev.
+- **El espejo escribe RAW al PTY** (es un terminal remoto del propio Luismi; sanear rompería las teclas de control). La puerta es la invitación temporal. Los transcripts de audio SÍ pasan `sanitizeChannelText`, y en espejo el ENTER va en escritura aparte.
+- La vista Chat de `lan-client.html` NO pinta stream crudo del PTY: cualquier flujo que dependa de "ver el terminal" va a la vista terminal o a página propia (`lan-mirror.html`).
+- Dev/deploy vía osascript; Mac Intel → `dist/mac/POWER-AGENT.app`. Verificar deploys por asar DESDE el scratchpad **y por PROCESO con ventana** (dev viva retiene el SingletonLock y la empaquetada se suicida en silencio).
+- El pre-commit hook corre la suite completa con el Node del sistema (v24.13.0). "Comitea y despliega" **incluye push**.
+- Campo de config nuevo del renderer → allowlist `SAFE_*`. Fichero nuevo en la RAÍZ → `build.files` (whitelist; `lan-mirror.html` ya está).
+- **Ningún enlace público lleva credencial persistente; solo invites.** Enmascarar antes de imprimir.
+- El grafo corre en worker (`computeProjectGraphAsync`); jamás el síncrono desde main. El clasificador bloquea escribir `claude-novak.config.json` (token lo rota Luismi con la app cerrada).
+- "Copiar invitación de la sesión actual" exige sesión que ya haya hablado; el ESPEJO no lo exige (engancha, no resume). Si una copia falla, el portapapeles conserva lo anterior.
+- El explorador rechaza rutas fuera de `allowedFsRoots()` (`main.js:511`). Conocimiento: `tech/runbook_kb_conocimiento.md`.
