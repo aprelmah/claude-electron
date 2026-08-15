@@ -1533,18 +1533,40 @@ function createLanWsServer(options = {}) {
     return true
   }
 
+  // Aviso cuando el túnel queda a medio configurar: con solo una de las dos
+  // URLs públicas el enlace se degrada a la IP LAN, que desde fuera de casa da
+  // un timeout sin ninguna pista. El renderer lo pinta; aquí solo se expone.
+  function computePublicUrlWarning() {
+    const publicClient = trimToString(getPublicClientUrl(), 1000)
+    const publicWs = trimToString(getPublicWsUrl(), 1000)
+    if (publicClient && !publicWs) {
+      return 'Falta la URL pública del WebSocket: el enlace compartido sigue siendo el de la red local.'
+    }
+    if (!publicClient && publicWs) {
+      return 'Falta la URL pública del cliente: el enlace compartido sigue siendo el de la red local.'
+    }
+    return null
+  }
+
   function buildClientUrl(extra = {}) {
     const publicClient = trimToString(getPublicClientUrl(), 1000)
     const publicWs = trimToString(getPublicWsUrl(), 1000)
     const tk = String(getAuthToken() || '')
     let url
-    // El cliente público y el WebSocket deben estar configurados juntos. Si
-    // falta uno, devolvemos la URL LAN para no ofrecer un enlace que parece
+    // INVARIANTE: el Bearer permanente SOLO puede viajar en la URL LAN; jamás
+    // en la pública, que es alcanzable desde internet (captura, portapapeles,
+    // logs del túnel, historial del móvil del cliente = auth total y para
+    // siempre). Por eso la URL pública se usa únicamente con invitación, que ya
+    // es una capability temporal y acotada.
+    // Corolario: sin invite devolvemos la URL LAN con token — un enlace público
+    // sin credencial no serviría de nada. El cliente público y el WebSocket
+    // deben estar configurados juntos; si falta uno, también caemos a la LAN
+    // (ver computePublicUrlWarning) para no ofrecer un enlace que parece
     // exterior pero intentaría conectar al puerto 9999 público.
-    if (publicClient && publicWs) {
+    if (publicClient && publicWs && extra.invite) {
       try {
         url = new URL(publicClient)
-        if (publicWs) url.searchParams.set('wsUrl', publicWs)
+        url.searchParams.set('wsUrl', publicWs)
       } catch {
         url = null
       }
@@ -1553,11 +1575,8 @@ function createLanWsServer(options = {}) {
       url = new URL(`http://${lanIp}:${httpPort}/lan-client.html`)
       url.searchParams.set('host', lanIp)
       url.searchParams.set('port', String(port))
+      if (tk && !extra.invite) url.searchParams.set('token', tk)
     }
-    // Una invitación ya es una capability temporal. No añadimos el Bearer
-    // persistente al enlace compartido para que una filtración no abra todo el
-    // servidor LAN.
-    if (tk && !extra.invite) url.searchParams.set('token', tk)
     for (const [key, value] of Object.entries(extra || {})) {
       if (value == null || value === '') continue
       url.searchParams.set(key, String(value))
@@ -3654,6 +3673,7 @@ function createLanWsServer(options = {}) {
       httpPort,
       wsUrl: `ws://${lanIp}:${port}`,
       clientUrl: buildClientUrl(),
+      publicUrlWarning: computePublicUrlWarning(),
       sessions: listSessions()
     }
   }
