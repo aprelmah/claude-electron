@@ -30,3 +30,11 @@ Commits: `4736ec3` (túnel) + `e613228` (espejo). Tests 1604 → 1624/0/6.
 - El enlace espejo vivo = control del terminal (bypassPermissions) → higiene: canal privado + "Cortar acceso" al terminar. Sin vínculo a dispositivo.
 - Paso serio futuro (decidido, no ejecutado): Cloudflare Access — túnel fijo con dominio propio + login por email delante de todo.
 - El espejo NO consume Claude extra (misma sesión); la copia de cliente SÍ (sesión propia). Whisper local = audio gratis.
+
+## § 2026-08-16 — El espejo se abre con QR (commit b597617)
+
+- Luismi rechazó "token viajando + copia-pega": el 🪞 pinta un **QR** (main/qr-svg.js, qrcode-generator local → data URL SVG a un `<img>` — nunca innerHTML). Pantalla → cámara; el token no toca canales. Enlace de texto como fallback.
+- **Invite espejo: 1 uso / 90 s** (`MIRROR_QR_*` en lan-session-invites.js). Quemado al conectar; caducado = 401 en el handshake, ni abre el WS.
+- **Renewal**: al conectar, initializeMirrorSession emite un invite de renovación POR EL WS (`mirror-renewal`). Invariantes: solo el servidor lo crea (createSessionInvite público no puede pasar `renewal`), **no encadenable** (un renewal no genera otro), techo absoluto 4 h / 60 usos (`MIRROR_RENEWAL_*`), y solo en modo mirror se rebasa el techo normal de 30 min. lan-mirror.html lo mete en su URL con `replaceState` (reconexiones Y recargas de página sobreviven; el token de 4 h vive solo en el móvil).
+- Riesgo de uso diario (explicado, aceptado): robo de móvil desbloqueado = control del Mac hasta el techo de 4 h o "Cortar acceso"; el vector cotidiano es el dedazo (espejo RAW) con el móvil desbloqueado.
+- Diseño futuro hablado para el caso CLIENTE: device-flow con aprobación en el Mac (URL limpia + código 6 dígitos + Aprobar/Rechazar). No implementado.
