@@ -7,6 +7,9 @@ const pty = require('node-pty')
 const { WebSocketServer } = require('ws')
 const { looksRemotePath } = require('./dir-helpers')
 const { createLanSessionInvites } = require('./lan-session-invites')
+const { shellQuote } = require('./shell-quote')
+const { sanitizeChannelText } = require('./untrusted-input')
+const { resolveFsWatchPollAction } = require('./fs-watch-poll')
 
 const DEFAULT_LAN_WS_PORT = 9999
 const MIN_LAN_PORT = 1024
@@ -170,10 +173,6 @@ function parseJsonMessage(raw) {
 function safeSend(ws, payload) {
   if (!ws || ws.readyState !== 1) return
   try { ws.send(JSON.stringify(payload)) } catch {}
-}
-
-function shellQuote(s) {
-  return `'${String(s).replace(/'/g, "'\\''")}'`
 }
 
 function buildDefaultExec(bin, args = []) {
@@ -1659,13 +1658,17 @@ function createLanWsServer(options = {}) {
     const audioFilePath = path.join('/tmp', `wa-audio-${session.id}-${Date.now()}.webm`)
     safeSend(session.ws, { type: 'status', state: 'transcribing', sessionId: session.id })
     try {
-      fs.writeFileSync(audioFilePath, Buffer.from(base64, 'base64'))
+      await fs.promises.writeFile(audioFilePath, Buffer.from(base64, 'base64'))
       const transcript = String(await transcribeAudio(audioFilePath)).trim()
       if (!transcript) throw new Error('Transcripción vacía')
       safeSend(session.ws, { type: 'transcript', text: transcript, sessionId: session.id })
       if (session.ptyProcess?._alive) {
-        const toWrite = transcript.endsWith('\n') ? transcript : `${transcript}\n`
-        session.ptyProcess.write(toWrite)
+        // Texto que entra por canal (cliente LAN) → saneado obligatorio antes de tocar el PTY
+        const clean = sanitizeChannelText(transcript).text.trim()
+        if (clean) {
+          const toWrite = clean.endsWith('\n') ? clean : `${clean}\n`
+          session.ptyProcess.write(toWrite)
+        }
       }
     } catch (err) {
       safeSend(session.ws, {
@@ -1676,7 +1679,7 @@ function createLanWsServer(options = {}) {
         message: err?.message || String(err)
       })
     } finally {
-      try { fs.unlinkSync(audioFilePath) } catch {}
+      try { await fs.promises.unlink(audioFilePath) } catch {}
     }
   }
 
@@ -1977,6 +1980,20 @@ function createLanWsServer(options = {}) {
     }
   }
 
+  function applyFsWatchPollAction(session, state) {
+    const action = resolveFsWatchPollAction({
+      nativeAttached: state.nativeAttached === true,
+      pollRunning: !!state.pollTimer
+    })
+    if (action === 'start') {
+      state.pollTimer = setInterval(() => pollWatchState(session, state), fsWatchPollingIntervalMs)
+      if (typeof state.pollTimer.unref === 'function') state.pollTimer.unref()
+    } else if (action === 'stop') {
+      try { clearInterval(state.pollTimer) } catch {}
+      state.pollTimer = null
+    }
+  }
+
   function normalizeWatchId(rawWatchId, fallback = '') {
     const text = trimToString(rawWatchId, 120)
     const clean = text
@@ -2003,7 +2020,7 @@ function createLanWsServer(options = {}) {
         watchId,
         path: allowed.absolutePath,
         recursive: !!existing.recursive,
-        polling: true,
+        polling: !!existing.pollTimer,
         auto: existing.auto === true,
         reused: true
       }
@@ -2026,6 +2043,7 @@ function createLanWsServer(options = {}) {
       lastDigest: '',
       lastPollErrorCode: '',
       nativeFallbackReason: '',
+      nativeAttached: false,
       closed: false
     }
 
@@ -2062,11 +2080,16 @@ function createLanWsServer(options = {}) {
       }
     }
 
+    state.nativeAttached = attached
+
     if (state.watcher && typeof state.watcher.on === 'function') {
       state.watcher.on('error', (err) => {
         if (state.closed) return
         const payloadErr = fsErrorToPayload(err, 'IO_ERROR')
         state.nativeFallbackReason = trimToString(payloadErr.message, 300) || payloadErr.code
+        // El nativo se ha caído: arranca el poll de respaldo a partir de aquí
+        state.nativeAttached = false
+        applyFsWatchPollAction(session, state)
         sendFsEvent(session, {
           event: 'warning',
           watchId: state.id,
@@ -2076,8 +2099,9 @@ function createLanWsServer(options = {}) {
       })
     }
 
-    state.pollTimer = setInterval(() => pollWatchState(session, state), fsWatchPollingIntervalMs)
-    if (typeof state.pollTimer.unref === 'function') state.pollTimer.unref()
+    // Poll solo como respaldo cuando NO hay watcher nativo adjunto (es un
+    // walk síncrono + sha1 cada tick en el hilo main)
+    applyFsWatchPollAction(session, state)
 
     session.fsWatchers.set(watchId, state)
 
@@ -2086,7 +2110,7 @@ function createLanWsServer(options = {}) {
       watchId: state.id,
       rootPath: state.rootPath,
       recursive: state.recursive,
-      polling: true,
+      polling: !!state.pollTimer,
       pollMs: fsWatchPollingIntervalMs,
       debounceMs: fsWatchDebounceMs,
       throttleMs: fsWatchThrottleMs,
@@ -2099,7 +2123,7 @@ function createLanWsServer(options = {}) {
       path: trimPathForWire(state.rootPath),
       recursiveRequested,
       recursiveApplied: state.recursive,
-      polling: true,
+      polling: !!state.pollTimer,
       auto: state.auto === true,
       fallback: state.nativeFallbackReason || ''
     })
@@ -2109,7 +2133,7 @@ function createLanWsServer(options = {}) {
       watchId: state.id,
       path: state.rootPath,
       recursive: state.recursive,
-      polling: true,
+      polling: !!state.pollTimer,
       pollMs: fsWatchPollingIntervalMs,
       auto: state.auto === true,
       fallback: state.nativeFallbackReason || null
@@ -2245,7 +2269,7 @@ function createLanWsServer(options = {}) {
     }
   }
 
-  function handleFsRead(session, msgType, payload = {}) {
+  async function handleFsRead(session, msgType, payload = {}) {
     if (msgType === 'fs:open') {
       if (!session.permissions[PERMISSION_KEYS.VIEWER_OPEN] && !session.permissions[PERMISSION_KEYS.FS_READ]) {
         throw createFsError('PERMISSION_DENIED', `Permiso denegado: ${PERMISSION_KEYS.VIEWER_OPEN}`)
@@ -2290,7 +2314,7 @@ function createLanWsServer(options = {}) {
 
       let buffer = null
       try {
-        buffer = fs.readFileSync(allowed.absolutePath)
+        buffer = await fs.promises.readFile(allowed.absolutePath)
       } catch (err) {
         throw createFsError('IO_ERROR', err?.message || 'No se pudo leer archivo')
       }
@@ -2352,8 +2376,8 @@ function createLanWsServer(options = {}) {
 
     const encoding = trimToString(payload?.encoding, 50).toLowerCase() === 'base64' ? 'base64' : 'utf8'
     const content = encoding === 'base64'
-      ? fs.readFileSync(allowed.absolutePath).toString('base64')
-      : fs.readFileSync(allowed.absolutePath, 'utf8')
+      ? (await fs.promises.readFile(allowed.absolutePath)).toString('base64')
+      : await fs.promises.readFile(allowed.absolutePath, 'utf8')
 
     return {
       ok: true,
@@ -2475,7 +2499,7 @@ function createLanWsServer(options = {}) {
     }
   }
 
-  function handleFsMessage(session, msgType, payload = {}) {
+  async function handleFsMessage(session, msgType, payload = {}) {
     const requestId = trimToString(payload?.requestId || payload?.id, 200)
     const opMap = {
       'fs:list': 'list',
@@ -2495,7 +2519,7 @@ function createLanWsServer(options = {}) {
     try {
       let result = null
       if (msgType === 'fs:list' || msgType === 'fs:tree') result = handleFsList(session, msgType, payload)
-      else if (msgType === 'fs:read' || msgType === 'fs:open') result = handleFsRead(session, msgType, payload)
+      else if (msgType === 'fs:read' || msgType === 'fs:open') result = await handleFsRead(session, msgType, payload)
       else if (msgType === 'fs:write' || msgType === 'fs:save') result = handleFsWrite(session, payload)
       else if (msgType === 'fs:rename') result = handleFsRename(session, payload)
       else if (msgType === 'fs:delete') result = handleFsDelete(session, payload)
@@ -2997,7 +3021,7 @@ function createLanWsServer(options = {}) {
 
     if (msgType.startsWith('fs:')) {
       touchSessionLock(session, Date.now())
-      handleFsMessage(session, msgType, payload)
+      handleFsMessage(session, msgType, payload).catch(() => {})
       return
     }
 
