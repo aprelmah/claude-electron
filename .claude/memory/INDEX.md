@@ -44,6 +44,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/tech_sondar_cli_en_pty.md` — sondar un CLI en un PTY controlado (la sonda que cerró los bugs de codex).
 - `tech/tech_perfiles_persona_invisible.md` — persona por perfil vía `--append-system-prompt` (invisible, aditiva, al spawn) y persona VIVA por hook; el perfil activo es config GLOBAL que `startPty` lee en el spawn, y se puede elegir desde el picker de arranque; WhatsApp es otro sistema. Leerla antes de tocar perfiles, personas o el selector del picker.
 - `tech/security_audit_2026-06-01.md` — auditoría de seguridad de junio: hallazgos y estado.
+- `tech/tech_auditoria_limpieza_2026_08_15.md` — auditoría senior de agosto: mapa de los módulos nuevos (graph-worker, fs-watch-poll, shell-quote, retitle, extract-runner, bridge-control), decisiones (worker+fallback, coalescing) y lecciones (la dev sobrevive al deploy; guard de parentPort). Leerla antes de tocar el grafo, el poll de fs-watch o el deploy.
 
 ## Bugs resueltos (leer si reaparece el síntoma)
 

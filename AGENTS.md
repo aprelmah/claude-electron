@@ -68,6 +68,9 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 - **El conocimiento es OPCIONAL por carpeta** (`main/kb-prefs.js` → `userData/kb-prefs.json`, default ON): con la casilla CONOCIMIENTO apagada (picker o popover AGENTE) no hay pestañas Casos/Fichas. Nada puede asumir que existen; qué se ve lo decide `kb-tabs-state.js`, fuera del renderer, porque la suite corre sin Electron.
 - Una pref de proyecto se ESCRIBE solo con el cwd de la barra (`cwdValue.title`): `resolveProjectCwd()` cae a `ptyCwd()` y sin sesión guarda contra el HOME. Adivinar vale para pintar, nunca para persistir (`bugs/bug_pref_proyecto_cwd_home_2026_08_15.md`, que trae también el `<label for>` con el input dentro = doble toggle).
 
+### Rendimiento y limpieza 2026-08-15 — `tech/tech_auditoria_limpieza_2026_08_15.md`
+- El grafo corre en worker_thread (`computeProjectGraphAsync`, con fallback síncrono): JAMÁS llamar `computeProjectGraph` directo desde el hilo main. El poll de fs-watch solo arranca sin watcher nativo (`main/fs-watch-poll.js`). Todo `innerHTML` con datos pasa por `escapeHtml` (global en `renderer.js`; el viewer tiene copia local). `shellQuote` y `stripAnsi` viven en UN sitio cada uno.
+
 ## Regla crítica WhatsApp (OBLIGATORIA)
 
 - Nunca enviar mensajes a números locales ambiguos (ej. `653765305`) sin prefijo internacional confirmado. Si el usuario no indica país/código, preguntar SIEMPRE antes de enviar: "¿Qué país/código uso para este número?".
@@ -114,7 +117,7 @@ ps aux | grep "claude-electron/node_modules/electron" | grep -v grep | grep -o "
 
 Checklist post-cambio: `node --check main.js` y `node --check renderer.js` → matar instancias → dev por osascript → verificar con ps → probar la feature → solo si OK, `npm run deploy`.
 
-**Deploy a /Applications**: `npm run deploy` (mata instancias, build x64, copia a `/Applications/POWER-AGENT.app`, `xattr -cr`, abre vía Finder). Mac Intel → usar SIEMPRE `dist/mac/POWER-AGENT.app` (arm64 sería el binario equivocado sin avisar). Verificar el deploy por contenido/timestamp del asar.
+**Deploy a /Applications**: `npm run deploy` (mata instancias, build x64, copia a `/Applications/POWER-AGENT.app`, `xattr -cr`, abre vía Finder). Mac Intel → usar SIEMPRE `dist/mac/POWER-AGENT.app` (arm64 sería el binario equivocado sin avisar). Verificar el deploy por contenido/timestamp del asar **y por PROCESO con ventana** (`--type=renderer`): una dev viva sobrevive al kill del script, retiene el `SingletonLock` y la empaquetada se suicida en silencio aunque el script diga "✅ abierto" (2026-08-15).
 
 ## Comandos estándar
 
