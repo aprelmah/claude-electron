@@ -114,28 +114,6 @@ function sanitizeNewProjectName(rawName) {
   return { ok: true, name }
 }
 
-// Caches con LRU manual: una vez la clave existe se renueva la posición.
-// Capacidad por defecto sensata; quien instancia pasa max.
-function createLruCache(max = 300) {
-  const m = new Map()
-  return {
-    get(key) { return m.get(key) },
-    has(key) { return m.has(key) },
-    set(key, value) {
-      if (m.has(key)) m.delete(key)
-      m.set(key, value)
-      if (m.size > max) {
-        const oldest = m.keys().next().value
-        if (oldest !== undefined) m.delete(oldest)
-      }
-    },
-    delete(key) { m.delete(key) },
-    size() { return m.size },
-    clear() { m.clear() },
-    raw() { return m }
-  }
-}
-
 module.exports = {
   extractTurnText,
   resolveRelayCwd,
@@ -148,6 +126,5 @@ module.exports = {
   extractCodexResumeId,
   extractClaudeResumeId,
   buildResumeArgs,
-  sanitizeNewProjectName,
-  createLruCache
+  sanitizeNewProjectName
 }
