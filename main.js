@@ -792,6 +792,7 @@ function ensureLanWsServer() {
     buildExecCommand: buildFdLimitCommand,
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event),
+    attachLocalMirror: attachLanMirror,
     getAuthToken: () => ensureLanAuthToken(),
     // El túnel efímero, si está vivo, manda sobre las URLs configuradas.
     getPublicClientUrl: () => lanTunnel.getPublicClientUrl() || appConfig?.lanServer?.publicClientUrl || '',
@@ -877,19 +878,71 @@ function getLanServerStatus() {
   }
 }
 
-function createLanSessionInvite(event) {
+// Espejo LAN: mirrorId efímero → wcId del terminal vivo. Solo se crea al
+// generar una invitación espejo; el claim del invite es la única llave.
+const LAN_MIRROR_BUFFER_MAX = 262144
+const lanMirrorTargets = new Map()
+
+// attachLocalMirror para el ws-server: engancha un espejo al PTY VIVO del
+// terminal. El write va RAW a s.pty (es un terminal remoto del propio Luismi,
+// no un canal de texto: sanitizeChannelText rompería las teclas de control);
+// la puerta es la invitación temporal, no el saneado.
+function attachLanMirror(mirrorId, handlers = {}) {
+  const wcId = lanMirrorTargets.get(String(mirrorId || ''))
+  if (wcId == null) return null
+  const s = sessions.get(wcId)
+  if (!s || !s.pty) return null
+  if (!s.mirrorWatchers) s.mirrorWatchers = new Map()
+  const watchId = require('crypto').randomUUID()
+  s.mirrorWatchers.set(watchId, {
+    onData: typeof handlers.onData === 'function' ? handlers.onData : () => {},
+    onExit: typeof handlers.onExit === 'function' ? handlers.onExit : () => {}
+  })
+  return {
+    write: (data) => { try { sessions.get(wcId)?.pty?.write(String(data)) } catch {} },
+    detach: () => { try { sessions.get(wcId)?.mirrorWatchers?.delete(watchId) } catch {} },
+    snapshot: Array.isArray(s.mirrorChunks) ? s.mirrorChunks.join('') : '',
+    cols: s.pty.cols || 80,
+    rows: s.pty.rows || 30,
+    cli: s.activeCli === 'codex' ? 'codex' : 'claude',
+    cwd: s.gitWorkspace?.realCwd || s.cwd || ''
+  }
+}
+
+function createLanSessionInvite(event, payload = {}) {
+  const mode = String(payload?.mode || '').toLowerCase() === 'mirror' ? 'mirror' : 'session'
   const session = getSessionByEvent(event) || (primaryWcId != null ? sessions.get(primaryWcId) : null)
   if (!session || !session.pty) {
     return { ok: false, error: 'No hay una sesión local activa para compartir.' }
   }
   const cli = session.activeCli === 'codex' ? 'codex' : 'claude'
-  const sessionId = semanticSessionId(session, cli)
-  if (!sessionId) {
-    return { ok: false, error: 'Habla al menos una vez antes de compartir esta sesión.' }
-  }
   const server = ensureLanWsServer()
   if (!server.isRunning()) {
     return { ok: false, error: 'Activa primero el servidor LAN.' }
+  }
+  if (mode === 'mirror') {
+    const mirrorId = require('crypto').randomBytes(18).toString('base64url')
+    lanMirrorTargets.set(mirrorId, session.wcId)
+    try {
+      // Espejo = uso personal prolongado: margen ancho (30 min de puerta, 10
+      // aperturas) porque cada reconexión del móvil gasta una apertura.
+      const created = server.createSessionInvite({
+        mode: 'mirror',
+        mirrorId,
+        cli,
+        label: 'Espejo del terminal',
+        ttlMs: 30 * 60 * 1000,
+        maxUses: 10
+      })
+      return { ...created, mirror: true }
+    } catch (err) {
+      lanMirrorTargets.delete(mirrorId)
+      return { ok: false, error: err?.message || String(err) }
+    }
+  }
+  const sessionId = semanticSessionId(session, cli)
+  if (!sessionId) {
+    return { ok: false, error: 'Habla al menos una vez antes de compartir esta sesión.' }
   }
   const meta = buildCurrentSessionMeta(session) || {}
   try {
@@ -2091,6 +2144,21 @@ function startPty(session, cols, rows, cwd, args = []) {
     if (s?.relayListener) {
       try { s.relayListener(data) } catch {}
     }
+    // Espejo LAN: ring de chunks para el replay al enganchar (O(1) amortizado,
+    // nunca concat sobre string grande en el hilo main) + forward a espejos vivos.
+    if (s) {
+      const arr = s.mirrorChunks || (s.mirrorChunks = [])
+      arr.push(data)
+      s.mirrorChunksBytes = (s.mirrorChunksBytes || 0) + data.length
+      while (arr.length > 1 && s.mirrorChunksBytes > LAN_MIRROR_BUFFER_MAX) {
+        s.mirrorChunksBytes -= arr.shift().length
+      }
+      if (s.mirrorWatchers?.size) {
+        for (const watcher of s.mirrorWatchers.values()) {
+          try { watcher.onData(data) } catch {}
+        }
+      }
+    }
     if (s) s.lastPtyDataAt = Date.now()
     if (PERF && s) {
       const last = perfPtyLastInputByWc.get(s.wcId)
@@ -2121,6 +2189,15 @@ function startPty(session, cols, rows, cwd, args = []) {
       if (s && s.win && !s.win.isDestroyed()) s.win.webContents.send('pty-exit')
     }
     if (s && s.pty === proc) {
+      // Espejo LAN: avisar a los espejos enganchados de que el PTY murió.
+      if (s.mirrorWatchers?.size) {
+        for (const watcher of Array.from(s.mirrorWatchers.values())) {
+          try { watcher.onExit({}) } catch {}
+        }
+        s.mirrorWatchers.clear()
+      }
+      s.mirrorChunks = null
+      s.mirrorChunksBytes = 0
       try { subchatManager.close(s.wcId, 'parent-pty-closed') } catch {}
       releaseVoiceMode(s.wcId)
       if (typeof s.relayCancel === 'function') {

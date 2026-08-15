@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Espejo — POWER-AGENT</title>
+  <link rel="stylesheet" href="vendor/xterm/css/xterm.css" />
+  <style>
+    :root { --bg: #0d0f14; --bar: #161a22; --border: #262c38; --text: #d6dae2; --dim: #8a91a0; --accent: #7c6af7; --rec: #e5534b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+    #app { display: flex; flex-direction: column; height: 100%; }
+    #status { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top)); background: var(--bar); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+    #status .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex: 0 0 auto; }
+    #status.online .dot { background: #3fb950; }
+    #status.error .dot { background: var(--rec); }
+    #status span.txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #term-scroll { flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
+    #term { padding: 4px 2px 4px 6px; }
+    #keys { flex: 0 0 auto; display: flex; gap: 4px; padding: 4px 6px; background: var(--bar); border-top: 1px solid var(--border); overflow-x: auto; }
+    #keys button { flex: 0 0 auto; min-width: 40px; padding: 7px 10px; background: #1e2430; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; font-family: ui-monospace, monospace; }
+    #keys button:active { background: var(--accent); }
+    #bar { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 10px; padding-bottom: max(8px, env(safe-area-inset-bottom)); background: var(--bar); border-top: 1px solid var(--border); }
+    #bar button { flex: 1; padding: 12px 0; font-size: 20px; background: #1e2430; border: 1px solid var(--border); border-radius: 10px; color: var(--text); }
+    #bar button:active { background: var(--accent); }
+    #bar button.rec { background: var(--rec); border-color: var(--rec); animation: pulse 1.2s infinite; }
+    @keyframes pulse { 50% { opacity: 0.55; } }
+    #overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(13,15,20,0.92); z-index: 10; padding: 24px; text-align: center; font-size: 15px; line-height: 1.5; }
+    #overlay.visible { display: flex; }
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="status"><div class="dot"></div><span class="txt" id="status-text">Conectando con tu terminal…</span></div>
+    <div id="term-scroll"><div id="term"></div></div>
+    <div id="keys">
+      <button data-seq="&#x1b;">Esc</button>
+      <button data-seq="&#x9;">Tab</button>
+      <button data-seq="&#x1b;[Z">⇧Tab</button>
+      <button data-seq="&#x1b;[A">↑</button>
+      <button data-seq="&#x1b;[B">↓</button>
+      <button data-seq="&#x1b;[D">←</button>
+      <button data-seq="&#x1b;[C">→</button>
+      <button data-seq="&#x3;">Ctrl·C</button>
+    </div>
+    <div id="bar">
+      <button id="btn-mic" title="Nota de voz">🎤</button>
+      <button id="btn-photo" title="Foto">📷</button>
+      <button id="btn-file" title="Archivo">📎</button>
+    </div>
+  </div>
+  <div id="overlay"><div id="overlay-text"></div></div>
+  <input id="input-photo" type="file" accept="image/*" capture="environment" />
+  <input id="input-file" type="file" accept="*/*" />
+  <script src="vendor/xterm/lib/xterm.js"></script>
+  <script>
+    'use strict'
+    const $ = (id) => document.getElementById(id)
+    const statusEl = $('status')
+    const statusText = $('status-text')
+    const overlay = $('overlay')
+    const overlayText = $('overlay-text')
+
+    function setStatus(kind, text) {
+      statusEl.className = kind
+      statusText.textContent = text
+    }
+    function showOverlay(text) {
+      overlayText.textContent = text
+      overlay.classList.add('visible')
+    }
+
+    const term = new Terminal({
+      convertEol: false,
+      cursorBlink: true,
+      scrollback: 4000,
+      fontSize: 13,
+      fontFamily: 'ui-monospace, Menlo, monospace',
+      theme: { background: '#0d0f14', foreground: '#d6dae2' }
+    })
+    term.open($('term'))
+
+    // El tamaño lo manda el HOST: encoge la letra para que quepa el ancho del
+    // Mac; si ni con letra mínima cabe, se desplaza en horizontal.
+    let hostCols = 0
+    function fitFontToHost() {
+      if (!hostCols) return
+      const avail = $('term-scroll').clientWidth - 10
+      const size = Math.floor(avail / (hostCols * 0.62))
+      term.options.fontSize = Math.max(8, Math.min(18, size))
+    }
+    window.addEventListener('resize', fitFontToHost)
+    // Teclado del móvil: que el terminal viva en el alto visible real.
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => {
+        document.getElementById('app').style.height = `${window.visualViewport.height}px`
+      })
+    }
+
+    // ── Conexión ──
+    const q = new URLSearchParams(location.search)
+    const invite = q.get('invite') || ''
+    function wsUrl() {
+      const explicit = q.get('wsUrl')
+      let base
+      if (explicit) {
+        base = new URL(explicit)
+      } else {
+        const host = q.get('host') || location.hostname
+        const port = Number(q.get('port')) || (Number(location.port) - 1)
+        base = new URL(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${host}:${port}`)
+      }
+      if (invite) base.searchParams.set('invite', invite)
+      return base.toString()
+    }
+
+    let socket = null
+    let pingTimer = null
+    let retryCount = 0
+    let closedForGood = false
+    const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 15000]
+
+    function send(payload) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false
+      socket.send(JSON.stringify(payload))
+      return true
+    }
+    // Latido: túneles y proxies matan WS inactivos; el pong lo contesta el server.
+    function startPing() {
+      stopPing()
+      pingTimer = setInterval(() => send({ type: 'ping' }), 30000)
+    }
+    function stopPing() {
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
+    }
+
+    function connect() {
+      socket = new WebSocket(wsUrl())
+      socket.addEventListener('open', () => {
+        setStatus('online', 'Conectado — tu terminal, en directo')
+        startPing()
+      })
+      socket.addEventListener('close', (event) => {
+        if (event.target !== socket) return
+        stopPing()
+        if (closedForGood) return
+        if (event.code === 4403) {
+          setStatus('error', 'Invitación caducada')
+          showOverlay('La invitación caducó (30 min o 10 aperturas). Genera un enlace nuevo desde la app: 🌐 → 🪞.')
+          return
+        }
+        if (retryCount >= RETRY_DELAYS.length) {
+          setStatus('error', 'Sin conexión')
+          showOverlay('No consigo reconectar. Comprueba la cobertura o genera un enlace nuevo desde la app (🌐 → 🪞).')
+          return
+        }
+        const delay = RETRY_DELAYS[retryCount]
+        retryCount += 1
+        setStatus('error', `Se cortó — reconectando (intento ${retryCount})…`)
+        setTimeout(() => { if (!closedForGood) connect() }, delay)
+      })
+      socket.addEventListener('error', () => setStatus('error', 'Error de conexión'))
+      socket.addEventListener('message', (event) => {
+        if (event.target !== socket) return
+        let msg = null
+        try { msg = JSON.parse(String(event.data || '')) } catch { return }
+        if (!msg) return
+        if (msg.type === 'output') { term.write(String(msg.data || '')); return }
+        if (msg.type === 'pong') return
+        if (msg.type === 'transcript') { setStatus('online', `🎤 «${String(msg.text || '').slice(0, 60)}»`); return }
+        if (msg.type === 'mirror:attach-ok') { setStatus('online', 'Adjunto en el prompt — añade texto y envía'); return }
+        if (msg.type !== 'status') return
+        const state = String(msg.state || '')
+        if (state === 'connected') {
+          retryCount = 0
+          // El server reenvía el snapshot entero: limpia antes para no duplicar pantalla.
+          term.reset()
+          if (msg.mirror?.cols && msg.mirror?.rows) {
+            hostCols = Math.floor(msg.mirror.cols)
+            term.resize(hostCols, Math.floor(msg.mirror.rows))
+            fitFontToHost()
+          }
+          setStatus('online', 'Conectado — tu terminal, en directo')
+          return
+        }
+        if (state === 'transcribing') { setStatus('online', 'Transcribiendo audio…'); return }
+        if (state === 'pty-exit') {
+          closedForGood = true
+          stopPing()
+          setStatus('error', 'El terminal se cerró en el Mac')
+          showOverlay('La sesión del terminal se cerró en el Mac.')
+          return
+        }
+        if (state === 'error') { setStatus('error', String(msg.message || 'Error')) }
+      })
+    }
+    if (!invite) {
+      showOverlay('Falta la invitación en el enlace. Genera uno nuevo desde la app.')
+    } else {
+      connect()
+    }
+    // Al volver del bloqueo o de otra app: si el WS murió, reintenta de cero.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || closedForGood) return
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        retryCount = 0
+        connect()
+      }
+    })
+
+    // Teclas del usuario → PTY del host, tal cual.
+    term.onData((data) => { send({ type: 'input', data }) })
+    for (const btn of document.querySelectorAll('#keys button')) {
+      btn.addEventListener('click', () => { send({ type: 'input', data: btn.dataset.seq }); term.focus() })
+    }
+
+    // ── Audio: toca para grabar, toca para enviar ──
+    const btnMic = $('btn-mic')
+    let recorder = null
+    let chunks = []
+    btnMic.addEventListener('click', async () => {
+      if (recorder && recorder.state === 'recording') {
+        recorder.stop()
+        return
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        chunks = []
+        recorder = new MediaRecorder(stream)
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
+        recorder.onstop = async () => {
+          btnMic.classList.remove('rec')
+          stream.getTracks().forEach((t) => t.stop())
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+          if (!blob.size) return
+          setStatus('online', 'Enviando audio…')
+          send({ type: 'audio', data: await blobToBase64(blob) })
+        }
+        recorder.start()
+        btnMic.classList.add('rec')
+        setStatus('online', 'Grabando — toca 🎤 para enviar')
+      } catch (err) {
+        setStatus('error', `Micrófono no disponible: ${err?.message || err}`)
+      }
+    })
+
+    // ── Foto y archivo → mirror:attach ──
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+        reader.onerror = reject
+        reader.readAsDataURL(blob)
+      })
+    }
+    async function sendAttachment(file) {
+      if (!file) return
+      setStatus('online', `Subiendo ${file.name}…`)
+      send({ type: 'mirror:attach', name: file.name, data: await blobToBase64(file) })
+    }
+    $('btn-photo').addEventListener('click', () => $('input-photo').click())
+    $('btn-file').addEventListener('click', () => $('input-file').click())
+    $('input-photo').addEventListener('change', (e) => { sendAttachment(e.target.files[0]); e.target.value = '' })
+    $('input-file').addEventListener('change', (e) => { sendAttachment(e.target.files[0]); e.target.value = '' })
+  </script>
+</body>
+</html>

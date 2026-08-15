@@ -1058,6 +1058,31 @@ body.layout-split #terminal-wrap { flex: 1; }
   min-width: 0;
 }
 
+.share-internet-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--accent);
+  background: var(--bg2);
+  flex-shrink: 0;
+  min-width: 0;
+  font-size: 12px;
+}
+.share-internet-bar[hidden] { display: none; }
+.share-internet-text { color: var(--text); white-space: nowrap; }
+.share-internet-url {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+#btn-share-internet.active { color: var(--accent); }
+
 /* Barra de pestañas hermanas Chat/Casos/Fichas — navegación de primer nivel
    dentro de la MISMA columna que el terminal (no una caja lateral aparte). */
 #content-tabs {

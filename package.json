@@ -64,6 +64,7 @@
       "prompt-capture.js",
       "index.html",
       "lan-client.html",
+      "lan-mirror.html",
       "styles.css",
       "viewer.html",
       "viewer-renderer.js",

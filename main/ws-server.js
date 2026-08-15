@@ -970,6 +970,9 @@ function createLanWsServer(options = {}) {
     ? options.listReusableProjects
     : ((meta) => [{ cwd: meta?.cwd, label: path.basename(String(meta?.cwd || '')) || 'Proyecto actual' }])
   const resolveSessionContext = typeof options.resolveSessionContext === 'function' ? options.resolveSessionContext : null
+  // Espejo: main.js entrega un attach al PTY VIVO del terminal local.
+  // attachLocalMirror(mirrorId, {onData, onExit}) → {write, detach, snapshot, cols, rows, cli, cwd} | null
+  const attachLocalMirror = typeof options.attachLocalMirror === 'function' ? options.attachLocalMirror : null
   const transcribeAudio = typeof options.transcribeAudio === 'function' ? options.transcribeAudio : null
   const runSemanticChatTurn = typeof options.runSemanticChatTurn === 'function' ? options.runSemanticChatTurn : null
   const logger = typeof options.logger === 'function' ? options.logger : (() => {})
@@ -1576,22 +1579,32 @@ function createLanWsServer(options = {}) {
       url.searchParams.set('port', String(port))
       if (tk && !extra.invite) url.searchParams.set('token', tk)
     }
-    for (const [key, value] of Object.entries(extra || {})) {
+    // Espejo: misma URL, otra página (la minimal). En la pública asumimos que
+    // el túnel proxea el server entero (Quick Tunnel = raíz), así que basta
+    // cambiar el pathname.
+    const { mirror, ...extraParams } = extra || {}
+    if (mirror) url.pathname = '/lan-mirror.html'
+    for (const [key, value] of Object.entries(extraParams)) {
       if (value == null || value === '') continue
       url.searchParams.set(key, String(value))
     }
     return url.toString()
   }
 
-  function createSessionInvite({ cwd, sessionId, cli, label, ttlMs, maxUses } = {}) {
+  function createSessionInvite({ cwd, sessionId, cli, label, ttlMs, maxUses, mode, mirrorId } = {}) {
     if (!running) throw new Error('Activa primero el servidor LAN.')
+    const isMirror = String(mode || '').toLowerCase() === 'mirror'
     const safeCwd = resolveExistingDir(cwd)
     const safeSessionId = sanitizeResumeSessionId(sessionId)
     const safeCli = sanitizeCliChoice(cli)
-    if (!safeCwd) throw new Error('La carpeta de la sesión ya no existe o no es local.')
-    if (!safeSessionId) throw new Error('La sesión actual aún no tiene un ID reutilizable.')
-    if (!safeCli) throw new Error('El CLI de la sesión no es válido.')
+    if (!isMirror) {
+      if (!safeCwd) throw new Error('La carpeta de la sesión ya no existe o no es local.')
+      if (!safeSessionId) throw new Error('La sesión actual aún no tiene un ID reutilizable.')
+      if (!safeCli) throw new Error('El CLI de la sesión no es válido.')
+    }
     const created = sessionInvites.create({
+      mode: isMirror ? 'mirror' : 'session',
+      mirrorId,
       cwd: safeCwd,
       sessionId: safeSessionId,
       cli: safeCli,
@@ -1600,6 +1613,7 @@ function createLanWsServer(options = {}) {
       maxUses
     })
     emitAudit('lan_session_invite_created', {
+      mode: isMirror ? 'mirror' : 'session',
       cwd: safeCwd,
       sessionId: safeSessionId,
       cli: safeCli,
@@ -1607,7 +1621,7 @@ function createLanWsServer(options = {}) {
     })
     return {
       ok: true,
-      clientUrl: buildClientUrl({ invite: created.token, cli: safeCli }),
+      clientUrl: buildClientUrl({ invite: created.token, cli: safeCli || undefined, mirror: isMirror }),
       expiresAt: created.expiresAt,
       maxUses: created.maxUses
     }
@@ -1666,8 +1680,16 @@ function createLanWsServer(options = {}) {
         // Texto que entra por canal (cliente LAN) → saneado obligatorio antes de tocar el PTY
         const clean = sanitizeChannelText(transcript).text.trim()
         if (clean) {
-          const toWrite = clean.endsWith('\n') ? clean : `${clean}\n`
-          session.ptyProcess.write(toWrite)
+          if (session.ptyProcess._mirror) {
+            // Espejo = el PTY REAL del claude TUI: el ENTER va en escritura
+            // APARTE o el prompt queda escrito sin enviar (regla pty-prompt-write).
+            session.ptyProcess.write(clean)
+            const facade = session.ptyProcess
+            setTimeout(() => { if (facade._alive) { try { facade.write('\r') } catch {} } }, 150)
+          } else {
+            const toWrite = clean.endsWith('\n') ? clean : `${clean}\n`
+            session.ptyProcess.write(toWrite)
+          }
         }
       }
     } catch (err) {
@@ -1681,6 +1703,42 @@ function createLanWsServer(options = {}) {
     } finally {
       try { await fs.promises.unlink(audioFilePath) } catch {}
     }
+  }
+
+  async function handleMirrorAttach(session, payload) {
+    const fail = (message, code = 'ATTACH_ERROR') => {
+      safeSend(session.ws, { type: 'status', state: 'error', sessionId: session.id, code, message })
+    }
+    if (!session.ptyProcess?._mirror || !session.ptyProcess?._alive) {
+      return fail('Adjuntos solo en modo espejo con el terminal vivo.', 'NOT_MIRROR')
+    }
+    const base64 = typeof payload?.data === 'string' ? payload.data.trim() : ''
+    if (!base64) return fail('Adjunto vacío.', 'INVALID_REQUEST')
+    const maxBytes = Number(session.fsLimits?.maxUploadBytes || defaultFsLimits.maxUploadBytes) || 8 * 1024 * 1024
+    // base64 ≈ 4/3 del binario: corta antes de decodificar.
+    if (base64.length > Math.ceil(maxBytes * 1.37)) {
+      return fail(`Adjunto demasiado grande (máx ${(maxBytes / 1048576).toFixed(0)} MB).`, 'ATTACH_TOO_BIG')
+    }
+    let buffer
+    try { buffer = Buffer.from(base64, 'base64') } catch { return fail('Adjunto ilegible.', 'INVALID_REQUEST') }
+    if (!buffer.length || buffer.length > maxBytes) {
+      return fail(`Adjunto vacío o demasiado grande (máx ${(maxBytes / 1048576).toFixed(0)} MB).`, 'ATTACH_TOO_BIG')
+    }
+    // Nombre saneado: solo base name, caracteres seguros, extensión conservada.
+    const rawName = String(payload?.name || 'adjunto').split(/[\\/]/).pop() || 'adjunto'
+    const safeName = rawName.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 80) || 'adjunto'
+    const dropDir = path.join(os.tmpdir(), 'poweragent-espejo')
+    const filePath = path.join(dropDir, `${Date.now()}-${safeName}`)
+    try {
+      await fs.promises.mkdir(dropDir, { recursive: true })
+      await fs.promises.writeFile(filePath, buffer)
+    } catch (err) {
+      return fail(`No pude guardar el adjunto: ${err?.message || err}`)
+    }
+    // La ruta al prompt, con espacio final y SIN enter: el usuario remata.
+    try { session.ptyProcess.write(`${filePath} `) } catch {}
+    safeSend(session.ws, { type: 'mirror:attach-ok', sessionId: session.id, path: filePath, bytes: buffer.length })
+    emitAudit('lan_espejo_adjunto', { sessionId: session.id, ip: session.ip, bytes: buffer.length })
   }
 
   async function handleSemanticChatAsk(session, payload) {
@@ -2975,6 +3033,14 @@ function createLanWsServer(options = {}) {
       return
     }
 
+    // Latido de la página espejo (y de cualquier cliente): mantiene vivo el WS
+    // a través de proxies/túneles que cortan por inactividad.
+    if (msgType === 'ping') {
+      touchSessionLock(session, Date.now())
+      safeSend(session.ws, { type: 'pong', sessionId: session.id })
+      return
+    }
+
     if (msgType === 'input') {
       touchSessionLock(session, Date.now())
       if (!session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
@@ -3010,6 +3076,15 @@ function createLanWsServer(options = {}) {
       session.audioQueue = (session.audioQueue || Promise.resolve())
         .then(() => handleAudioMessage(session, payload))
         .catch(() => {})
+      return
+    }
+
+    // Foto/archivo desde la página espejo: se guarda en un cajón temporal y la
+    // RUTA se escribe en el prompt (sin enter — el usuario añade texto y envía),
+    // igual que el botón Adjuntar del escritorio. Solo sesiones espejo.
+    if (msgType === 'mirror:attach') {
+      touchSessionLock(session, Date.now())
+      handleMirrorAttach(session, payload).catch(() => {})
       return
     }
 
@@ -3105,12 +3180,86 @@ function createLanWsServer(options = {}) {
     return normalizeResolvedSessionConfig(resolved || {}, requestedContext, defaultFsLimits)
   }
 
+  // Espejo del terminal local: nada de resolver config, git ni spawn — se
+  // engancha al PTY vivo que main.js expone via attachLocalMirror. El facade
+  // que dejamos en session.ptyProcess DESENGANCHA en kill(): killSessionPty
+  // jamás debe matar el PTY del host.
+  function initializeMirrorSession(session) {
+    const failMirror = (message, code) => {
+      session.initInFlight = false
+      safeSend(session.ws, { type: 'status', state: 'error', sessionId: session.id, code, message })
+      try { session.ws.close(1011, code) } catch {}
+    }
+    if (!attachLocalMirror) {
+      return failMirror('Este servidor no admite modo espejo.', 'MIRROR_UNAVAILABLE')
+    }
+    const facade = {
+      _alive: true,
+      _mirror: true,
+      write: () => {},
+      resize: () => {},   // el espejo sigue el tamaño del HOST, nunca al revés
+      kill: () => {},
+      onData: () => {},
+      onExit: () => {}
+    }
+    const target = attachLocalMirror(String(session.sessionInvite?.mirrorId || ''), {
+      onData: (data) => {
+        if (!facade._alive) return
+        safeSend(session.ws, { type: 'output', data: String(data), sessionId: session.id })
+      },
+      onExit: ({ exitCode, signal } = {}) => {
+        safeSend(session.ws, { type: 'status', state: 'pty-exit', sessionId: session.id, exitCode, signal })
+        if (sessions.get(session.id)?.ptyProcess === facade) sessions.get(session.id).ptyProcess = null
+        facade._alive = false
+      }
+    })
+    if (!target) {
+      return failMirror('La sesión del terminal ya no está abierta en la app.', 'MIRROR_TARGET_GONE')
+    }
+    facade.write = (data) => { try { target.write(String(data)) } catch {} }
+    facade.kill = () => {
+      facade._alive = false
+      try { target.detach() } catch {}
+    }
+    session.ptyProcess = facade
+    session.cli = sanitizeCliChoice(target.cli) || 'claude'
+    session.cwd = trimToString(target.cwd, 4000) || session.cwd
+    session.permissions = { ...DEFAULT_PERMISSIONS, [PERMISSION_KEYS.PTY_EXECUTE]: true }
+    session.context = { ...session.context, mode: 'mirror' }
+    sessions.set(session.id, session)
+    session.initialized = true
+    session.initInFlight = false
+    safeSend(session.ws, {
+      type: 'status',
+      state: 'connected',
+      sessionId: session.id,
+      cli: session.cli,
+      cwd: session.cwd,
+      connectedAt: session.connectedAt,
+      resumeSessionId: null,
+      mirror: { cols: Number(target.cols) || DEFAULT_COLS, rows: Number(target.rows) || DEFAULT_ROWS },
+      context: buildPublicSessionContext(session),
+      // Sin chat semántico: en espejo contestaría un headless APARTE del PTY
+      // que estás viendo — exactamente la bifurcación que el espejo evita.
+      capabilities: { ...buildSessionCapabilities(session), chat: { ask: false } }
+    })
+    const snapshot = String(target.snapshot || '')
+    if (snapshot) {
+      safeSend(session.ws, { type: 'output', data: snapshot, sessionId: session.id })
+    }
+    emitAudit('lan_espejo_conectado', { sessionId: session.id, ip: session.ip, cli: session.cli })
+    logger(`[lan] mirror connected ${session.id} from ${session.ip || 'unknown'}`)
+  }
+
   async function initializeSession(session, req, options = {}) {
     if (session.initialized || session.initInFlight) return
     session.initInFlight = true
     if (session.initTimer) {
       try { clearTimeout(session.initTimer) } catch {}
       session.initTimer = null
+    }
+    if (session.sessionInvite?.mode === 'mirror') {
+      return initializeMirrorSession(session)
     }
 
     let resolved = options?.resolved || null
@@ -3309,7 +3458,9 @@ function createLanWsServer(options = {}) {
         lanInvite: { ...sessionInvite }
       }
     }
-    const manualSessionSelector = extractSessionSelectorModeFromQuery(req) || !!sessionInvite
+    // El espejo no elige nada: engancha directo al terminal vivo.
+    const isMirrorInvite = sessionInvite?.mode === 'mirror'
+    const manualSessionSelector = extractSessionSelectorModeFromQuery(req) || (!!sessionInvite && !isMirrorInvite)
     const session = {
       id: crypto.randomUUID(),
       ws,
@@ -3381,7 +3532,9 @@ function createLanWsServer(options = {}) {
       initializeSession(session, req).catch(() => {})
     }
 
-    if (!session.manualSessionSelector) {
+    if (isMirrorInvite) {
+      maybeStartSession('mirror-invite')
+    } else if (!session.manualSessionSelector) {
       if (
         session.requestedContext.operatorId ||
         session.requestedContext.profileId ||
@@ -3561,16 +3714,20 @@ function createLanWsServer(options = {}) {
       }
       // SEC-C1: los endpoints HTTP requieren Bearer, salvo la página abierta
       // con una invitación temporal válida. /status nunca se abre con invite.
-      const inviteAllowedPage = (u.pathname === '/' || u.pathname === '/lan-client.html') && hasValidSessionInvite(req)
+      const inviteAllowedPage = (u.pathname === '/' || u.pathname === '/lan-client.html' || u.pathname === '/lan-mirror.html') && hasValidSessionInvite(req)
       if (!isAuthorizedReq(req) && !inviteAllowedPage) {
         try { emitAudit('lan-http-auth-rejected', { ip: normalizeRemoteIp(req?.socket?.remoteAddress), path: u.pathname }) } catch {}
         res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer realm="lan"' })
         res.end('unauthorized')
         return
       }
-      if (u.pathname === '/' || u.pathname === '/lan-client.html') {
+      if (u.pathname === '/' || u.pathname === '/lan-client.html' || u.pathname === '/lan-mirror.html') {
         try {
-          const html = fs.readFileSync(clientHtmlPath, 'utf8')
+          // La página espejo vive junto a lan-client.html (misma carpeta, mismos vendor/).
+          const htmlPath = u.pathname === '/lan-mirror.html'
+            ? path.join(path.dirname(clientHtmlPath), 'lan-mirror.html')
+            : clientHtmlPath
+          const html = fs.readFileSync(htmlPath, 'utf8')
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
           res.end(html)
         } catch (err) {

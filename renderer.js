@@ -114,6 +114,17 @@ const cfgLanClientUrl = document.getElementById('cfg-lan-client-url')
 const cfgLanQr = document.getElementById('cfg-lan-qr')
 const btnLanShareSession = document.getElementById('btn-lan-share-session')
 const cfgLanShareStatus = document.getElementById('cfg-lan-share-status')
+const btnLanTunnel = document.getElementById('btn-lan-tunnel')
+const cfgLanTunnelStatus = document.getElementById('cfg-lan-tunnel-status')
+const btnShareInternet = document.getElementById('btn-share-internet')
+const shareInternetBar = document.getElementById('share-internet-bar')
+const shareInternetText = document.getElementById('share-internet-text')
+const shareInternetUrl = document.getElementById('share-internet-url')
+const btnShareInternetCopy = document.getElementById('btn-share-internet-copy')
+const btnShareInternetCut = document.getElementById('btn-share-internet-cut')
+const btnShareInternetClose = document.getElementById('btn-share-internet-close')
+const btnShareMirror = document.getElementById('btn-share-mirror')
+const btnShareClient = document.getElementById('btn-share-client')
 const cfgEnterpriseEnabled = document.getElementById('cfg-enterprise-enabled')
 const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
 const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
@@ -2356,6 +2367,32 @@ function renderLanPublicUrlWarning(message) {
   el.style.display = text ? '' : 'none'
 }
 
+function renderLanTunnelStatus(tunnel) {
+  const state = tunnel?.state || 'stopped'
+  if (btnShareInternet) {
+    const on = state === 'running'
+    btnShareInternet.classList.toggle('active', on)
+    btnShareInternet.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+  // Si el túnel se cae con la banda del enlace abierta, que no quede un enlace muerto a la vista.
+  if (state === 'error' && shareInternetBar && !shareInternetBar.hidden && shareInternetUrl && !shareInternetUrl.hidden) {
+    showShareInternetBar({ text: `El túnel se cayó: ${tunnel?.error || 'error'}` })
+  }
+  if (btnLanTunnel) {
+    btnLanTunnel.textContent = state === 'running' ? '✂️ Cortar acceso por internet' : '🌐 Compartir por internet'
+  }
+  if (!cfgLanTunnelStatus) return
+  if (state === 'running') {
+    cfgLanTunnelStatus.textContent = `Internet: activo — ${tunnel.clientUrl || ''}`
+  } else if (state === 'starting') {
+    cfgLanTunnelStatus.textContent = 'Internet: levantando túnel…'
+  } else if (state === 'error') {
+    cfgLanTunnelStatus.textContent = `Internet: caído — ${tunnel?.error || 'error'}`
+  } else {
+    cfgLanTunnelStatus.textContent = 'Internet: apagado. Un clic crea un túnel efímero de Cloudflare; la URL cambia en cada arranque.'
+  }
+}
+
 function renderLanStatus(snapshot, errorText = '') {
   lanServerSnapshot = snapshot || null
   const running = Boolean(snapshot?.running)
@@ -2382,6 +2419,7 @@ function renderLanStatus(snapshot, errorText = '') {
   syncLanPublicInput(cfgLanPublicClient, snapshot?.publicClientUrl)
   syncLanPublicInput(cfgLanPublicWs, snapshot?.publicWsUrl)
   renderLanPublicUrlWarning(snapshot?.publicUrlWarning)
+  renderLanTunnelStatus(snapshot?.tunnel)
   renderRemoteSessionsToggle()
   renderRemoteSessions(snapshot?.sessions || [])
   renderProfileReminder()
@@ -2974,30 +3012,186 @@ if (btnRemoteSessionsToggle) {
   })
 }
 
+// Compartido entre "Copiar invitación" y el túnel 🌐 (que la genera al levantar).
+// Devuelve true si hay invitación creada (copiada o no).
+async function generateAndCopyLanInvite() {
+  if (cfgLanShareStatus) cfgLanShareStatus.textContent = 'Generando invitación temporal…'
+  try {
+    const result = await window.api.wsServerCreateSessionInvite?.()
+    if (!result?.ok || !result.clientUrl) {
+      const message = result?.error || 'No se pudo generar la invitación.'
+      if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
+      showStatus(message, 'warn', 5000)
+      return false
+    }
+    const copied = await window.api.copyText(result.clientUrl)
+    const expires = result.expiresAt ? new Date(result.expiresAt).toLocaleTimeString() : '10 minutos'
+    if (cfgLanShareStatus) cfgLanShareStatus.textContent = copied
+      ? `Invitación copiada. Caduca a las ${expires}; máximo ${result.maxUses || 3} aperturas.`
+      : `Invitación creada hasta las ${expires}, pero no se pudo copiar.`
+    showStatus(copied ? 'Invitación copiada al portapapeles' : 'Invitación creada', copied ? 'ok' : 'warn', 5000)
+    return true
+  } catch (err) {
+    const message = errorMessage(err)
+    if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
+    showStatus(message, 'error', 5000)
+    return false
+  }
+}
+
 if (btnLanShareSession) {
   btnLanShareSession.addEventListener('click', async () => {
     btnLanShareSession.disabled = true
-    if (cfgLanShareStatus) cfgLanShareStatus.textContent = 'Generando invitación temporal…'
     try {
-      const result = await window.api.wsServerCreateSessionInvite?.()
-      if (!result?.ok || !result.clientUrl) {
-        const message = result?.error || 'No se pudo generar la invitación.'
-        if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
-        showStatus(message, 'warn', 5000)
-        return
-      }
-      const copied = await window.api.copyText(result.clientUrl)
-      const expires = result.expiresAt ? new Date(result.expiresAt).toLocaleTimeString() : '10 minutos'
-      if (cfgLanShareStatus) cfgLanShareStatus.textContent = copied
-        ? `Invitación copiada. Caduca a las ${expires}; máximo ${result.maxUses || 3} aperturas.`
-        : `Invitación creada hasta las ${expires}, pero no se pudo copiar.`
-      showStatus(copied ? 'Invitación copiada al portapapeles' : 'Invitación creada', copied ? 'ok' : 'warn', 5000)
-    } catch (err) {
-      const message = errorMessage(err)
-      if (cfgLanShareStatus) cfgLanShareStatus.textContent = message
-      showStatus(message, 'error', 5000)
+      await generateAndCopyLanInvite()
     } finally {
       btnLanShareSession.disabled = false
+    }
+  })
+}
+
+// ── Compartir por internet desde la propia sesión (botón 🌐 de la topbar) ──
+
+function showShareInternetBar({ text, url, canCut, choice } = {}) {
+  if (!shareInternetBar) return
+  shareInternetBar.hidden = false
+  if (shareInternetText) shareInternetText.textContent = text || ''
+  if (shareInternetUrl) {
+    shareInternetUrl.hidden = !url
+    shareInternetUrl.value = url || ''
+  }
+  if (btnShareMirror) btnShareMirror.hidden = !choice
+  if (btnShareClient) btnShareClient.hidden = !choice
+  if (btnShareInternetCopy) btnShareInternetCopy.hidden = !url
+  if (btnShareInternetCut) btnShareInternetCut.hidden = !canCut
+}
+
+// Un clic lo hace todo: servidor LAN si falta, túnel si falta, invitación
+// nueva, copia al portapapeles y el enlace visible en la banda para copiarlo
+// a mano o reenviarlo. Cada clic genera invitación fresca (caducan a los 10 min).
+// mode: 'mirror' = espejo del terminal vivo (mismo hilo); 'session' = copia
+// aislada para un cliente (fork con --resume en su propio worktree).
+async function shareSessionViaInternet(mode) {
+  if (!window.api.lanTunnelStart) return
+  const isMirror = mode === 'mirror'
+  if (btnShareInternet) btnShareInternet.disabled = true
+  try {
+    showShareInternetBar({ text: 'Preparando acceso por internet…' })
+    let snap = lanServerSnapshot
+    if (!snap?.running) {
+      const started = await window.api.wsServerStart?.()
+      if (!started?.ok) {
+        showShareInternetBar({ text: `No pude arrancar el servidor LAN: ${started?.error || 'error'}` })
+        return
+      }
+      renderLanStatus(started, '')
+      snap = started
+    }
+    if (snap?.tunnel?.state !== 'running') {
+      showShareInternetBar({ text: 'Levantando túnel… (unos segundos)' })
+      const res = await window.api.lanTunnelStart?.()
+      if (!res?.ok) {
+        renderLanStatus(res || snap, '')
+        showShareInternetBar({ text: res?.error || 'No se pudo levantar el túnel.' })
+        return
+      }
+      renderLanStatus(res, '')
+    }
+    const invite = await window.api.wsServerCreateSessionInvite?.({ mode: isMirror ? 'mirror' : 'session' })
+    if (!invite?.ok || !invite.clientUrl) {
+      showShareInternetBar({ text: invite?.error || 'No se pudo generar la invitación.', canCut: true })
+      return
+    }
+    const copied = await window.api.copyText(invite.clientUrl)
+    const expires = invite.expiresAt ? new Date(invite.expiresAt).toLocaleTimeString() : ''
+    const kindLabel = isMirror ? 'Espejo (tu sesión real)' : 'Invitación para cliente (copia)'
+    showShareInternetBar({
+      text: copied
+        ? `${kindLabel} — enlace copiado, caduca ${expires ? `a las ${expires}` : 'en 10 min'}:`
+        : `${kindLabel} — enlace listo (cópialo a mano):`,
+      url: invite.clientUrl,
+      canCut: true
+    })
+    showStatus(copied ? 'Enlace copiado al portapapeles' : 'Enlace listo', copied ? 'ok' : 'warn', 5000)
+  } catch (err) {
+    showShareInternetBar({ text: errorMessage(err) })
+  } finally {
+    if (btnShareInternet) btnShareInternet.disabled = false
+  }
+}
+
+if (btnShareInternet) {
+  btnShareInternet.addEventListener('click', () => {
+    showShareInternetBar({ text: '¿Qué quieres compartir?', choice: true, canCut: lanServerSnapshot?.tunnel?.state === 'running' })
+  })
+}
+
+if (btnShareMirror) {
+  btnShareMirror.addEventListener('click', () => { shareSessionViaInternet('mirror') })
+}
+
+if (btnShareClient) {
+  btnShareClient.addEventListener('click', () => { shareSessionViaInternet('session') })
+}
+
+if (btnShareInternetCopy) {
+  btnShareInternetCopy.addEventListener('click', async () => {
+    if (!shareInternetUrl?.value) return
+    const copied = await window.api.copyText(shareInternetUrl.value)
+    showStatus(copied ? 'Enlace copiado' : 'No se pudo copiar', copied ? 'ok' : 'warn', 3000)
+  })
+}
+
+if (btnShareInternetCut) {
+  btnShareInternetCut.addEventListener('click', async () => {
+    btnShareInternetCut.disabled = true
+    try {
+      const res = await window.api.lanTunnelStop?.()
+      renderLanStatus(res?.ok !== false ? res : lanServerSnapshot, res?.ok === false ? (res?.error || 'Error') : '')
+      if (shareInternetBar) shareInternetBar.hidden = true
+      showStatus('Acceso por internet cortado', 'ok', 4000)
+    } finally {
+      btnShareInternetCut.disabled = false
+    }
+  })
+}
+
+if (btnShareInternetClose) {
+  btnShareInternetClose.addEventListener('click', () => {
+    // Solo esconde la banda; el túnel sigue como esté (para cortarlo: "Cortar acceso").
+    if (shareInternetBar) shareInternetBar.hidden = true
+  })
+}
+
+if (btnLanTunnel) {
+  btnLanTunnel.addEventListener('click', async () => {
+    btnLanTunnel.disabled = true
+    try {
+      const tunnelRunning = lanServerSnapshot?.tunnel?.state === 'running'
+      if (tunnelRunning) {
+        const res = await window.api.lanTunnelStop?.()
+        renderLanStatus(res?.ok !== false ? res : lanServerSnapshot, res?.ok === false ? (res?.error || 'Error') : '')
+        showStatus('Acceso por internet cortado', 'ok', 4000)
+        return
+      }
+      if (cfgLanTunnelStatus) cfgLanTunnelStatus.textContent = 'Internet: levantando túnel… (unos segundos)'
+      const res = await window.api.lanTunnelStart?.()
+      if (!res?.ok) {
+        const message = res?.error || 'No se pudo levantar el túnel.'
+        renderLanStatus(res || lanServerSnapshot, '')
+        if (cfgLanTunnelStatus) cfgLanTunnelStatus.textContent = `Internet: ${message}`
+        showStatus(message, 'warn', 6000)
+        return
+      }
+      renderLanStatus(res, '')
+      // Túnel arriba: la invitación pública se copia del tirón si hay sesión.
+      await generateAndCopyLanInvite()
+    } catch (err) {
+      const message = errorMessage(err)
+      if (cfgLanTunnelStatus) cfgLanTunnelStatus.textContent = `Internet: ${message}`
+      showStatus(message, 'error', 5000)
+    } finally {
+      btnLanTunnel.disabled = false
     }
   })
 }

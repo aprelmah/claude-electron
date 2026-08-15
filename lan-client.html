@@ -1972,6 +1972,14 @@
     }
 
     function sendResizeToServer(options = {}) {
+      // Espejo: el tamaño lo manda el HOST — jamás redimensionamos su terminal.
+      if (appState.mirrorMode) {
+        const size = appState.mirrorSize || {}
+        if (size.cols && size.rows && (term.cols !== size.cols || term.rows !== size.rows)) {
+          try { term.resize(Math.floor(size.cols), Math.floor(size.rows)) } catch {}
+        }
+        return { cols: term.cols, rows: term.rows }
+      }
       const { cols, rows } = getSafeTerminalSize(options)
       sendMessage({ type: 'resize', cols, rows })
       return { cols, rows }
@@ -3383,6 +3391,14 @@
           }
           appState.sessionInfo = msg
           appState.sessionCapabilities = msg.capabilities || {}
+          appState.mirrorMode = !!msg.mirror
+          appState.mirrorSize = msg.mirror || null
+          if (appState.mirrorMode && msg.mirror.cols && msg.mirror.rows) {
+            try { term.resize(Math.floor(msg.mirror.cols), Math.floor(msg.mirror.rows)) } catch {}
+          }
+          // Espejo: lo que hay que ver es el TERMINAL real, no la vista chat
+          // (en chat el stream del espejo no se pinta y parece que "no va").
+          if (appState.mirrorMode) setChatView('terminal')
           clearAgentReplyIdleTimer()
           appState.chatCaptureEnabled = false
           appState.awaitingAgentReply = false
@@ -3396,7 +3412,7 @@
           if (msg?.context?.request?.effort) refs.effortSelect.value = String(msg.context.request.effort).toLowerCase()
           renderSessionContext()
           updateFsControlState()
-          setHandshakeStatus('ok', 'Identidad aceptada. Sesión lista.', 'ok')
+          setHandshakeStatus('ok', appState.mirrorMode ? 'Espejo del terminal — esto ES tu sesión real.' : 'Identidad aceptada. Sesión lista.', 'ok')
           refs.btnConnect.textContent = 'Salir'
           const roots = Array.isArray(msg?.context?.allowedRoots) ? msg.context.allowedRoots : []
           renderRootSelector(roots.length ? roots : [msg.cwd || ''])

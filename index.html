@@ -234,6 +234,9 @@
       <button id="btn-handoff-terminal" class="icon-btn" title="Llevar esta sesión a Terminal" aria-label="Abrir esta sesión en Terminal">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l4 3-4 3M12 15h6"/></svg>
       </button>
+      <button id="btn-share-internet" class="icon-btn" title="Compartir esta sesión por internet — túnel efímero + invitación de 10 min" aria-label="Compartir esta sesión por internet" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg>
+      </button>
       <button id="btn-voice" class="icon-btn" title="Modo voz — hablar con el agente" aria-label="Activar modo voz" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h2M20 12h2M6 8v8M10 5v14M14 7v10M18 9v6"/></svg>
       </button>
@@ -405,6 +408,15 @@
     <div id="divider"></div>
 
     <div id="terminal-wrap">
+    <div id="share-internet-bar" class="share-internet-bar" hidden>
+      <span id="share-internet-text" class="share-internet-text">—</span>
+      <button id="btn-share-mirror" class="icon-btn small text-btn" type="button" hidden title="Ver y escribir en ESTA sesión desde el móvil — mismo hilo, misma pantalla">🪞 Seguir yo (espejo)</button>
+      <button id="btn-share-client" class="icon-btn small text-btn" type="button" hidden title="Darle a un cliente una copia aislada con el contexto de esta sesión">👥 Invitar a un cliente (copia)</button>
+      <input id="share-internet-url" class="share-internet-url" type="text" readonly hidden />
+      <button id="btn-share-internet-copy" class="icon-btn small text-btn" type="button" hidden>Copiar</button>
+      <button id="btn-share-internet-cut" class="icon-btn small text-btn" type="button" hidden>Cortar acceso</button>
+      <button id="btn-share-internet-close" class="icon-btn small text-btn" type="button" aria-label="Cerrar aviso">✕</button>
+    </div>
     <div id="terminal-toolbar">
       <button id="btn-mic" class="action icon-btn small" title="Dictado por voz (Cmd+Shift+M)" aria-label="Dictado por voz" aria-pressed="false">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 1 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
@@ -766,7 +778,9 @@
           <div id="cfg-lan-qr" class="settings-note">QR no disponible</div>
           <button id="btn-lan-share-session" class="btn btn-ghost" type="button">Copiar invitación de la sesión actual</button>
           <div id="cfg-lan-share-status" class="settings-note">La invitación dura 10 minutos y admite hasta 3 aperturas.</div>
-          <div class="settings-note">Para salir de tu red, rellena estas dos URLs con un Cloudflare Tunnel + Access. No abras el puerto en el router.</div>
+          <button id="btn-lan-tunnel" class="btn btn-ghost" type="button">🌐 Compartir por internet</button>
+          <div id="cfg-lan-tunnel-status" class="settings-note">Internet: apagado. Un clic crea un túnel efímero de Cloudflare; la URL cambia en cada arranque.</div>
+          <div class="settings-note">Las dos URLs públicas de arriba solo hacen falta para un túnel propio permanente (Cloudflare Tunnel + Access). No abras el puerto en el router.</div>
         </div>
 
         <div class="settings-group">

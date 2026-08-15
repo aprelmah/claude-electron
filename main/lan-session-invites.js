@@ -32,6 +32,16 @@ function isSafeInviteToken(value) {
   return /^[A-Za-z0-9_-]{40,120}$/.test(String(value || ''))
 }
 
+// Espejo: la invitación no resume nada — engancha al PTY VIVO del terminal via
+// un id efímero que main.js registra al crearla. Sin cwd ni sessionId.
+function normalizeMode(value) {
+  return trim(value, 20).toLowerCase() === 'mirror' ? 'mirror' : 'session'
+}
+
+function isSafeMirrorId(value) {
+  return /^[A-Za-z0-9_-]{10,80}$/.test(String(value || ''))
+}
+
 function normalizeTtl(value, fallback = DEFAULT_TTL_MS) {
   const ttl = Number(value)
   if (!Number.isFinite(ttl)) return fallback
@@ -51,13 +61,19 @@ function createLanSessionInvites(options = {}) {
     : (size) => crypto.randomBytes(size)
   const entries = new Map()
 
-  function create({ cwd, sessionId, cli, label, ttlMs, maxUses } = {}) {
+  function create({ cwd, sessionId, cli, label, ttlMs, maxUses, mode, mirrorId } = {}) {
+    const normalizedMode = normalizeMode(mode)
     const normalizedCwd = normalizeCwd(cwd)
     const normalizedSessionId = normalizeSessionId(sessionId)
     const normalizedCli = normalizeCli(cli)
-    if (!normalizedCwd) throw new Error('La carpeta de la sesión no es válida.')
-    if (!normalizedSessionId) throw new Error('El ID de sesión no es válido.')
-    if (!normalizedCli) throw new Error('El CLI de la sesión no es válido.')
+    const normalizedMirrorId = trim(mirrorId, 80)
+    if (normalizedMode === 'mirror') {
+      if (!isSafeMirrorId(normalizedMirrorId)) throw new Error('El identificador del espejo no es válido.')
+    } else {
+      if (!normalizedCwd) throw new Error('La carpeta de la sesión no es válida.')
+      if (!normalizedSessionId) throw new Error('El ID de sesión no es válido.')
+      if (!normalizedCli) throw new Error('El CLI de la sesión no es válido.')
+    }
 
     let token = ''
     do {
@@ -67,6 +83,8 @@ function createLanSessionInvites(options = {}) {
     const createdAt = Number(now()) || Date.now()
     const expiresAt = createdAt + normalizeTtl(ttlMs)
     const entry = {
+      mode: normalizedMode,
+      mirrorId: normalizedMode === 'mirror' ? normalizedMirrorId : '',
       cwd: normalizedCwd,
       sessionId: normalizedSessionId,
       cli: normalizedCli,
@@ -93,6 +111,8 @@ function createLanSessionInvites(options = {}) {
     entry.uses += 1
     if (entry.uses >= entry.maxUses) entries.delete(key)
     return {
+      mode: entry.mode || 'session',
+      mirrorId: entry.mirrorId || '',
       cwd: entry.cwd,
       sessionId: entry.sessionId,
       cli: entry.cli,
