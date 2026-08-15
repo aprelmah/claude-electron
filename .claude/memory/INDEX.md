@@ -13,6 +13,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 ## Runbooks por subsistema (operativo vigente, movido del CLAUDE.md el 2026-08-09)
 
 - `tech/runbook_execution_policy_delegations.md` — política de ejecución, registro de skills y delegaciones: límites, persistencia y worktrees (09-08-2026).
+- `tech/tech_logica_en_ipc_handle_sin_cobertura.md` — la suite corre sin Electron, así que lo que decide dentro de un `ipcMain.handle` es invisible para CI. Leer al añadir lógica a un handler o cuando pienses "esto solo puedo comprobarlo abriendo la app" (15-08-2026).
 - `tech/runbook_relay_telegram.md` — relay claude por JSONL, forks del sessionId y sus guardas, badge de modelo, auto-update de CLIs. Leer antes de tocar relay/sesiones/PTY.
 - `tech/runbook_git_por_sesion.md` — aislamiento git por worktree, finalize, regla para spawns nuevos, limitaciones. Leer antes de añadir cualquier spawn.
 - `tech/runbook_modo_voz.md` — modo voz completo: motor, helper Swift, endpointing, lectura a trozos, cola de habla. Leer antes de tocar voz.
@@ -47,6 +48,7 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 ## Bugs resueltos (leer si reaparece el síntoma)
 
 - `bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md` — `SAFE_LAN` descartaba en silencio las URLs públicas del túnel: los campos se vaciaban al guardar. Leer antes de añadir cualquier campo de config que envíe el renderer, y si un botón "parece copiar mal" (el portapapeles conserva lo anterior cuando la acción falla). Trae el gotcha de verificar WebSockets con `curl --http1.1` (13-08-2026).
+- `bugs/bug_lan_token_enlace_publico_2026_08_15.md` — el Bearer permanente viajaba dentro del enlace público del túnel (lo destapó arreglar la allowlist). Leer antes de tocar `buildClientUrl` o cualquier enlace compartible, y antes de imprimir URLs al verificar: aquí está la regla de enmascarar secretos y cómo rotar el `authToken` (15-08-2026).
 - `bugs/bug_kb_conocimiento_zombi_2026_08_13.md` — fichas y casos borrados resucitaban en la sesión siguiente (el worktree nace de HEAD). Leer antes de tocar `session-git.js`/`kb-git.js`, o si un agente vuelve a citar conocimiento retirado. Trae también la trampa de verificación: `pty-start` es idempotente (13-08-2026).
 - `bugs/bug_flake_apple_transcribe_voice_note_2026_08_10.md` — flake intermitente `cancelledByParent` en esos dos tests, sin relación con lo que se toque; SIN resolver, solo documentado (10-08-2026).
 - `bugs/bug_task_manager_skills_multiselect_2026_08_09.md` — selector nativo múltiple de skills difícil de limpiar en macOS y corrección visual (09-08-2026).
