@@ -22,20 +22,19 @@
 // ESPACIOS, así que todo patrón contra la pantalla de codex se compara sobre el
 // texto normalizado sin espacios. Buscar la frase con espacios no encuentra nada.
 
+// stripAnsi completo (OSC, ESC sueltos y controles C0): un residuo ANSI en el
+// texto normalizado rompe el match contra el TUI, así que se usa el de
+// agent-pty-proposal en vez de una copia débil local.
+const { stripAnsi } = require('./agent-pty-proposal')
+
 const MENU_TITLE = 'Chooseworkingdirectorytoresumethissession'
 const CURRENT_OPTION = /(\d+)\.Usecurrentdirectory/
 const ACTIVE_WRITER = 'alreadyhasanactivewriter'
 const MAX_BUFFER = 8192
 
-function stripAnsi(text) {
-  return String(text)
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-}
-
 // Sin ANSI y sin espacios: así el texto es estable pese al pintado por celdas.
 function normalize(text) {
-  return stripAnsi(text).replace(/\s+/g, '')
+  return stripAnsi(String(text)).replace(/\s+/g, '')
 }
 
 // Un chunk del PTY puede cortar una secuencia ANSI por la mitad (`\x1b[9;1` +

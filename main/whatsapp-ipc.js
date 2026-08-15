@@ -6,6 +6,7 @@ const path = require('path')
 const { spawnSync } = require('child_process')
 const { atomicWriteFileSync } = require('./atomic-writes')
 const { isPathSafe } = require('./path-sandbox')
+const { normalizeBridgeAction, runBridgeControl } = require('./whatsapp-bridge-control')
 const waKb = require('../whatsapp/whatsapp-kb')
 
 // Directorio de fichas de la base de conocimiento. Los ids se validan con regex
@@ -98,16 +99,6 @@ function getBridgeServiceStatus() {
   }
 }
 
-function isBenignBootoutFailure(message) {
-  const s = String(message || '').toLowerCase()
-  return s.includes('could not find') || s.includes('no such process') || s.includes('not loaded')
-}
-
-function isBenignBootstrapFailure(message) {
-  const s = String(message || '').toLowerCase()
-  return s.includes('already') || s.includes('in progress') || s.includes('input/output error')
-}
-
 function mediaFileNameFromUrl(mediaUrl) {
   const raw = String(mediaUrl || '').trim()
   if (!raw) return ''
@@ -174,8 +165,10 @@ function registerWhatsappIpc({
   })
 
   ipcMain.handle('whatsapp:bridge-control', async (_e, actionRaw) => {
-    const action = String(actionRaw || '').trim().toLowerCase()
-    if (!['start', 'stop', 'restart'].includes(action)) {
+    // La decisión (escalera + clasificación benigno/error) vive en
+    // whatsapp-bridge-control.js, que sí cubre CI; aquí solo se ejecuta.
+    const action = normalizeBridgeAction(actionRaw)
+    if (!action) {
       return { ok: false, error: 'Acción inválida', bridge: getBridgeServiceStatus() }
     }
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
@@ -183,50 +176,16 @@ function registerWhatsappIpc({
     const serviceTarget = `${domain}/${WA_BRIDGE_LABEL}`
     const client = getClient()
 
-    function stopClientSafe() {
-      try { client?.stop?.() } catch {}
-    }
-    function startClientSafe() {
-      try { client?.start?.() } catch {}
-    }
-
-    function stopService() {
-      stopClientSafe()
-      const byLabel = launchctlExec(['bootout', serviceTarget])
-      if (byLabel.ok) return { ok: true, step: 'bootout-label', run: byLabel }
-      const msg1 = `${byLabel.error || ''} ${byLabel.stderr || ''}`.trim()
-      if (isBenignBootoutFailure(msg1)) return { ok: true, step: 'bootout-label-benign', run: byLabel }
-      const byPlist = launchctlExec(['bootout', domain, WA_BRIDGE_PLIST])
-      if (byPlist.ok) return { ok: true, step: 'bootout-plist', run: byPlist }
-      const msg2 = `${byPlist.error || ''} ${byPlist.stderr || ''}`.trim()
-      if (isBenignBootoutFailure(msg2)) return { ok: true, step: 'bootout-plist-benign', run: byPlist }
-      return { ok: false, step: 'bootout-failed', run: byPlist, error: msg2 || msg1 || 'bootout failed' }
-    }
-
-    function startService() {
-      const bootstrap = launchctlExec(['bootstrap', domain, WA_BRIDGE_PLIST])
-      const bootstrapMsg = `${bootstrap.error || ''} ${bootstrap.stderr || ''}`.trim()
-      if (!bootstrap.ok && !isBenignBootstrapFailure(bootstrapMsg)) {
-        return { ok: false, step: 'bootstrap-failed', run: bootstrap, error: bootstrapMsg || 'bootstrap failed' }
-      }
-      const kickstart = launchctlExec(['kickstart', '-k', serviceTarget])
-      if (!kickstart.ok) {
-        const msg = `${kickstart.error || ''} ${kickstart.stderr || ''}`.trim()
-        return { ok: false, step: 'kickstart-failed', run: kickstart, error: msg || 'kickstart failed' }
-      }
-      startClientSafe()
-      return { ok: true, step: 'kickstart', run: kickstart }
-    }
-
     try {
-      let op = null
-      if (action === 'stop') op = stopService()
-      else if (action === 'start') op = startService()
-      else {
-        const stopped = stopService()
-        if (!stopped.ok) op = stopped
-        else op = startService()
-      }
+      const op = runBridgeControl({
+        action,
+        exec: launchctlExec,
+        domain,
+        serviceTarget,
+        plistPath: WA_BRIDGE_PLIST,
+        stopClient: () => { client?.stop?.() },
+        startClient: () => { client?.start?.() }
+      })
       const bridge = getBridgeServiceStatus()
       if (!op || !op.ok) {
         return { ok: false, error: op?.error || 'Operación fallida', step: op?.step || '', bridge }
