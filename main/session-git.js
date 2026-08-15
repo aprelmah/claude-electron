@@ -59,7 +59,15 @@ function createSessionGit({
 
   const slugFor = worktreeSlugFor
 
-  async function prepareSessionWorkspace({ realCwd }) {
+  // prepare comparte la cola por repo del finalize: ensureKbCommitted hace
+  // add+commit en el repo real y `worktree add` toca el mismo index — un
+  // prepare concurrente con un finalize (o con otro prepare) compiten por el
+  // index.lock y el perdedor degrada la sesión sin motivo real.
+  function prepareSessionWorkspace({ realCwd } = {}) {
+    return enqueuePorRepo(String(realCwd || ''), () => doPrepareSessionWorkspace({ realCwd }))
+  }
+
+  async function doPrepareSessionWorkspace({ realCwd }) {
     try {
       if (!realCwd) return null
       // isEnabled recibe el cwd real: el aislamiento puede estar apagado
@@ -111,6 +119,10 @@ function createSessionGit({
       return { key, realCwd, branch, worktreePath, workCwd }
     } catch (err) {
       log.warn?.(`[session-git] prepare falló (${realCwd}): ${err?.message || err}`)
+      // Invariante "arranca SIN aislar y AVISA": cualquier fallo real
+      // (worktree add, index.lock…) degrada igual que el kb sin commitear;
+      // en silencio el usuario no sabe que su sesión corre sin red.
+      try { onDegraded?.({ realCwd, reason: 'prepare-error', detail: String(err?.message || err) }) } catch { /* mejor esfuerzo */ }
       return null
     }
   }
@@ -159,21 +171,25 @@ function createSessionGit({
     }
   }
 
-  // Cola por repo: dos finalize simultáneos sobre el mismo realCwd (varias
+  // Cola por repo: operaciones simultáneas sobre el mismo realCwd (varias
   // ventanas, LAN + local, recovery al arrancar) se serializan para no
-  // pisarse el index.lock ni producir falsos conflictos.
-  const finalizeQueues = new Map()
+  // pisarse el index.lock ni producir falsos conflictos. La comparten
+  // finalize Y prepare: ambos escriben en el index del repo real.
+  const repoQueues = new Map()
 
-  function finalizeSessionWorkspace(ws) {
-    const queueKey = String(ws?.realCwd || '')
-    const prev = finalizeQueues.get(queueKey) || Promise.resolve()
-    const run = prev.then(() => doFinalizeSessionWorkspace(ws))
+  function enqueuePorRepo(queueKey, fn) {
+    const prev = repoQueues.get(queueKey) || Promise.resolve()
+    const run = prev.then(fn)
     const tracked = run.catch(() => { /* la cola nunca se rompe */ })
-    finalizeQueues.set(queueKey, tracked)
+    repoQueues.set(queueKey, tracked)
     tracked.then(() => {
-      if (finalizeQueues.get(queueKey) === tracked) finalizeQueues.delete(queueKey)
+      if (repoQueues.get(queueKey) === tracked) repoQueues.delete(queueKey)
     })
     return run
+  }
+
+  function finalizeSessionWorkspace(ws) {
+    return enqueuePorRepo(String(ws?.realCwd || ''), () => doFinalizeSessionWorkspace(ws))
   }
 
   async function doFinalizeSessionWorkspace(ws) {

@@ -154,3 +154,131 @@ test('dos prepare sobre el mismo repo dan worktrees y ramas distintos', async ()
   assert.notEqual(w1.branch, w2.branch)
   assert.notEqual(w1.worktreePath, w2.worktreePath)
 })
+
+// ── Invariante "arranca SIN aislar y AVISA" también en el catch-all ──
+// El aviso existía solo para el kb sin commitear; un worktree add roto o un
+// index.lock ajeno degradaban la sesión en silencio.
+
+test('si prepare revienta (worktree add, index.lock…), degrada AVISANDO, no en silencio', async () => {
+  const repo = initRepo()
+  // worktreesRoot cuelga de un FICHERO: mkdirSync lanza y cae en el catch-all,
+  // igual que lo haría un `worktree add` fallido.
+  const fichero = path.join(mkTmp('sg-file-'), 'ocupado')
+  fs.writeFileSync(fichero, 'x')
+  const avisos = []
+  const sg = createSessionGit({
+    worktreesRoot: path.join(fichero, 'sub'),
+    looksRemotePath: () => false,
+    isEnabled: () => true,
+    log: { warn: () => {} },
+    onDegraded: (info) => avisos.push(info)
+  })
+
+  const ws = await sg.prepareSessionWorkspace({ realCwd: repo })
+
+  assert.equal(ws, null, 'fail-open: la sesión arranca sin aislar')
+  assert.equal(avisos.length, 1, 'la degradación tiene que avisar')
+  assert.equal(avisos[0].realCwd, repo)
+  assert.equal(avisos[0].reason, 'prepare-error', 'reason distinguible del kb-sin-commitear')
+  assert.ok(avisos[0].detail, 'el detalle lleva el error real')
+})
+
+test('los "no aplica" (sin repo, deshabilitado, remoto) NO son degradación: cero avisos', async () => {
+  const avisos = []
+  const mk = (ov = {}) => makeSg({ onDegraded: (i) => avisos.push(i), ...ov })
+  assert.equal(await mk().prepareSessionWorkspace({ realCwd: mkTmp('sg-plain-') }), null)
+  assert.equal(await mk({ isEnabled: () => false }).prepareSessionWorkspace({ realCwd: initRepo() }), null)
+  assert.equal(await mk({ looksRemotePath: () => true }).prepareSessionWorkspace({ realCwd: initRepo() }), null)
+  assert.equal(avisos.length, 0)
+})
+
+// ── Carrera prepare/finalize: comparten el index.lock del repo real ──
+// Se prueba con stubs (sin git real): lo que se verifica es la SERIALIZACIÓN —
+// nunca hay dos operaciones git en vuelo sobre el mismo repo.
+
+// Cada llamada git tarda 10ms y cuenta cuántas hay en vuelo a la vez; dentro
+// de una operación son secuenciales (await), así que max > 1 solo puede venir
+// de dos operaciones interfoliadas.
+function makeRastreadorGit() {
+  let enVuelo = 0
+  const estado = { max: 0 }
+  const paso = () => new Promise((resolve) => {
+    enVuelo++
+    estado.max = Math.max(estado.max, enVuelo)
+    setTimeout(() => { enVuelo--; resolve() }, 10)
+  })
+  const execFileImpl = (cmd, args, opts, cb) => {
+    paso().then(() => {
+      let out = ''
+      if (args[0] === 'rev-parse') {
+        if (args.includes('--is-inside-work-tree')) out = 'true'
+        else if (args.includes('--show-prefix')) out = ''
+        else out = 'deadbeef' // rama y HEAD iguales → finalize sale por 'clean'
+      }
+      cb(null, out, '')
+    })
+  }
+  return { estado, paso, execFileImpl }
+}
+
+function makeSgRastreado(rastreador) {
+  return createSessionGit({
+    worktreesRoot: mkTmp('sg-wt-'),
+    looksRemotePath: () => false,
+    isEnabled: () => true,
+    execFileImpl: rastreador.execFileImpl,
+    // El add+commit del conocimiento también toca el index del repo real.
+    ensureKbCommitted: () => rastreador.paso().then(() => ({ ok: true })),
+    log: { warn: () => {} }
+  })
+}
+
+test('un prepare concurrente con un finalize sobre el mismo repo se serializa', async () => {
+  const rastreador = makeRastreadorGit()
+  const repo = mkTmp('sg-race-')
+  const sg = makeSgRastreado(rastreador)
+  const viejo = {
+    key: 'k',
+    realCwd: repo,
+    branch: 'poweragent/session-k',
+    worktreePath: path.join(repo, 'wt'),
+    workCwd: path.join(repo, 'wt')
+  }
+
+  const [prep, fin] = await Promise.all([
+    sg.prepareSessionWorkspace({ realCwd: repo }),
+    sg.finalizeSessionWorkspace(viejo)
+  ])
+
+  assert.ok(prep, 'prepare termina bien')
+  assert.equal(fin.outcome, 'clean')
+  assert.equal(rastreador.estado.max, 1,
+    `prepare y finalize compiten por el index.lock: ${rastreador.estado.max} operaciones git a la vez`)
+})
+
+test('dos prepare a la vez sobre el mismo repo tampoco compiten', async () => {
+  const rastreador = makeRastreadorGit()
+  const repo = mkTmp('sg-race2-')
+  const sg = makeSgRastreado(rastreador)
+
+  const [w1, w2] = await Promise.all([
+    sg.prepareSessionWorkspace({ realCwd: repo }),
+    sg.prepareSessionWorkspace({ realCwd: repo })
+  ])
+
+  assert.ok(w1 && w2)
+  assert.notEqual(w1.worktreePath, w2.worktreePath)
+  assert.equal(rastreador.estado.max, 1)
+})
+
+test('la cola es por repo: repos distintos siguen en paralelo', async () => {
+  const rastreador = makeRastreadorGit()
+  const sg = makeSgRastreado(rastreador)
+
+  await Promise.all([
+    sg.prepareSessionWorkspace({ realCwd: mkTmp('sg-race-a-') }),
+    sg.prepareSessionWorkspace({ realCwd: mkTmp('sg-race-b-') })
+  ])
+
+  assert.ok(rastreador.estado.max >= 2, 'una cola global bloquearía repos que no comparten index')
+})
