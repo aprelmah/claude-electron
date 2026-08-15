@@ -7,6 +7,7 @@ const fs = require('fs')
 const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
 const { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick, pickDropped } = require('./main/app-config-allowlists')
+const { decideLanServerAction } = require('./main/lan-server-action')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createNotifier } = require('./main/native-notify')
@@ -4752,15 +4753,18 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   }
   broadcastTelegramStatus()
   if (Object.prototype.hasOwnProperty.call(partial, 'lanServer')) {
-    const wantsEnabled = !!appConfig.lanServer?.enabled
     const nextPort = clampLanPort(appConfig.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
-    const wasRunning = getLanServerStatus().running
-    if (!wantsEnabled) {
+    // La decisión vive en main/lan-server-action.js para que la suite la cubra
+    // sin Electron: reiniciar de más corta las sesiones remotas y anula invites.
+    const { action } = decideLanServerAction({
+      enabled: !!appConfig.lanServer?.enabled,
+      running: getLanServerStatus().running,
+      previousPort: previousLanPort,
+      nextPort
+    })
+    if (action === 'stop') {
       try { await stopLanServer({ persist: false }) } catch {}
-    } else if (!wasRunning || nextPort !== previousLanPort) {
-      // Solo aquí: arrancar por primera vez o cambiar de puerto. Las URLs
-      // públicas del túnel se leen por getter en caliente (getPublicClientUrl /
-      // getPublicWsUrl), así que cambiarlas NO necesita reinicio.
+    } else if (action === 'start') {
       try {
         await startLanServer({ port: nextPort, persist: false })
       } catch (err) {
