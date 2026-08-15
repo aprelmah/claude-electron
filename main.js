@@ -29,6 +29,8 @@ const {
 const { createTranscriber } = require('./main/whisper-transcribe')
 const { normalizeGraphRootPath } = require('./main/graph-builder')
 const { computeProjectGraphAsync } = require('./main/graph-worker-client')
+const { retitleTranscript } = require('./main/retitle-transcript')
+const { decideExtractRunner } = require('./main/extract-runner')
 const {
   stripAnsi,
   flattenTerminal,
@@ -4531,49 +4533,10 @@ ipcMain.handle('update-session-title', async (_event, { cwd, sessionId, title })
       if (err && err.code === 'ENOENT') return { ok: false, error: 'No encontré el archivo de sesión.' }
       throw err
     }
-    const hadTrailingNl = raw.endsWith('\n')
-    const lines = raw.split('\n')
-    let updated = false
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      if (!line.trim()) continue
-      let obj
-      try { obj = JSON.parse(line) } catch { continue }
-      if (obj?.type !== 'user' || !obj?.message) continue
-
-      const currentText = extractTurnText(obj).replace(/<[^>]+>/g, '').trim()
-      if (!currentText || currentText.startsWith('Caveat:')) continue
-
-      const content = obj.message.content
-      if (typeof content === 'string') {
-        obj.message.content = nextTitle
-      } else if (Array.isArray(content)) {
-        let replaced = false
-        const nextContent = content.map((block) => {
-          if (!replaced && block && typeof block === 'object' && block.type === 'text') {
-            replaced = true
-            return { ...block, text: nextTitle }
-          }
-          return block
-        })
-        if (!replaced) nextContent.unshift({ type: 'text', text: nextTitle })
-        obj.message.content = nextContent
-      } else {
-        obj.message.content = nextTitle
-      }
-
-      lines[i] = JSON.stringify(obj)
-      updated = true
-      break
-    }
-
+    const { updated, text: finalText } = retitleTranscript(raw, nextTitle)
     if (!updated) {
       return { ok: false, error: 'No encontré un mensaje de usuario para renombrar en esta sesión.' }
     }
-
-    const out = lines.join('\n')
-    const finalText = hadTrailingNl ? (out.endsWith('\n') ? out : `${out}\n`) : out
     await atomicWriteFileAsync(file, finalText, 'utf-8')
     let stat = null
     try { stat = await fs.promises.stat(file) } catch {}
@@ -5283,30 +5246,16 @@ ipcMain.handle('automation-pty:extract', async (event, { runner } = {}) => {
   // Quédate con los últimos 80k chars: la propuesta final estará al final.
   const transcript = clean.length > 80000 ? clean.slice(-80000) : clean
 
-  const useRunner = runner === 'codex' ? 'codex' : 'claude'
+  const decision = decideExtractRunner(runner, ensureCliAvailable)
+  if (!decision.ok) return { ok: false, error: decision.error }
   const prompt = buildExtractPrompt(transcript)
 
   let result
   try {
-    if (useRunner === 'codex') {
-      const check = ensureCliAvailable('codex')
-      if (!check.ok) {
-        // Fallback automático a claude.
-        const checkC = ensureCliAvailable('claude')
-        if (!checkC.ok) return { ok: false, error: check.error + ' / ' + checkC.error }
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
-      } else {
-        result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
-      }
+    if (decision.runner === 'codex') {
+      result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
     } else {
-      const check = ensureCliAvailable('claude')
-      if (!check.ok) {
-        const checkX = ensureCliAvailable('codex')
-        if (!checkX.ok) return { ok: false, error: check.error + ' / ' + checkX.error }
-        result = await runCodexHeadless({ prompt, cwd: s.cwd, origin: 'extractor' })
-      } else {
-        result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
-      }
+      result = await runClaudeHeadless({ prompt, cwd: s.cwd, model: getClaudeModel(), origin: 'extractor' })
     }
   } catch (err) {
     return { ok: false, error: 'Headless falló: ' + (err?.message || String(err)) }
