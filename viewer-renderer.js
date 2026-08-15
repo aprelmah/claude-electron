@@ -37,6 +37,15 @@
     return parts[parts.length - 1] || p
   }
 
+  function escapeHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
   function setDirty(d) {
     state.dirty = d
     if (d) {
@@ -136,12 +145,12 @@
     try {
       res = await window.api.fileRead(p)
     } catch (err) {
-      el.host.innerHTML = `<div id="binary-msg"><strong>Error</strong><span>${String(err && err.message || err)}</span></div>`
+      el.host.innerHTML = `<div id="binary-msg"><strong>Error</strong><span>${escapeHtml(String(err && err.message || err))}</span></div>`
       return
     }
 
     if (!res || !res.ok) {
-      el.host.innerHTML = `<div id="binary-msg"><strong>Error</strong><span>${(res && res.error) || 'No se pudo leer el archivo'}</span></div>`
+      el.host.innerHTML = `<div id="binary-msg"><strong>Error</strong><span>${escapeHtml((res && res.error) || 'No se pudo leer el archivo')}</span></div>`
       return
     }
 

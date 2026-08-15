@@ -1,6 +1,18 @@
 // ── Window id (per-window localStorage scoping) ──
 const WID = new URLSearchParams(location.search).get('wid') || '0'
 
+// Helper GLOBAL de escape para innerHTML — lo usa también kb-panel.js (los
+// <script> de index.html comparten ámbito; declaración function para no chocar
+// con las copias locales dentro de IIFEs, que simplemente lo sombrean).
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
 // ── DOM ──
 const btnTheme = document.getElementById('btn-theme')
 const btnNewWindow = document.getElementById('btn-new-window')
@@ -715,8 +727,8 @@ function renderHealthPopoverRows(health) {
   healthPopoverList.innerHTML = rows.map((row) => (
     `<div class="health-popover-row">
       <span class="health-dot state-${row.dot}"></span>
-      <span class="health-popover-service">${row.name}</span>
-      <span class="health-popover-detail" title="${row.detail.replace(/"/g, '&quot;')}">${row.detail}</span>
+      <span class="health-popover-service">${escapeHtml(row.name)}</span>
+      <span class="health-popover-detail" title="${escapeHtml(row.detail)}">${escapeHtml(row.detail)}</span>
     </div>`
   )).join('')
 }
@@ -1658,7 +1670,7 @@ function renderEnterpriseLists() {
       item.className = 'enterprise-item' + ((enterpriseSelection.type === 'role' && enterpriseSelection.id === role.id) ? ' active' : '')
       const enabledPermCount = ENTERPRISE_PERMISSION_KEYS.filter((key) => role.permissions?.[key]).length
       item.innerHTML = `
-        <div class="enterprise-item-title">${role.name || role.id}</div>
+        <div class="enterprise-item-title">${escapeHtml(role.name || role.id)}</div>
         <div class="enterprise-item-meta">${role.id} · ${enabledPermCount} permisos · roots ${role.allowedRoots.length}</div>
       `
       item.addEventListener('click', () => {
@@ -1679,7 +1691,7 @@ function renderEnterpriseLists() {
       const profileLabel = operator.defaultProfileId || 'sin-perfil'
       const modeLabel = operator.enabled ? 'ON' : 'OFF'
       item.innerHTML = `
-        <div class="enterprise-item-title">${operator.name || operator.id}</div>
+        <div class="enterprise-item-title">${escapeHtml(operator.name || operator.id)}</div>
         <div class="enterprise-item-meta">${operator.id} · ${operator.username || '-'} · ${roleLabel} · ${profileLabel} · ${modeLabel}</div>
       `
       item.addEventListener('click', () => {
@@ -4545,7 +4557,7 @@ async function openSessions() {
           <span class="meta-time"></span>
           <span class="meta-msgs"></span>
           <span class="meta-size"></span>
-          <span class="meta-id" title="${s.id}">${s.id.slice(0, 8)}…</span>
+          <span class="meta-id" title="${escapeHtml(s.id)}">${escapeHtml(s.id.slice(0, 8))}…</span>
         </div>
       </div>
       <div class="session-actions">

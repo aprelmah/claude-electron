@@ -276,7 +276,8 @@
     const data = await window.api.kb.list(currentCwd)
     casosList.innerHTML = ''
     if (!data.ok) {
-      casosList.innerHTML = `<div class="kb-list-empty">${data.error}</div>`
+      // escapeHtml es el global de renderer.js (misma página, ámbito compartido)
+      casosList.innerHTML = `<div class="kb-list-empty">${escapeHtml(data.error)}</div>`
       return
     }
     const entries = data.shortcuts?.entries || []
@@ -351,7 +352,7 @@
     const data = await window.api.kb.list(currentCwd)
     fichasList.innerHTML = ''
     if (!data.ok) {
-      fichasList.innerHTML = `<div class="kb-list-empty">${data.error}</div>`
+      fichasList.innerHTML = `<div class="kb-list-empty">${escapeHtml(data.error)}</div>`
       return
     }
     const atajosRelPath = data.shortcuts?.relPath
