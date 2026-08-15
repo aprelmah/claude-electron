@@ -8,6 +8,7 @@ const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
 const { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick, pickDropped } = require('./main/app-config-allowlists')
 const { decideLanServerAction } = require('./main/lan-server-action')
+const { createLanTunnelManager } = require('./main/lan-tunnel')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createNotifier } = require('./main/native-notify')
@@ -20,6 +21,7 @@ const {
   USER_LOCAL_BIN,
   PYTHON39_BIN,
   HOMEBREW_BIN,
+  FALLBACK_CLOUDFLARED_BIN,
   LATEST_NVM_NODE_BIN,
   FALLBACK_CLAUDE_BIN,
   FALLBACK_CODEX_BIN,
@@ -317,6 +319,16 @@ let whatsappReachable = false
 let whatsappRetryTimer = null
 let autoUpdater = null
 let lanWsServer = null
+// Túnel efímero "Compartir por internet": sus URLs mandan sobre las de la
+// config mientras está vivo y JAMÁS se persisten (ver main/lan-tunnel.js).
+const lanTunnel = createLanTunnelManager({
+  getPorts: () => {
+    const status = getLanServerStatus()
+    return { wsPort: status.port, httpPort: status.httpPort }
+  },
+  cloudflaredBin: FALLBACK_CLOUDFLARED_BIN,
+  log: (message) => console.log(message)
+})
 const autoUpdateState = {
   available: false,
   downloaded: false
@@ -781,8 +793,9 @@ function ensureLanWsServer() {
     logger: (message) => console.log(message),
     onAuditEvent: (event) => logLanAuditSemantic(event),
     getAuthToken: () => ensureLanAuthToken(),
-    getPublicClientUrl: () => appConfig?.lanServer?.publicClientUrl || '',
-    getPublicWsUrl: () => appConfig?.lanServer?.publicWsUrl || '',
+    // El túnel efímero, si está vivo, manda sobre las URLs configuradas.
+    getPublicClientUrl: () => lanTunnel.getPublicClientUrl() || appConfig?.lanServer?.publicClientUrl || '',
+    getPublicWsUrl: () => lanTunnel.getPublicWsUrl() || appConfig?.lanServer?.publicWsUrl || '',
     // Getters: sessionGit/sessionGitMap son `let` inicializados en onReady,
     // después de crear el servidor. La resolución perezosa evita capturar null.
     sessionGit: () => sessionGit,
@@ -822,6 +835,8 @@ async function startLanServer(options = {}) {
 
 async function stopLanServer(options = {}) {
   const server = lanWsServer
+  // Sin servidor no hay nada que proxear: el túnel muere con él.
+  try { lanTunnel.stop() } catch {}
   if (server && server.isRunning()) {
     await server.stop()
   }
@@ -842,6 +857,7 @@ function getLanServerStatus() {
       publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
       publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
       publicUrlWarning: null,
+      tunnel: lanTunnel.getStatus(),
       sessions: []
     }
   }
@@ -856,6 +872,7 @@ function getLanServerStatus() {
     publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
     publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
     publicUrlWarning: status.publicUrlWarning || null,
+    tunnel: lanTunnel.getStatus(),
     sessions: Array.isArray(status.sessions) ? status.sessions : []
   }
 }
@@ -3977,6 +3994,7 @@ app.on('before-quit', (event) => {
   if (quitFinalizeHandled) return
   globalShortcut.unregisterAll()
   pauseAgentProposalPolling()
+  try { lanTunnel.stop() } catch {}
   try { lanWsServer?.stop() } catch {}
   for (const s of sessions.values()) killPty(s)
   for (const s of agentPtySessions.values()) killAgentPty(s)
@@ -4890,6 +4908,7 @@ registerWsServerIpc({
   getLanServerStatus,
   createLanSessionInvite,
   getLanWsServer: () => lanWsServer,
+  getLanTunnel: () => lanTunnel,
   clampLanPort,
   getAppConfig: () => appConfig,
   DEFAULT_LAN_WS_PORT

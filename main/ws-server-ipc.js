@@ -7,6 +7,7 @@ function registerWsServerIpc({
   getLanServerStatus,
   createLanSessionInvite,
   getLanWsServer,
+  getLanTunnel,
   clampLanPort,
   getAppConfig,
   DEFAULT_LAN_WS_PORT
@@ -47,11 +48,31 @@ function registerWsServerIpc({
     return { ok: true, ...getLanServerStatus() }
   })
 
-  ipcMain.handle('ws-server:create-session-invite', async (event) => {
+  ipcMain.handle('ws-server:create-session-invite', async (event, payload = {}) => {
     try {
-      return createLanSessionInvite(event)
+      return createLanSessionInvite(event, payload)
     } catch (err) {
       return { ok: false, error: err?.message || String(err) }
+    }
+  })
+
+  // Túnel efímero (botón "Compartir por internet"). Handlers finos a propósito:
+  // todo lo que decide vive en main/lan-tunnel.js, que la suite cubre sin Electron.
+  ipcMain.handle('lan-tunnel:start', async () => {
+    try {
+      const result = await getLanTunnel().start({ serverRunning: !!getLanServerStatus().running })
+      return { ...result, ...getLanServerStatus() }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
+    }
+  })
+
+  ipcMain.handle('lan-tunnel:stop', async () => {
+    try {
+      getLanTunnel().stop()
+      return { ok: true, ...getLanServerStatus() }
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err), ...getLanServerStatus() }
     }
   })
 }
