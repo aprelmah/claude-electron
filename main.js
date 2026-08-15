@@ -6,7 +6,7 @@ const os = require('os')
 const fs = require('fs')
 const http = require('http')
 const { atomicWriteJsonSync, atomicWriteFileSync, atomicWriteFileAsync } = require('./main/atomic-writes')
-const { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick } = require('./main/app-config-allowlists')
+const { SAFE_CLI, SAFE_TELEGRAM, SAFE_LAN, pick, pickDropped } = require('./main/app-config-allowlists')
 const { isPathSafe, isValidSessionId } = require('./main/path-sandbox')
 const { createSemanticLogger } = require('./main/semantic-logger')
 const { createNotifier } = require('./main/native-notify')
@@ -118,6 +118,7 @@ const {
   resolveActiveProfileId,
   makeProfileIdFromName,
   createConfigNormalizers,
+  explainLanPublicUrl,
   readConfigFromFile,
   writeConfigToFile
 } = require('./main/config-store')
@@ -789,15 +790,16 @@ function ensureLanWsServer() {
 
 function persistLanServerConfig(patch = {}) {
   const current = appConfig?.lanServer || {}
-  const merged = normalizeAppConfig({
+  // saveAppConfig ya normaliza: normalizar aquí sería pasar dos veces por los
+  // saneadores (y arriesgarse a que alguno deje de ser idempotente).
+  const saved = saveAppConfig({
     ...appConfig,
     lanServer: {
       ...current,
       ...patch
     }
   })
-  saveAppConfig(merged)
-  return merged.lanServer
+  return saved.lanServer
 }
 
 async function startLanServer(options = {}) {
@@ -836,6 +838,7 @@ function getLanServerStatus() {
       clientUrl: '',
       publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
       publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
+      publicUrlWarning: null,
       sessions: []
     }
   }
@@ -849,6 +852,7 @@ function getLanServerStatus() {
     clientUrl: status.clientUrl || '',
     publicClientUrl: appConfig?.lanServer?.publicClientUrl || '',
     publicWsUrl: appConfig?.lanServer?.publicWsUrl || '',
+    publicUrlWarning: status.publicUrlWarning || null,
     sessions: Array.isArray(status.sessions) ? status.sessions : []
   }
 }
@@ -3227,11 +3231,10 @@ function initTelegramBridge() {
       if (s) return setActiveCli(s, cli)
       // decision: sin ventana primaria, persiste como defaultCli y devuelve ok
       if (cli !== 'claude' && cli !== 'codex') return { ok: false, error: 'Invalid CLI' }
-      const merged = normalizeAppConfig({
+      saveAppConfig({
         ...appConfig,
         cli: { ...appConfig.cli, defaultCli: cli }
       })
-      saveAppConfig(merged)
       lastPrimarySnapshot = { ...lastPrimarySnapshot, activeCli: cli }
       return { ok: true }
     },
@@ -3251,11 +3254,10 @@ function initTelegramBridge() {
       // Sin reiniciar el bridge: onRunQuery lee appConfig.telegram en cada
       // turno, así que el cambio aplica desde el mensaje siguiente.
       const field = cli === 'codex' ? 'codexModel' : 'claudeModel'
-      const merged = normalizeAppConfig({
+      saveAppConfig({
         ...appConfig,
         telegram: { ...appConfig.telegram, [field]: String(model || '') }
       })
-      saveAppConfig(merged)
       return { ok: true }
     },
     onGetLinkStatus: async ({ chatId }) => {
@@ -4694,7 +4696,32 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
   // desde este canal (usar 'enterprise:save-config'). lanServer.authToken NO se acepta
   // desde renderer. cli/telegram filtrados por campos válidos.
   const partial = partialConfig || {}
-  const merged = normalizeAppConfig({
+  // Estado LAN previo: decide si hay que reiniciar el servidor. Reiniciar mata
+  // las sesiones remotas vivas e invalida los invites pendientes, así que solo
+  // se hace cuando cambia algo que lo exige de verdad.
+  const previousLanPort = clampLanPort(appConfig.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
+  const warnings = []
+
+  // Un campo fuera de la allowlist se descartaba en SILENCIO: ese fue el bug de
+  // las URLs públicas del túnel (bug_lan_allowlist_urls_publicas_2026_08_13).
+  // Ahora el descarte se reporta. authToken y enterprise.* están fuera aposta.
+  const dropped = [
+    ...pickDropped(partial.cli, SAFE_CLI).map((k) => `cli.${k}`),
+    ...pickDropped(partial.telegram, SAFE_TELEGRAM).map((k) => `telegram.${k}`),
+    ...pickDropped(partial.lanServer, SAFE_LAN).map((k) => `lanServer.${k}`)
+  ]
+  if (dropped.length) {
+    warnings.push(`Campos ignorados al guardar (no están en la allowlist): ${dropped.join(', ')}`)
+  }
+
+  // Una URL pública mal formada también se blanqueaba sin decir nada.
+  for (const [key, kind] of [['publicClientUrl', 'client'], ['publicWsUrl', 'ws']]) {
+    if (!partial.lanServer || !Object.prototype.hasOwnProperty.call(partial.lanServer, key)) continue
+    const { error } = explainLanPublicUrl(partial.lanServer[key], kind)
+    if (error) warnings.push(error)
+  }
+
+  saveAppConfig({
     ...appConfig,
     cli: { ...appConfig.cli, ...pick(partial.cli, SAFE_CLI) },
     telegram: { ...appConfig.telegram, ...pick(partial.telegram, SAFE_TELEGRAM) },
@@ -4703,8 +4730,6 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
     activeProfile: typeof partial.activeProfile === 'string' ? partial.activeProfile : appConfig.activeProfile,
     enterprise: appConfig.enterprise // sin tocar: usar enterprise:save-config
   })
-  saveAppConfig(merged)
-  const warnings = []
 
   // Voz/velocidad del modo voz: aplicar en caliente si el helper está vivo.
   try { applyVoicePrefsToHelper() } catch {}
@@ -4722,22 +4747,37 @@ ipcMain.handle('save-app-config', async (event, partialConfig) => {
 
   let telegramResult = { ok: true, running: false }
   if (telegramBridge) telegramResult = await telegramBridge.applyConfig(appConfig.telegram)
-  if (Object.prototype.hasOwnProperty.call(partialConfig || {}, 'telegram')) {
+  if (Object.prototype.hasOwnProperty.call(partial, 'telegram')) {
     try { applyTelegramNotifyBot() } catch (err) { warnings.push(`Bot de avisos no arrancó: ${err?.message || err}`) }
   }
   broadcastTelegramStatus()
-  if (Object.prototype.hasOwnProperty.call(partialConfig || {}, 'lanServer')) {
-    if (appConfig.lanServer?.enabled) {
-      try {
-        await startLanServer({ port: appConfig.lanServer.port, persist: false })
-      } catch (err) {
-        warnings.push(`Config guardada pero no pude iniciar servidor LAN: ${err?.message || err}`)
-      }
-    } else {
+  if (Object.prototype.hasOwnProperty.call(partial, 'lanServer')) {
+    const wantsEnabled = !!appConfig.lanServer?.enabled
+    const nextPort = clampLanPort(appConfig.lanServer?.port ?? DEFAULT_LAN_WS_PORT)
+    const wasRunning = getLanServerStatus().running
+    if (!wantsEnabled) {
       try { await stopLanServer({ persist: false }) } catch {}
+    } else if (!wasRunning || nextPort !== previousLanPort) {
+      // Solo aquí: arrancar por primera vez o cambiar de puerto. Las URLs
+      // públicas del túnel se leen por getter en caliente (getPublicClientUrl /
+      // getPublicWsUrl), así que cambiarlas NO necesita reinicio.
+      try {
+        await startLanServer({ port: nextPort, persist: false })
+      } catch (err) {
+        warnings.push(
+          `Config guardada pero el servidor LAN quedó PARADO: ${err?.message || err}. ` +
+          'Revisa el puerto y vuelve a activarlo.'
+        )
+      }
     }
   }
-  return { ok: telegramResult.ok, telegram: telegramResult, warnings, config: appConfig }
+  return {
+    ok: telegramResult.ok,
+    telegram: telegramResult,
+    warnings,
+    config: appConfig,
+    lan: getLanServerStatus()
+  }
 })
 
 ipcMain.handle('get-telegram-status', () => telegramBridge?.getStatus() || null)
