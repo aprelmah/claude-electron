@@ -187,14 +187,9 @@
     <div id="drag-area"><span id="app-title"><svg class="app-title-bolt" viewBox="0 0 24 24" aria-hidden="true"><polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/></svg>POWER-AGENT</span></div>
 
     <div id="controls">
-      <select id="cli-selector" title="Seleccionar Claude o Codex" aria-label="CLI activo">
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
-      </select>
-      <select id="profile-selector" title="Seleccionar perfil de encargo" aria-label="Perfil activo"></select>
-      <button id="profile-reminder" class="profile-reminder" title="Perfil activo" aria-label="Resumen del perfil activo" aria-haspopup="dialog" aria-expanded="false">
+      <button id="profile-reminder" class="profile-reminder" title="Agente activo" aria-label="Agente activo" aria-haspopup="dialog" aria-expanded="false">
+        <span class="profile-reminder-label">AGENTE</span>
         <span id="profile-reminder-name">Perfil</span>
-        <span id="profile-reminder-mcp">MCP 0 · Emp —</span>
       </button>
       <button id="health-indicator" class="health-indicator" title="Estado del sistema" aria-label="Estado del sistema" aria-haspopup="dialog" aria-expanded="false">
         <span id="health-global-dot" class="health-global-dot state-off"></span>
@@ -303,8 +298,24 @@
     <div id="health-popover-list" class="health-popover-list"></div>
     <div id="health-popover-meta" class="health-popover-meta">Sin datos</div>
   </div>
-  <div id="profile-popover" class="hidden" role="dialog" aria-label="Detalle del perfil activo">
-    <div class="health-popover-title">Perfil activo</div>
+  <div id="profile-popover" class="hidden" role="dialog" aria-label="Agente activo">
+    <div class="health-popover-title profile-popover-head">
+      <span>Agente</span>
+      <span id="profile-reminder-mcp" class="profile-popover-badge">MCP 0 · Emp —</span>
+    </div>
+    <div class="profile-popover-controls">
+      <label class="profile-popover-control">
+        <span class="profile-popover-control-label">CLI</span>
+        <select id="cli-selector" title="Seleccionar Claude o Codex" aria-label="CLI activo">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label class="profile-popover-control">
+        <span class="profile-popover-control-label">Personalidad</span>
+        <select id="profile-selector" title="Seleccionar perfil de encargo" aria-label="Perfil activo"></select>
+      </label>
+    </div>
     <div id="profile-popover-main" class="profile-popover-main">Sin datos</div>
     <div class="profile-popover-list">
       <div class="profile-popover-row">

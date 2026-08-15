@@ -155,17 +155,19 @@ button {
   background: var(--bg4);
 }
 
-#profile-reminder-name {
+.profile-reminder-label {
   color: var(--text);
-  max-width: 110px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+#profile-reminder-name {
+  color: var(--text2);
+  max-width: 150px;
+  font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-#profile-reminder-mcp {
-  color: var(--text2);
-  font-size: 10px;
 }
 
 .update-banner {
@@ -315,6 +317,43 @@ button {
 
 #profile-popover.hidden {
   display: none;
+}
+
+.profile-popover-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.profile-popover-badge {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text2);
+}
+
+.profile-popover-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.profile-popover-control {
+  display: grid;
+  grid-template-columns: 86px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-popover-control-label {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.profile-popover-control select {
+  width: 100%;
+  min-width: 0;
 }
 
 .profile-popover-main {

@@ -1168,7 +1168,7 @@ function positionProfilePopover() {
   if (!profileReminder || !profilePopover || profilePopover.classList.contains('hidden')) return
   const r = profileReminder.getBoundingClientRect()
   const gap = 8
-  let left = r.right - profilePopover.offsetWidth
+  let left = r.left
   if (left < 10) left = 10
   if (left + profilePopover.offsetWidth > window.innerWidth - 10) {
     left = window.innerWidth - profilePopover.offsetWidth - 10
@@ -2778,6 +2778,7 @@ if (profileSelector) {
     const value = String(e?.target?.value || '')
     if (value === PROFILE_MANAGE_VALUE) {
       renderProfileSelector()
+      closeProfilePopover()
       await openProfilesModal()
       return
     }
@@ -4800,6 +4801,7 @@ cliSelector.addEventListener('change', async (e) => {
   const newCli = e.target.value
   const previousCli = await window.api.getActiveCli()
   if (newCli === previousCli) return
+  closeProfilePopover()
 
   const result = await window.api.setActiveCli(newCli)
   if (!result.ok) {
