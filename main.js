@@ -27,7 +27,8 @@ const {
   FFMPEG_BIN
 } = require('./main/cli-resolver')
 const { createTranscriber } = require('./main/whisper-transcribe')
-const { computeProjectGraph, normalizeGraphRootPath } = require('./main/graph-builder')
+const { normalizeGraphRootPath } = require('./main/graph-builder')
+const { computeProjectGraphAsync } = require('./main/graph-worker-client')
 const {
   stripAnsi,
   flattenTerminal,
@@ -2230,6 +2231,7 @@ function createWindow() {
     graphCacheDirty: true,
     graphCacheBuiltAt: 0,
     graphCacheResult: null,
+    graphBuildPromise: null,
     graphFileActiveLastAt: 0,
     graphFileActiveLastPath: ''
   }
@@ -4292,11 +4294,14 @@ registerFilesystemIpc({
 function computeProjectGraphForSession(session, rootPath) {
   const root = normalizeGraphRootPath(rootPath)
   if (!root) return { ok: false, error: 'no rootPath' }
-  if (!session) return computeProjectGraph(root)
+  // El build corre en worker_thread (antes, síncrono aquí: congelaba PTYs,
+  // IPC y WS en proyectos grandes). ipcMain.handle resuelve la promesa.
+  if (!session) return computeProjectGraphAsync(root)
 
   if (session.graphCacheRoot !== root) {
     session.graphCacheRoot = root
     session.graphCacheDirty = true
+    session.graphBuildPromise = null
   }
 
   const now = Date.now()
@@ -4309,11 +4314,23 @@ function computeProjectGraphForSession(session, rootPath) {
     }
   }
 
-  const result = computeProjectGraph(root)
-  session.graphCacheResult = result
-  session.graphCacheBuiltAt = now
-  session.graphCacheDirty = false
-  return result
+  // Coalescer: un build en vuelo para este root sirve a todas las llamadas.
+  if (session.graphBuildPromise) return session.graphBuildPromise
+
+  const build = computeProjectGraphAsync(root).then((result) => {
+    if (session.graphCacheRoot === root) {
+      session.graphCacheResult = result
+      session.graphCacheBuiltAt = Date.now()
+      session.graphCacheDirty = false
+    }
+    if (session.graphBuildPromise === build) session.graphBuildPromise = null
+    return result
+  }, (err) => {
+    if (session.graphBuildPromise === build) session.graphBuildPromise = null
+    return { ok: false, error: String(err?.message || err) }
+  })
+  session.graphBuildPromise = build
+  return build
 }
 
 ipcMain.handle('sidebar:get-graph', (event, rootPath) => {

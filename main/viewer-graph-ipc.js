@@ -4,7 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { isPathSafe } = require('./path-sandbox')
-const { computeProjectGraph } = require('./graph-builder')
+const { computeProjectGraphAsync } = require('./graph-worker-client')
 
 function registerViewerGraphIpc({
   ipcMain,
@@ -82,7 +82,7 @@ function registerViewerGraphIpc({
 
   ipcMain.handle('graph-window:get-data', () => graphWindowData || { nodes: [], edges: [], dirs: [] })
 
-  ipcMain.handle('graph-window:fetch-graph', (_event, rootPathArg) => {
+  ipcMain.handle('graph-window:fetch-graph', async (_event, rootPathArg) => {
     let root = (typeof rootPathArg === 'string' && rootPathArg) ? rootPathArg : null
     if (!root) root = getCwdSync() || null
     if (!root) return { ok: false, error: 'No hay carpeta activa para calcular el grafo' }
@@ -90,7 +90,7 @@ function registerViewerGraphIpc({
       if (!fs.existsSync(root)) return { ok: false, error: `La ruta no existe: ${root}` }
     } catch (err) { return { ok: false, error: err.message } }
     try {
-      const result = computeProjectGraph(root)
+      const result = await computeProjectGraphAsync(root)
       if (result && result.ok) result.cwd = root
       return result
     } catch (err) {
