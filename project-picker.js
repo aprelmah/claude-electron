@@ -21,6 +21,7 @@
   const btnNewSession = document.getElementById('btn-picker-new-session')
   const profileSelectEl = document.getElementById('picker-profile-selector')
   const profileHintEl = document.getElementById('picker-profile-hint')
+  const profileBarEl = document.querySelector('.picker-profile-bar')
   const kbToggleEl = document.getElementById('picker-kb-toggle')
   const kbHintEl = document.getElementById('picker-kb-hint')
 
@@ -102,9 +103,13 @@
     viewSession.classList.add('hidden')
     titleEl.textContent = 'Elige proyecto'
     subtitleEl.textContent = 'Selecciona una carpeta para empezar.'
-    // Sin carpeta elegida mostramos el default, no lo que valía la carpeta
-    // anterior: al elegir otra se cargará SU pref y la casilla saltaría sola.
-    paintKbToggle(kbPending === null ? KB_DEFAULT : kbPending, { hasCwd: false })
+    // Entrar aquí es empezar de cero: sin cwd la casilla opera en modo
+    // "pendiente para la carpeta que elijas" y nunca escribe contra la
+    // carpeta anterior. refreshProfiles decide si la barra se ve.
+    state.cwd = null
+    kbPending = null
+    profileBarEl?.classList.remove('hidden')
+    paintKbToggle(KB_DEFAULT, { hasCwd: false })
     refreshProfiles().catch(() => {})
     refreshRecents().catch(() => {})
   }
@@ -114,6 +119,9 @@
     viewSession.classList.remove('hidden')
     titleEl.textContent = 'Elige sesión'
     subtitleEl.textContent = 'Continúa una sesión previa o crea una nueva.'
+    // Personalidad y conocimiento se deciden en el paso de proyecto (valen
+    // para el proyecto entero); dentro de la app se cambian en AGENTE.
+    profileBarEl?.classList.add('hidden')
     cwdValueEl.textContent = state.cwd || ''
     cwdValueEl.title = state.cwd || ''
     setActiveCliButton(state.cli)
