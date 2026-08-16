@@ -24,13 +24,16 @@
   const kbToggleEl = document.getElementById('picker-kb-toggle')
   const kbHintEl = document.getElementById('picker-kb-hint')
 
+  // Espeja KB_PREFS_DEFAULT de main/kb-prefs.js (el picker no puede hacer require).
+  const KB_DEFAULT = false
+
   const state = {
     cwd: null,
     cli: 'claude',
     onSpawn: null,
     dragDepth: 0,
     activeProfileId: '',
-    kbEnabled: true
+    kbEnabled: KB_DEFAULT
   }
 
   function shorten(p, max = 56) {
@@ -64,7 +67,7 @@
       await saveKbForCwd(cwd, wanted)
       return
     }
-    let enabled = true
+    let enabled = KB_DEFAULT
     try { enabled = await window.api.kbPrefs.get(cwd) } catch {}
     paintKbToggle(enabled, { hasCwd: true })
   }
@@ -101,7 +104,7 @@
     subtitleEl.textContent = 'Selecciona una carpeta para empezar.'
     // Sin carpeta elegida mostramos el default, no lo que valía la carpeta
     // anterior: al elegir otra se cargará SU pref y la casilla saltaría sola.
-    paintKbToggle(kbPending === null ? true : kbPending, { hasCwd: false })
+    paintKbToggle(kbPending === null ? KB_DEFAULT : kbPending, { hasCwd: false })
     refreshProfiles().catch(() => {})
     refreshRecents().catch(() => {})
   }

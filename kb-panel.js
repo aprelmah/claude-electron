@@ -114,7 +114,7 @@
     if (typeof enabled !== 'boolean') {
       const cwd = await resolveActiveCwd()
       if (!cwd) return
-      try { enabled = await window.api.kbPrefs.get(cwd) } catch { enabled = true }
+      try { enabled = await window.api.kbPrefs.get(cwd) } catch { enabled = false }
     }
     const plan = window.KbTabsState.decideKbTabs({ enabled, activeTab })
     tabBtnCasos.classList.toggle('hidden', !plan.showCasos)

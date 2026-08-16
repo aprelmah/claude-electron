@@ -3,14 +3,15 @@
 // Preferencia "esta carpeta lleva conocimiento (Casos/Fichas)", por proyecto.
 // El conocimiento vive físicamente en la carpeta (CLAUDE.md + kb/), así que la
 // preferencia se ata al cwd y no al perfil: el mismo perfil en otra carpeta no
-// tiene esas fichas. Default ON = comportamiento histórico (todas lo tenían).
+// tiene esas fichas. Default OFF (2026-08-16): el conocimiento se activa
+// carpeta a carpeta; las que estaban ON implícito pasan a OFF hasta marcarlas.
 
 const fs = require('fs')
 const path = require('path')
 const { atomicWriteJsonSync } = require('./atomic-writes')
 
 const KB_PREFS_VERSION = 1
-const KB_PREFS_DEFAULT = true
+const KB_PREFS_DEFAULT = false
 
 function normalizeCwd(cwd) {
   const trimmed = String(cwd || '').trim()

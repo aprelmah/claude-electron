@@ -1236,7 +1236,7 @@ async function refreshAgentKbToggle() {
     return
   }
   agentKbToggle.disabled = false
-  let enabled = true
+  let enabled = false
   try { enabled = await window.api.kbPrefs.get(cwd) } catch {}
   agentKbToggle.checked = Boolean(enabled)
   if (agentKbHint) agentKbHint.textContent = enabled ? 'Casos y Fichas de este proyecto' : 'Este proyecto va sin Casos ni Fichas'
