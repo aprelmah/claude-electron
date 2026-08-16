@@ -366,3 +366,31 @@ proyectos llevan conocimiento**, y quien lo decide es el usuario.
 Tests 1544/0/6 (8 de `kb-prefs`, 6 de `kb-tabs-state`). Deploy verificado por contenido
 del asar. Verificado en la app real por CDP con clics reales, en las dos direcciones y
 en las dos casillas.
+
+## 2026-08-16 — Default OFF y la barra solo en el paso de proyecto
+
+- **`KB_PREFS_DEFAULT = false`** (`23199a4`): el conocimiento se activa carpeta a
+  carpeta. La semántica de `kb-prefs.json` queda INVERTIDA respecto a antes: sin
+  entrada = OFF, y `set()` borra la entrada al volver al default (ahora borra los
+  `false`, guarda los `true`). Carpetas que estaban ON implícito pasan a OFF hasta
+  marcarlas una vez; las que tenían `false` explícito siguen igual (la entrada sobra
+  pero no estorba). Fallbacks alineados a `false` en `project-picker.js` (constante
+  local `KB_DEFAULT` — el picker no puede hacer require), popover AGENTE
+  (`renderer.js`) y `kb-panel.js`.
+- **La barra PERSONALIDAD+CONOCIMIENTO solo se ve en "Elige proyecto"** (`50c21d0`).
+  Decisión de producto de Luismi: esas elecciones valen para el proyecto entero;
+  dentro de la app se cambian en AGENTE. No duplicar controles entre pasos del picker.
+- **Trampa del markup común**: `.picker-profile-bar` vive FUERA de las `<section>` de
+  vista en `index.html` — aparece en las dos pantallas aunque el código de cada vista
+  no la mencione. Hoy costó una casilla duplicada (añadida y revertida en la misma
+  sesión). Antes de añadir un control "a una vista" del picker, comprobar si el
+  contenedor es común. `showViewSession()` la oculta; `showViewProject()` la
+  re-muestra y `refreshProfiles()` decide si queda visible (sin perfiles, se oculta).
+- **`showViewProject()` resetea `state.cwd` y `kbPending`**: volver al paso de
+  proyecto es empezar de cero. Antes, con "Cambiar", la casilla seguía escribiendo
+  contra la carpeta anterior y al elegir otra "se desmarcaba sola" (cargaba la pref
+  de la nueva). Nadie llama a `ProjectPicker.showSession()` sin cwd, verificado.
+
+Tests 1630/0/6 (suite igual: el picker sigue sin cobertura — los dos ajustes los cazó
+Luismi probando en dev, no la suite). Deploy 2026-08-16 10:35 verificado por asar
+(`profileBarEl` dentro) y por proceso con ventana.
