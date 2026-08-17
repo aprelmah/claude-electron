@@ -1658,6 +1658,10 @@ body.light .wa-bubble-quoted-body { color: rgba(0,0,0,0.55); }
       if (!res || !res.ok) {
         const msg = (res && res.error) ? res.error : `No se pudo ${action === 'stop' ? 'parar' : 'arrancar'} el bridge`
         showInputError(msg)
+      } else if (res.warning) {
+        showInputError(res.warning)
+      } else if (action === 'stop') {
+        showHeaderNotice('Bridge parado: no volverá a arrancar solo')
       }
     } catch (e) {
       showInputError((e && e.message) || `Error al ${action === 'stop' ? 'parar' : 'arrancar'} bridge`)

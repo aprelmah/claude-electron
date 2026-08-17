@@ -187,10 +187,14 @@ function registerWhatsappIpc({
         startClient: () => { client?.start?.() }
       })
       const bridge = getBridgeServiceStatus()
+      // El warning (enable/disable de launchd que falló) NO invalida la
+      // operación, pero jamás se queda mudo: sin él el usuario cree que el
+      // bridge quedó apagado para siempre y reaparece en el próximo login.
+      const warn = op?.warning ? { warning: op.warning } : {}
       if (!op || !op.ok) {
-        return { ok: false, error: op?.error || 'Operación fallida', step: op?.step || '', bridge }
+        return { ok: false, error: op?.error || 'Operación fallida', step: op?.step || '', bridge, ...warn }
       }
-      return { ok: true, action, step: op.step, bridge }
+      return { ok: true, action, step: op.step, bridge, ...warn }
     } catch (err) {
       return { ok: false, error: err?.message || String(err), bridge: getBridgeServiceStatus() }
     }
