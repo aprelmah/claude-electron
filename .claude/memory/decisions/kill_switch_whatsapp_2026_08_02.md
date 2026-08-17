@@ -11,7 +11,7 @@ Luismi: "el botón de AUTO TODO solo conecta a todos en auto pero no desconecta 
 | Control | Dónde | Efecto |
 |---|---|---|
 | **BOT ON/OFF** | cabecera, `#wa-btn-autoreply` | Sigues recibiendo y puedes escribir tú; el bot calla. **Es el kill switch real.** |
-| **STOP** | cabecera, `#wa-btn-bridge-toggle` | `launchctl` sobre `com.luismi.whatsapp-bridge`: desconecta WhatsApp entero. Ni recibes ni envías, y puede pedir QR al volver. Botón de pánico duro. |
+| **STOP** | cabecera, `#wa-btn-bridge-toggle` | `launchctl` sobre `com.luismi.whatsapp-bridge`: desconecta WhatsApp entero. Ni recibes ni envías, y puede pedir QR al volver. Botón de pánico duro. **Desde 2026-08-17 es PERSISTENTE** (deshabilita el servicio: no vuelve en el próximo login) → [[runbook_whatsapp_bridge_ciclo_vida]]. |
 | **AUTO TODO** | cabecera, `#wa-btn-all-auto` | Reengancha el bot en todos los chats individuales (y fuerza MANUAL en grupos). |
 
 ## Por qué AUTO TODO es one-way — y se queda así

@@ -77,6 +77,7 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 - Nunca enviar mensajes a números locales ambiguos (ej. `653765305`) sin prefijo internacional confirmado. Si el usuario no indica país/código, preguntar SIEMPRE antes de enviar: "¿Qué país/código uso para este número?".
 - Solo se permite enviar cuando el número llega en formato internacional (`+...` o `00...`) o el usuario confirma explícitamente el código de país. PROHIBIDO asumir `+34` (o cualquier otro) por defecto. Ante duda de formato/destino: bloquear envío y pedir confirmación.
 - Sin orden explícita de Luismi en ese momento, no se envía NADA por WhatsApp: ni pruebas, ni confirmaciones, ni contenido inofensivo. Nunca llamar al bridge (`127.0.0.1:3031`) sin el header `X-Auth-Token` (`whatsapp/whatsapp-auth.js`).
+- **El bridge lo arranca launchd, no la app** (`RunAtLoad`+`KeepAlive` en `~/Library/LaunchAgents/com.luismi.whatsapp-bridge.plist`): un reboot lo dejaba conectado solo. Por eso STOP es PERSISTENTE (`disable` antes del bootout) y START rehabilita (`enable` incondicional, no parsear los mensajes de launchd) — el estado de encendido vive en el override store de launchd, no en la config; `autoReply` decide si RESPONDE, que es cosa distinta de estar vivo. Detalle y comandos medidos: `tech/runbook_whatsapp_bridge_ciclo_vida.md`.
 
 ## Protocolo de despliegue y prueba
 
