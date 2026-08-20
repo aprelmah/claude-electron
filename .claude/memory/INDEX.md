@@ -12,6 +12,8 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Runbooks por subsistema (operativo vigente, movido del CLAUDE.md el 2026-08-09)
 
+- `tech/runbook_deploy_verificacion.md` — arranque en dev, limpieza del lock, verificación por proceso y deploy a /Applications. Los comandos completos, mudados del runbook el 2026-08-20. Leer antes de desplegar o de diagnosticar un arranque sin ventana.
+
 - `tech/runbook_execution_policy_delegations.md` — política de ejecución, registro de skills y delegaciones: límites, persistencia y worktrees (09-08-2026).
 - `tech/tech_logica_en_ipc_handle_sin_cobertura.md` — la suite corre sin Electron, así que lo que decide dentro de un `ipcMain.handle` es invisible para CI. Leer al añadir lógica a un handler o cuando pienses "esto solo puedo comprobarlo abriendo la app" (15-08-2026).
 - `tech/runbook_relay_telegram.md` — relay claude por JSONL, forks del sessionId y sus guardas, badge de modelo, auto-update de CLIs. Leer antes de tocar relay/sesiones/PTY.

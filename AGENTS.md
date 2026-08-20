@@ -80,54 +80,17 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 - **Desde 2026-08-20 la regla madre ya no depende de que el agente la lea: hay un guard debajo** (`~/.claude/hooks/whatsapp-send-guard.mjs`, PreToolUse). Tres puertas: el sello de intención solo lo estampa un prompt de Luismi (`whatsapp-intent-stamp.mjs`, UserPromptSubmit) y ninguna herramienta puede escribirlo; la orden caduca a los 15 min; el destino tiene que ser internacional explícito. Falla CERRADO. Desarrollar el bridge, correr los tests o mirar `/status` no se toca — solo el envío real. Si te bloquea, es que Luismi no lo ha pedido: pídeselo, no lo rodees.
 - **El bridge lo arranca launchd, no la app** (`RunAtLoad`+`KeepAlive` en `~/Library/LaunchAgents/com.luismi.whatsapp-bridge.plist`): un reboot lo dejaba conectado solo. Por eso STOP es PERSISTENTE (`disable` antes del bootout) y START rehabilita (`enable` incondicional, no parsear los mensajes de launchd) — el estado de encendido vive en el override store de launchd, no en la config; `autoReply` decide si RESPONDE, que es cosa distinta de estar vivo. Detalle y comandos medidos: `tech/runbook_whatsapp_bridge_ciclo_vida.md`.
 
-## Protocolo de despliegue y prueba
+## Protocolo de despliegue y prueba — `tech/runbook_deploy_verificacion.md`
 
-**Regla de oro**: después de cualquier cambio de código, probar SIEMPRE en modo dev antes de empaquetar.
+**Antes de dar nada por bueno: `npm run verify`** (1,7 s, solo lectura). Dice si el deploy está al día por CONTENIDO del asar, si hay proceso con ventana, si el lock es legítimo y si el bridge está donde debe. No mata, no borra, no despliega: si algo hay que arreglar, lo dice y lo arreglas tú.
 
-⚠️ `pkill -f "POWER-AGENT.app"` NO mata la app empaquetada. Dev y empaquetada NUNCA conviven (mismo `userData` → mismo `SingletonLock`; la segunda instancia se suicida EN SILENCIO).
+- **Regla de oro**: tras cualquier cambio de código, probar SIEMPRE en dev antes de empaquetar.
+- `pkill -f "POWER-AGENT.app"` NO mata la empaquetada. Dev y empaquetada **nunca conviven** (mismo `userData` → mismo `SingletonLock`; la segunda se suicida EN SILENCIO, incluso con el script de deploy diciendo "✅ abierto").
+- Mac Intel → SIEMPRE `dist/mac/POWER-AGENT.app`; arm64 sería el binario equivocado sin avisar.
+- Claude Code no tiene WindowServer: la app se lanza por `osascript`.
+- Un comando de verificación copiado de un documento **no verifica hasta que se ejecuta una vez y se comprueba que distingue el caso bueno del malo**. Dos de los de aquí estuvieron meses mintiendo (`bugs/bug_runbook_verificaciones_falsas_2026_08_20.md`).
 
-```bash
-# 1. Matar cualquier instancia previa (dev Y empaquetada)
-osascript -e 'quit app "POWER-AGENT"' 2>/dev/null          # empaquetada: cierre ordenado (dispara before-quit)
-pkill -9 -f "claude-electron/node_modules/electron" 2>/dev/null   # dev
-sleep 3
-
-# 2. Si murió a lo bruto, limpiar el lock huérfano (si no, el siguiente arranque se suicida sin mensaje)
-UD="$HOME/Library/Application Support/CLAUDE-NOVAK"
-# OJO: SingletonLock es un SYMLINK COLGANTE (apunta a "<hostname>-<pid>", que no existe como
-# fichero), así que `[ -e ]` da FALSE aunque el lock esté ahí y esta línea no disparaba NUNCA.
-# Con -L sí. Y el pid del target dice si el lock es legítimo o huérfano, sin heurística.
-[ -L "$UD/SingletonLock" ] && ! pgrep -f "claude-electron/node_modules/electron" >/dev/null \
-  && rm -f "$UD/SingletonLock" "$UD/SingletonSocket" "$UD/SingletonCookie"
-
-# 3. Lanzar en la sesión gráfica del usuario vía osascript (Claude Code no tiene WindowServer)
-cat > /tmp/launch_poweragent.scpt << 'EOF'
-set projectPath to "/Users/isabel/Desktop/LUISMI/claude-electron"
-set cmd to "cd " & quoted form of projectPath & " && npm start"
-tell application "Terminal"
-    activate
-    do script cmd
-end tell
-EOF
-osascript /tmp/launch_poweragent.scpt
-```
-
-Verificaciones:
-```bash
-# Corre el dev (no el empaquetado):
-ps aux | grep electron | grep -v grep | head -2   # debe mostrar node_modules/electron/... --app-path=.../claude-electron
-# Y tiene VENTANA:
-ps aux | grep "claude-electron/node_modules/electron" | grep -v grep | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
-# Debe aparecer --type=renderer; solo gpu-process+utility = arrancó sin ventana (lock huérfano típico)
-
-# Para la EMPAQUETADA el grep de arriba NO SIRVE: su binario se llama POWER-AGENT, no electron
-# (con la app corriendo, `ps aux | grep electron` solo devuelve Docker). Va por ruta del bundle:
-ps -Awwo args= | grep "[P]OWER-AGENT.app/Contents" | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
-```
-
-Checklist post-cambio: `node --check main.js` y `node --check renderer.js` → matar instancias → dev por osascript → verificar con ps → probar la feature → solo si OK, `npm run deploy`.
-
-**Deploy a /Applications**: `npm run deploy` (mata instancias, build x64, copia a `/Applications/POWER-AGENT.app`, `xattr -cr`, abre vía Finder). Mac Intel → usar SIEMPRE `dist/mac/POWER-AGENT.app` (arm64 sería el binario equivocado sin avisar). Verificar el deploy por contenido/timestamp del asar **y por PROCESO con ventana** (`--type=renderer`): una dev viva sobrevive al kill del script, retiene el `SingletonLock` y la empaquetada se suicida en silencio aunque el script diga "✅ abierto" (2026-08-15).
+Los comandos completos (arranque en dev, limpieza del lock, verificación por proceso, deploy) viven en la ficha.
 
 ## Comandos estándar
 
