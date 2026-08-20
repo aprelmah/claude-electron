@@ -23,6 +23,7 @@
     "build:zip": "electron-builder --mac zip --arm64 --x64",
     "build:dmg": "electron-builder --mac dmg --arm64 --x64",
     "doctor": "bash ./scripts/doctor.sh",
+    "verify": "bash ./scripts/verify.sh",
     "reset:state": "bash ./scripts/reset-macos-state.sh",
     "deploy": "bash ./scripts/deploy.sh",
     "wa:send": "bash ./scripts/whatsapp-send-safe.sh",
