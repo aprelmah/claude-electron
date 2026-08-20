@@ -93,7 +93,10 @@ sleep 3
 
 # 2. Si murió a lo bruto, limpiar el lock huérfano (si no, el siguiente arranque se suicida sin mensaje)
 UD="$HOME/Library/Application Support/CLAUDE-NOVAK"
-[ -e "$UD/SingletonLock" ] && ! pgrep -f "claude-electron/node_modules/electron" >/dev/null \
+# OJO: SingletonLock es un SYMLINK COLGANTE (apunta a "<hostname>-<pid>", que no existe como
+# fichero), así que `[ -e ]` da FALSE aunque el lock esté ahí y esta línea no disparaba NUNCA.
+# Con -L sí. Y el pid del target dice si el lock es legítimo o huérfano, sin heurística.
+[ -L "$UD/SingletonLock" ] && ! pgrep -f "claude-electron/node_modules/electron" >/dev/null \
   && rm -f "$UD/SingletonLock" "$UD/SingletonSocket" "$UD/SingletonCookie"
 
 # 3. Lanzar en la sesión gráfica del usuario vía osascript (Claude Code no tiene WindowServer)
@@ -115,6 +118,10 @@ ps aux | grep electron | grep -v grep | head -2   # debe mostrar node_modules/el
 # Y tiene VENTANA:
 ps aux | grep "claude-electron/node_modules/electron" | grep -v grep | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
 # Debe aparecer --type=renderer; solo gpu-process+utility = arrancó sin ventana (lock huérfano típico)
+
+# Para la EMPAQUETADA el grep de arriba NO SIRVE: su binario se llama POWER-AGENT, no electron
+# (con la app corriendo, `ps aux | grep electron` solo devuelve Docker). Va por ruta del bundle:
+ps -Awwo args= | grep "[P]OWER-AGENT.app/Contents" | grep -o "\-\-type=[a-z-]*" | sort | uniq -c
 ```
 
 Checklist post-cambio: `node --check main.js` y `node --check renderer.js` → matar instancias → dev por osascript → verificar con ps → probar la feature → solo si OK, `npm run deploy`.
