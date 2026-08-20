@@ -1,6 +1,6 @@
 # INDEX — mapa de fichas de `.claude/memory/`
 
-Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-11.
+Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aquí (contrato de capas del runbook). Actualizado: 2026-08-20.
 
 ## Estado y proyecto
 
@@ -26,6 +26,8 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 
 ## Fichas técnicas (lecciones con el porqué)
 
+- `tech/tech_verify_script_2026_08_20.md` — qué comprueba `npm run verify`, sus cuatro invariantes medidos y por qué lee el asar en memoria. Leer antes de tocar `scripts/verify.sh` o de añadirle un check.
+
 - `tech/tech_modo_voz.md` — arquitectura real del modo voz post-implementación y pendientes.
 - `tech/tech_modo_voz_mediciones.md` — mediciones de motores STT en este i7 (RTF, latencias). NO repetir las mediciones.
 - `tech/tech_modo_voz_permisos_macos.md` — permisos de micrófono con app sin firmar; bundle VoiceHelper.app en deploy.sh.
@@ -49,6 +51,8 @@ Una línea por ficha: qué es y cuándo leerla. Toda ficha nueva se registra aqu
 - `tech/tech_lan_tunel_espejo_2026_08_15.md` — túnel Quick Tunnel de un clic + modo espejo: los 3 casos de uso del acceso remoto, piezas (lan-tunnel, attachLanMirror, lan-mirror.html), invariantes (facade que desengancha, write RAW invite-gated, URLs efímeras jamás persistidas, PATH de la empaquetada) y los 3 bugs cazados en real. Leerla antes de tocar túnel, espejo o el cliente LAN.
 
 ## Bugs resueltos (leer si reaparece el síntoma)
+
+- `bugs/bug_runbook_verificaciones_falsas_2026_08_20.md` — dos comandos del protocolo de deploy que llevaban meses mintiendo (`[ -e ]` sobre un symlink colgante, `grep electron` que no ve la empaquetada). Leer antes de fiarse de cualquier comando de verificación copiado de un documento.
 
 - `bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md` — `SAFE_LAN` descartaba en silencio las URLs públicas del túnel: los campos se vaciaban al guardar. Leer antes de añadir cualquier campo de config que envíe el renderer, y si un botón "parece copiar mal" (el portapapeles conserva lo anterior cuando la acción falla). Trae el gotcha de verificar WebSockets con `curl --http1.1` (13-08-2026).
 - `bugs/bug_lan_token_enlace_publico_2026_08_15.md` — el Bearer permanente viajaba dentro del enlace público del túnel (lo destapó arreglar la allowlist). Leer antes de tocar `buildClientUrl` o cualquier enlace compartible, y antes de imprimir URLs al verificar: aquí está la regla de enmascarar secretos y cómo rotar el `authToken` (15-08-2026).
