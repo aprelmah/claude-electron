@@ -3060,8 +3060,11 @@ if (btnLanShareSession) {
 // muerto una y otra vez. Mientras la banda siga abierta se renueva sola con
 // margen, y la cuenta atrás dice en todo momento lo que le queda.
 // Se carga como <script src> en index.html (nodeIntegration está desactivado:
-// un require aquí mataría la página entera, no solo esta función).
-const { computeQrRefreshDelay, formatQrCountdown } = window.MirrorConnectionStatus || {}
+// un require aquí mataría la página entera, no solo esta función). Y se usa
+// SIEMPRE cualificado: un `const { computeQrRefreshDelay } = ...` aquí redeclara
+// el nombre que el módulo ya puso en el ámbito global compartido por los
+// <script> sueltos, y eso es un SyntaxError que mata renderer.js ENTERO —
+// picker sin proyectos, selector de personalidad vacío (2026-08-21).
 let qrRefreshTimer = null
 let qrCountdownTimer = null
 let qrExpiresAt = null
@@ -3074,14 +3077,14 @@ function stopQrAutoRefresh() {
 
 function renderQrCountdown() {
   if (!shareInternetQrCountdown) return
-  const text = formatQrCountdown(qrExpiresAt, Date.now())
+  const text = window.MirrorConnectionStatus?.formatQrCountdown(qrExpiresAt, Date.now()) || ''
   shareInternetQrCountdown.textContent = text
   shareInternetQrCountdown.hidden = !text
 }
 
 function startQrAutoRefresh(expiresAt) {
   stopQrAutoRefresh()
-  const delay = computeQrRefreshDelay({ expiresAt, now: Date.now() })
+  const delay = window.MirrorConnectionStatus?.computeQrRefreshDelay({ expiresAt, now: Date.now() })
   if (delay == null) return
   qrExpiresAt = Number(expiresAt)
   renderQrCountdown()
