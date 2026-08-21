@@ -152,6 +152,57 @@ test('el espejo conecta directo, recibe snapshot+stream y sus teclas llegan al P
   }
 })
 
+test('mirror:send manda el texto entero y el ENTER APARTE (el móvil ya no teclea al PTY)', async () => {
+  const { html } = makeFixture()
+  const port = PORT_BASE + 140 + Math.floor(Math.random() * 40)
+  const host = makeMirrorHost()
+  const server = createLanWsServer({
+    clientHtmlPath: html,
+    getAuthToken: () => 'bearer-compose',
+    attachLocalMirror: host.attachLocalMirror
+  })
+  let ws = null
+  try {
+    await server.start({ port, clientHtmlPath: html })
+    const created = server.createSessionInvite({ mode: 'mirror', mirrorId: 'mirror-id-valido-123', cli: 'claude' })
+    const inviteToken = new URL(created.clientUrl).searchParams.get('invite')
+    const wsUrl = new URL(`ws://127.0.0.1:${port}/`)
+    wsUrl.searchParams.set('invite', inviteToken)
+    ws = new WebSocket(wsUrl)
+    const connectedPromise = waitForMessage(ws, (m) => m.type === 'status' && m.state === 'connected', 'connected')
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
+    await connectedPromise
+
+    ws.send(JSON.stringify({ type: 'mirror:send', text: 'arregla el espejo', enter: true }))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    // Dos writes: el texto y el ENTER. Pegados, el TUI de claude deja el prompt
+    // escrito sin enviar (regla pty-prompt-write).
+    assert.deepEqual(host.writes, ['arregla el espejo', '\r'])
+
+    // Sin ENTER: la respuesta de un menú que contesta a la tecla suelta.
+    host.writes.length = 0
+    ws.send(JSON.stringify({ type: 'mirror:send', text: '2', enter: false }))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.deepEqual(host.writes, ['2'])
+
+    // Multilínea SIN que el TUI haya pedido bracketed paste: crudo, no se inventa.
+    host.writes.length = 0
+    ws.send(JSON.stringify({ type: 'mirror:send', text: 'uno\ndos', enter: false }))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.deepEqual(host.writes, ['uno\ndos'])
+
+    // El host anuncia el modo por el stream → el pegado ya viaja delimitado.
+    host.handlers.onData('\x1b[?2004h')
+    host.writes.length = 0
+    ws.send(JSON.stringify({ type: 'mirror:send', text: 'uno\ndos', enter: false }))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.deepEqual(host.writes, ['\x1b[200~uno\ndos\x1b[201~'])
+  } finally {
+    try { ws?.close() } catch {}
+    await server.stop()
+  }
+})
+
 test('cerrar el espejo DESENGANCHA sin matar el PTY del host', async () => {
   const { html } = makeFixture()
   const port = PORT_BASE + 60 + Math.floor(Math.random() * 40)

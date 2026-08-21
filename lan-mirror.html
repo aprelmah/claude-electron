@@ -20,6 +20,15 @@
     #keys { flex: 0 0 auto; display: flex; gap: 4px; padding: 4px 6px; background: var(--bar); border-top: 1px solid var(--border); overflow-x: auto; }
     #keys button { flex: 0 0 auto; min-width: 40px; padding: 7px 10px; background: #1e2430; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; font-family: ui-monospace, monospace; }
     #keys button:active { background: var(--accent); }
+    #keys button#btn-mode.on { background: var(--accent); border-color: var(--accent); }
+    #compose.hidden { display: none; }
+    #compose { flex: 0 0 auto; display: flex; gap: 6px; align-items: flex-end; padding: 6px; background: var(--bar); border-top: 1px solid var(--border); }
+    /* 16px o menos: el navegador hace zoom al enfocar y descoloca la pantalla. */
+    #compose textarea { flex: 1 1 auto; resize: none; overflow-y: auto; max-height: 120px; padding: 9px 10px; background: #10141c; border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 16px; font-family: -apple-system, system-ui, sans-serif; line-height: 1.35; }
+    #compose textarea:focus { outline: none; border-color: var(--accent); }
+    #compose button { flex: 0 0 auto; min-width: 48px; padding: 11px 0; background: #1e2430; border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 17px; }
+    #compose button#btn-send { background: var(--accent); border-color: var(--accent); }
+    #compose button:active { opacity: 0.7; }
     #bar { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 10px; padding-bottom: max(8px, env(safe-area-inset-bottom)); background: var(--bar); border-top: 1px solid var(--border); }
     #bar button { flex: 1; padding: 12px 0; font-size: 20px; background: #1e2430; border: 1px solid var(--border); border-radius: 10px; color: var(--text); }
     #bar button:active { background: var(--accent); }
@@ -43,6 +52,13 @@
       <button data-seq="&#x1b;[D">←</button>
       <button data-seq="&#x1b;[C">→</button>
       <button data-seq="&#x3;">Ctrl·C</button>
+      <button id="btn-enter" title="Solo Enter">⏎</button>
+      <button id="btn-mode" title="Teclear directo en el terminal">⌨</button>
+    </div>
+    <div id="compose">
+      <textarea id="compose-text" rows="1" placeholder="Escribe y pulsa ⏎" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
+      <button id="btn-send-raw" title="Enviar sin Enter">⇢</button>
+      <button id="btn-send" title="Enviar">⏎</button>
     </div>
     <div id="bar">
       <button id="btn-mic" title="Nota de voz">🎤</button>
@@ -74,7 +90,16 @@
       overlay.classList.add('visible')
     }
 
+    // disableStdin NO es un detalle: xterm entrega al PTY cada evento del
+    // teclado según llega, y el teclado de Android COMPONE (reescribe la palabra
+    // al meter un espacio, emite composición e input por el mismo carácter e
+    // ignora autocorrect/autocapitalize, que no son estándar ahí). De ahí las
+    // letras dobles, las palabras repetidas y el ENTER duplicado. Aquí el
+    // terminal es PANTALLA; se escribe abajo, en un textarea normal, y el texto
+    // sale entero de una vez. Las teclas de control siguen yendo RAW por #keys,
+    // que no pasan por ningún IME.
     const term = new Terminal({
+      disableStdin: true,
       convertEol: false,
       cursorBlink: true,
       scrollback: 4000,
@@ -288,11 +313,67 @@
       }
     })
 
-    // Teclas del usuario → PTY del host, tal cual.
-    term.onData((data) => { send({ type: 'input', data }) })
-    for (const btn of document.querySelectorAll('#keys button')) {
-      btn.addEventListener('click', () => { send({ type: 'input', data: btn.dataset.seq }); term.focus() })
+    // Teclas de control → PTY del host, tal cual (no las toca ningún IME).
+    const composeText = $('compose-text')
+    for (const btn of document.querySelectorAll('#keys button[data-seq]')) {
+      btn.addEventListener('click', () => { send({ type: 'input', data: btn.dataset.seq }); composeText.focus() })
     }
+    $('btn-enter').addEventListener('click', () => { send({ type: 'input', data: '\r' }); composeText.focus() })
+
+    // Barra de escritura: el mensaje entero en un envío. El troceado (texto y
+    // ENTER en escrituras APARTE, pegados delimitados si el TUI los pidió) lo
+    // decide el servidor en main/mirror-input-send.js, que sí tiene tests.
+    function autoGrow() {
+      composeText.style.height = 'auto'
+      composeText.style.height = `${Math.min(120, composeText.scrollHeight)}px`
+    }
+    composeText.addEventListener('input', autoGrow)
+    function sendComposed(withEnter) {
+      const text = composeText.value
+      if (!withEnter && !text) return
+      if (!send({ type: 'mirror:send', text, enter: withEnter !== false })) {
+        setStatus('error', 'Sin conexión — no se ha enviado (tu texto sigue aquí)')
+        return
+      }
+      composeText.value = ''
+      autoGrow()
+      term.scrollToBottom()
+      composeText.focus()
+    }
+    // Tecla directa: xterm vuelve a leer el teclado del móvil. Es el modo que
+    // duplicaba con GBoard, así que va APAGADO por defecto y avisa al encender;
+    // existe para lo que la barra no cubre (un TUI que responde a cada tecla).
+    const MODE_KEY = 'poweragent-mirror-tecla-directa'
+    const btnMode = $('btn-mode')
+    const composeBar = $('compose')
+    let directMode = false
+    try { directMode = localStorage.getItem(MODE_KEY) === '1' } catch {}
+    function applyMode(announce) {
+      term.options.disableStdin = !directMode
+      composeBar.classList.toggle('hidden', directMode)
+      btnMode.classList.toggle('on', directMode)
+      try { localStorage.setItem(MODE_KEY, directMode ? '1' : '0') } catch {}
+      if (directMode) term.focus()
+      else composeText.focus()
+      if (!announce) return
+      setStatus('online', directMode
+        ? '⌨ Tecla directa — ojo: el teclado del móvil puede duplicar'
+        : 'Barra de escritura — el texto sale entero')
+    }
+    btnMode.addEventListener('click', () => { directMode = !directMode; applyMode(true) })
+    // Registrado una vez; con disableStdin no llega nada, pero el modo manda.
+    term.onData((data) => { if (directMode) send({ type: 'input', data }) })
+    applyMode(false)
+
+    $('btn-send').addEventListener('click', () => sendComposed(true))
+    $('btn-send-raw').addEventListener('click', () => sendComposed(false))
+    // isComposing/229: en mitad de una composición el Enter es del teclado
+    // predictivo, no del usuario. Confundirlos era medio bug original.
+    composeText.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return
+      e.preventDefault()
+      sendComposed(true)
+    })
 
     // ── Audio: toca para grabar, toca para enviar ──
     const btnMic = $('btn-mic')

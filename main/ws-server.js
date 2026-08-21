@@ -10,6 +10,7 @@ const { createLanSessionInvites, MIRROR_RENEWAL_TTL_MS, MIRROR_RENEWAL_MAX_USES 
 const { shellQuote } = require('./shell-quote')
 const { sanitizeChannelText } = require('./untrusted-input')
 const { resolveFsWatchPollAction } = require('./fs-watch-poll')
+const { planMirrorWrites, detectBracketedPaste, applyMirrorWrites } = require('./mirror-input-send')
 
 const DEFAULT_LAN_WS_PORT = 9999
 const MIN_LAN_PORT = 1024
@@ -3102,6 +3103,42 @@ function createLanWsServer(options = {}) {
       return
     }
 
+    // Texto escrito en la barra del móvil. NO son teclas: el teclado de Android
+    // compone y duplicaba cuando xterm entregaba tecla a tecla (mirror-input-send.js).
+    // Llega el mensaje entero, se sanea (esto es texto de un canal, no la
+    // excepción RAW de las teclas de control) y el ENTER va aparte.
+    if (msgType === 'mirror:send') {
+      touchSessionLock(session, Date.now())
+      if (!session.permissions[PERMISSION_KEYS.PTY_EXECUTE]) {
+        safeSend(session.ws, {
+          type: 'status',
+          state: 'error',
+          sessionId: session.id,
+          code: 'PERMISSION_DENIED',
+          message: 'Permiso denegado: pty.execute'
+        })
+        return
+      }
+      if (!session.ptyProcess?._mirror || !session.ptyProcess?._alive) {
+        safeSend(session.ws, {
+          type: 'status',
+          state: 'error',
+          sessionId: session.id,
+          code: 'MIRROR_ONLY',
+          message: 'mirror:send solo vale en una sesión espejo viva'
+        })
+        return
+      }
+      const facade = session.ptyProcess
+      const clean = sanitizeChannelText(typeof payload.text === 'string' ? payload.text : '').text
+      const steps = planMirrorWrites(clean, {
+        enter: payload.enter !== false,
+        bracketedPaste: session.mirrorPasteMode?.enabled === true
+      })
+      applyMirrorWrites(facade, steps, { isAlive: () => facade._alive === true })
+      return
+    }
+
     // Foto/archivo desde la página espejo: se guarda en un cajón temporal y la
     // RUTA se escribe en el prompt (sin enter — el usuario añade texto y envía),
     // igual que el botón Adjuntar del escritorio. Solo sesiones espejo.
@@ -3228,6 +3265,10 @@ function createLanWsServer(options = {}) {
     const target = attachLocalMirror(String(session.sessionInvite?.mirrorId || ''), {
       onData: (data) => {
         if (!facade._alive) return
+        // Escuchar aquí es la única forma de saber si el programa del PTY pide
+        // los pegados delimitados: sin este dato, un texto multilínea del móvil
+        // se enviaría a trozos (cada \n es un ENTER).
+        session.mirrorPasteMode = detectBracketedPaste(session.mirrorPasteMode, data)
         safeSend(session.ws, { type: 'output', data: String(data), sessionId: session.id })
       },
       onExit: ({ exitCode, signal } = {}) => {
@@ -3268,6 +3309,7 @@ function createLanWsServer(options = {}) {
     })
     const snapshot = String(target.snapshot || '')
     if (snapshot) {
+      session.mirrorPasteMode = detectBracketedPaste(session.mirrorPasteMode, snapshot)
       safeSend(session.ws, { type: 'output', data: snapshot, sessionId: session.id })
     }
     // El QR espejo es 1 uso / 90 s: la reconexión del móvil vive de este
