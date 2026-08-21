@@ -30,7 +30,7 @@
 
 - **Probar el espejo en real** (lo hará Luismi estos días, en la empaquetada). La causa del "el QR nuevo tampoco conectaba" sigue SIN CERRAR: quedan dos sospechosos —la ventana de 90 s y el túnel dando IP LAN en vez de pública— y el mensaje nuevo del móvil dirá cuál en cuanto vuelva a pasar.
 - **Decisión pendiente de Luismi**: el techo de 4 h del renewal sigue intacto a propósito. Tocarlo es decisión suya, no técnica.
-- **Poda del runbook** — `AGENTS.md` en 20 KB, por encima del umbral de ~15 KB. Candidata: § "Protocolo de despliegue y prueba" a `tech/runbook_deploy_verificacion.md`. Propuesta desde el 2026-08-20, **no aprobada**.
+- ~~Poda del runbook~~ **HECHA el 2026-08-21**: `AGENTS.md` 16,9 → **15,7 KB**. Criterio aplicado: se queda lo que hay que saber ANTES de tocar nada (invariantes); se muda el cómo y los nombres de función, que se consultan ya trabajando en el subsistema. Se comprimieron relay/forks, espejo LAN, allowlists, ámbito global, ciclo de vida del bridge y conocimiento. **La regla madre de WhatsApp no se tocó** (seguridad crítica). Antes de quitar nada se verificó que el detalle estaba en su ficha; el aviso de descarte de allowlists (`pickDropped`/`warnings`) NO estaba y se mudó a `bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md` primero.
 
 ## Notas operativas
 

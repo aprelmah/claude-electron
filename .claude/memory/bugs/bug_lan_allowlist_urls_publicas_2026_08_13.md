@@ -73,3 +73,13 @@ estaba a la vista y se leyó como texto de ayuda fijo.
 el túnel no soporta WebSockets. Hay que forzar `--http1.1`; entonces sale
 `101 Switching Protocols` (o `401` sin Bearer, que también prueba que el
 tráfico llega).
+
+## Seguimiento — el descarte ya no es mudo (`95e93fb`, 2026-08-15)
+
+El agujero de esta ficha era que `pick()` tiraba las claves fuera de la allowlist **en silencio**: el renderer enviaba el campo, `save-app-config` lo descartaba y nadie se enteraba hasta que algo no funcionaba días después.
+
+Desde `95e93fb`:
+- **`pickDropped(payload, allowlist)`** devuelve las claves que `pick` habría descartado, y `save-app-config` las propaga como **`warnings`** en la respuesta. El descarte sigue ocurriendo (es la defensa), pero ahora se ve.
+- Un test compara el **payload real que envía `renderer.js`** contra las allowlists, sección por sección (`cli`, `telegram`, `lanServer`). Si alguien añade un campo al renderer y olvida la allowlist, falla la suite en vez de fallar en producción.
+
+Movido aquí desde `AGENTS.md` en la poda del 2026-08-21: en el runbook queda la regla (añadir el campo a `main/app-config-allowlists.js` o desaparece sin error); el mecanismo que la respalda vive en esta ficha.
