@@ -54,6 +54,9 @@
   <input id="input-photo" type="file" accept="image/*" capture="environment" />
   <input id="input-file" type="file" accept="*/*" />
   <script src="vendor/xterm/lib/xterm.js"></script>
+  <!-- El servidor sustituye este marcador por main/mirror-connection-status.js
+       al servir la página: misma lógica que usa la app, testeada en la suite. -->
+  <script>/*__MIRROR_STATUS_MODULE__*/</script>
   <script>
     'use strict'
     const $ = (id) => document.getElementById(id)
@@ -124,6 +127,53 @@
     let closedForGood = false
     const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 15000]
 
+    // Diagnóstico: sin esto, tres averías distintas (token quemado, Mac
+    // inalcanzable, WebSocket bloqueado) se veían igual — pantalla en blanco.
+    let everOpened = false
+    let lastServerError = null
+    let hostReachable = null
+
+    function wsTarget() {
+      try {
+        const u = new URL(wsUrl())
+        return { host: u.hostname, port: Number(u.port) || null }
+      } catch { return { host: '', port: null } }
+    }
+
+    // Cualquier respuesta HTTP vale, incluido un 401: prueba que el host existe
+    // y separa "no llego al Mac" de "llego pero el WebSocket no pasa".
+    async function probeHost() {
+      try {
+        const u = new URL(location.href)
+        u.pathname = '/status'
+        u.search = ''
+        await fetch(u.toString(), { method: 'GET', cache: 'no-store' })
+        return true
+      } catch { return false }
+    }
+
+    function reportFailure({ closeCode = null, attemptsExhausted = false } = {}) {
+      const api = window.MirrorConnectionStatus
+      const target = wsTarget()
+      if (!api) {
+        setStatus('error', 'Sin conexión')
+        showOverlay('No consigo conectar. Genera un QR nuevo desde la app: 🌐 → 🪞.')
+        return
+      }
+      const info = api.describeMirrorFailure({
+        everOpened,
+        closeCode,
+        serverCode: lastServerError?.code || '',
+        serverMessage: lastServerError?.message || '',
+        reachable: hostReachable,
+        host: target.host,
+        port: target.port,
+        attemptsExhausted
+      })
+      setStatus('error', info.title)
+      showOverlay(`${info.title}. ${info.detail}`)
+    }
+
     function send(payload) {
       if (!socket || socket.readyState !== WebSocket.OPEN) return false
       socket.send(JSON.stringify(payload))
@@ -141,26 +191,34 @@
     function connect() {
       socket = new WebSocket(wsUrl())
       socket.addEventListener('open', () => {
+        everOpened = true
         setStatus('online', 'Conectado — tu terminal, en directo')
         startPing()
       })
-      socket.addEventListener('close', (event) => {
+      socket.addEventListener('close', async (event) => {
         if (event.target !== socket) return
         stopPing()
         if (closedForGood) return
-        if (event.code === 4403) {
-          setStatus('error', 'Invitación caducada')
-          showOverlay('La invitación caducó. Genera un QR nuevo desde la app: 🌐 → 🪞.')
+        // Un cierre 4403/4401 lo decidió el servidor: no hay nada que sondear.
+        if (event.code === 4403 || event.code === 4401) {
+          reportFailure({ closeCode: event.code })
           return
         }
+        // El WS nunca llegó a abrir: preguntamos al host antes de acusar a nadie.
+        if (!everOpened && hostReachable === null) {
+          hostReachable = await probeHost()
+        }
         if (retryCount >= RETRY_DELAYS.length) {
-          setStatus('error', 'Sin conexión')
-          showOverlay('No consigo reconectar. Comprueba la cobertura o genera un QR nuevo desde la app (🌐 → 🪞).')
+          reportFailure({ closeCode: event.code, attemptsExhausted: true })
           return
         }
         const delay = RETRY_DELAYS[retryCount]
         retryCount += 1
-        setStatus('error', `Se cortó — reconectando (intento ${retryCount})…`)
+        // Si nunca llegó a conectar, el intento no es "se cortó": di a dónde va.
+        const t = wsTarget()
+        setStatus('error', everOpened
+          ? `Se cortó — reconectando (intento ${retryCount})…`
+          : `Sin respuesta de ${t.host || 'el Mac'} — reintentando (${retryCount})…`)
         setTimeout(() => { if (!closedForGood) connect() }, delay)
       })
       socket.addEventListener('error', () => setStatus('error', 'Error de conexión'))
@@ -188,6 +246,8 @@
         const state = String(msg.state || '')
         if (state === 'connected') {
           retryCount = 0
+          lastServerError = null
+          hostReachable = true
           // El server reenvía el snapshot entero: limpia antes para no duplicar pantalla.
           term.reset()
           if (msg.mirror?.cols && msg.mirror?.rows) {
@@ -206,7 +266,12 @@
           showOverlay('La sesión del terminal se cerró en el Mac.')
           return
         }
-        if (state === 'error') { setStatus('error', String(msg.message || 'Error')) }
+        // El servidor manda su causa exacta ANTES de cerrar: la guardamos para
+        // que el diagnóstico del close use su código en vez de adivinar.
+        if (state === 'error') {
+          lastServerError = { code: String(msg.code || ''), message: String(msg.message || '') }
+          setStatus('error', String(msg.message || 'Error'))
+        }
       })
     }
     if (!invite) {

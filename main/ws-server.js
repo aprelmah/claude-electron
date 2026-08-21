@@ -145,6 +145,29 @@ function isPrivateIPv4(ip) {
   return false
 }
 
+// El diagnóstico del espejo vive en main/mirror-connection-status.js para poder
+// testearlo (la suite corre sin navegador). La página remota no puede hacer
+// require ni pedir un endpoint nuevo sin abrir superficie sin auth: se inyecta
+// en el HTML al servirlo, sustituyendo el marcador. Un único sitio con la
+// lógica, cero rutas nuevas. Si el fichero faltara, la página sigue sirviéndose
+// con su fallback: perder el detalle del error no vale una pantalla en blanco.
+const MIRROR_STATUS_MARKER = '/*__MIRROR_STATUS_MODULE__*/'
+let mirrorStatusSourceCache = null
+
+function injectMirrorStatusModule(html) {
+  const text = String(html || '')
+  if (!text.includes(MIRROR_STATUS_MARKER)) return text
+  if (mirrorStatusSourceCache == null) {
+    try {
+      mirrorStatusSourceCache = fs.readFileSync(path.join(__dirname, 'mirror-connection-status.js'), 'utf8')
+    } catch {
+      mirrorStatusSourceCache = ''
+    }
+  }
+  if (!mirrorStatusSourceCache) return text
+  return text.replace(MIRROR_STATUS_MARKER, () => mirrorStatusSourceCache)
+}
+
 function pickLanIPv4() {
   const nets = os.networkInterfaces()
   const privateCandidates = []
@@ -3751,7 +3774,7 @@ function createLanWsServer(options = {}) {
           const htmlPath = u.pathname === '/lan-mirror.html'
             ? path.join(path.dirname(clientHtmlPath), 'lan-mirror.html')
             : clientHtmlPath
-          const html = fs.readFileSync(htmlPath, 'utf8')
+          const html = injectMirrorStatusModule(fs.readFileSync(htmlPath, 'utf8'))
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
           res.end(html)
         } catch (err) {
