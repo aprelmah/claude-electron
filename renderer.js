@@ -127,6 +127,7 @@ const btnShareMirror = document.getElementById('btn-share-mirror')
 const btnShareClient = document.getElementById('btn-share-client')
 const shareInternetQr = document.getElementById('share-internet-qr')
 const shareInternetQrImg = document.getElementById('share-internet-qr-img')
+const shareInternetQrCountdown = document.getElementById('share-internet-qr-countdown')
 const cfgEnterpriseEnabled = document.getElementById('cfg-enterprise-enabled')
 const cfgEnterpriseStatus = document.getElementById('cfg-enterprise-status')
 const btnOpenEnterpriseModal = document.getElementById('btn-open-enterprise-modal')
@@ -3054,6 +3055,45 @@ if (btnLanShareSession) {
 
 // ── Compartir por internet desde la propia sesión (botón 🌐 de la topbar) ──
 
+// El QR del espejo muere a los 90 s sin cambiar de aspecto: quien lo tenía en
+// pantalla no distinguía uno vivo de uno caducado y volvía a escanear un código
+// muerto una y otra vez. Mientras la banda siga abierta se renueva sola con
+// margen, y la cuenta atrás dice en todo momento lo que le queda.
+// Se carga como <script src> en index.html (nodeIntegration está desactivado:
+// un require aquí mataría la página entera, no solo esta función).
+const { computeQrRefreshDelay, formatQrCountdown } = window.MirrorConnectionStatus || {}
+let qrRefreshTimer = null
+let qrCountdownTimer = null
+let qrExpiresAt = null
+
+function stopQrAutoRefresh() {
+  if (qrRefreshTimer) { clearTimeout(qrRefreshTimer); qrRefreshTimer = null }
+  if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null }
+  qrExpiresAt = null
+}
+
+function renderQrCountdown() {
+  if (!shareInternetQrCountdown) return
+  const text = formatQrCountdown(qrExpiresAt, Date.now())
+  shareInternetQrCountdown.textContent = text
+  shareInternetQrCountdown.hidden = !text
+}
+
+function startQrAutoRefresh(expiresAt) {
+  stopQrAutoRefresh()
+  const delay = computeQrRefreshDelay({ expiresAt, now: Date.now() })
+  if (delay == null) return
+  qrExpiresAt = Number(expiresAt)
+  renderQrCountdown()
+  qrCountdownTimer = setInterval(renderQrCountdown, 1000)
+  qrRefreshTimer = setTimeout(() => {
+    // Solo mientras la banda siga a la vista: si se cerró, no se generan
+    // invitaciones a espaldas de nadie.
+    if (!shareInternetBar || shareInternetBar.hidden) { stopQrAutoRefresh(); return }
+    shareSessionViaInternet('mirror', { silent: true })
+  }, delay)
+}
+
 function showShareInternetBar({ text, url, canCut, choice, qr } = {}) {
   if (!shareInternetBar) return
   shareInternetBar.hidden = false
@@ -3079,12 +3119,14 @@ function showShareInternetBar({ text, url, canCut, choice, qr } = {}) {
 // de texto como fallback. Cliente = enlace copiado (caduca a los 10 min).
 // mode: 'mirror' = espejo del terminal vivo (mismo hilo); 'session' = copia
 // aislada para un cliente (fork con --resume en su propio worktree).
-async function shareSessionViaInternet(mode) {
+async function shareSessionViaInternet(mode, { silent = false } = {}) {
   if (!window.api.lanTunnelStart) return
   const isMirror = mode === 'mirror'
   if (btnShareInternet) btnShareInternet.disabled = true
   try {
-    showShareInternetBar({ text: 'Preparando acceso por internet…' })
+    // El refresco automático no anuncia nada: repinta el QR y punto. Sin esto,
+    // cada renovación borraría la banda y parpadearía en pantalla.
+    if (!silent) showShareInternetBar({ text: 'Preparando acceso por internet…' })
     let snap = lanServerSnapshot
     if (!snap?.running) {
       const started = await window.api.wsServerStart?.()
@@ -3114,12 +3156,13 @@ async function shareSessionViaInternet(mode) {
     const expires = invite.expiresAt ? new Date(invite.expiresAt).toLocaleTimeString() : ''
     if (isMirror && invite.qrDataUrl) {
       showShareInternetBar({
-        text: 'Espejo — escanea el QR con la cámara del móvil (un uso, caduca en 90 s). Si caduca, vuelve a pulsar 🪞:',
+        text: 'Espejo — escanea el QR con la cámara del móvil. Se renueva solo mientras esta banda siga abierta:',
         url: invite.clientUrl,
         canCut: true,
         qr: invite.qrDataUrl
       })
-      showStatus('QR del espejo listo — escanéalo', 'ok', 5000)
+      startQrAutoRefresh(invite.expiresAt)
+      if (!silent) showStatus('QR del espejo listo — escanéalo', 'ok', 5000)
       return
     }
     const kindLabel = isMirror ? 'Espejo (tu sesión real)' : 'Invitación para cliente (copia)'
@@ -3167,6 +3210,7 @@ if (btnShareInternetCut) {
       const res = await window.api.lanTunnelStop?.()
       renderLanStatus(res?.ok !== false ? res : lanServerSnapshot, res?.ok === false ? (res?.error || 'Error') : '')
       if (shareInternetBar) shareInternetBar.hidden = true
+      stopQrAutoRefresh()
       showStatus('Acceso por internet cortado', 'ok', 4000)
     } finally {
       btnShareInternetCut.disabled = false
@@ -3178,6 +3222,7 @@ if (btnShareInternetClose) {
   btnShareInternetClose.addEventListener('click', () => {
     // Solo esconde la banda; el túnel sigue como esté (para cortarlo: "Cortar acceso").
     if (shareInternetBar) shareInternetBar.hidden = true
+    stopQrAutoRefresh()
   })
 }
 

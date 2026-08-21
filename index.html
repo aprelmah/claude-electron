@@ -416,7 +416,7 @@
       <button id="btn-share-internet-copy" class="icon-btn small text-btn" type="button" hidden>Copiar</button>
       <button id="btn-share-internet-cut" class="icon-btn small text-btn" type="button" hidden>Cortar acceso</button>
       <button id="btn-share-internet-close" class="icon-btn small text-btn" type="button" aria-label="Cerrar aviso">✕</button>
-      <span id="share-internet-qr" class="share-internet-qr" hidden><img id="share-internet-qr-img" alt="QR de la invitación espejo" /></span>
+      <span id="share-internet-qr" class="share-internet-qr" hidden><img id="share-internet-qr-img" alt="QR de la invitación espejo" /><small id="share-internet-qr-countdown" class="share-internet-qr-countdown" hidden></small></span>
     </div>
     <div id="terminal-toolbar">
       <button id="btn-mic" class="action icon-btn small" title="Dictado por voz (Cmd+Shift+M)" aria-label="Dictado por voz" aria-pressed="false">
@@ -1002,6 +1002,7 @@
   <script src="project-picker.js"></script>
   <script src="voice-ui-state.js"></script>
   <script src="kb-tabs-state.js"></script>
+  <script src="main/mirror-connection-status.js"></script>
   <script src="prompt-capture.js"></script>
   <script src="renderer.js"></script>
   <script src="kb-panel.js"></script>
