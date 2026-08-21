@@ -2,34 +2,40 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-20 tarde (verificado contra git, filesystem y `npm run verify` en el mismo turno).
+Última actualización: 2026-08-21 tarde (verificado contra git, filesystem, CDP y `npm run verify` en el mismo turno).
 
 ## Estado de entrega (verificado)
 
-- Rama `main`, **sincronizada con `origin/main`** (`git ls-remote origin main` → `b9107aa`, igual que HEAD local; sin ahead/behind). Working tree limpio salvo la memoria de este cierre.
-- Últimos commits: `b9107aa feat(verify): npm run verify — la Definition of Done, ejecutable`, `8ad969d docs(runbook): la regla madre de WhatsApp ya tiene un mecanismo debajo`, `a3ee550 fix(runbook): dos comandos de verificación que nunca funcionaron`.
-- Tests: **1652 pass, 0 fail, 6 skipped** (1635 + 17 del blindaje de verify). Suite completa en el pre-commit de los tres commits, Node del sistema v24.13.0.
-- **`npm run verify` → VEREDICTO OK (0 KO · 0 WARN · 6 OK)** en 1,7 s. Es la nueva foto rápida: sintaxis de 140 ficheros, huérfanos de `build.files`, deploy al día, proceso, lock y bridge.
-- Deploy: `/Applications/POWER-AGENT.app` v1.3.0, asar del **2026-08-17 17:38** ≥ último commit de código empaquetado (`8b544b9`, 17:26) y **3/3 canarios idénticos a HEAD**. Los commits de hoy no tocan código empaquetado (runbook, script de dev y tests), así que el asar sigue al día: no hace falta redeploy.
-- App corriendo **con ventana** (pid 99510, `--type=renderer` presente), sin dev viva. Se cerró y relanzó en esta sesión: el `quit` ordenado retiró el `SingletonLock` solo.
+- Rama `main`, **sincronizada con `origin/main`** (`git status -sb` → `## main...origin/main`, sin ahead/behind). Working tree limpio salvo la memoria de este cierre.
+- Últimos commits: `88bdbe8 fix(renderer): un destructuring dejó el picker sin proyectos ni personalidades`, `925af4f feat(lan): el QR del espejo se renueva solo y dice lo que le queda`, `a4446f9 feat(lan): el espejo dice por qué falla, en vez de quedarse en blanco`.
+- Tests: **1672 pass, 0 fail, 6 skipped** (1652 + 16 del módulo del espejo + 3 de colisiones de ámbito global + 1 de encadenado del QR). Suite completa en el pre-commit de los tres commits, Node del sistema v24.13.0.
+- **`npm run verify` → VEREDICTO OK (0 KO · 0 WARN · 6 OK)**. Sintaxis de 141 ficheros, huérfanos de `build.files`, deploy al día, proceso, lock y bridge.
+- Deploy: `/Applications/POWER-AGENT.app` v1.3.0, asar del **2026-08-21 19:25** ≥ último commit de código empaquetado (`88bdbe8`, 19:24) y **3/3 canarios idénticos a HEAD**. El fichero nuevo `main/mirror-connection-status.js` se comprobó DENTRO del asar y es byte-idéntico al del repo.
+- App corriendo **con ventana** (pid 41543, `--type=renderer`), sin dev viva y sin puerto de debug. **0 errores en la consola del renderer** (verificado por CDP tras el fix).
 - **Bridge de WhatsApp: APAGADO y deshabilitado** (launchd `=> true`, no cargado, 3031 libre). Sigue siendo el estado que Luismi quiere por defecto.
 
-## Última sesión (2026-08-20 — el harness deja de ser prosa)
+## Última sesión (2026-08-21 — el espejo aprende a decir por qué falla, y una lección cara)
 
-- Auditoría del harness a petición de Luismi. Diagnóstico: tenía mucha regla escrita al modelo y pocos mecanismos. Se cerraron tres huecos y se instrumentó el resto.
-- **Dos comandos del protocolo de deploy llevaban meses mintiendo** y nadie lo vio porque se leían en vez de ejecutarse: `[ -e ]` sobre `SingletonLock` (es un symlink colgante: da FALSE con el lock puesto) y `ps aux | grep electron` (no ve la empaquetada, cuyo binario se llama POWER-AGENT). Corregidos en `a3ee550`. Ficha: `bugs/bug_runbook_verificaciones_falsas_2026_08_20.md`.
-- **`npm run verify`** (`b9107aa`): la checklist en prosa del runbook, hecha comando. Solo lectura por construcción, blindada con un test que prohíbe 15 verbos destructivos. Ficha: `tech/tech_verify_script_2026_08_20.md`.
-- **Barandillas globales** (fuera del repo, en `~/.claude/hooks/`, respaldadas en `aprelmah/claude-skills-luismi` commit `b328423`): hook de sintaxis en PostToolUse, y el guard de WhatsApp que convierte la regla madre en mecanismo. Documentado en `~/claude-shared/memory/01-infra.md` y en el skill `/harness`.
-- Verificado en vivo, no por lectura: el hook de sintaxis bloqueó un `.js` roto escrito a propósito; el guard bloqueó un `wa:send` y un `Write` al sello.
+- **DeepSeek Harness evaluado y descartado.** `dsh` es el BUCLE (lo que aquí hace el binario `claude` en el PTY); POWER-AGENT es todo lo de alrededor. Decisión de Luismi: seguir igual. Deuda que dsh sí cubre: sandbox de subprocesos y desacople del binario. Detalle en la memoria auto.
+- **Espejo LAN: diagnóstico cerrado a medias, con código.** El renewal caduca **4 h después de escanear el QR**, no es deslizante y NO se re-emite (`ws-server.js:3253`, anti-cadena deliberado). Mientras el WS aguante abierto nadie revalida; pasadas las 4 h, **el primer corte es definitivo**. Descartados con evidencia: lock, límite de sesiones (no existe), el GET no quema el invite (`has()`, no `claim()`), `MIRROR_TARGET_GONE` tiene mensaje propio, URLs públicas de config vacías, `lan-mirror.html` sí en `build.files`.
+- **`a4446f9`** — el móvil ya no se queda en blanco: `main/mirror-connection-status.js` distingue token quemado / Mac inalcanzable / WS bloqueado / terminal cerrado, nombra `host:puerto` y sondea `/status` antes de acusar a nadie (un 401 ya prueba que el host existe). El módulo se INYECTA en `lan-mirror.html` al servirla — sin endpoint nuevo, sin duplicar lógica.
+- **`925af4f`** — el QR se renueva solo cada 75 s mientras la banda esté abierta, con cuenta atrás visible. Antes moría a los 90 s sin cambiar de aspecto.
+- **`88bdbe8`** — el fix del fallo que rompió la app en el escritorio de Luismi, más el mecanismo que faltaba (ver abajo).
+
+## Riesgo abierto que descubrió esta sesión
+
+- **`npm run verify` NO detecta una página muerta.** Dijo "proceso con ventana · 1 renderer" con la UI completamente rota: proceso vivo, renderer cargado y `renderer.js` sin ejecutar por un `SyntaxError`. **Arrancar ≠ funcionar.** Lo cazó el ojo de Luismi y luego CDP, no la verificación automática. Candidato claro de mejora para `verify`: una comprobación de salud de la UI.
 
 ## Próximo paso
 
-- Nada urgente. Cuando toque: **poda del runbook** — `AGENTS.md` está en 20 KB, por encima del umbral de ~15 KB del contrato de capas. Candidata: la sección "Protocolo de despliegue y prueba" (~2,5 KB de bloques bash) ahora que `npm run verify` hace ese trabajo; se mudaría a `tech/runbook_deploy_verificacion.md` dejando el porqué y un puntero. **Propuesta, no aprobada.**
-- Evals de skills: pospuesto a propósito hasta tener datos de uso reales en el log del harness.
+- **Probar el espejo en real** (lo hará Luismi estos días, en la empaquetada). La causa del "el QR nuevo tampoco conectaba" sigue SIN CERRAR: quedan dos sospechosos —la ventana de 90 s y el túnel dando IP LAN en vez de pública— y el mensaje nuevo del móvil dirá cuál en cuanto vuelva a pasar.
+- **Decisión pendiente de Luismi**: el techo de 4 h del renewal sigue intacto a propósito. Tocarlo es decisión suya, no técnica.
+- **Poda del runbook** — `AGENTS.md` en 20 KB, por encima del umbral de ~15 KB. Candidata: § "Protocolo de despliegue y prueba" a `tech/runbook_deploy_verificacion.md`. Propuesta desde el 2026-08-20, **no aprobada**.
 
 ## Notas operativas
 
-- **`npm run verify` antes de dar nada por bueno.** Con `--full` añade la suite y el sync con origin. No mata procesos, no borra locks, no despliega: si algo hay que arreglar, lo dice y lo arreglas tú.
-- El guard de WhatsApp bloquea cualquier comando que mencione la ruta del sello, aunque sea inocente (falla cerrado, es deliberado). Rodeo: meter el script en un fichero — el guard mira el comando, no el contenido.
-- `tests/telegram-relay-concurrent-turns.test.js:87` es **sensible a timing**: falló una vez bajo carga (varios agentes a la vez) y pasó en las tres corridas siguientes. Si falla suelto, repetir antes de investigar.
+- **Para pruebas de varios días, desplegar a `/Applications`** — dev es solo para verificación puntual. Luismi no puede tener una sesión de dev abierta horas.
+- **El script de deploy dice "✅ abierto" aunque la app se haya suicidado**: si hay una dev viva, sobrevive a su kill, retiene el `SingletonLock` y la empaquetada muere en silencio. Verificar SIEMPRE con `npm run verify` (proceso + lock) después de desplegar.
+- Un `<script src>` nuevo en `index.html` comparte ámbito global con `renderer.js`: nada de `const`/`let`/destructuring que repita un nombre. Lo vigila `tests/renderer-global-scope-collisions.test.js`.
+- `tests/telegram-relay-concurrent-turns.test.js:87` es **sensible a timing**: si falla suelto, repetir antes de investigar.
 - Node del sistema v24.13.0; el CI usa 20.18.0.

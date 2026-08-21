@@ -37,3 +37,21 @@ lo resolvió explícitamente con "PUSH" tras preguntárselo. A partir de ahora, 
 incluido, no hace falta pedirlo aparte cada vez. (La regla global de pedir
 autorización explícita de push sigue vigente para el resto de proyectos/repos —
 esta es una excepción específica de este proyecto, confirmada por Luismi.)
+
+## 2026-08-21 — Dev es para verificar; la empaquetada es para usar
+
+Cuando Luismi va a **probar algo durante días**, el cambio va desplegado a `/Applications`, no queda en dev.
+
+**Why:** lo dijo tal cual — *"no puedo estar en dev 4 horas"*. Una sesión de dev vive atada a una ventana de Terminal abierta, y POWER-AGENT es la app que usa a diario (bridge, tareas, sesiones). Dejarlo en dev le secuestra la herramienta de trabajo. Esto **no contradice** la actualización del 2026-08-11: el deploy se sigue haciendo cuando él lo pide; lo que se añade es que "voy a probarlo estos días" **es** una petición de deploy.
+
+**How to apply:**
+- Cambio que él probará a lo largo de días → commit + push + `npm run deploy` + verificar (asar por contenido **y** proceso con ventana).
+- Dev solo para la verificación puntual del turno, y **cerrarla después**: si queda viva retiene el `SingletonLock` y la empaquetada se suicida en silencio, aunque el script de deploy diga "✅ abierto". Pasó otra vez el 2026-08-21.
+
+## 2026-08-21 — Verificar la UI, no solo que la app arranque
+
+Tras desplegar un cambio que toca el renderer, **abrir lo que el cambio afecta**. Que el proceso tenga ventana no prueba nada.
+
+**Why:** ese día se desplegó con `renderer.js` muerto por un `SyntaxError`. `npm run verify` dio **0 KO** ("proceso con ventana · 1 renderer") y aun así el picker salía sin proyectos ni personalidades. Lo detectó Luismi, no la verificación. **Arrancar ≠ funcionar.**
+
+**How to apply:** si el cambio toca `renderer.js`, `index.html` o cualquier `<script>` de la página, verificar por CDP (skill `verify`) que la consola está a 0 errores y que el elemento afectado se pinta. Incidente completo en `bugs/bug_scripts_renderer_ambito_global.md` § 2026-08-21.
