@@ -92,3 +92,28 @@ El módulo lleva guardas en las dos salidas (`module.exports` y `window.X`) para
 ### El QR dejaba morir la sesión en pantalla
 
 El QR caduca a los 90 s **sin cambiar de aspecto**: quien lo tenía delante no distinguía uno vivo de uno muerto y escaneaba un código quemado una y otra vez. Ahora se renueva solo con 75 s de margen mientras la banda siga abierta, con cuenta atrás visible, y **se para** al cerrar la banda o cortar el acceso (nunca se generan invitaciones a espaldas de nadie). El cálculo vive en el módulo testeado, no en el renderer.
+
+### 2026-08-21 (noche) — el móvil escribe por `mirror:send`, no tecleando al PTY
+
+Cambio de contrato de entrada del espejo (`9544b5e`). El terminal remoto es **PANTALLA**
+(`disableStdin`): xterm ya no lee el teclado del móvil, porque un IME (GBoard) compone y
+duplicaba todo lo escrito — diagnóstico completo en
+`bugs/bug_espejo_teclado_movil_duplicado_2026_08_21.md`.
+
+Dos caminos de entrada, con políticas distintas y deliberadas:
+
+| Camino | Qué manda | Política |
+|---|---|---|
+| `input` (fila `#keys`: Esc, Tab, ↑↓←→, Ctrl·C, ⏎) | teclas de control | **RAW** — sanear las mata |
+| `mirror:send` (barra de escritura) | texto escrito o pegado | `sanitizeChannelText`, como el audio |
+
+El troceado vive en `main/mirror-input-send.js` (puro, testeado): texto y ENTER en escrituras
+APARTE, saltos finales recortados, y multilínea envuelto en bracketed paste **solo si el TUI
+lo pidió** — el modo se aprende de `\x1b[?2004h/l` en el stream del host y del snapshot
+inicial (`session.mirrorPasteMode`), con cola de 7 caracteres porque un chunk puede cortar la
+secuencia por la mitad. Sin constancia del modo, el texto va crudo: no se inventan secuencias
+de control contra un programa que no las pidió.
+
+El toggle **⌨** devuelve el teclado directo (modo anterior): apagado por defecto, avisa al
+encenderlo y se recuerda en el `localStorage` del móvil. Es el primer sitio donde mirar si
+alguien vuelve a reportar duplicados.

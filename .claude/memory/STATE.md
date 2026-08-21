@@ -2,40 +2,43 @@
 
 > Estado vivo. Lo lee el arranque de Claude y Codex y se actualiza al cierre.
 
-Última actualización: 2026-08-21 tarde (verificado contra git, filesystem, CDP y `npm run verify` en el mismo turno).
+Última actualización: 2026-08-21 noche (verificado contra git, filesystem, hash del asar y `npm run verify` en el mismo turno).
 
 ## Estado de entrega (verificado)
 
 - Rama `main`, **sincronizada con `origin/main`** (`git status -sb` → `## main...origin/main`, sin ahead/behind). Working tree limpio salvo la memoria de este cierre.
-- Últimos commits: `88bdbe8 fix(renderer): un destructuring dejó el picker sin proyectos ni personalidades`, `925af4f feat(lan): el QR del espejo se renueva solo y dice lo que le queda`, `a4446f9 feat(lan): el espejo dice por qué falla, en vez de quedarse en blanco`.
-- Tests: **1672 pass, 0 fail, 6 skipped** (1652 + 16 del módulo del espejo + 3 de colisiones de ámbito global + 1 de encadenado del QR). Suite completa en el pre-commit de los tres commits, Node del sistema v24.13.0.
-- **`npm run verify` → VEREDICTO OK (0 KO · 0 WARN · 6 OK)**. Sintaxis de 141 ficheros, huérfanos de `build.files`, deploy al día, proceso, lock y bridge.
-- Deploy: `/Applications/POWER-AGENT.app` v1.3.0, asar del **2026-08-21 19:25** ≥ último commit de código empaquetado (`88bdbe8`, 19:24) y **3/3 canarios idénticos a HEAD**. El fichero nuevo `main/mirror-connection-status.js` se comprobó DENTRO del asar y es byte-idéntico al del repo.
-- App corriendo **con ventana** (pid 41543, `--type=renderer`), sin dev viva y sin puerto de debug. **0 errores en la consola del renderer** (verificado por CDP tras el fix).
-- **Bridge de WhatsApp: APAGADO y deshabilitado** (launchd `=> true`, no cargado, 3031 libre). Sigue siendo el estado que Luismi quiere por defecto.
+- Últimos commits: `9544b5e feat(lan): el móvil escribe en una barra; xterm deja de recibir el teclado`, `517f6cf docs(runbook): poda 16,9 → 15,7 KB`, `b24977b docs(memory): cierre 2026-08-21`.
+- Tests: **1690 pass, 0 fail, 6 skipped** (1672 + 10 de `mirror-input-send` + 1 e2e de `mirror:send`; el resto ya estaba). Suite completa en el pre-commit de `9544b5e`, Node del sistema v24.13.0.
+- Deploy: `/Applications/POWER-AGENT.app` v1.3.0, asar del **2026-08-21 23:09**, verificado **por CONTENIDO**: `lan-mirror.html`, `main/ws-server.js`, `main/mirror-input-send.js`, `main.js` y `renderer.js` son byte-idénticos a HEAD (sha256).
+- **`npm run verify` da 1 KO de RELOJ, no de contenido**: el deploy (23:09) se hizo ANTES del commit (23:20), así que su regla "asar ≥ último commit de código" dispara aunque el paquete lleve exactamente el código de HEAD — la propia línea `contenido 3/3 canarios idénticos a HEAD` lo desmiente. Si se despliega antes de commitear, este KO es esperado; comprobar por hash antes de creerlo.
+- App corriendo **con ventana** (pid 52308, `--type=renderer`), lock legítimo, sin dev viva.
+- **Bridge de WhatsApp: APAGADO y deshabilitado** (launchd, no cargado, 3031 libre). Sigue siendo el estado que Luismi quiere por defecto.
 
-## Última sesión (2026-08-21 — el espejo aprende a decir por qué falla, y una lección cara)
+## Última sesión (2026-08-21 noche — el móvil deja de teclearle al PTY)
 
-- **DeepSeek Harness evaluado y descartado.** `dsh` es el BUCLE (lo que aquí hace el binario `claude` en el PTY); POWER-AGENT es todo lo de alrededor. Decisión de Luismi: seguir igual. Deuda que dsh sí cubre: sandbox de subprocesos y desacople del binario. Detalle en la memoria auto.
-- **Espejo LAN: diagnóstico cerrado a medias, con código.** El renewal caduca **4 h después de escanear el QR**, no es deslizante y NO se re-emite (`ws-server.js:3253`, anti-cadena deliberado). Mientras el WS aguante abierto nadie revalida; pasadas las 4 h, **el primer corte es definitivo**. Descartados con evidencia: lock, límite de sesiones (no existe), el GET no quema el invite (`has()`, no `claim()`), `MIRROR_TARGET_GONE` tiene mensaje propio, URLs públicas de config vacías, `lan-mirror.html` sí en `build.files`.
-- **`a4446f9`** — el móvil ya no se queda en blanco: `main/mirror-connection-status.js` distingue token quemado / Mac inalcanzable / WS bloqueado / terminal cerrado, nombra `host:puerto` y sondea `/status` antes de acusar a nadie (un 401 ya prueba que el host existe). El módulo se INYECTA en `lan-mirror.html` al servirla — sin endpoint nuevo, sin duplicar lógica.
-- **`925af4f`** — el QR se renueva solo cada 75 s mientras la banda esté abierta, con cuenta atrás visible. Antes moría a los 90 s sin cambiar de aspecto.
-- **`88bdbe8`** — el fix del fallo que rompió la app en el escritorio de Luismi, más el mecanismo que faltaba (ver abajo).
+- **Bug del espejo cerrado y probado en real.** Luismi reportó duplicados escribiendo desde Android; salieron los tres síntomas juntos (letras dobles, palabra repetida, ENTER doble). Causa: **xterm entrega al PTY cada evento del teclado según llega y GBoard no teclea, COMPONE** — y `autocorrect`/`autocapitalize` no son estándar en Android, así que xterm los pone y el teclado los ignora. Ningún atributo lo arregla.
+- **`9544b5e`** — el terminal del espejo pasa a `disableStdin` (es PANTALLA), se escribe en una barra con `<textarea>` y el texto sale ENTERO por un mensaje nuevo `mirror:send`. El troceado vive en `main/mirror-input-send.js` (puro y testeado): texto y ENTER en escrituras APARTE, saltos finales recortados y bracketed paste **solo si el TUI lo pidió** (el modo se aprende de `\x1b[?2004h/l` en el stream del host). Botones ⏎ / ⇢ / ⏎-solo, y toggle **⌨** que devuelve el teclado directo (apagado por defecto, se recuerda en el móvil).
+- **Regla nueva**: la excepción RAW del espejo es para las **TECLAS** (`#keys`), no para el texto — el texto pasa por `sanitizeChannelText`, como el audio.
+- Detalle: `bugs/bug_espejo_teclado_movil_duplicado_2026_08_21.md` y `tech/tech_lan_tunel_espejo_2026_08_15.md` § 2026-08-21 (noche).
 
-## Riesgo abierto que descubrió esta sesión
+## Riesgos abiertos
 
-- **`npm run verify` NO detecta una página muerta.** Dijo "proceso con ventana · 1 renderer" con la UI completamente rota: proceso vivo, renderer cargado y `renderer.js` sin ejecutar por un `SyntaxError`. **Arrancar ≠ funcionar.** Lo cazó el ojo de Luismi y luego CDP, no la verificación automática. Candidato claro de mejora para `verify`: una comprobación de salud de la UI.
+- **`npm run verify` NO detecta una página muerta** (heredado del cierre anterior): dice "proceso con ventana" con la UI rota por un `SyntaxError`. **Arrancar ≠ funcionar.** Candidato de mejora: comprobación de salud de la UI.
+- **Y ahora se sabe que su regla de deploy es de reloj, no de contenido** (ver arriba). Segunda mejora candidata para `verify`: comparar por hash y degradar el KO a INFO cuando el asar coincide con HEAD.
+- Sin cobertura: la barra del espejo (foco, autoGrow, toggle) vive en el HTML remoto, que ningún test toca. Solo el troceado está testeado.
+- Sin probar en real: el multilínea con bracketed paste contra el TUI de claude (verificado en test, no en el móvil).
 
 ## Próximo paso
 
-- **Probar el espejo en real** (lo hará Luismi estos días, en la empaquetada). La causa del "el QR nuevo tampoco conectaba" sigue SIN CERRAR: quedan dos sospechosos —la ventana de 90 s y el túnel dando IP LAN en vez de pública— y el mensaje nuevo del móvil dirá cuál en cuanto vuelva a pasar.
-- **Decisión pendiente de Luismi**: el techo de 4 h del renewal sigue intacto a propósito. Tocarlo es decisión suya, no técnica.
-- ~~Poda del runbook~~ **HECHA el 2026-08-21**: `AGENTS.md` 16,9 → **15,7 KB**. Criterio aplicado: se queda lo que hay que saber ANTES de tocar nada (invariantes); se muda el cómo y los nombres de función, que se consultan ya trabajando en el subsistema. Se comprimieron relay/forks, espejo LAN, allowlists, ámbito global, ciclo de vida del bridge y conocimiento. **La regla madre de WhatsApp no se tocó** (seguridad crítica). Antes de quitar nada se verificó que el detalle estaba en su ficha; el aviso de descarte de allowlists (`pickDropped`/`warnings`) NO estaba y se mudó a `bugs/bug_lan_allowlist_urls_publicas_2026_08_13.md` primero.
+- **Uso real del espejo** con la barra nueva. Si aparecen duplicados otra vez: mirar PRIMERO si el toggle ⌨ está encendido (es el modo viejo y se persiste en el `localStorage` del móvil).
+- **Decisión pendiente de Luismi**: el techo de 4 h del renewal del QR sigue intacto a propósito.
+- **Poda del runbook propuesta y NO ejecutada**: `AGENTS.md` está en **16,3 KB**, por encima del techo de ~15 KB. Candidato a mudar a su ficha: el bloque § Relay/sesiones/forks (el más largo, con `runbook_relay_telegram.md` propio). Bajaría a ~14 KB.
 
 ## Notas operativas
 
-- **Para pruebas de varios días, desplegar a `/Applications`** — dev es solo para verificación puntual. Luismi no puede tener una sesión de dev abierta horas.
-- **El script de deploy dice "✅ abierto" aunque la app se haya suicidado**: si hay una dev viva, sobrevive a su kill, retiene el `SingletonLock` y la empaquetada muere en silencio. Verificar SIEMPRE con `npm run verify` (proceso + lock) después de desplegar.
+- **Para pruebas de varios días, desplegar a `/Applications`** — dev es solo para verificación puntual.
+- **El script de deploy dice "✅ abierto" aunque la app se haya suicidado**: si hay una dev viva, sobrevive a su kill, retiene el `SingletonLock` y la empaquetada muere en silencio. Verificar SIEMPRE tras desplegar (proceso + lock).
 - Un `<script src>` nuevo en `index.html` comparte ámbito global con `renderer.js`: nada de `const`/`let`/destructuring que repita un nombre. Lo vigila `tests/renderer-global-scope-collisions.test.js`.
+- El JS inline de `lan-mirror.html` no lo comprueba ningún test: tras tocarlo, extraer los `<script>` y pasarles `node --check` (hecho en esta sesión desde el scratchpad).
 - `tests/telegram-relay-concurrent-turns.test.js:87` es **sensible a timing**: si falla suelto, repetir antes de investigar.
 - Node del sistema v24.13.0; el CI usa 20.18.0.
