@@ -22,16 +22,21 @@ App Electron de escritorio (Mac Intel, macOS 12) con terminal `node-pty` para lo
 ### Relay, sesiones y forks — `tech/runbook_relay_telegram.md`
 - Fuente de verdad = transcript JSONL; jamás el TUI raspado. Fin de turno = último `assistant` no-sidechain con `stop_reason: 'end_turn'`.
 - Todo write de prompt a un PTY de claude pasa por `writePromptThenEnter` (`main/pty-prompt-write.js`): el ENTER va en escritura APARTE o el turno queda escrito sin enviar.
-- Lectura de transcripts SIEMPRE parcial (offset + stat); jamás `readFileSync` entero. El offset tiene dos trampas medidas (la primera línea del slice, y el `baseOffset` 0 sobre un fork, que cierra el turno con la respuesta ANTERIOR): antes de tocar offsets, leer la ficha.
-- El `--resume` (interactivo o spawn) FORKEA el sessionId: el `.jsonl` viejo no crece jamás. Detección por prompt (`detectForkedRelayTranscript`) o vigía con tres guardas; todo fork nuevo debe registrar su sessionId o alguien lo adoptará.
-- Un sessionId ADIVINADO no se persiste jamás en la sesión (bug `6956fd5`): lo escriben solo spawn, vigías o relay verificando por prompt. "Latest por mtime" vale para PINTAR, nunca para asignar.
-- El transcript NO vive donde corre el proceso: localizar por sessionId (`findRelayTranscript`), jamás derivar del cwd. El headless resuelve cwd con `resolveResumeCwd`.
+- Lectura de transcripts SIEMPRE parcial (offset + stat), jamás entera. El offset tiene dos trampas medidas que cierran el turno con la respuesta ANTERIOR: antes de tocarlo, leer la ficha.
+- El `--resume` (interactivo o spawn) FORKEA el sessionId: el `.jsonl` viejo no crece jamás, y todo fork nuevo registra el suyo o alguien lo adoptará.
+- Un sessionId ADIVINADO no se persiste jamás en la sesión (bug `6956fd5`): "latest por mtime" vale para PINTAR, nunca para asignar.
+- El transcript NO vive donde corre el proceso: localizar por sessionId, jamás derivar del cwd.
 - La compactación "últimos 20 turnos" está RETIRADA (huérfanaba la conversación real) — NO reintroducirla; el headless resume SIEMPRE la sesión real.
 - Chat con `binding.bound` cuyo relay PTY falla → error claro; PROHIBIDO fallback headless.
 - Todo texto que entra por un canal (Telegram/WhatsApp/notify) pasa por `sanitizeChannelText` (`main/untrusted-input.js`) antes de tocar un PTY; canal nuevo = pasarlo por ahí y documentar su política.
-- Avisos de automatizaciones → SIEMPRE por el notify bot si está configurado (`notifyBotToken`/`notifyChatId` con fallback), sin tocar `rememberRunForChat`/pool como efecto colateral.
-- **Ningún enlace que pueda salir a internet lleva credencial persistente: solo invites.** El invariante se garantiza por estructura (el `set('token')` vive DENTRO de la rama que construye la URL LAN), no por un `if` que alguien pueda relajar. Y al verificar, enmascarar antes de imprimir: el booleano, nunca la URL con token (`bugs/bug_lan_token_enlace_publico_2026_08_15.md`). Guardar la config solo reinicia el servidor LAN al arrancar o cambiar de puerto — reiniciar de más corta las sesiones remotas vivas y anula los invites (`main/lan-server-action.js`).
-- **Túnel y espejo LAN** (`tech/tech_lan_tunel_espejo_2026_08_15.md`): binario externo que la app spawnee → ruta absoluta vía `main/cli-resolver.js` (la empaquetada no hereda `/usr/local/bin`). El ESPEJO escribe RAW al PTY del host solo las TECLAS de control (`input`) —excepción deliberada a `sanitizeChannelText`, que las mataría—; el TEXTO del móvil llega por `mirror:send` y sí se sanea, porque xterm dejó de leer el teclado del móvil (un IME componía y duplicaba: `bugs/bug_espejo_teclado_movil_duplicado_2026_08_21.md`). Su facade DESENGANCHA en `kill()`, jamás mata el PTY del host; la puerta es la invitación temporal. Se abre con QR de 1 uso/90 s y la reconexión vive de un renewal no encadenable con techo de 4 h que NO es deslizante. El resto (audio, vistas, device-flow, diagnóstico del móvil) en la ficha.
+- Avisos de automatizaciones → SIEMPRE por el notify bot si está configurado, sin tocar el pool como efecto colateral (`tech/runbook_telegram_bridge.md`).
+
+### LAN, túnel y espejo — `tech/tech_lan_tunel_espejo_2026_08_15.md`
+- **Ningún enlace que pueda salir a internet lleva credencial persistente: solo invites.** El invariante se garantiza por ESTRUCTURA, no por un `if` que alguien pueda relajar; y al verificar, enmascarar antes de imprimir (`bugs/bug_lan_token_enlace_publico_2026_08_15.md`).
+- Guardar la config solo reinicia el servidor LAN al arrancar o cambiar de puerto: reiniciar de más corta las sesiones remotas vivas y anula los invites.
+- Binario externo que la app spawnee → ruta absoluta vía `main/cli-resolver.js`: la empaquetada no hereda `/usr/local/bin`.
+- El espejo escribe RAW al PTY del host solo las TECLAS de control; el TEXTO del móvil llega por `mirror:send` y sí se sanea (`bugs/bug_espejo_teclado_movil_duplicado_2026_08_21.md`).
+- Su facade DESENGANCHA en `kill()`, jamás mata el PTY del host; la puerta es la invitación temporal: QR de 1 uso/90 s y renewal no encadenable con techo de 4 h que NO es deslizante.
 
 ### Git por sesión y spawns — `tech/runbook_git_por_sesion.md`
 - Todo spawn de PTY nuevo decide EXPLÍCITAMENTE si pasa por `ensureSessionWorkspace` (aislado en worktree) o queda excluido — y se documenta en esa ficha. `session.cwd` muestra siempre el path real.
@@ -105,4 +110,4 @@ Los comandos completos (arranque en dev, limpieza del lock, verificación por pr
 - Detalle por subsistema: `.claude/memory/tech/runbook_relay_telegram.md` (relay, forks, badge de modelo, auto-update CLI), `runbook_git_por_sesion.md`, `runbook_modo_voz.md`, `runbook_codex_sesiones.md`, `runbook_telegram_bridge.md` (comandos del bot, notas de voz, bot de avisos, configuración), `runbook_hermes_robos.md` (pairing, saneado, doctor, panel 📈), `runbook_incidentes_2026_05.md` (crash de arranque de mayo y fixes).
 - Índice completo de fichas: `.claude/memory/INDEX.md`. Historia de sesiones: memoria auto (`MEMORY.md`). Arqueología: `docs/archive/handoffs/INDICE.md`. Instalación cliente: `INSTALACION_CLIENTE.md`.
 
-_Última revisión: 2026-08-09 (dieta del runbook: 65 KB → este fichero). Si algo de aquí contradice a STATE.md, manda STATE.md._
+_Última revisión: 2026-08-21 (poda: relay comprimido y LAN/túnel/espejo con sección propia). Si algo de aquí contradice a STATE.md, manda STATE.md._
