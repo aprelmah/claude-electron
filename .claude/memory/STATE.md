@@ -7,7 +7,7 @@
 ## Estado de entrega (verificado)
 
 - Rama `main`, **sincronizada con `origin/main`** (`git status -sb` → `## main...origin/main`, sin ahead/behind). Working tree limpio salvo la memoria de este cierre.
-- Últimos commits: `9544b5e feat(lan): el móvil escribe en una barra; xterm deja de recibir el teclado`, `517f6cf docs(runbook): poda 16,9 → 15,7 KB`, `b24977b docs(memory): cierre 2026-08-21`.
+- Últimos commits: `c75a636 docs(runbook): poda 16,3 → 15,6 KB`, `ec27340 docs(memory): cierre 2026-08-21 noche`, `9544b5e feat(lan): el móvil escribe en una barra; xterm deja de recibir el teclado`.
 - Tests: **1690 pass, 0 fail, 6 skipped** (1672 + 10 de `mirror-input-send` + 1 e2e de `mirror:send`; el resto ya estaba). Suite completa en el pre-commit de `9544b5e`, Node del sistema v24.13.0.
 - Deploy: `/Applications/POWER-AGENT.app` v1.3.0, asar del **2026-08-21 23:09**, verificado **por CONTENIDO**: `lan-mirror.html`, `main/ws-server.js`, `main/mirror-input-send.js`, `main.js` y `renderer.js` son byte-idénticos a HEAD (sha256).
 - **`npm run verify` da 1 KO de RELOJ, no de contenido**: el deploy (23:09) se hizo ANTES del commit (23:20), así que su regla "asar ≥ último commit de código" dispara aunque el paquete lleve exactamente el código de HEAD — la propia línea `contenido 3/3 canarios idénticos a HEAD` lo desmiente. Si se despliega antes de commitear, este KO es esperado; comprobar por hash antes de creerlo.
@@ -32,7 +32,7 @@
 
 - **Uso real del espejo** con la barra nueva. Si aparecen duplicados otra vez: mirar PRIMERO si el toggle ⌨ está encendido (es el modo viejo y se persiste en el `localStorage` del móvil).
 - **Decisión pendiente de Luismi**: el techo de 4 h del renewal del QR sigue intacto a propósito.
-- **Poda del runbook propuesta y NO ejecutada**: `AGENTS.md` está en **16,3 KB**, por encima del techo de ~15 KB. Candidato a mudar a su ficha: el bloque § Relay/sesiones/forks (el más largo, con `runbook_relay_telegram.md` propio). Bajaría a ~14 KB.
+- ~~Poda del runbook~~ **HECHA** (`c75a636`): 16,3 → **15,6 KB**. LAN/túnel/espejo salen del cajón de relay a sección propia, y se comprimieron los nombres de función (verificando uno a uno que están en su ficha antes de quitarlos). Bajada real 725 B, no los ~2 KB estimados: el resto de ese bloque son invariantes y comprimirlos más sería tirar reglas. Para bajar de verdad habría que mudar una sección entera — decisión de producto, no técnica.
 
 ## Notas operativas
 
